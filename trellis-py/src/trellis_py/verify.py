@@ -81,8 +81,6 @@ class TrellisTimestamp:
 
 ATTACHMENT_EXPORT_EXTENSION = "trellis.export.attachments.v1"
 ATTACHMENT_EVENT_EXTENSION = "trellis.evidence-attachment-binding.v1"
-SIGNATURE_EXPORT_EXTENSION = "trellis.export.signature-affirmations.v1"
-INTAKE_EXPORT_EXTENSION = "trellis.export.intake-handoffs.v1"
 ERASURE_EVIDENCE_EVENT_EXTENSION = "trellis.erasure-evidence.v1"
 ERASURE_EVIDENCE_EXPORT_EXTENSION = "trellis.export.erasure-evidence.v1"
 ERASURE_EVIDENCE_CATALOG_MEMBER = "064-erasure-evidence.cbor"
@@ -96,15 +94,6 @@ CERTIFICATE_EXPORT_EXTENSION = "trellis.export.certificates-of-completion.v1"
 # ADR 0007 §9.8 / Core §9 — domain-separation tag for the SHA-256
 # preimage covering rendered presentation-artifact bytes (PDF / HTML).
 PRESENTATION_ARTIFACT_DOMAIN = "trellis-presentation-artifact-v1"
-WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE = "wos.kernel.signatureAffirmation"
-WOS_INTAKE_ACCEPTED_EVENT_TYPE = "wos.kernel.intakeAccepted"
-WOS_CASE_CREATED_EVENT_TYPE = "wos.kernel.caseCreated"
-WOS_GOVERNANCE_DETERMINATION_PREFIX = "wos.governance.determination"
-WOS_GOVERNANCE_DETERMINATION_RESCINDED_EVENT_TYPE = (
-    "wos.governance.determinationRescinded"
-)
-WOS_GOVERNANCE_REINSTATED_EVENT_TYPE = "wos.governance.reinstated"
-
 # ADR 0010 §6.7 registration — `EventPayload.extensions` slot for
 # user-content-attestation records.
 USER_CONTENT_ATTESTATION_EVENT_EXTENSION = "trellis.user-content-attestation.v1"
@@ -116,9 +105,6 @@ SUPERSESSION_GRAPH_MEMBER = "064-supersession-graph.json"
 SUPERSESSION_PREDECESSOR_PREFIX = "070-predecessors/"
 OPEN_CLOCKS_EXPORT_EXTENSION = "trellis.export.open-clocks.v1"
 OPEN_CLOCKS_MEMBER = "open-clocks.json"
-CLOCK_STARTED_RECORD_KIND = "clockStarted"
-CLOCK_RESOLVED_RECORD_KIND = "clockResolved"
-CLOCK_RESOLUTION_PAUSED = "paused"
 # Phase-1 identity-attestation event type (test-only). Core §6.7 + §10.6
 # reserve `x-trellis-test/*` for fixture authoring; admitted by
 # `_is_identity_attestation_event_type` until PLN-0381 ratifies the canonical
@@ -1851,15 +1837,6 @@ def _finalize_certificates_of_completion(
                     )
                 )
                 continue
-            if target.event_type != WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE:
-                outcome.all_signing_events_resolved = False
-                outcome.failures.append("signing_event_unresolved")
-                event_failures.append(
-                    VerificationFailure(
-                        "signing_event_unresolved", _hex(signing_event_hash)
-                    )
-                )
-                continue
             display = payload.chain_summary.signer_display[i]
             if display.signed_at != target.authored_at:
                 outcome.chain_summary_consistent = False
@@ -1878,8 +1855,6 @@ def _finalize_certificates_of_completion(
             for signing_event_hash in payload.signing_events:
                 target = event_by_hash.get(signing_event_hash)
                 if target is None:
-                    continue
-                if target.event_type != WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE:
                     continue
                 affirmation = _affirmation_payload_bytes(target, payload_blobs)
                 if affirmation is None:
@@ -1909,8 +1884,6 @@ def _finalize_certificates_of_completion(
         for i, signing_event_hash in enumerate(payload.signing_events):
             target = event_by_hash.get(signing_event_hash)
             if target is None:
-                continue
-            if target.event_type != WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE:
                 continue
             affirmation = _affirmation_payload_bytes(target, payload_blobs)
             if affirmation is None:
@@ -2318,7 +2291,6 @@ def _verify_event_set(
     chain_summaries: list[_ChainEventSummary] = []
     previous_hash: Optional[bytes] = None
     previous_authored_at: Optional[TrellisTimestamp] = None
-    rescission_terminal = False
     skip_prev = initial_posture_declaration is not None and len(events) == 1
 
     # Core §17.3 — Track every (ledger_scope, idempotency_key) identity seen
@@ -2487,23 +2459,6 @@ def _verify_event_set(
 
         previous_authored_at = details.authored_at
         previous_hash = details.canonical_event_hash
-
-        # ADR 0066 D-3 / TR-CORE-171 — once a determination is rescinded,
-        # later determination-changing governance events are integrity
-        # failures until an explicit reinstatement reopens the chain.
-        if details.event_type == WOS_GOVERNANCE_DETERMINATION_RESCINDED_EVENT_TYPE:
-            rescission_terminal = True
-        elif details.event_type == WOS_GOVERNANCE_REINSTATED_EVENT_TYPE:
-            rescission_terminal = False
-        elif rescission_terminal and details.event_type.startswith(
-            WOS_GOVERNANCE_DETERMINATION_PREFIX
-        ):
-            event_failures.append(
-                VerificationFailure(
-                    "rescission_terminality_violation",
-                    _hex(details.canonical_event_hash),
-                )
-            )
 
         # ADR 0005 step 8 input collection — every event contributes a
         # chain summary so the post-loop pass can flag `authored_at >
@@ -2841,30 +2796,6 @@ def _parse_attachment_export_extension(
     digest = _map_lookup_fixed_bytes(ext, "attachment_manifest_digest", 32)
     inline = _map_lookup_bool(ext, "inline_attachments")
     return digest, inline
-
-
-def _parse_signature_export_extension(manifest_map: dict) -> Optional[bytes]:
-    exts = _map_lookup_optional_extensions(manifest_map)
-    if exts is None:
-        return None
-    ext = exts.get(SIGNATURE_EXPORT_EXTENSION)
-    if ext is None:
-        return None
-    if not isinstance(ext, dict):
-        raise VerifyError("signature export extension is not a map")
-    return _map_lookup_fixed_bytes(ext, "signature_catalog_digest", 32)
-
-
-def _parse_intake_export_extension(manifest_map: dict) -> Optional[bytes]:
-    exts = _map_lookup_optional_extensions(manifest_map)
-    if exts is None:
-        return None
-    ext = exts.get(INTAKE_EXPORT_EXTENSION)
-    if ext is None:
-        return None
-    if not isinstance(ext, dict):
-        raise VerifyError("intake export extension is not a map")
-    return _map_lookup_fixed_bytes(ext, "intake_catalog_digest", 32)
 
 
 def _parse_erasure_evidence_export_extension(
@@ -3416,84 +3347,6 @@ def _verify_open_clocks(
         report.event_failures.append(
             VerificationFailure("manifest_payload_invalid", f"{OPEN_CLOCKS_MEMBER}/sealed_at")
         )
-    for row in catalog["open_clocks"]:
-        if row["computed_deadline"] < catalog["sealed_at"]:
-            report.warnings.append(
-                "open_clock_overdue:"
-                + row["clock_id"]
-                + ":"
-                + _hex(row["origin_event_hash"])
-            )
-
-
-def _parse_clock_record(payload_bytes: bytes) -> Optional[dict[str, Any]]:
-    value = _decode_value(payload_bytes)
-    if not isinstance(value, dict):
-        raise VerifyError("clock record root is not a map")
-    record_kind = str(_map_lookup_str(value, "recordKind"))
-    if record_kind not in (CLOCK_STARTED_RECORD_KIND, CLOCK_RESOLVED_RECORD_KIND):
-        return None
-    data_value = value.get("data")
-    if not isinstance(data_value, dict):
-        raise VerifyError("clock record data is not a map")
-    if record_kind == CLOCK_STARTED_RECORD_KIND:
-        calendar_ref = data_value.get("calendarRef")
-        if calendar_ref is not None and not isinstance(calendar_ref, str):
-            raise VerifyError("calendarRef must be a string or null")
-        return {
-            "recordKind": record_kind,
-            "clockId": str(_map_lookup_str(data_value, "clockId")),
-            "clockKind": str(_map_lookup_str(data_value, "clockKind")),
-            "calendarRef": calendar_ref,
-        }
-    return {
-        "recordKind": record_kind,
-        "clockId": str(_map_lookup_str(data_value, "clockId")),
-        "resolution": str(_map_lookup_str(data_value, "resolution")),
-    }
-
-
-def _verify_clock_segments(
-    events: list[ParsedSign1],
-    payload_blobs: dict[bytes, bytes],
-    report: VerificationReport,
-) -> None:
-    active: dict[str, dict[str, Any]] = {}
-    paused: dict[str, dict[str, Any]] = {}
-    for event in events:
-        try:
-            details = _decode_event_details(event)
-            payload_bytes = _readable_payload_bytes(details, payload_blobs)
-            if payload_bytes is None:
-                continue
-            clock_record = _parse_clock_record(payload_bytes)
-        except VerifyError:
-            continue
-        if clock_record is None:
-            continue
-        clock_id = clock_record["clockId"]
-        if clock_record["recordKind"] == CLOCK_STARTED_RECORD_KIND:
-            paused_segment = paused.pop(clock_id, None)
-            if paused_segment is not None and (
-                paused_segment["clockKind"] != clock_record["clockKind"]
-                or paused_segment["calendarRef"] != clock_record["calendarRef"]
-            ):
-                report.event_failures.append(
-                    VerificationFailure(
-                        "clock_calendar_mismatch", _hex(details.canonical_event_hash)
-                    )
-                )
-            active[clock_id] = {
-                "clockKind": clock_record["clockKind"],
-                "calendarRef": clock_record["calendarRef"],
-            }
-        elif clock_record["resolution"] == CLOCK_RESOLUTION_PAUSED:
-            segment = active.pop(clock_id, None)
-            if segment is not None:
-                paused[clock_id] = segment
-        else:
-            active.pop(clock_id, None)
-            paused.pop(clock_id, None)
 
 
 def _parse_certificate_catalog_entries(cat_bytes: bytes) -> list[dict[str, Any]]:
@@ -4273,213 +4126,6 @@ def _index_events_by_canonical_hash(
     return event_by_hash, duplicate_failures
 
 
-def _verify_signature_catalog(
-    archive: dict[str, bytes],
-    payload_blobs: dict[bytes, bytes],
-    catalog_digest: bytes,
-    report: VerificationReport,
-    event_by_hash: dict[bytes, EventDetails],
-) -> None:
-    cat_bytes = archive.get("062-signature-affirmations.cbor")
-    if cat_bytes is None:
-        report.event_failures.append(
-            VerificationFailure("missing_signature_catalog", "062-signature-affirmations.cbor")
-        )
-        return
-    if _sha256(cat_bytes) != catalog_digest:
-        report.event_failures.append(
-            VerificationFailure(
-                "signature_catalog_digest_mismatch", "062-signature-affirmations.cbor"
-            )
-        )
-    try:
-        entries = _parse_signature_catalog_entries(cat_bytes)
-    except VerifyError as exc:
-        report.event_failures.append(
-            VerificationFailure(
-                "signature_catalog_invalid", f"062-signature-affirmations.cbor/{exc}"
-            )
-        )
-        return
-    seen_row: set[bytes] = set()
-    for row in entries:
-        h = row["canonical_event_hash"]
-        if h in seen_row:
-            report.event_failures.append(
-                VerificationFailure("signature_catalog_duplicate_event", _hex(h))
-            )
-        seen_row.add(h)
-    for row in entries:
-        h = row["canonical_event_hash"]
-        det = event_by_hash.get(h)
-        if det is None:
-            report.event_failures.append(
-                VerificationFailure("signature_catalog_event_unresolved", _hex(h))
-            )
-            continue
-        if det.event_type != WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE:
-            report.event_failures.append(
-                VerificationFailure("signature_catalog_event_type_mismatch", _hex(h))
-            )
-            continue
-        payload = _readable_payload_bytes(det, payload_blobs)
-        if payload is None:
-            report.event_failures.append(
-                VerificationFailure("signature_affirmation_payload_unreadable", _hex(h))
-            )
-            continue
-        try:
-            record = _parse_signature_affirmation_record(payload)
-        except VerifyError as exc:
-            report.event_failures.append(
-                VerificationFailure(
-                    "signature_affirmation_payload_invalid", f"{_hex(h)}/{exc}"
-                )
-            )
-            continue
-        if not _signature_entry_matches_record(row, record):
-            report.event_failures.append(
-                VerificationFailure("signature_catalog_mismatch", _hex(h))
-            )
-
-
-def _verify_intake_catalog(
-    archive: dict[str, bytes],
-    payload_blobs: dict[bytes, bytes],
-    catalog_digest: bytes,
-    report: VerificationReport,
-    event_by_hash: dict[bytes, EventDetails],
-) -> None:
-    cat_bytes = archive.get("063-intake-handoffs.cbor")
-    if cat_bytes is None:
-        report.event_failures.append(
-            VerificationFailure("missing_intake_handoff_catalog", "063-intake-handoffs.cbor")
-        )
-        return
-    if _sha256(cat_bytes) != catalog_digest:
-        report.event_failures.append(
-            VerificationFailure(
-                "intake_handoff_catalog_digest_mismatch", "063-intake-handoffs.cbor"
-            )
-        )
-    try:
-        entries = _parse_intake_manifest_entries(cat_bytes)
-    except VerifyError as exc:
-        report.event_failures.append(
-            VerificationFailure("intake_handoff_catalog_invalid", f"063-intake-handoffs.cbor/{exc}")
-        )
-        return
-
-    seen_row: set[bytes] = set()
-    for entry in entries:
-        h = entry["intake_event_hash"]
-        if h in seen_row:
-            report.event_failures.append(
-                VerificationFailure("intake_handoff_catalog_duplicate_event", _hex(h))
-            )
-        seen_row.add(h)
-
-    for entry in entries:
-        intake_h = entry["intake_event_hash"]
-        det = event_by_hash.get(intake_h)
-        if det is None:
-            report.event_failures.append(
-                VerificationFailure("intake_event_unresolved", _hex(intake_h))
-            )
-            continue
-        if det.event_type != WOS_INTAKE_ACCEPTED_EVENT_TYPE:
-            report.event_failures.append(
-                VerificationFailure("intake_event_type_mismatch", _hex(intake_h))
-            )
-            continue
-        payload = _readable_payload_bytes(det, payload_blobs)
-        if payload is None:
-            report.event_failures.append(
-                VerificationFailure("intake_payload_unreadable", _hex(intake_h))
-            )
-            continue
-        try:
-            intake_record = _parse_intake_accepted_record(payload)
-        except VerifyError as exc:
-            report.event_failures.append(
-                VerificationFailure("intake_payload_invalid", f"{_hex(intake_h)}/{exc}")
-            )
-            continue
-        if not _intake_entry_matches_record(entry, intake_record):
-            report.event_failures.append(
-                VerificationFailure("intake_handoff_mismatch", _hex(intake_h))
-            )
-        ok, err_detail = _response_hash_matches(
-            entry["handoff"]["response_hash"], entry["response_bytes"]
-        )
-        if err_detail is not None:
-            report.event_failures.append(
-                VerificationFailure(
-                    "intake_handoff_catalog_invalid",
-                    f"{_hex(intake_h)}/{err_detail}",
-                )
-            )
-        elif not ok:
-            report.event_failures.append(
-                VerificationFailure("intake_response_hash_mismatch", _hex(intake_h))
-            )
-
-        handoff = entry["handoff"]
-        mode = handoff["initiation_mode"]
-        case_created_hash = entry["case_created_event_hash"]
-        if mode == "workflowInitiated":
-            if case_created_hash is not None:
-                report.event_failures.append(
-                    VerificationFailure("case_created_handoff_mismatch", _hex(intake_h))
-                )
-            continue
-        if mode == "publicIntake":
-            if case_created_hash is None:
-                report.event_failures.append(
-                    VerificationFailure("case_created_handoff_mismatch", _hex(intake_h))
-                )
-                continue
-            case_details = event_by_hash.get(case_created_hash)
-            if case_details is None:
-                report.event_failures.append(
-                    VerificationFailure(
-                        "case_created_event_unresolved", _hex(case_created_hash)
-                    )
-                )
-                continue
-            if case_details.event_type != WOS_CASE_CREATED_EVENT_TYPE:
-                report.event_failures.append(
-                    VerificationFailure(
-                        "case_created_event_type_mismatch", _hex(case_created_hash)
-                    )
-                )
-                continue
-            case_payload = _readable_payload_bytes(case_details, payload_blobs)
-            if case_payload is None:
-                report.event_failures.append(
-                    VerificationFailure(
-                        "case_created_payload_unreadable", _hex(case_created_hash)
-                    )
-                )
-                continue
-            try:
-                case_record = _parse_case_created_record(case_payload)
-            except VerifyError as exc:
-                report.event_failures.append(
-                    VerificationFailure(
-                        "case_created_payload_invalid", f"{_hex(case_created_hash)}/{exc}"
-                    )
-                )
-                continue
-            if not _case_created_record_matches_handoff(entry, intake_record, case_record):
-                report.event_failures.append(
-                    VerificationFailure(
-                        "case_created_handoff_mismatch", _hex(case_created_hash)
-                    )
-                )
-            continue
-
-
 def parse_export_zip(data: bytes) -> dict[str, bytes]:
     try:
         zf = zipfile.ZipFile(io.BytesIO(data), "r")
@@ -4849,18 +4495,6 @@ def verify_export_zip(export_zip: bytes) -> VerificationReport:
         att_digest, att_inline = attachment_export
         _verify_attachment_manifest(archive, events, att_digest, att_inline, report)
     try:
-        signature_catalog_digest = _parse_signature_export_extension(manifest_map)
-    except VerifyError as exc:
-        return VerificationReport.fatal(
-            "manifest_payload_invalid", f"signature export extension is invalid: {exc}"
-        )
-    try:
-        intake_catalog_digest = _parse_intake_export_extension(manifest_map)
-    except VerifyError as exc:
-        return VerificationReport.fatal(
-            "manifest_payload_invalid", f"intake export extension is invalid: {exc}"
-        )
-    try:
         erasure_export_ext = _parse_erasure_evidence_export_extension(manifest_map)
     except VerifyError as exc:
         return VerificationReport.fatal(
@@ -4888,22 +4522,9 @@ def verify_export_zip(export_zip: bytes) -> VerificationReport:
             f"open clocks export extension is invalid: {exc}",
         )
     shared_event_by_hash: dict[bytes, EventDetails] = {}
-    if (
-        signature_catalog_digest is not None
-        or intake_catalog_digest is not None
-        or erasure_export_ext is not None
-        or certificate_export_ext is not None
-    ):
+    if erasure_export_ext is not None or certificate_export_ext is not None:
         shared_event_by_hash, dup_failures = _index_events_by_canonical_hash(events)
         report.event_failures.extend(dup_failures)
-    if signature_catalog_digest is not None:
-        _verify_signature_catalog(
-            archive, payload_blobs, signature_catalog_digest, report, shared_event_by_hash
-        )
-    if intake_catalog_digest is not None:
-        _verify_intake_catalog(
-            archive, payload_blobs, intake_catalog_digest, report, shared_event_by_hash
-        )
     if erasure_export_ext is not None:
         _verify_erasure_evidence_catalog(
             archive, erasure_export_ext, report, shared_event_by_hash
@@ -4933,7 +4554,6 @@ def verify_export_zip(export_zip: bytes) -> VerificationReport:
         )
     if open_clocks_ext is not None:
         _verify_open_clocks(archive, open_clocks_ext, generated_at, report)
-    _verify_clock_segments(events, payload_blobs, report)
 
     for failure in report.event_failures:
         if failure.kind == "scope_mismatch":

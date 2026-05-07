@@ -22,6 +22,37 @@ from trellis_py.verify import (
     verify_export_zip,
     verify_tampered_ledger,
 )
+from trellis_py import verify_wos
+
+
+WOS_TAMPER_KINDS = {
+    "case_created_event_type_mismatch",
+    "case_created_event_unresolved",
+    "case_created_handoff_mismatch",
+    "case_created_payload_invalid",
+    "case_created_payload_unreadable",
+    "clock_calendar_mismatch",
+    "intake_event_type_mismatch",
+    "intake_event_unresolved",
+    "intake_handoff_catalog_digest_mismatch",
+    "intake_handoff_catalog_duplicate_event",
+    "intake_handoff_catalog_invalid",
+    "intake_handoff_mismatch",
+    "intake_payload_invalid",
+    "intake_payload_unreadable",
+    "intake_response_hash_mismatch",
+    "missing_intake_handoff_catalog",
+    "missing_signature_catalog",
+    "rescission_terminality_violation",
+    "signature_affirmation_payload_invalid",
+    "signature_affirmation_payload_unreadable",
+    "signature_catalog_digest_mismatch",
+    "signature_catalog_duplicate_event",
+    "signature_catalog_event_type_mismatch",
+    "signature_catalog_event_unresolved",
+    "signature_catalog_invalid",
+    "signature_catalog_mismatch",
+}
 
 
 def _load_manifest(vector_dir: Path) -> dict[str, Any]:
@@ -118,9 +149,14 @@ def _assert_export(root: Path, manifest: dict[str, Any]) -> None:
 def _assert_verify(root: Path, manifest: dict[str, Any]) -> None:
     inputs = manifest["inputs"]
     expected_report = manifest["expected"]["report"]
-    report = verify_export_zip((root / inputs["export_zip"]).read_bytes())
+    wos_report = verify_wos.verify_export_zip((root / inputs["export_zip"]).read_bytes())
+    expected_kind = expected_report.get("first_failure_kind")
+    if expected_kind in WOS_TAMPER_KINDS:
+        _assert_wos_report(root, expected_report, wos_report, expected_kind)
+        return
+    report = wos_report.trellis
     assert report.structure_verified == expected_report["structure_verified"]
-    assert report.integrity_verified == expected_report["integrity_verified"]
+    assert wos_report.integrity_verified == expected_report["integrity_verified"]
     assert report.readability_verified == expected_report["readability_verified"]
     if "posture_transition_count" in expected_report:
         assert len(report.posture_transitions) == expected_report["posture_transition_count"]
@@ -144,9 +180,50 @@ def _first_failure(report: VerificationReport):
     return None
 
 
+def _first_wos_failure(report: verify_wos.WosVerificationReport):
+    for finding in report.wos_findings:
+        if finding.severity == "failure":
+            return finding
+    return None
+
+
+def _assert_wos_report(
+    root: Path,
+    expected_report: dict[str, Any],
+    report: verify_wos.WosVerificationReport,
+    expected_kind: str,
+) -> None:
+    assert report.trellis.structure_verified == expected_report["structure_verified"]
+    assert report.integrity_verified == expected_report["integrity_verified"]
+    assert report.trellis.readability_verified == expected_report["readability_verified"]
+    ff = _first_wos_failure(report)
+    assert ff is not None
+    assert ff.kind == expected_kind
+    if "failing_event_id" in expected_report:
+        assert ff.event_hash is not None
+        assert ff.event_hash.hex() == expected_report["failing_event_id"]
+
+
 def _assert_tamper(root: Path, manifest: dict[str, Any]) -> None:
     inputs = manifest["inputs"]
     expected_report = manifest["expected"]["report"]
+    expected_kind = expected_report.get("tamper_kind")
+    if expected_kind in WOS_TAMPER_KINDS:
+        if "export_zip" in inputs:
+            wos_report = verify_wos.verify_export_zip((root / inputs["export_zip"]).read_bytes())
+        else:
+            init_pd = (
+                (root / p).read_bytes() if (p := inputs.get("initial_posture_declaration")) else None
+            )
+            pd = (root / p).read_bytes() if (p := inputs.get("posture_declaration")) else None
+            wos_report = verify_wos.verify_tampered_ledger(
+                (root / inputs["signing_key_registry"]).read_bytes(),
+                (root / inputs["ledger"]).read_bytes(),
+                init_pd,
+                pd,
+            )
+        _assert_wos_report(root, expected_report, wos_report, expected_kind)
+        return
     if "export_zip" in inputs:
         report = verify_export_zip((root / inputs["export_zip"]).read_bytes())
     else:

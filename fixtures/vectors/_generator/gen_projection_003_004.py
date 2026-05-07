@@ -1,10 +1,12 @@
-"""Generate O-3 cadence fixtures projection/003 and projection/004.
+"""Generate O-3 cadence fixtures projection/003, 004, 006, and 007.
 
 Authoring aid only. The normative source is Core + Companion prose and each
 fixture's derivation.md. This script pins deterministic bytes for:
 
   - projection/003-cadence-positive-height: checkpoints at heights 2, 4, 6.
   - projection/004-cadence-gap: checkpoints at heights 2 and 6, missing 4.
+  - projection/006-cadence-positive-time: time-driven cadence, satisfied.
+  - projection/007-cadence-event-gap: event-driven cadence, missing one point.
 
 Both fixtures exercise TR-OP-008, the declared snapshot-cadence obligation.
 """
@@ -26,6 +28,8 @@ ROOT = Path(__file__).resolve().parent.parent
 KEY_FILE = ROOT / "_keys" / "issuer-001.cose_key"
 OUT_POSITIVE = ROOT / "projection" / "003-cadence-positive-height"
 OUT_GAP = ROOT / "projection" / "004-cadence-gap"
+OUT_TIME_POSITIVE = ROOT / "projection" / "006-cadence-positive-time"
+OUT_EVENT_GAP = ROOT / "projection" / "007-cadence-event-gap"
 
 LEDGER_SCOPE = b"test-cadence-ledger"
 EVENT_COUNT = 6
@@ -260,12 +264,18 @@ def build_checkpoint(
     return checkpoint_bytes, checkpoint_hash, payload
 
 
-def build_report(observed_heights: list[int]) -> dict:
-    missing = [height for height in REQUIRED_HEIGHTS if height not in observed_heights]
+def build_report(
+    observed_heights: list[int],
+    *,
+    cadence_kind: str,
+    interval: int,
+    required_heights: list[int],
+) -> dict:
+    missing = [height for height in required_heights if height not in observed_heights]
     return {
-        "cadence_kind":        "height-based",
-        "interval":            CADENCE_INTERVAL,
-        "expected_tree_sizes": REQUIRED_HEIGHTS,
+        "cadence_kind":        cadence_kind,
+        "interval":            interval,
+        "expected_tree_sizes": required_heights,
         "observed_tree_sizes": observed_heights,
         "missing_tree_sizes":  missing,
         "cadence_satisfied":   not missing,
@@ -286,6 +296,10 @@ def write_fixture(
     chain_bytes: bytes,
     checkpoints: dict[int, bytes],
     observed_heights: list[int],
+    *,
+    cadence_kind: str = "height-based",
+    interval: int = CADENCE_INTERVAL,
+    required_heights: list[int] = REQUIRED_HEIGHTS,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     for pattern in (
@@ -298,7 +312,12 @@ def write_fixture(
     write_bytes(out_dir, "input-chain.cbor", chain_bytes)
     for height in observed_heights:
         write_bytes(out_dir, f"input-checkpoint-{height:03d}.cbor", checkpoints[height])
-    report = build_report(observed_heights)
+    report = build_report(
+        observed_heights,
+        cadence_kind=cadence_kind,
+        interval=interval,
+        required_heights=required_heights,
+    )
     write_bytes(out_dir, "expected-cadence-report.cbor", dcbor(report))
 
 
@@ -333,6 +352,14 @@ def main() -> None:
         prev_checkpoint_hash = checkpoint_hash
 
     write_fixture(OUT_POSITIVE, chain_bytes, checkpoints, [2, 4, 6])
+    write_fixture(
+        OUT_TIME_POSITIVE,
+        chain_bytes,
+        checkpoints,
+        [2, 4, 6],
+        cadence_kind="time-driven",
+        interval=120,
+    )
 
     # The negative fixture intentionally omits the required height-4 checkpoint.
     # Its height-6 checkpoint links back to height 2, matching the observed
@@ -347,6 +374,14 @@ def main() -> None:
     gap_checkpoints[2] = checkpoint_2
     gap_checkpoints[6] = checkpoint_6
     write_fixture(OUT_GAP, chain_bytes, gap_checkpoints, [2, 6])
+    write_fixture(
+        OUT_EVENT_GAP,
+        chain_bytes,
+        gap_checkpoints,
+        [2, 6],
+        cadence_kind="event-driven",
+        interval=2,
+    )
 
     print()
     print(f"  kid                          = {kid.hex()}")

@@ -18,6 +18,78 @@ cross-commit wave context that a raw log cannot reconstruct.
 
 ## Wave-by-wave dispatch history
 
+### Wave 46 (2026-05-07) — TODO #14 stack security disclosure policy
+
+- Added root `SECURITY.md` with private vulnerability-reporting intake,
+  stack-wide scope, out-of-scope cases, response expectations, and coordinated
+  disclosure posture.
+- Included Trellis envelope, append, verify, export, COSE, HPKE, key registry,
+  store, and conformance-vector behavior in the in-scope surface.
+- Synced root `README.md`, `STACK.md`, parent `PLANNING.md` PLN-0308, parent
+  `TODO-STACK.md`, and Trellis `TODO.md`.
+
+Verification:
+- Docs-only change; reviewed linked paths and `rg` security-policy references.
+
+### Wave 45 (2026-05-07) — TODO #21 cadence subtype fixture breadth
+
+- Added non-height snapshot-cadence projection fixtures:
+  `projection/006-cadence-positive-time` and
+  `projection/007-cadence-event-gap`.
+- Extended the cadence generator so the same deterministic chain can emit
+  height-based, time-driven, and event-driven cadence reports while preserving
+  the existing required-tree-size runner contract.
+- Rust and Python conformance now replay 138 committed vectors.
+
+Verification:
+- `cargo test -p trellis-conformance`.
+- `PYTHONPATH=trellis-py/src uv run --with cbor2 --with cryptography python -m trellis_py.conformance --vectors fixtures/vectors`.
+- `uv run --with cbor2 --with cryptography python scripts/check-specs.py`.
+
+### Wave 44 (2026-05-07) — TODO #5 Respondent Ledger hash-pair schema closure
+
+- Tightened the Formspec Respondent Ledger event schema so `eventHash` and
+  `priorEventHash` are structurally paired: an event may omit both for a
+  non-chained ledger, but cannot carry only one half of the integrity-chain
+  seam.
+- Added conformance coverage proving half-chained events are rejected while the
+  first Trellis-wrapped event may still use `priorEventHash: null`.
+- Synced the schema copy used by the Formspec MCP package.
+
+Verification:
+- `uv run --with pytest --with jsonschema python -m pytest tests/conformance/schemas/test_respondent_ledger_schema.py -q`.
+
+### Wave 43 (2026-05-07) — TODO #1 PLN-0379..0398 drift audit
+
+- Audited the live parent stack-closure rows PLN-0379..0398 against the
+  accepted WOS custody-hook companion and Trellis Core custody/composition
+  surfaces.
+- Confirmed the phantom `tag` / `payload` / `prior_event_hash` /
+  `producer_signature` seam is confined to PLN-0385's historical correction
+  text and explanatory downstream notes that explicitly reject it.
+- Confirmed the sibling rows already point at the accepted four-field WOS
+  append input (`caseId` / `recordId` / `eventType` / `record`), Trellis
+  `prev_hash`, and envelope COSE_Sign1 boundaries where those details are
+  material. No parent-row semantic correction was required.
+
+Verification:
+- `rg` audit over parent `PLANNING.md`, WOS custody-hook companion, WOS TODOs,
+  and Trellis Core custody sections.
+
+### Wave 42 (2026-05-07) — TODO #15 Python WOS verifier carve-out
+
+- `trellis_py.verify` no longer executes WOS-domain rescission, catalog,
+  intake/case-created, or clock-calendar semantics as part of Core integrity
+  verification.
+- Added `trellis_py.verify_wos` as the Python WOS-domain composition layer,
+  mirroring the Rust `trellis-verify` + `trellis-verify-wos` split.
+- Python conformance now routes WOS-coupled vector expectations through the
+  composed WOS verifier while keeping Core-only vectors on the Core report.
+
+Verification:
+- `PYTHONPATH=trellis-py/src uv run --with cbor2 --with cryptography --with pytest python -m pytest trellis-py/tests`.
+- `PYTHONPATH=trellis-py/src uv run --with cbor2 --with cryptography python -m trellis_py.conformance --vectors fixtures/vectors`.
+
 ### Wave 41 (2026-05-07) — TODO #15 Rust WOS verifier extraction
 
 - `trellis-verify` now exposes a domain-validator seam and keeps WOS record
@@ -31,8 +103,7 @@ cross-commit wave context that a raw log cannot reconstruct.
   consumer-owned domain validation; WOS-domain obligations live in
   `specs/wos-trellis-verification.md`.
 - `wos-server` had no live code dependency to migrate in this checkout. The
-  Python verifier still carries WOS-aware checks and remains tracked in
-  `TODO.md` under the same item.
+  Python verifier carve-out closed in Wave 42.
 
 Verification:
 - `cargo check -p trellis-verify -p trellis-verify-wos`.

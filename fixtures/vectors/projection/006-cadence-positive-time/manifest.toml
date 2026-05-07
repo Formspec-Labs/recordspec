@@ -1,0 +1,29 @@
+id          = "projection/006-cadence-positive-time"
+op          = "projection"
+status      = "active"
+description = """O-3 cadence breadth fixture. A six-event canonical chain declares a time-driven snapshot cadence equivalent to every 120 seconds over this deterministic fixture timeline and includes checkpoints at the required tree sizes 2, 4, and 6."""
+
+[coverage]
+tr_op = [
+    "TR-OP-008",  # Declared snapshot cadence gaps MUST be detected and surfaced.
+]
+
+[inputs]
+chain = "input-chain.cbor"
+checkpoints = [
+    "input-checkpoint-002.cbor",
+    "input-checkpoint-004.cbor",
+    "input-checkpoint-006.cbor",
+]
+
+[expected]
+cadence_report = "expected-cadence-report.cbor"
+
+[cadence]
+kind = "time-driven"
+interval = 120
+required_tree_sizes = [2, 4, 6]
+expect_failure = false
+
+[derivation]
+document = "derivation.md"

@@ -1,0 +1,29 @@
+id          = "projection/007-cadence-event-gap"
+op          = "projection"
+status      = "active"
+description = """O-3 cadence breadth fixture. A six-event canonical chain declares an event-driven snapshot cadence every two qualifying events, but omits the required checkpoint at tree size 4."""
+
+[coverage]
+tr_op = [
+    "TR-OP-008",  # Declared snapshot cadence gaps MUST be detected and surfaced.
+]
+
+[inputs]
+chain = "input-chain.cbor"
+checkpoints = [
+    "input-checkpoint-002.cbor",
+    "input-checkpoint-006.cbor",
+]
+
+[expected]
+cadence_report = "expected-cadence-report.cbor"
+
+[cadence]
+kind = "event-driven"
+interval = 2
+required_tree_sizes = [2, 4, 6]
+expect_failure = true
+failure_code = "missing-required-checkpoint"
+
+[derivation]
+document = "derivation.md"

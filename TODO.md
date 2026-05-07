@@ -108,6 +108,8 @@ downstream consumer in the WOS `bundle.schema.json` shape when activated.
 adopter-triggered work.
 
  1. **PLN-0379..0398 cluster drift audit** — **S**.
+    **Closed 2026-05-07 (Wave 43); retained here until the next planned TODO
+    renumbering pass.**
     *Land before authoring against any sibling row in the parent stack-closure
     cluster (proactive; no external trigger).* Wave 27 closure of PLN-0385
     surfaced a phantom four-field surface (`tag` / `payload` /
@@ -122,11 +124,14 @@ adopter-triggered work.
     carry parallel drift. Audit each sibling: cross-reference cited wire
     surface, schema names, event-type strings, and field labels against
     Trellis CDDL §28, work-spec schemas, custody-hook companion, and ADR-0061.
-    Output: per-row corrections applied in-place to PLANNING.md + the
-    referenced source docs (mirroring the Wave 27 train pattern). Prevents
-    repeating Wave 27 archaeology cost (cross-stack-scout dispatch → Fork-B
-    drift discovery → three-commit cross-repo train) once per sibling row.
-    See [`COMPLETED.md`](COMPLETED.md) Wave 27 for the discovery pattern.
+    2026-05-07 audit result: no sibling-row correction was required. Parent
+    PLN-0379..0398 rows already preserve the accepted four-field WOS append
+    input (`caseId` / `recordId` / `eventType` / `record`), Trellis
+    `prev_hash`, and envelope COSE_Sign1 boundaries where those details are
+    material. The phantom surface appears only in PLN-0385 historical
+    correction text or explanatory downstream notes that explicitly reject it.
+    See [`COMPLETED.md`](COMPLETED.md) Waves 27 and 43 for the discovery and
+    audit records.
 
  2. **WOS-T4 residue — shared cross-repo fixture bundle re-seeding** — **S**.
     *Land when parent standardizes a single shared cross-stack fixture bundle.*
@@ -163,6 +168,13 @@ adopter-triggered work.
     ledgers, and **PLN-0311** offline-authoring semantics — not a blanket wait
     on “Formspec has not promoted yet.” Parent backlog: **PLN-0311**
     (Respondent Ledger offline-authoring profile + chain semantics).
+    *Progress 2026-05-07:* schema/conformance closure for the paired hash seam
+    landed in Formspec. `eventHash` and `priorEventHash` now depend on each
+    other structurally, so a non-chained ledger may omit both but a chained /
+    Trellis-wrapped event cannot carry only one half. The first wrapped event
+    still uses `priorEventHash: null`. Remaining work is the broader
+    unconditional all-chained-ledgers policy decision and PLN-0311
+    offline-authoring semantics.
 
  6. **ADR 0068 execution — tenant in envelope and verifier** — **M**.
      *Gates closed:* **PLN-0004** (D-1.1 grammar), **PLN-0005** (D-1.2
@@ -380,22 +392,27 @@ adopter-triggered work.
     ratification at parent **PLN-0384**.
 
 14. **Stack-level security disclosure policy** — **S**, stack-coordination.
+    **Closed 2026-05-07 (Wave 46).**
     *Coordinates parent **PLN-0308**.* Trellis is in the security perimeter
     (envelope, verifier, export attack surface); without a published intake
     channel and scope, security reports route through private conversation.
-    Trellis-side action once stack governance picks the policy home:
-    contribute scope notes (which crates and surfaces are in / out of scope).
+    Stack-level [`../SECURITY.md`](../SECURITY.md) now names Trellis envelope,
+    append, verify, export, COSE, HPKE, key registry, store, and
+    conformance-vector behavior as in scope, with private intake and response
+    expectations.
 
 15. **Verify-layer domain coupling extraction — `trellis-verify` integrity-only
     + sibling `trellis-verify-wos` adapter** — **M–L**.
+    **Closed 2026-05-07 (Waves 41-42); retained here until the next planned
+    TODO renumbering pass.**
     *Plan ready:* [`thoughts/plans/2026-05-07-extract-trellis-verify-wos.md`](thoughts/plans/2026-05-07-extract-trellis-verify-wos.md).
-    *Status 2026-05-07:* Rust verifier extraction landed. `trellis-verify`
+    *Status 2026-05-07:* Rust and Python verifier extraction landed. `trellis-verify`
     now exposes the validator seam and no longer carries WOS event-type
     literals, WOS record parsers, WOS catalog field matching, rescission
     terminality, clock-calendar semantics, or WOS failure variants. The
-    sibling `trellis-verify-wos` adapter owns those concerns. `trellis-py`
-    still carries WOS-aware verification and remains the explicit follow-up
-    before this item can be archived.
+    sibling `trellis-verify-wos` adapter owns those concerns. Python now
+    mirrors that split with `trellis_py.verify` as the Core verifier and
+    `trellis_py.verify_wos` as the composed WOS-domain validator.
     Five queued ADRs (#11 supersession terminality, #12 clock semantics, #6
     tenant, #8 commit-failure, #10 migration pins) will compound the violation
     with each ratification cycle if the inversion is not closed first.
@@ -429,11 +446,11 @@ adopter-triggered work.
       `wos-server` code dependency on `trellis-verify` exists in this checkout;
       only TODO/VISION references mention future exporter paths. `trellis-cli`
       and `trellis-interop-c2pa` stay on `trellis-verify`.
-    + [ ] **`trellis-py` cross-check** (Phase 0 / Phase 2c): grep for WOS
-      coverage; mirror the carve in Python if present. 2026-05-07 grep found
-      WOS literals, rescission terminality, clock-calendar checks, and
-      signature/intake catalog field matching in
-      `trellis-py/src/trellis_py/verify.py`; carve still open.
+    + [x] **`trellis-py` cross-check** (Phase 0 / Phase 2c): grep for WOS
+      coverage; mirror the carve in Python if present. 2026-05-07 split
+      added `trellis_py.verify_wos`, removed WOS-domain execution from
+      `trellis_py.verify`, and routed WOS-coupled conformance expectations
+      through the composed Python verifier.
 
 16. **Case ledger + agency log semantic definitions** — **M**.
     *Land when case-ledger / agency-log scoping opens.* Core §22 case ledger
@@ -486,9 +503,15 @@ adopter-triggered work.
     in the Posture Declaration.
 
 21. **Cadence subtypes beyond height-based** — **M**.
+    **Closed 2026-05-07 (Wave 45); retained here until the next planned TODO
+    renumbering pass.**
     *Land with a non-height adopter, or proactively under fixture-corpus
     breadth work.* `projection/003` and `projection/004` cover height-based
-    only; time-driven / event-driven / hybrid untested.
+    cadence. `projection/006-cadence-positive-time` now covers a satisfied
+    time-driven declaration, and `projection/007-cadence-event-gap` covers an
+    event-driven declaration with a missing checkpoint. Hybrid cadence remains
+    adopter-triggered because it needs a concrete policy for combining clock
+    and event selectors.
 
 22. **O-4 ledger-replay lint rules 7–13** — **M**.
     *Land when the first external adopter publishes a declaration to verify
