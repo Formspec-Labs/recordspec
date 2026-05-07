@@ -159,6 +159,8 @@ adopter-triggered work.
     envelope) prove composition.
 
  5. **Respondent Ledger ↔ Trellis `eventHash` MUST promotion** — **M**.
+    **Closed 2026-05-07 (Waves 44 and 48); retained here until the next
+    planned TODO renumbering pass.**
     *Prerequisite nuance:* Formspec Respondent Ledger §6.2 already requires
     `eventHash` / `priorEventHash` as **MUST** when events are Trellis-envelope
     wrapped; generic “integrity chaining enabled” rows remain **SHOULD**, and
@@ -172,9 +174,13 @@ adopter-triggered work.
     landed in Formspec. `eventHash` and `priorEventHash` now depend on each
     other structurally, so a non-chained ledger may omit both but a chained /
     Trellis-wrapped event cannot carry only one half. The first wrapped event
-    still uses `priorEventHash: null`. Remaining work is the broader
-    unconditional all-chained-ledgers policy decision and PLN-0311
-    offline-authoring semantics.
+    still uses `priorEventHash: null`. 2026-05-07 closure: Formspec now
+    declares `integrityProfile = none | chained | trellis-wrapped`.
+    `chained` and `trellis-wrapped` ledgers require both hashes on every
+    embedded event, with `priorEventHash: null` only for the first event in the
+    chain. `offlineAuthoring.chainConstruction = "local-linear"` preserves
+    authored time and forbids server-side hash-chain rebasing during delayed
+    submit. Parent PLN-0311 is closed by the same contract.
 
  6. **ADR 0068 execution — tenant in envelope and verifier** — **M**.
      *Gates closed:* **PLN-0004** (D-1.1 grammar), **PLN-0005** (D-1.2

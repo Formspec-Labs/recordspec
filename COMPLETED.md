@@ -18,6 +18,22 @@ cross-commit wave context that a raw log cannot reconstruct.
 
 ## Wave-by-wave dispatch history
 
+### Wave 48 (2026-05-07) — TODO #5 offline chain semantics
+
+- Closed the remaining Respondent Ledger hash-obligation gap by adding
+  Formspec `integrityProfile` semantics: `chained` and `trellis-wrapped`
+  ledgers require every embedded event to carry both `priorEventHash` and
+  `eventHash`; `priorEventHash` is `null` only for the first chain event.
+- Added the Formspec `offlineAuthoring` profile for pending-local state,
+  authored-time preservation under delayed submit, and local-linear buffered
+  event-chain construction.
+- Synced parent `PLANNING.md` PLN-0311 and Trellis `TODO.md` #5. Server sync
+  may reject/conflict an offline chain, but it must not silently rewrite event
+  bytes or rebase Trellis hash links.
+
+Verification:
+- `uv run --with pytest --with jsonschema python -m pytest tests/conformance/schemas/test_respondent_ledger_schema.py -q`.
+
 ### Wave 47 (2026-05-07) — TODO #11 ResponseCorrection coordination
 
 - Closed the remaining Trellis ADR 0066 coordination row by landing the
