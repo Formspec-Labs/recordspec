@@ -122,6 +122,7 @@ TAMPER_KIND_ENUM = frozenset({
     "signing_event_unresolved",
     "signing_event_timestamp_mismatch",
     "response_ref_mismatch",
+    "malformed_response_digest",  # TR-CORE-175; tamper/052 (review F2 fail-closed).
     "certificate_catalog_digest_mismatch",
     # Certificate-of-completion optional-catalog localization labels
     # (Core §19.1 / §19 step 6c optional manifest catalog; ADR 0007 §"Export

@@ -478,6 +478,7 @@ mod tests {
                 | "intake_payload_invalid"
                 | "intake_payload_unreadable"
                 | "intake_response_hash_mismatch"
+                | "malformed_response_digest"
                 | "missing_intake_handoff_catalog"
                 | "missing_signature_catalog"
                 | "rescission_terminality_violation"

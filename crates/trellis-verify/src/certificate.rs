@@ -187,10 +187,17 @@ pub(crate) fn finalize_certificates_of_completion(
                 let record_response_hash = match resolver.resolve(&payload_bytes) {
                     Ok(Some(proof)) => proof.response_hash,
                     Ok(None) => continue,
-                    Err(_resolver_err) => {
-                        // Phase M leaves this as `continue` to preserve
-                        // current behavior. Phase N will replace with a
-                        // fail-closed `MalformedResponseDigest` failure.
+                    Err(crate::certificate_proof::ResolverError::MalformedResponseDigest(_)) => {
+                        // Phase N: a payload that declared a sha-256 response
+                        // digest but carried it in non-hex form fails closed
+                        // with a distinct kind, localized to the certificate
+                        // event whose response_ref triggered the lookup.
+                        outcome.chain_summary_consistent = false;
+                        outcome.failures.push("malformed_response_digest".into());
+                        event_failures.push(VerificationFailure::new(
+                            VerificationFailureKind::MalformedResponseDigest,
+                            hex_string(canonical_hash),
+                        ));
                         continue;
                     }
                 };

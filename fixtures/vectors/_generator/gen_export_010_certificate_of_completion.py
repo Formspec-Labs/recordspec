@@ -1,5 +1,6 @@
 """Generate `export/010-certificate-of-completion-inline` plus the three
-export-bundle ADR 0007 tamper vectors `tamper/020`, `tamper/022`, `tamper/024`.
+export-bundle ADR 0007 tamper vectors `tamper/020`, `tamper/022`, `tamper/024`,
+`tamper/052`.
 
 Authoring aid only. The committed fixture bytes and per-vector
 `derivation.md` files are the evidence surface; this script exists so
@@ -19,10 +20,11 @@ Event 0 binds the attachment that carries the presentation-artifact bytes
 `presentation_artifact.attachment_id` matches event 0's `attachment_id`.
 
 For full ADR 0007 step 7 coverage (`response_ref` cross-check), event 1's
-`data.formspecResponseRef` is a `sha256:<hex>` digest text (NOT a URL like
-`append/019`); this lets the verifier's `parse_sha256_text` succeed and
-exercise the cross-check. Event 2 either echoes that digest (positive path
-in export/010) or carries a different digest (tamper/024).
+`data.signedPayloadDigest` is a 32-byte sha-256 hex digest. This lets the
+verifier prove the certificate's response_ref matches the signer-assented
+payload digest without overloading `sourceResponseRef` or Formspec handoff
+`responseHash`. Event 2 either echoes that digest (positive path in export/010)
+or carries a different digest (tamper/024).
 
 Per ADR 0007 §"Export manifest catalog", the optional
 `trellis.export.certificates-of-completion.v1` extension binds
@@ -81,6 +83,7 @@ OUT_EXPORT_010 = ROOT / "export" / "010-certificate-of-completion-inline"
 OUT_TAMPER_020 = ROOT / "tamper" / "020-cert-content-hash-mismatch"
 OUT_TAMPER_022 = ROOT / "tamper" / "022-cert-signing-event-unresolved"
 OUT_TAMPER_024 = ROOT / "tamper" / "024-cert-response-ref-mismatch"
+OUT_TAMPER_052 = ROOT / "tamper" / "052-cert-response-ref-malformed-digest"
 
 LEDGER_SCOPE = b"trellis-cert:export-010"
 GENERATED_AT = ts(1_776_900_500)
@@ -99,12 +102,11 @@ TAG_TRELLIS_CHECKPOINT_V1 = "trellis-checkpoint-v1"
 TAG_TRELLIS_MERKLE_LEAF_V1 = "trellis-merkle-leaf-v1"
 TAG_TRELLIS_WOS_IDEMPOTENCY_V1 = "trellis-wos-idempotency-v1"
 
-# Reference response-hash digest the SignatureAffirmation event covers.
+# Reference signed-payload digest the SignatureAffirmation event covers.
 # This is intentionally a deterministic test marker; ADR 0007 step 7 only
-# requires that `response_ref == parse_sha256_text(record.formspecResponseRef)`.
+# requires that `response_ref == record.signedPayloadDigest` for sha-256 records.
 RESPONSE_HASH_HEX = "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
 RESPONSE_HASH = bytes.fromhex(RESPONSE_HASH_HEX)
-RESPONSE_REF_TEXT = f"sha256:{RESPONSE_HASH_HEX}"
 
 # The presentation artifact bytes (committed inline in the export ZIP).
 PRESENTATION_ARTIFACT_BYTES = (
@@ -450,14 +452,27 @@ def build_binding_event(*, seed: bytes, kid: bytes) -> dict:
 
 
 def build_signature_affirmation_event(
-    *, seed: bytes, kid: bytes, prev_hash: bytes
+    *,
+    seed: bytes,
+    kid: bytes,
+    prev_hash: bytes,
+    signed_payload_digest_override: str | None = None,
+    idempotency_preimage_record_id: str = "export-010-prov-001",
 ) -> dict:
     """Event 1 — wos.kernel.signatureAffirmation Facts-tier provenance.
-    Mirrors `append/019-wos-signature-affirmation` shape, but `data.formspec
-    ResponseRef` is a `sha256:<hex>` digest text so ADR 0007 step 7 cross-
-    check has parseable input."""
+    Mirrors `append/019-wos-signature-affirmation` shape, but uses the
+    deterministic `signedPayloadDigest` marker so ADR 0007 step 7 has
+    parseable sha-256 input without overloading `sourceResponseRef`.
+
+    `signed_payload_digest_override` lets tamper variants substitute a
+    malformed digest text (still claiming `signedPayloadDigestAlgorithm
+    = "sha-256"`) so the WOS resolver fails-closed on hex parse rather
+    than silent-skipping. `idempotency_preimage_record_id` keeps the
+    SignatureAffirmation event idempotency-distinct from the positive
+    fixture when a tamper variant reuses everything else.
+    """
     record = {
-        "id":          "export-010-prov-001",
+        "id":          idempotency_preimage_record_id,
         "recordKind":  "signatureAffirmation",
         "timestamp":   "2026-04-22T14:30:00Z",
         "actorId":     "applicant",
@@ -469,6 +484,11 @@ def build_signature_affirmation_event(
             "documentId":            "benefitsApplication",
             "documentHash":          "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
             "documentHashAlgorithm": "sha-256",
+            "sourceSignatureSystem": "formspec",
+            "sourceSignatureId":     "sig-export-010",
+            "signedPayloadDigest":   signed_payload_digest_override or RESPONSE_HASH_HEX,
+            "signedPayloadDigestAlgorithm": "sha-256",
+            "signingIntent":         "urn:wos:signing-intent:applicant-signature",
             "signedAt":              "2026-04-22T12:00:00Z",
             "identityBinding": {
                 "method":          "email-otp",
@@ -484,7 +504,7 @@ def build_signature_affirmation_event(
             "signatureProvider":   "urn:agency.gov:signature:providers:formspec",
             "ceremonyId":          "ceremony-export-010",
             "profileRef":          "urn:agency.gov:wos:signature-profile:benefits:v1",
-            "formspecResponseRef": RESPONSE_REF_TEXT,            # sha256:<hex>
+            "sourceResponseRef":    "urn:formspec:response:export-010",
             "custodyHookEligible": True,
         },
     }
@@ -498,7 +518,7 @@ def build_signature_affirmation_event(
     idempotency_preimage = dcbor(
         {
             "caseId":   "export-010-case",
-            "recordId": "export-010-prov-001",
+            "recordId": idempotency_preimage_record_id,
         }
     )
     idempotency_key = domain_separated_sha256(
@@ -946,10 +966,10 @@ three events on `ledger_scope = {LEDGER_SCOPE!r}`:
    extension declares `attachment_id = {ATTACHMENT_ID!r}`.
 
 2. **Event 1 (sequence 1).** `wos.kernel.signatureAffirmation` Facts-tier
-   provenance record. `data.formspecResponseRef = "{RESPONSE_REF_TEXT}"` —
-   a `sha256:<hex>` digest text so ADR 0007 step 7 cross-check has
-   parseable input. The certificate's `chain_summary.response_ref` echoes
-   the same 32-byte digest.
+   provenance record. `data.signedPayloadDigest = "{RESPONSE_HASH_HEX}"` —
+   a 32-byte sha-256 hex digest so ADR 0007 step 7 cross-check has parseable
+   input. The certificate's `chain_summary.response_ref` echoes the same
+   digest as bytes.
 
 3. **Event 2 (sequence 2).** `trellis.certificate-of-completion.v1` —
    `presentation_artifact.attachment_id` resolves through event 0's
@@ -1001,13 +1021,19 @@ def build_tamper_export(
     cert_overrides: dict,
     description_suffix: str,
     derivation: str,
+    sigaff_signed_payload_digest_override: str | None = None,
+    sigaff_idempotency_preimage_record_id: str = "export-010-prov-001",
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"\ngenerating {out_dir.relative_to(ROOT.parent.parent)}/")
 
     binding = build_binding_event(seed=seed, kid=kid)
     sigaff = build_signature_affirmation_event(
-        seed=seed, kid=kid, prev_hash=binding["canonical_event_hash"]
+        seed=seed,
+        kid=kid,
+        prev_hash=binding["canonical_event_hash"],
+        signed_payload_digest_override=sigaff_signed_payload_digest_override,
+        idempotency_preimage_record_id=sigaff_idempotency_preimage_record_id,
     )
     presentation_content_hash = domain_separated_sha256(
         PRESENTATION_ARTIFACT_DOMAIN, PRESENTATION_ARTIFACT_BYTES
@@ -1165,7 +1191,7 @@ def gen_tamper_022(*, seed: bytes, kid: bytes, pubkey: bytes) -> None:
 
 def gen_tamper_024(*, seed: bytes, kid: bytes, pubkey: bytes) -> None:
     """chain_summary.response_ref flipped to disagree with the SignatureAffirmation's
-    `data.formspecResponseRef` digest."""
+    `data.signedPayloadDigest`."""
     bad_response = bytes(b ^ 0xAA for b in RESPONSE_HASH)
     build_tamper_export(
         seed=seed,
@@ -1175,7 +1201,7 @@ def gen_tamper_024(*, seed: bytes, kid: bytes, pubkey: bytes) -> None:
         description=(
             'ADR 0007 §"Verifier obligations" step 7 violation: certificate `chain_summary.response_ref` '
             'is XOR-flipped so it disagrees with the resolved SignatureAffirmation event\'s '
-            '`data.formspecResponseRef` digest. `finalize_certificates_of_completion` parses the '
+            '`data.signedPayloadDigest`. `finalize_certificates_of_completion` parses the '
             'SignatureAffirmation record, finds at least one resolvable response digest, fails to '
             'find a match, and emits `response_ref_mismatch`. Generator: `_generator/gen_export_010_certificate_of_completion.py`.'
         ),
@@ -1192,13 +1218,77 @@ def gen_tamper_024(*, seed: bytes, kid: bytes, pubkey: bytes) -> None:
             "# Derivation — `tamper/024-cert-response-ref-mismatch`\n\n"
             "Starts from `export/010-certificate-of-completion-inline`. The certificate event's "
             "`chain_summary.response_ref` is XOR-flipped (`b ^ 0xAA` for each byte) so its 32-byte digest "
-            "disagrees with the SignatureAffirmation record's `data.formspecResponseRef = "
-            f'"{RESPONSE_REF_TEXT}"`.\n\n'
+            "disagrees with the SignatureAffirmation record's `data.signedPayloadDigest = "
+            f'"{RESPONSE_HASH_HEX}"`.\n\n'
             "`finalize_certificates_of_completion` runs step 7 (response_ref equivalence): walks the "
-            "chain-resolved SignatureAffirmation events, parses each `data.formspecResponseRef` via "
-            "`parse_sha256_text` (succeeds because the source vector ships a `sha256:<hex>` text, not a "
-            "URL), records `had_resolvable_response = true`, finds no match, and emits "
+            "chain-resolved SignatureAffirmation events, parses each `data.signedPayloadDigest` as "
+            "sha-256 hex, records `had_resolvable_response = true`, finds no match, and emits "
             "`response_ref_mismatch` localized to the certificate's canonical_event_hash.\n\n"
+            "Generator: `_generator/gen_export_010_certificate_of_completion.py`.\n"
+        ),
+    )
+
+
+def gen_tamper_052(*, seed: bytes, kid: bytes, pubkey: bytes) -> None:
+    """SignatureAffirmation `data.signedPayloadDigest` mutated to non-hex
+    text while `signedPayloadDigestAlgorithm = "sha-256"` is preserved.
+    Phase N posture: the WOS resolver fails closed with
+    `MalformedResponseDigestError` and the verifier emits
+    `malformed_response_digest`."""
+    # 64-character non-hex marker. `Z` is intentionally outside the hex
+    # alphabet so `parse_sha256_hex` rejects on the first nibble.
+    bad_digest = "Z" * 64
+    build_tamper_export(
+        seed=seed,
+        kid=kid,
+        pubkey=pubkey,
+        out_dir=OUT_TAMPER_052,
+        description=(
+            'ADR 0007 §"Verifier obligations" step 7 / Phase-N malformed-digest '
+            'posture: SignatureAffirmation `data.signedPayloadDigest` carries '
+            f'a 64-character non-hex marker (`{bad_digest}`) while '
+            '`signedPayloadDigestAlgorithm = "sha-256"`. The WOS resolver '
+            'recognizes the payload as a sha-256-claimed signing event but '
+            'fails closed on hex parse; `finalize_certificates_of_completion` '
+            'emits `malformed_response_digest` localized to the certificate '
+            "event's canonical_event_hash. Generator: "
+            "`_generator/gen_export_010_certificate_of_completion.py`."
+        ),
+        tamper_kind="malformed_response_digest",
+        failing_event_id="",  # filled with cert canonical hash inside builder
+        coverage_tr_core=[
+            "TR-CORE-018",
+            "TR-CORE-030",
+            "TR-CORE-035",
+            "TR-CORE-150",
+            "TR-CORE-175",
+        ],
+        coverage_tr_op=[],
+        cert_overrides={
+            # The certificate's `response_ref` stays well-formed; the
+            # malformed digest lives on the SignatureAffirmation record.
+            "idempotency_key": b"tamper-052-cert-malformed-digest",
+        },
+        sigaff_signed_payload_digest_override=bad_digest,
+        sigaff_idempotency_preimage_record_id="tamper-052-prov-001",
+        description_suffix="Tamper: SignatureAffirmation signedPayloadDigest non-hex (tamper/052).",
+        derivation=(
+            "# Derivation — `tamper/052-cert-response-ref-malformed-digest`\n\n"
+            "Starts from `export/010-certificate-of-completion-inline`. Event 1's "
+            "`data.signedPayloadDigest` is rewritten to a 64-character non-hex marker "
+            f"(`{bad_digest}`) while `signedPayloadDigestAlgorithm = \"sha-256\"` is "
+            "preserved, so the WOS resolver still recognizes the payload as a sha-256-claimed "
+            "signing event but cannot parse the digest as hex.\n\n"
+            "Phase-N posture (Trellis review F2): the resolver returns "
+            "`Err(ResolverError::MalformedResponseDigest)` (Rust) / raises "
+            "`MalformedResponseDigestError` (Python) instead of silent-skipping. "
+            "`finalize_certificates_of_completion` translates this into a fail-closed "
+            "`malformed_response_digest` failure localized to the certificate event's "
+            "`canonical_event_hash`.\n\n"
+            "The certificate event itself carries a well-formed `chain_summary.response_ref` "
+            "(byte-equal to the positive fixture); only the SignatureAffirmation record's "
+            "digest text is malformed. This isolates the malformed-digest path from the "
+            "mismatched-digest path covered by `tamper/024-cert-response-ref-mismatch`.\n\n"
             "Generator: `_generator/gen_export_010_certificate_of_completion.py`.\n"
         ),
     )
@@ -1217,6 +1307,7 @@ def main() -> None:
     gen_tamper_020(seed=seed, kid=kid, pubkey=pubkey)
     gen_tamper_022(seed=seed, kid=kid, pubkey=pubkey)
     gen_tamper_024(seed=seed, kid=kid, pubkey=pubkey)
+    gen_tamper_052(seed=seed, kid=kid, pubkey=pubkey)
 
 
 if __name__ == "__main__":

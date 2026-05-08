@@ -1,0 +1,26 @@
+id          = "tamper/052-cert-response-ref-malformed-digest"
+op          = "tamper"
+status      = "active"
+description = """ADR 0007 §"Verifier obligations" step 7 / Phase-N malformed-digest posture: SignatureAffirmation `data.signedPayloadDigest` carries a 64-character non-hex marker (`ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ`) while `signedPayloadDigestAlgorithm = "sha-256"`. The WOS resolver recognizes the payload as a sha-256-claimed signing event but fails closed on hex parse; `finalize_certificates_of_completion` emits `malformed_response_digest` localized to the certificate event's canonical_event_hash. Generator: `_generator/gen_export_010_certificate_of_completion.py`."""
+
+[coverage]
+tr_core = [
+    "TR-CORE-018",
+    "TR-CORE-030",
+    "TR-CORE-035",
+    "TR-CORE-150",
+    "TR-CORE-175",
+]
+
+[inputs]
+export_zip = "input-export.zip"
+
+[expected.report]
+structure_verified   = true
+integrity_verified   = false
+readability_verified = true
+tamper_kind          = "malformed_response_digest"
+failing_event_id     = "ac22a7449376a1938e20dfa338047685ff35fd814ce060479460c34c22e98caf"
+
+[derivation]
+document = "derivation.md"

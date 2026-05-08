@@ -531,8 +531,8 @@ def _validate_clock_segments(
 # principal-ref string) to Trellis Core, or `None` if the payload is
 # not a signing-event payload this resolver knows how to interpret.
 #
-# Mirror of Rust `trellis_verify_wos::WosFormspecResolver`. Phase M
-# leaves malformed-digest as silent-skip; Phase N flips it to
+# Mirror of Rust `trellis_verify_wos::WosFormspecResolver`. Phase N flips
+# the malformed-digest branch from silent-skip to fail-closed
 # `MalformedResponseDigestError`.
 # ---------------------------------------------------------------
 
@@ -549,14 +549,31 @@ class WosFormspecResolver:
             record = _parse_signature_affirmation_record(payload_bytes)
         except core.VerifyError:
             return None
+        # When the record declares `signedPayloadDigestAlgorithm = "sha-256"`
+        # but the digest text is not 32 bytes of hex, fail closed via
+        # `MalformedResponseDigestError`. When the record carries no
+        # sha-256 signed-payload digest at all (and no parseable legacy
+        # `formspecResponseRef`/`sourceResponseRef`), silent-skip — the
+        # payload is not a response-proof carrier this resolver can
+        # interpret. Phase N narrows the silent-skip path to the
+        # absent-digest case only.
+        if record.get("signed_payload_digest_algorithm") == "sha-256":
+            digest_text = str(record["signed_payload_digest"])
+            try:
+                digest = core._parse_sha256_hex(digest_text)
+            except (core.VerifyError, ValueError) as exc:
+                # `_parse_sha256_hex` may raise `VerifyError` on wrong byte
+                # length or `ValueError` from the underlying `int(_, 16)`
+                # when the text contains non-hex characters; both flow into
+                # the fail-closed `MalformedResponseDigestError`.
+                raise core.MalformedResponseDigestError(
+                    f"signedPayloadDigest {digest_text!r} does not match "
+                    f"sha-256 hex format (expected 64 hex chars)"
+                ) from exc
+            return core.CertificateResponseProof(response_hash=digest)
         try:
             digest = _signature_affirmation_response_digest(record)
         except core.VerifyError:
-            # Phase M posture: source SignatureAffirmation carries no
-            # sha-256 signed payload digest or legacy response digest;
-            # silent-skip so Phase-1 admits signing-only shapes.
-            # Phase N replaces this with
-            # `raise core.MalformedResponseDigestError(...)`.
             return None
         return core.CertificateResponseProof(response_hash=digest)
 

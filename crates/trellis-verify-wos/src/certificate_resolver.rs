@@ -9,10 +9,15 @@
 //! or `Ok(None)` if the payload is not a signing-event payload this
 //! resolver knows how to interpret.
 //!
-//! Phase M relocates these readers from `trellis-verify` into
-//! `trellis-verify-wos`. Malformed-digest still returns `Ok(None)` for
-//! Phase M; Phase N flips it to
-//! [`ResolverError::MalformedResponseDigest`].
+//! Phase M relocated these readers from `trellis-verify` into
+//! `trellis-verify-wos`. Phase N flips the malformed-digest branch from
+//! silent-skip (`Ok(None)`) to fail-closed
+//! [`ResolverError::MalformedResponseDigest`]: when the consumer-domain
+//! payload declares `signedPayloadDigestAlgorithm = "sha-256"` and carries a
+//! `signedPayloadDigest` that does not parse as 32 bytes of hex, the
+//! resolver returns `Err` so the Core verifier can emit a distinct
+//! `malformed_response_digest` failure rather than silently skipping the
+//! response-ref equivalence check.
 
 #![forbid(unsafe_code)]
 
@@ -59,11 +64,10 @@ impl ResponseProofResolver for WosFormspecResolver {
         {
             return match parse_sha256_hex(&digest) {
                 Some(response_hash) => Ok(Some(CertificateResponseProof { response_hash })),
-                // Phase M posture: malformed digest yields silent-skip
-                // (matches prior `parse_sha256_hex(...).ok()` behavior).
-                // Phase N flips this to
-                // `Err(ResolverError::MalformedResponseDigest(...))`.
-                None => Ok(None),
+                None => Err(ResolverError::MalformedResponseDigest(format!(
+                    "signedPayloadDigest {digest:?} does not match sha-256 hex format \
+                     (expected 64 hex chars)"
+                ))),
             };
         }
         let Ok(response_ref) = map_lookup_text(data, "formspecResponseRef") else {

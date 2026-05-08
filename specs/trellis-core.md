@@ -1907,7 +1907,12 @@ VERIFY(E) -> VerificationReport
    + content-hash recompute), **TR-CORE-149** (signing_events resolution
    + signed_at timestamp equivalence), **TR-CORE-150** (response_ref
    canonical-response-hash equivalence), **TR-CORE-151** (optional
-   `trellis.export.certificates-of-completion.v1` manifest catalog).
+   `trellis.export.certificates-of-completion.v1` manifest catalog),
+   **TR-CORE-175** (malformed signed-payload-digest fail-closed:
+   when the linked SignatureAffirmation declares `sha-256` but
+   `signedPayloadDigest` is present and unparseable, surface
+   `malformed_response_digest` rather than silently skipping the
+   step-7 equivalence check).
 
 6d. User-content-attestation processing. For each event e whose
    EventPayload.extensions carries `trellis.user-content-attestation.v1`
@@ -2216,6 +2221,7 @@ semantics.
 | `signing_event_unresolved` | 6c step 5 | A `signing_events[i]` digest does not resolve to a chain-present `SignatureAffirmation` event (or WOS equivalent registered in §6.7). |
 | `signing_event_timestamp_mismatch` | 6c step 6 | A `signer_display[i].signed_at` does not exactly equal the resolved `SignatureAffirmation` header's `authored_at` (timestamp exact equality). |
 | `response_ref_mismatch` | 6c step 7 | `chain_summary.response_ref` is non-null but does not equal the Formspec canonical-response-hash carried on the linked `SignatureAffirmation`. |
+| `malformed_response_digest` | 6c step 7 | The linked `SignatureAffirmation` payload declares `signedPayloadDigestAlgorithm = "sha-256"` and carries a `signedPayloadDigest` that is not parseable as 32 bytes of hex; the consumer-domain resolver surfaces a `MalformedResponseDigest` error and Trellis Core fails closed rather than silently skipping the response-ref equivalence check. Distinct from `response_ref_mismatch` (the digest text was parseable but did not match) and from absent-digest silent-skip (the payload carried no proof at all). |
 | `certificate_catalog_digest_mismatch` | 6c optional catalog | `065-certificates-of-completion.cbor` digest does not match the manifest's `trellis.export.certificates-of-completion.v1` binding (ADR 0007 §"Export manifest catalog"). |
 | `certificate_catalog_invalid` | 6c optional catalog | `065-certificates-of-completion.cbor` is malformed (CBOR decode failure, missing required fields, or `entry_count` disagrees with actual rows). |
 | `certificate_catalog_duplicate_event` | 6c optional catalog | Two catalog rows in `065-certificates-of-completion.cbor` carry the same `canonical_event_hash`. |

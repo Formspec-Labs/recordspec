@@ -1938,10 +1938,20 @@ def _finalize_certificates_of_completion(
                 try:
                     proof = resolver.resolve(affirmation)
                 except MalformedResponseDigestError:
-                    # Phase M leaves this as `continue` to preserve current
-                    # behavior. Phase N flips this to a fail-closed
-                    # `response_ref_mismatch` (or a more-specific tamper
-                    # kind on the resolver-implementation side).
+                    # Phase N: the resolver recognized the payload but the
+                    # declared sha-256 response digest did not parse as
+                    # 32 bytes of hex. Fail closed with a distinct
+                    # `malformed_response_digest` failure localized to the
+                    # certificate event whose `response_ref` triggered the
+                    # lookup; mirror of the Rust call-site handling in
+                    # `crates/trellis-verify/src/certificate.rs`.
+                    outcome.chain_summary_consistent = False
+                    outcome.failures.append("malformed_response_digest")
+                    event_failures.append(
+                        VerificationFailure(
+                            "malformed_response_digest", _hex(canonical_hash)
+                        )
+                    )
                     continue
                 if proof is None:
                     continue
