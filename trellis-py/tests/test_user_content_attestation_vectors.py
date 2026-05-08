@@ -12,6 +12,8 @@ from pathlib import Path
 import pytest
 
 from trellis_py.conformance import _assert_tamper, _load_manifest
+from trellis_py import verify_wos
+from trellis_py.verify import _is_identity_attestation_event_type
 
 
 def _vectors_root() -> Path:
@@ -30,3 +32,18 @@ def _uca_tamper_dirs() -> list[Path]:
 def test_uca_tamper_vectors_match_manifest(vector_dir: Path) -> None:
     manifest = _load_manifest(vector_dir)
     _assert_tamper(vector_dir, manifest)
+
+
+def test_core_identity_attestation_event_type_is_fixture_only() -> None:
+    assert not _is_identity_attestation_event_type("wos.identity.identityAttestation")
+    assert _is_identity_attestation_event_type("x-trellis-test/identity-attestation/v1")
+    assert not _is_identity_attestation_event_type("wos.identity.authenticationMethod")
+
+
+def test_wos_identity_attestation_event_type_is_adapter_owned() -> None:
+    assert verify_wos._is_wos_identity_attestation_event_type(  # noqa: SLF001
+        "wos.identity.identityAttestation"
+    )
+    assert not verify_wos._is_wos_identity_attestation_event_type(  # noqa: SLF001
+        "wos.identity.authenticationMethod"
+    )

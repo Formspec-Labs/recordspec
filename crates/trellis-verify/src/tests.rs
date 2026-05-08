@@ -14,7 +14,21 @@ use crate::interop_sidecar::{is_interop_sidecar_path_valid, verify_interop_sidec
 use crate::kinds::{VerificationFailureKind, VerifyErrorKind};
 use crate::parse::{parse_sign1_bytes, parse_signing_key_registry};
 use crate::types::TrellisTimestamp;
+use crate::util::is_identity_attestation_event_type;
 use crate::{verify_event_set, verify_export_zip, verify_single_event, verify_tampered_ledger};
+
+#[test]
+fn identity_attestation_event_type_is_core_fixture_only() {
+    assert!(!is_identity_attestation_event_type(
+        "wos.identity.identityAttestation"
+    ));
+    assert!(is_identity_attestation_event_type(
+        "x-trellis-test/identity-attestation/v1"
+    ));
+    assert!(!is_identity_attestation_event_type(
+        "wos.identity.authenticationMethod"
+    ));
+}
 
 /// TR-CORE-167 — `interop_sidecar_path_invalid` predicate (ADR 0008
 /// §"Phase-1 verifier obligation" step 2.c). Structural cases only;
@@ -2412,6 +2426,7 @@ fn finalize_uca_flags_operator_in_user_slot() {
         &BTreeMap::new(),
         &registry,
         None,
+        &(),
         &mut event_failures,
     );
     assert_eq!(outcomes.len(), 1);
@@ -2453,6 +2468,7 @@ fn finalize_uca_flags_identity_required_when_posture_default() {
         &BTreeMap::new(),
         &registry,
         None, // no Posture Declaration → default required
+        &(),
         &mut event_failures,
     );
     assert_eq!(outcomes.len(), 1);
@@ -2501,6 +2517,7 @@ fn finalize_uca_admits_null_identity_when_posture_permits() {
         &BTreeMap::new(),
         &registry,
         Some(&posture_bytes),
+        &(),
         &mut event_failures,
     );
     assert_eq!(outcomes.len(), 1);
@@ -2554,6 +2571,7 @@ fn finalize_uca_accepts_rotating_key_inside_overlap() {
         &BTreeMap::new(),
         &registry,
         None,
+        &(),
         &mut event_failures,
     );
     assert_eq!(outcomes.len(), 1);
@@ -2606,6 +2624,7 @@ fn finalize_uca_rejects_rotating_key_after_overlap() {
         &BTreeMap::new(),
         &registry,
         None,
+        &(),
         &mut event_failures,
     );
     assert_eq!(outcomes.len(), 1);
@@ -2642,6 +2661,7 @@ fn finalize_uca_flags_key_not_active_for_unregistered_kid() {
         &BTreeMap::new(),
         &registry,
         None,
+        &(),
         &mut event_failures,
     );
     assert_eq!(outcomes.len(), 1);
@@ -2702,6 +2722,7 @@ fn finalize_uca_id_collision_detected_on_disagreeing_payloads() {
         &BTreeMap::new(),
         &registry,
         None,
+        &(),
         &mut event_failures,
     );
     assert!(
@@ -2735,6 +2756,7 @@ fn finalize_uca_no_collision_when_byte_identical() {
         &BTreeMap::new(),
         &registry,
         None,
+        &(),
         &mut event_failures,
     );
     assert!(

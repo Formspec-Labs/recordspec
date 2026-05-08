@@ -50,11 +50,11 @@ pub(crate) fn is_operator_uri(value: &str) -> bool {
     value.starts_with(OPERATOR_URI_PREFIX_TRELLIS) || value.starts_with(OPERATOR_URI_PREFIX_WOS)
 }
 
-/// Phase-1 identity-attestation event-type admission. Admits the
-/// `x-trellis-test/*` reserved fixture identifier (Core §6.7 + §10.6).
-/// Per ADR 0010 open question 1, this gains the canonical `wos.identity.*`
-/// branch when PLN-0381 ratifies; the test branch stays for future fixture
-/// authoring under the spec-reserved test prefix.
+/// Phase-1 identity-attestation event-type admission.
+///
+/// Admits the `x-trellis-test/*` reserved fixture identifier (Core §6.7 +
+/// §10.6). Consumer-owned identity taxonomies are admitted through the
+/// `RecordValidator` seam.
 pub(crate) fn is_identity_attestation_event_type(event_type: &str) -> bool {
     event_type == PHASE_1_TEST_IDENTITY_EVENT_TYPE
 }

@@ -10,6 +10,7 @@ pub(crate) const OPEN_CLOCKS_EXPORT_EXTENSION: &str = "trellis.export.open-clock
 pub(crate) const WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE: &str = "wos.kernel.signatureAffirmation";
 pub(crate) const WOS_INTAKE_ACCEPTED_EVENT_TYPE: &str = "wos.kernel.intakeAccepted";
 pub(crate) const WOS_CASE_CREATED_EVENT_TYPE: &str = "wos.kernel.caseCreated";
+pub(crate) const WOS_IDENTITY_ATTESTATION_EVENT_TYPE: &str = "wos.identity.identityAttestation";
 pub(crate) const WOS_GOVERNANCE_DETERMINATION_PREFIX: &str = "wos.governance.determination";
 pub(crate) const WOS_GOVERNANCE_DETERMINATION_RESCINDED_EVENT_TYPE: &str =
     "wos.governance.determinationRescinded";

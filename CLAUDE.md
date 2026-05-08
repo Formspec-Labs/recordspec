@@ -30,6 +30,7 @@ For public-facing stack framing, see [`../STACK.md`](../STACK.md) — lookup-onl
 - **Nothing is released.** `v1.0.0` is a coherent-snapshot tag, not a freeze. Zero production records exist. If a wire-shape change prevents architectural debt, make it and retag. Only real adopters close the revision window; there are none.
 - **Rust is the byte authority (ADR 0004).** For anything spec prose cannot pin — CBOR ordering, COSE headers, ZIP metadata, Merkle steps, domain separation tags — Rust is canonical. Python (`trellis-py/`) is the cross-check. When they disagree: update spec prose if load-bearing and under-specified, update Python to match, add a vector if coverage was missing.
 - **Maximalist envelope, restrictive Phase-1 runtime.** Reserve capacity in the wire shape now. Enforce Phase-1 scope with lint + runtime constraints, never by omitting capacity.
+- **Dependency inversion is mandatory.** Trellis center crates define byte contracts, integrity primitives, and narrow ports. WOS, Formspec, Case Portal, or other consumer-specific semantics live in separate consumer-owned crates that depend inward on Trellis; Trellis does not depend outward on their schemas, event vocabularies, workflow states, or business validation rules.
 - **No stubs.** `unimplemented!()` / `todo!()` / `NotImplementedError` are forbidden unless the blocker is an unresolved architectural decision — in which case STOP and surface it.
 - **Vectors and Rust move together.** New `fixtures/vectors/` contract lands with matching `trellis-conformance` coverage in the same change train.
 - **Spec + matrix + fixture in the same commit.** Every normative MUST has a `TR-CORE-*` / `TR-OP-*` row and (where testable) a byte-exact fixture.
@@ -51,6 +52,8 @@ Apply after stack-wide heuristics (in [`../VISION.md`](../VISION.md)):
 **Canonical encoding + signature suite.** dCBOR (RFC 8949 §4.2.2). Ed25519 over COSE_Sign1 (`alg = -8`), with `suite_id` registry reserving ML-DSA / SLH-DSA / hybrid codepoints. SHA-256 hash construction with domain separation tags. HPKE Base-mode payload-key wrap. COSE_Sign1 checkpoints over `(tree_size, tree_head_hash, suite_id, timestamp, anchor_ref?)`.
 
 **Center-vs-adapter.** Center: `trellis-core` + `trellis-types` + `trellis-cddl` + `trellis-cose` + `trellis-verify`. Traits: storage, KMS, anchor target. Adapters: `trellis-store-memory`, `trellis-store-postgres`, `trellis-verify-wos`; anchor substrates via `AnchorAdapter` trait (adopters pick OpenTimestamps / Rekor / Trillian per-deployment; see spike in `thoughts/specs/2026-04-24-anchor-substrate-spike.md`).
+
+**Consumer crate boundary.** If code needs WOS names, Formspec field semantics, portal workflows, intake handoff rules, respondent/case-ledger policy, or consumer-specific verification policy, it belongs outside Trellis center crates. Put it in an adapter or binding crate such as `trellis-verify-wos`, `wos-*`, or `formspec-*`, and pass only stable Trellis types, opaque payloads, extension namespaces, or trait calls across the boundary.
 
 **Verification independence contract** (Core §16) is load-bearing: verifiers MUST NOT depend on derived artifacts, workflow runtime, or mutable DBs. Keep `trellis-verify` free of non-essential dependencies.
 

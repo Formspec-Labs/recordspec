@@ -18,6 +18,42 @@ cross-commit wave context that a raw log cannot reconstruct.
 
 ## Wave-by-wave dispatch history
 
+### Wave 50 (2026-05-08) — identity-attestation event-type admission
+
+- Registered `wos.identity.identityAttestation` as the canonical WOS
+  identity-attestation event type under the `wos.<layer>.<recordKind>`
+  taxonomy for ADR 0068 D-3.1 records.
+- Updated Rust and Python WOS-composed verifier admission so ADR 0010
+  `identity_attestation_ref` resolution accepts the canonical WOS event type
+  through the consumer-owned validation seam while preserving Trellis center's
+  `x-trellis-test/identity-attestation/v1` fixture-only admission.
+- Left Trellis `TODO.md` item #3 open because replacing fixture-only identity
+  event bytes and declaring the full provider-neutral export bundle shape
+  still depends on PLN-0384 taxonomy / shared-fixture ratification.
+- Synced the ADR 0068 tenant story gate: parent PLN-0012 is now closed by
+  ADR 0068's confirmed supersession carry-forward default, so Trellis item #4
+  no longer has a decision blocker before implementation.
+
+Verification:
+- `cargo test -p trellis-verify identity_attestation_event_type_is_core_fixture_only`.
+- `cargo test -p trellis-verify-wos validator_admits_wos_identity_attestation_event_type`.
+- `PYTHONPATH=trellis-py/src uv run --with cbor2 --with cryptography --with pytest python -m pytest trellis-py/tests/test_user_content_attestation_vectors.py -q`.
+
+### Wave 49 (2026-05-08) — TODO renumbering pass
+
+- Retired the closed rows that had been intentionally retained in `TODO.md`
+  until the next planned renumbering pass: Waves 34, 39-48.
+- Renumbered the remaining live Trellis queue from 1-16 and synced dependent
+  item-number references in parent planning and sibling TODO surfaces.
+- Kept closed implementation detail in this file instead of the live tactical
+  queue, so `TODO.md` now shows only open, blocked, or trigger-gated work.
+
+Verification:
+- `rg` audit for stale Trellis item-number references across `TODO.md`,
+  parent `PLANNING.md`, `TODO-STACK.md`, `work-spec/TODO.md`, and
+  `workspec-server/crates/wos-server/TODO.md`.
+- `git diff --check`.
+
 ### Wave 48 (2026-05-07) — TODO #5 offline chain semantics
 
 - Closed the remaining Respondent Ledger hash-obligation gap by adding

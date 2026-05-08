@@ -107,6 +107,13 @@ pub(crate) fn parse_sign1_value(value: &Value) -> Result<ParsedSign1, VerifyErro
 }
 
 pub(crate) fn decode_event_details(event: &ParsedSign1) -> Result<EventDetails, VerifyError> {
+    decode_event_details_with_identity_admission(event, &|_| false)
+}
+
+pub(crate) fn decode_event_details_with_identity_admission(
+    event: &ParsedSign1,
+    identity_event_type_admitted: &dyn Fn(&str) -> bool,
+) -> Result<EventDetails, VerifyError> {
     let payload_bytes = event
         .payload
         .as_ref()
@@ -177,7 +184,11 @@ pub(crate) fn decode_event_details(event: &ParsedSign1) -> Result<EventDetails, 
             decode_erasure_evidence_details(extensions, authored_at)?,
             decode_certificate_payload(extensions)?,
             decode_user_content_attestation_payload(extensions, authored_at)?,
-            decode_identity_attestation_subject(extensions, &event_type),
+            decode_identity_attestation_subject(
+                extensions,
+                &event_type,
+                identity_event_type_admitted,
+            ),
             decode_supersedes_chain_id_payload(extensions)?,
         ),
         None => (None, None, None, None, None, None, None),

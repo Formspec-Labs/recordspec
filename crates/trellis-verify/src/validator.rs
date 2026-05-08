@@ -68,6 +68,11 @@ pub struct VerificationWithDomain {
 
 /// Consumer-owned domain verifier.
 pub trait RecordValidator {
+    /// Returns true when the domain owns this identity-attestation event type.
+    fn admits_identity_attestation_event_type(&self, _event_type: &str) -> bool {
+        false
+    }
+
     /// Validates a verified event chain.
     fn validate_events(&self, _events: &[DomainEvent]) -> Vec<DomainFinding> {
         Vec::new()

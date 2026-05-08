@@ -7,6 +7,7 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use trellis_types::{domain_separated_sha256, map_lookup_optional_value, map_lookup_text};
 
 use super::USER_CONTENT_ATTESTATION_DOMAIN;
+use crate::RecordValidator;
 use crate::kinds::VerificationFailureKind;
 use crate::parse::decode_value;
 use crate::types::*;
@@ -49,8 +50,10 @@ pub(crate) fn parse_admit_unverified_user_attestations(bytes: &[u8]) -> bool {
 pub(crate) fn decode_identity_attestation_subject(
     extensions: &[(Value, Value)],
     event_type: &str,
+    identity_event_type_admitted: &dyn Fn(&str) -> bool,
 ) -> Option<String> {
-    if !is_identity_attestation_event_type(event_type) {
+    if !is_identity_attestation_event_type(event_type) && !identity_event_type_admitted(event_type)
+    {
         return None;
     }
     let identity_value = map_lookup_optional_value(extensions, event_type)?;
@@ -113,13 +116,12 @@ fn signing_key_admits_user_content_attestation(
 /// force at `attested_at`. The verifier passes the bytes through; absent
 /// declaration defaults to `false` (REQUIRED non-null, fails-closed).
 ///
-/// **Phase-1 identity-attestation taxonomy.** Step 4 admits any chain-
-/// present event whose `event_type` matches
-/// [`is_identity_attestation_event_type`] — the fixture-corpus
-/// deployment-local naming or the PLN-0381 candidate string. Resolved
-/// event's `ledger_scope` MUST match the attestation's; `sequence` MUST
-/// be strictly less than `attested_event_position`; payload subject
-/// MUST equal `attestor`.
+/// **Phase-1 identity-attestation taxonomy.** Step 4 admits any chain-present
+/// event whose `event_type` matches the fixture-corpus deployment-local naming
+/// or a consumer-owned taxonomy admitted by the `RecordValidator`. Resolved
+/// event's `ledger_scope` MUST match the attestation's; `sequence` MUST be
+/// strictly less than `attested_event_position`; payload subject MUST equal
+/// `attestor`.
 pub(crate) fn finalize_user_content_attestations(
     payloads: &[(usize, UserContentAttestationDetails, [u8; 32])],
     event_lookup_pool: &[EventDetails],
@@ -127,6 +129,7 @@ pub(crate) fn finalize_user_content_attestations(
     event_by_position_idx: &BTreeMap<(Vec<u8>, u64), usize>,
     registry: &BTreeMap<Vec<u8>, SigningKeyEntry>,
     posture_declaration: Option<&[u8]>,
+    record_validator: &dyn RecordValidator,
     event_failures: &mut Vec<VerificationFailure>,
 ) -> Vec<UserContentAttestationOutcome> {
     if payloads.is_empty() {
@@ -266,7 +269,10 @@ pub(crate) fn finalize_user_content_attestations(
                     ));
                 }
                 Some(identity_event) => {
-                    if !is_identity_attestation_event_type(&identity_event.event_type) {
+                    if !is_identity_attestation_event_type(&identity_event.event_type)
+                        && !record_validator
+                            .admits_identity_attestation_event_type(&identity_event.event_type)
+                    {
                         outcome.identity_resolved = false;
                         outcome
                             .failures

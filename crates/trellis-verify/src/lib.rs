@@ -44,8 +44,9 @@ use crate::correction::finalize_correction_preservations;
 use crate::erasure::finalize_erasure_evidence;
 use crate::merkle::recompute_author_event_hash;
 use crate::parse::{
-    decode_event_details, event_identity, parse_custody_model, parse_disclosure_profile,
-    parse_key_registry, parse_sign1_array, parse_sign1_bytes,
+    decode_event_details, decode_event_details_with_identity_admission, event_identity,
+    parse_custody_model, parse_disclosure_profile, parse_key_registry, parse_sign1_array,
+    parse_sign1_bytes,
 };
 use crate::user_attestation::finalize_user_content_attestations;
 use crate::util::{hex_string, requires_dual_attestation};
@@ -119,18 +120,11 @@ const OPEN_CLOCKS_EXPORT_EXTENSION: &str = "trellis.export.open-clocks.v1";
 /// identity_attestation_ref, signing_intent, attested_at])`.
 const USER_CONTENT_ATTESTATION_DOMAIN: &str = "trellis-user-content-attestation-v1";
 
-/// Phase-1 deployment-local identity-attestation event-type convention. Per
-/// ADR 0010 open question 1, the parent-repo identity-attestation stack ADR
-/// (PLN-0381) ratifies the `wos.identity.*` namespace for `IdentityAttestation`
-/// events. Until that lands, this verifier admits any event whose
-/// `event_type` matches one of the values in [`identity_attestation_event_type`]
-/// Phase-1 identity-attestation event type (test-only). The Trellis Working
-/// Group reserves `x-trellis-test/*` (Core §6.7 + §10.6) for conformance
-/// fixtures; this constant pins the literal the fixture corpus mints so
-/// `is_identity_attestation_event_type` admits it. When PLN-0381 ratifies
-/// the canonical `wos.identity.*` naming, that string lands in Core §6.7
-/// and `is_identity_attestation_event_type` gains the canonical branch in
-/// the same commit; the test prefix stays for future fixture authoring.
+/// Phase-1 deployment-local identity-attestation event-type convention. The
+/// Trellis Working Group reserves `x-trellis-test/*` (Core §6.7 + §10.6) for
+/// conformance fixtures; this constant pins the literal the fixture corpus
+/// mints so `is_identity_attestation_event_type` admits it. Consumer-owned
+/// identity event taxonomies are admitted through the `RecordValidator` seam.
 const PHASE_1_TEST_IDENTITY_EVENT_TYPE: &str = "x-trellis-test/identity-attestation/v1";
 
 /// Operator URI scheme convention for the Phase-1 Companion §6.4 enforcement
@@ -498,7 +492,12 @@ pub(crate) fn verify_event_set_with_classes(
             continue;
         }
 
-        let decoded = match decode_event_details(event) {
+        let identity_event_type_admitted =
+            |event_type: &str| record_validator.admits_identity_attestation_event_type(event_type);
+        let decoded = match decode_event_details_with_identity_admission(
+            event,
+            &identity_event_type_admitted,
+        ) {
             Ok(details) => details,
             Err(error) => {
                 // Surface typed structural-failure kinds (e.g.
@@ -843,6 +842,7 @@ pub(crate) fn verify_event_set_with_classes(
         &event_by_position_idx,
         registry,
         posture_declaration,
+        record_validator,
         &mut event_failures,
     );
 

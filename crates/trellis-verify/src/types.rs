@@ -443,8 +443,7 @@ pub(crate) struct EventDetails {
     pub(crate) supersedes_chain: Option<SupersedesChainIdDetails>,
     /// Identity-attestation subject for events whose `event_type` matches
     /// one of the registered identity-attestation taxonomies (Phase-1
-    /// admission via `is_identity_attestation_event_type`; canonical
-    /// `wos.identity.*` lands with PLN-0381). Populated from
+    /// admission via `is_identity_attestation_event_type`). Populated from
     /// `EventPayload.extensions[event_type]["subject"]` when present.
     /// `None` for non-identity events or for identity events whose
     /// payload omits the subject field. ADR 0010 §"Verifier obligations"

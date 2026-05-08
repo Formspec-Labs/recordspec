@@ -1939,9 +1939,12 @@ VERIFY(E) -> VerificationReport
             `user_content_attestation_identity_required`. Default
             posture is REQUIRED non-null.
           - If non-null: resolve to a chain-present event of a
-            registered identity-attestation event type (initial
-            registration target `wos.identity.*` per PLN-0381;
-            until ratified, deployment-local extension types per §6.7).
+            registered identity-attestation event type. Core conformance
+            fixtures may continue using
+            `x-trellis-test/identity-attestation/v1` under §14.6. The WOS
+            composed verifier admits the canonical WOS identity-attestation
+            event type `wos.identity.identityAttestation` (§23.4) through the
+            consumer-owned validation seam, not through Trellis center logic.
             Confirm its `ledger_scope` matches; confirm its
             `sequence < attested_event_position` (identity proof
             temporally precedes the attestation); confirm its payload
@@ -2423,6 +2426,7 @@ The `wos.*` event-type family is registered in the bound registry (§14) with th
 - **Namespace disjointness.** The `wos.*` family and the `trellis.*` family are mutually disjoint. A Trellis-authored envelope whose authored-fact material is not a WOS governance record MUST NOT use a `wos.*` identifier, and a WOS runtime MUST NOT emit a `trellis.*` identifier as its `event_type`. A Trellis processor MUST NOT admit a WOS governance record under a `trellis.*` identifier, and MUST NOT admit a non-WOS authored fact under a `wos.*` identifier.
 - Registered `wos.*` identifiers name the governance-record *kind*, not its outcome. `wos.determination`, `wos.review-close`, `wos.assignment`, `wos.adjudication` are conformant shapes; `wos.determination.granted`, `wos.determination.denied`, `wos.review-close.adverse` are NON-CONFORMANT and MUST NOT be registered. WOS outcome is carried in the encrypted payload and in `EventHeader.outcome_commitment` per §12.2.
 - `wos.*` identifiers MUST resolve to WOS governance semantics defined by the WOS specification at the registry-bound version (§14.2). A bound-registry entry for a `wos.*` identifier names the WOS spec version it refers to; a registry change that re-points the identifier to a different WOS semantic version is a new registry binding per §14.5.
+- `wos.identity.identityAttestation` is the canonical identity-attestation event type for ADR 0068 D-3.1 `IdentityAttestation` records. The identifier follows the WOS custody-hook taxonomy `wos.<layer>.<recordKind>`: layer `identity`, record kind `identityAttestation`. WOS-aware user-content-attestation identity resolution (§19 step 6d) admits this event type through the consumer-owned validator, while Trellis center conformance continues to admit only `x-trellis-test/identity-attestation/v1` inside core fixtures.
 - The `wos.` prefix is reserved to the WOS specification family in the bound registry. Vendors extending WOS with deployment-local governance records MUST use a registered `x-` identifier under §6.7 that does not shadow any upstream specification's reserved `x-*` prefix (cf. WOS Kernel §10.6, which reserves `x-wos-` for future WOS-normative use). A bare `wos.*` identifier MUST NOT be minted outside the WOS specification family.
 
 ### 23.5 Idempotency-key construction for WOS retries

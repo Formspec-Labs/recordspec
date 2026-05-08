@@ -10,7 +10,7 @@ use trellis_verify::{DomainEvent, DomainExport, RecordValidator, Severity, Trell
 
 use crate::event_types::{
     OPEN_CLOCKS_EXPORT_EXTENSION, WOS_GOVERNANCE_DETERMINATION_RESCINDED_EVENT_TYPE,
-    WOS_GOVERNANCE_REINSTATED_EVENT_TYPE,
+    WOS_GOVERNANCE_REINSTATED_EVENT_TYPE, WOS_IDENTITY_ATTESTATION_EVENT_TYPE,
 };
 use crate::validator::WosRecordValidator;
 
@@ -73,6 +73,18 @@ fn encode_record(kind: &str, data: Vec<(Value, Value)>) -> Vec<u8> {
     let mut bytes = Vec::new();
     ciborium::into_writer(&value, &mut bytes).unwrap();
     bytes
+}
+
+#[test]
+fn validator_admits_wos_identity_attestation_event_type() {
+    assert!(
+        WosRecordValidator
+            .admits_identity_attestation_event_type(WOS_IDENTITY_ATTESTATION_EVENT_TYPE)
+    );
+    assert!(
+        !WosRecordValidator
+            .admits_identity_attestation_event_type("wos.identity.authenticationMethod")
+    );
 }
 
 #[test]

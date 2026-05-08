@@ -8,7 +8,7 @@ import zipfile
 from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import cbor2
 from cbor2 import CBORDecodeError, CBORTag
@@ -105,10 +105,9 @@ SUPERSESSION_GRAPH_MEMBER = "064-supersession-graph.json"
 SUPERSESSION_PREDECESSOR_PREFIX = "070-predecessors/"
 OPEN_CLOCKS_EXPORT_EXTENSION = "trellis.export.open-clocks.v1"
 OPEN_CLOCKS_MEMBER = "open-clocks.json"
-# Phase-1 identity-attestation event type (test-only). Core §6.7 + §10.6
-# reserve `x-trellis-test/*` for fixture authoring; admitted by
-# `_is_identity_attestation_event_type` until PLN-0381 ratifies the canonical
-# `wos.identity.*` naming.
+# Phase-1 identity-attestation event type for fixtures. Core §6.7 + §10.6
+# reserve `x-trellis-test/*` for fixture authoring. Consumer-owned identity
+# taxonomies are admitted through composed verifier hooks.
 PHASE_1_TEST_IDENTITY_EVENT_TYPE = "x-trellis-test/identity-attestation/v1"
 # Companion §6.4 operator-URI prefix conventions (Phase-1 baseline). Step 8
 # of ADR 0010 verifier obligations rejects user-content-attestation events
@@ -1293,7 +1292,12 @@ def _decode_key_bag_recipients(payload_value: dict) -> list[bytes]:
     return out
 
 
-def _decode_event_details(event: ParsedSign1) -> EventDetails:
+def _decode_event_details(
+    event: ParsedSign1,
+    identity_event_type_admitted: Optional[Callable[[str], bool]] = None,
+) -> EventDetails:
+    if identity_event_type_admitted is None:
+        identity_event_type_admitted = _is_identity_attestation_event_type
     if event.payload is None:
         raise VerifyError("detached event payloads are out of scope")
     payload_value = _decode_value(event.payload)
@@ -1358,7 +1362,9 @@ def _decode_event_details(event: ParsedSign1) -> EventDetails:
         erasure = _decode_erasure_evidence_details(exts, authored_at)
         certificate = _decode_certificate_payload(exts)
         user_content_attestation = _decode_user_content_attestation_payload(exts, authored_at)
-        identity_attestation_subject = _decode_identity_attestation_subject(exts, event_type)
+        identity_attestation_subject = _decode_identity_attestation_subject(
+            exts, event_type, identity_event_type_admitted
+        )
         supersedes_chain = _decode_supersedes_chain_id_payload(exts)
     elif exts is not None:
         raise VerifyError("extensions not map")
@@ -1940,15 +1946,19 @@ def _is_operator_uri(value: str) -> bool:
 
 
 def _is_identity_attestation_event_type(event_type: str) -> bool:
-    """ADR 0010 step 4 admit list. Phase-1 admits the §6.7 + §10.6 reserved
-    test prefix; PLN-0381 ratification will add canonical `wos.identity.*`
-    branch in a single edit. Mirrors Rust
-    `is_identity_attestation_event_type`."""
+    """ADR 0010 step 4 admit list.
+
+    Admits the §6.7 + §10.6 reserved test prefix. Consumer-owned identity
+    taxonomies are admitted through composed verifier hooks. Mirrors Rust
+    `is_identity_attestation_event_type`.
+    """
     return event_type == PHASE_1_TEST_IDENTITY_EVENT_TYPE
 
 
 def _decode_identity_attestation_subject(
-    exts: dict, event_type: str
+    exts: dict,
+    event_type: str,
+    identity_event_type_admitted: Callable[[str], bool] = _is_identity_attestation_event_type,
 ) -> Optional[str]:
     """Resolves the subject of an identity-attestation event from its
     decoded `EventPayload.extensions` map. Convention:
@@ -1956,7 +1966,9 @@ def _decode_identity_attestation_subject(
     Returns `None` for non-identity events or for identity events whose
     payload omits the subject field. Mirrors Rust
     `decode_identity_attestation_subject`."""
-    if not _is_identity_attestation_event_type(event_type):
+    if not _is_identity_attestation_event_type(event_type) and not identity_event_type_admitted(
+        event_type
+    ):
         return None
     ext = exts.get(event_type)
     if not isinstance(ext, dict):
@@ -2098,6 +2110,7 @@ def _finalize_user_content_attestations(
     events: list[EventDetails],
     registry: dict[bytes, SigningKeyEntry],
     posture_declaration: Optional[bytes],
+    identity_event_type_admitted: Callable[[str], bool],
     event_failures: list[VerificationFailure],
 ) -> list[UserContentAttestationOutcome]:
     """ADR 0010 §"Verifier obligations" cross-event finalization. Step 1 +
@@ -2197,9 +2210,18 @@ def _finalize_user_content_attestations(
         if payload.identity_attestation_ref is not None:
             identity_ref = payload.identity_attestation_ref
             identity_event = event_by_hash.get(identity_ref)
-            if identity_event is None or not _is_identity_attestation_event_type(
-                identity_event.event_type
-            ) or identity_event.scope != attestation_scope:
+            identity_type_admitted = (
+                identity_event is not None
+                and (
+                    _is_identity_attestation_event_type(identity_event.event_type)
+                    or identity_event_type_admitted(identity_event.event_type)
+                )
+            )
+            if (
+                identity_event is None
+                or not identity_type_admitted
+                or identity_event.scope != attestation_scope
+            ):
                 outcome.identity_resolved = False
                 outcome.failures.append("user_content_attestation_identity_unresolved")
                 event_failures.append(
@@ -2279,6 +2301,7 @@ def _verify_event_set(
     expected_ledger_scope: Optional[bytes],
     payload_blobs: Optional[dict[bytes, bytes]],
     non_signing_registry: Optional[dict[bytes, NonSigningKeyEntry]] = None,
+    identity_event_type_admitted: Callable[[str], bool] = _is_identity_attestation_event_type,
 ) -> VerificationReport:
     event_failures: list[VerificationFailure] = []
     posture_transitions: list[PostureTransitionOutcome] = []
@@ -2351,7 +2374,7 @@ def _verify_event_set(
             continue
 
         try:
-            details = _decode_event_details(event)
+            details = _decode_event_details(event, identity_event_type_admitted)
         except VerifyError as exc:
             # Surface typed structural-failure kinds (e.g.
             # `erasure_destroyed_at_after_host` from ADR 0005 step 4)
@@ -2564,6 +2587,7 @@ def _verify_event_set(
         decoded_events_for_uca,
         registry,
         posture_declaration,
+        identity_event_type_admitted,
         event_failures,
     )
     posture_ok = all(
@@ -4295,7 +4319,10 @@ def _verify_interop_sidecars(
     return outcomes, None
 
 
-def verify_export_zip(export_zip: bytes) -> VerificationReport:
+def verify_export_zip(
+    export_zip: bytes,
+    identity_event_type_admitted: Callable[[str], bool] = _is_identity_attestation_event_type,
+) -> VerificationReport:
     try:
         archive = parse_export_zip(export_zip)
     except VerifyError as exc:
@@ -4478,6 +4505,7 @@ def verify_export_zip(export_zip: bytes) -> VerificationReport:
         scope,
         payload_blobs,
         non_signing_registry=non_signing_registry,
+        identity_event_type_admitted=identity_event_type_admitted,
     )
     # ADR 0008 / Core §18.3a — Wave 25 dispatched-verifier outcomes.
     # `_verify_interop_sidecars` already short-circuited any fatal
@@ -4813,6 +4841,7 @@ def verify_tampered_ledger(
     ledger: bytes,
     initial_posture_declaration: Optional[bytes] = None,
     posture_declaration: Optional[bytes] = None,
+    identity_event_type_admitted: Callable[[str], bool] = _is_identity_attestation_event_type,
 ) -> VerificationReport:
     try:
         registry, non_signing_registry = _parse_key_registry(signing_key_registry)
@@ -4839,13 +4868,27 @@ def verify_tampered_ledger(
         None,
         None,
         non_signing_registry=non_signing_registry,
+        identity_event_type_admitted=identity_event_type_admitted,
     )
 
 
-def verify_single_event(public_key_bytes: bytes, signed_event: bytes) -> VerificationReport:
+def verify_single_event(
+    public_key_bytes: bytes,
+    signed_event: bytes,
+    identity_event_type_admitted: Callable[[str], bool] = _is_identity_attestation_event_type,
+) -> VerificationReport:
     try:
         parsed = _parse_sign1_bytes(signed_event)
     except VerifyError as exc:
         return VerificationReport.fatal("malformed_cose", str(exc))
     registry = {parsed.kid: SigningKeyEntry(public_key=public_key_bytes, status=0, valid_to=None)}
-    return _verify_event_set([parsed], registry, None, None, False, None, None)
+    return _verify_event_set(
+        [parsed],
+        registry,
+        None,
+        None,
+        False,
+        None,
+        None,
+        identity_event_type_admitted=identity_event_type_admitted,
+    )

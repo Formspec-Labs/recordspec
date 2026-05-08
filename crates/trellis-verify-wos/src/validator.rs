@@ -10,6 +10,10 @@ use trellis_verify::{DomainEvent, DomainExport, DomainFinding, RecordValidator};
 pub struct WosRecordValidator;
 
 impl RecordValidator for WosRecordValidator {
+    fn admits_identity_attestation_event_type(&self, event_type: &str) -> bool {
+        event_type == crate::event_types::WOS_IDENTITY_ATTESTATION_EVENT_TYPE
+    }
+
     fn validate_events(&self, events: &[DomainEvent]) -> Vec<DomainFinding> {
         let mut findings = crate::rescission::validate_rescission_terminality(events);
         findings.extend(crate::clock_semantics::validate_clock_semantics(events));

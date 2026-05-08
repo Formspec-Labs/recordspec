@@ -20,6 +20,7 @@ OPEN_CLOCKS_MEMBER = "open-clocks.json"
 WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE = "wos.kernel.signatureAffirmation"
 WOS_INTAKE_ACCEPTED_EVENT_TYPE = "wos.kernel.intakeAccepted"
 WOS_CASE_CREATED_EVENT_TYPE = "wos.kernel.caseCreated"
+WOS_IDENTITY_ATTESTATION_EVENT_TYPE = "wos.identity.identityAttestation"
 WOS_GOVERNANCE_DETERMINATION_PREFIX = "wos.governance.determination"
 WOS_GOVERNANCE_DETERMINATION_RESCINDED_EVENT_TYPE = (
     "wos.governance.determinationRescinded"
@@ -51,7 +52,10 @@ class WosVerificationReport:
 
 
 def verify_export_zip(export_zip: bytes) -> WosVerificationReport:
-    trellis = core.verify_export_zip(export_zip)
+    trellis = core.verify_export_zip(
+        export_zip,
+        identity_event_type_admitted=_is_wos_identity_attestation_event_type,
+    )
     if not trellis.structure_verified:
         return WosVerificationReport(trellis)
     try:
@@ -79,6 +83,7 @@ def verify_tampered_ledger(
         ledger,
         initial_posture_declaration,
         posture_declaration,
+        identity_event_type_admitted=_is_wos_identity_attestation_event_type,
     )
     if not trellis.structure_verified:
         return WosVerificationReport(trellis)
@@ -129,6 +134,10 @@ def _validate_events(
     findings.extend(_validate_rescission_terminality(events))
     findings.extend(_validate_clock_segments(events, payload_blobs))
     return findings
+
+
+def _is_wos_identity_attestation_event_type(event_type: str) -> bool:
+    return event_type == WOS_IDENTITY_ATTESTATION_EVENT_TYPE
 
 
 def _validate_export(
