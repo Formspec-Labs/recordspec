@@ -1,3 +1,27 @@
+// Task 3C.1 (refactor): this crate is being split into the universal
+// phase (`integrity-verify`) plus the WOS / Trellis-specific profile
+// plugin (`trellis-verify-wos`). Today's `trellis-verify` still hosts
+// the legacy genesis-append + export-bundle paths; the universal
+// pieces (envelope shape, JCS canonical digest, bundle structural
+// ordering, chain continuity, `profile_id` dispatch) live in
+// `integrity-verify::{cose, canonical, bundle, chain, profile,
+// verify_universal}`. Subsequent tasks (3C.2 `substrate_tier`, 3C.3
+// `profile_id` dispatcher) finish the move; the functions in this
+// file marked `// NEXT TO MOVE TO integrity-verify` below are the
+// migration map.
+//
+// NEXT TO MOVE TO integrity-verify:
+// - `verify_signature` (line ~918): structural Ed25519 verification —
+//   superseded by `integrity_cose::verify_ed25519_sign1`.
+// - `verify_single_event` (line ~197): one-event verifier — becomes a
+//   wrapper over `integrity_verify::verify_universal` with a registered
+//   WOS profile.
+// - The `previous_hash` / sequence continuity sub-block inside
+//   `verify_event_set_with_classes` (lines ~643-687): replaceable with
+//   `integrity_verify::chain::ChainContinuityCheck`.
+// - `export.rs` deterministic-bundle path checks: replaceable with
+//   `integrity_verify::bundle::BundleStructuralCheck`.
+
 use std::collections::BTreeMap;
 
 use ed25519_dalek::ed25519::signature::Verifier;
@@ -7,6 +31,20 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use trellis_cose::sig_structure_bytes;
 
 use trellis_types::{CONTENT_DOMAIN, CborHelperError, SUITE_ID_PHASE_1, domain_separated_sha256};
+
+/// Re-exports the universal verifier surface so downstream callers can
+/// reach `integrity-verify` without an extra direct dependency. The
+/// WOS / Trellis-specific profile plugin (`trellis-verify-wos`) will
+/// implement `ProfileVerifier` against this trait in 3C.3.
+pub use integrity_verify::{
+    BundleEntryView as UniversalBundleEntryView,
+    BundleStructuralCheck as UniversalBundleCheck, CanonicalCheck as UniversalCanonicalCheck,
+    CanonicalDigestCheck as UniversalCanonicalDigestCheck, ChainContinuityCheck,
+    ChainEventView as UniversalChainEventView, CoseEnvelopeCheck, ProfileRegistry,
+    ProfileVerificationResult, ProfileVerifier, UniversalFailureKind,
+    VerificationReport as UniversalVerificationReport, VerifyBundleInput as UniversalVerifyInput,
+    VerifyEvent as UniversalVerifyEvent, verify_universal,
+};
 
 pub(crate) mod kinds;
 

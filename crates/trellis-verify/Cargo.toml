@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 ciborium = "0.2"
 ed25519-dalek = "2.1"
+integrity-verify = { path = "../../../integrity-stack/crates/integrity-verify" }
 serde_json = "1.0"
 sha2 = "0.10"
 trellis-cose = { path = "../trellis-cose" }
