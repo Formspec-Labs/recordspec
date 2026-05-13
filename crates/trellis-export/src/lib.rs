@@ -18,6 +18,9 @@ const ZIP_LOCAL_FILE_HEADER_SIGNATURE: u32 = 0x0403_4b50;
 const ZIP_CENTRAL_DIRECTORY_SIGNATURE: u32 = 0x0201_4b50;
 const ZIP_END_OF_CENTRAL_DIRECTORY_SIGNATURE: u32 = 0x0605_4b50;
 
+/// Archive member that carries the optional witness-key history registry.
+pub const WITNESS_KEY_REGISTRY_MEMBER: &str = "031-witness-key-registry.cbor";
+
 /// One file entry in a logical export package.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExportEntry {
@@ -89,6 +92,14 @@ impl ExportPackage {
     /// Adds an entry to the logical package.
     pub fn add_entry(&mut self, entry: ExportEntry) {
         self.entries.push(entry);
+    }
+
+    /// Adds the optional witness-key registry member under the export root.
+    pub fn add_witness_key_registry(&mut self, root_dir: &str, bytes: Vec<u8>) {
+        self.add_entry(ExportEntry::new(
+            format!("{root_dir}/{WITNESS_KEY_REGISTRY_MEMBER}"),
+            bytes,
+        ));
     }
 
     /// Returns the logical entries.
@@ -251,6 +262,27 @@ mod tests {
         let second = package.to_zip_bytes().unwrap();
 
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn witness_key_registry_member_sorts_after_signing_registry() {
+        let mut package = ExportPackage::new();
+        package.add_entry(ExportEntry::new(
+            "root/030-signing-key-registry.cbor",
+            vec![0x30],
+        ));
+        package.add_witness_key_registry("root", vec![0x31]);
+
+        let mut paths: Vec<&str> = package.entries().iter().map(ExportEntry::path).collect();
+        paths.sort();
+
+        assert_eq!(
+            paths,
+            vec![
+                "root/030-signing-key-registry.cbor",
+                "root/031-witness-key-registry.cbor"
+            ]
+        );
     }
 
     #[test]

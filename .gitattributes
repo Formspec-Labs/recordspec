@@ -1,0 +1,4 @@
+*.bin binary
+*.cbor binary
+*.dcbor binary
+*.zip binary

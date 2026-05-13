@@ -10,6 +10,7 @@ use trellis_verify::{DomainEvent, DomainExport, RecordValidator, Severity, Trell
 
 use crate::event_types::{
     OPEN_CLOCKS_EXPORT_EXTENSION, WOS_CASE_CREATED_EVENT_TYPE,
+    WOS_GOVERNANCE_CLOCK_RESOLVED_EVENT_TYPE, WOS_GOVERNANCE_CLOCK_STARTED_EVENT_TYPE,
     WOS_GOVERNANCE_DETERMINATION_RESCINDED_EVENT_TYPE, WOS_GOVERNANCE_REINSTATED_EVENT_TYPE,
     WOS_IDENTITY_ATTESTATION_EVENT_TYPE, WOS_INTAKE_ACCEPTED_EVENT_TYPE,
     WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE,
@@ -45,12 +46,12 @@ fn clock_started(clock_id: &str, clock_kind: &str, calendar_ref: Option<&str>) -
             Value::Text(calendar_ref.to_string()),
         ));
     }
-    encode_record("clockStarted", data)
+    encode_record(WOS_GOVERNANCE_CLOCK_STARTED_EVENT_TYPE, data)
 }
 
 fn clock_paused(clock_id: &str) -> Vec<u8> {
     encode_record(
-        "clockResolved",
+        WOS_GOVERNANCE_CLOCK_RESOLVED_EVENT_TYPE,
         vec![
             (
                 Value::Text("clockId".into()),
@@ -64,11 +65,11 @@ fn clock_paused(clock_id: &str) -> Vec<u8> {
     )
 }
 
-fn encode_record(kind: &str, data: Vec<(Value, Value)>) -> Vec<u8> {
+fn encode_record(event_type: &str, data: Vec<(Value, Value)>) -> Vec<u8> {
     let value = Value::Map(vec![
         (
-            Value::Text("recordKind".into()),
-            Value::Text(kind.to_string()),
+            Value::Text("event".into()),
+            Value::Text(event_type.to_string()),
         ),
         (Value::Text("data".into()), Value::Map(data)),
     ]);

@@ -7,6 +7,7 @@ members = [
     "crates/trellis-core",
     "crates/trellis-verify",
     "crates/trellis-verify-wos",
+    "crates/trellis-witness-registry",
     "crates/trellis-store-memory",
     "crates/trellis-store-postgres",
     "crates/trellis-export",

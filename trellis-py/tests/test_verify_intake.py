@@ -1,4 +1,4 @@
-"""Unit tests for intake-handoff verification helpers (trellis_py.verify)."""
+"""Unit tests for WOS intake-handoff verification helpers."""
 
 from __future__ import annotations
 
@@ -7,12 +7,16 @@ import hashlib
 import cbor2
 import pytest
 
-from trellis_py.verify import VerifyError, _parse_intake_accepted_record, _response_hash_matches
+from trellis_py.verify import VerifyError, _response_hash_matches
+from trellis_py.verify_wos import (
+    WOS_INTAKE_ACCEPTED_EVENT_TYPE,
+    _parse_intake_accepted_record,
+)
 
 
 def test_parse_intake_accepted_rejects_empty_outputs() -> None:
     payload = {
-        "recordKind": "intakeAccepted",
+        "event": "wos.kernel.intake_accepted",
         "data": {
             "intakeId": "handoff-1",
             "caseIntent": "requestGovernedCaseCreation",
@@ -22,7 +26,9 @@ def test_parse_intake_accepted_rejects_empty_outputs() -> None:
         "outputs": [],
     }
     with pytest.raises(VerifyError, match="outputs array is missing or empty"):
-        _parse_intake_accepted_record(cbor2.dumps(payload))
+        _parse_intake_accepted_record(
+            cbor2.dumps(payload), WOS_INTAKE_ACCEPTED_EVENT_TYPE
+        )
 
 
 def test_response_hash_matches_ok() -> None:

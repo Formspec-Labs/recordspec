@@ -109,17 +109,18 @@ fn validate_signature_entry(
         ));
         return;
     };
-    let record = match parse_signature_affirmation_record(payload) {
-        Ok(record) => record,
-        Err(error) => {
-            findings.push(finding(
-                "signature_affirmation_payload_invalid",
-                Some(entry.canonical_event_hash),
-                format!("signature affirmation payload is invalid: {error}"),
-            ));
-            return;
-        }
-    };
+    let record =
+        match parse_signature_affirmation_record(payload, WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE) {
+            Ok(record) => record,
+            Err(error) => {
+                findings.push(finding(
+                    "signature_affirmation_payload_invalid",
+                    Some(entry.canonical_event_hash),
+                    format!("signature affirmation payload is invalid: {error}"),
+                ));
+                return;
+            }
+        };
     if !signature_entry_matches_record(entry, &record) {
         findings.push(finding(
             "signature_catalog_mismatch",
@@ -211,7 +212,8 @@ fn validate_intake_entry(
         ));
         return;
     };
-    let intake_record = match parse_intake_accepted_record(payload) {
+    let intake_record = match parse_intake_accepted_record(payload, WOS_INTAKE_ACCEPTED_EVENT_TYPE)
+    {
         Ok(record) => record,
         Err(error) => {
             findings.push(finding(
@@ -291,7 +293,8 @@ fn validate_case_created_entry(
                 ));
                 return;
             };
-            let case_record = match parse_case_created_record(payload) {
+            let case_record = match parse_case_created_record(payload, WOS_CASE_CREATED_EVENT_TYPE)
+            {
                 Ok(record) => record,
                 Err(error) => {
                     findings.push(finding(

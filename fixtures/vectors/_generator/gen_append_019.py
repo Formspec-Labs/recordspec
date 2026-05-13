@@ -49,7 +49,7 @@ TAG_TRELLIS_WOS_IDEMPOTENCY_V1 = "trellis-wos-idempotency-v1"
 
 WOS_RECORD = {
     "id": RECORD_ID,
-    "recordKind": "signatureAffirmation",
+    "event": "wos.kernel.signature_affirmation",
     "timestamp": "2026-04-22T14:30:00Z",
     "actorId": "applicant",
     "auditLayer": "facts",

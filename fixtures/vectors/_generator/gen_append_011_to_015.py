@@ -219,7 +219,7 @@ def mode_specs() -> list[dict]:
             "idempotency_key": b"idemp-adr0066-011",
             "record": {
                 "id": "adr0066-prov-011",
-                "recordKind": "correctionAuthorized",
+                "event": "wos.governance.correction_authorized",
                 "timestamp": "2026-05-07T10:00:11Z",
                 "auditLayer": "facts",
                 "definitionVersion": "1.0.0",
@@ -245,7 +245,7 @@ def mode_specs() -> list[dict]:
             "idempotency_key": b"idemp-adr0066-012",
             "record": {
                 "id": "adr0066-prov-012",
-                "recordKind": "determinationAmended",
+                "event": "wos.governance.determination_amended",
                 "timestamp": "2026-05-07T10:00:12Z",
                 "auditLayer": "facts",
                 "definitionVersion": "1.0.0",
@@ -271,7 +271,7 @@ def mode_specs() -> list[dict]:
             "idempotency_key": b"idemp-adr0066-013",
             "record": {
                 "id": "adr0066-prov-013",
-                "recordKind": "determinationRescinded",
+                "event": "wos.governance.determination_rescinded",
                 "timestamp": "2026-05-07T10:00:13Z",
                 "auditLayer": "facts",
                 "definitionVersion": "1.0.0",
@@ -293,7 +293,7 @@ def mode_specs() -> list[dict]:
             "idempotency_key": b"idemp-adr0066-014",
             "record": {
                 "id": "adr0066-prov-014",
-                "recordKind": "reinstated",
+                "event": "wos.governance.reinstated",
                 "timestamp": "2026-05-07T10:00:14Z",
                 "auditLayer": "facts",
                 "definitionVersion": "1.0.0",
@@ -322,7 +322,7 @@ def mode_specs() -> list[dict]:
             },
             "record": {
                 "id": "adr0066-prov-015",
-                "recordKind": "supersessionStarted",
+                "event": "wos.kernel.supersession_started",
                 "timestamp": "2026-05-07T10:00:15Z",
                 "auditLayer": "facts",
                 "definitionVersion": "1.0.0",

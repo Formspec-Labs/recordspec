@@ -120,7 +120,7 @@ def build_terminality_event(
 ) -> tuple[bytes, bytes, bytes]:
     record = {
         "id": "adr0066-tamper-050",
-        "recordKind": "determinationAmended",
+        "event": "wos.governance.determination_amended",
         "timestamp": "2026-05-07T10:00:50Z",
         "auditLayer": "facts",
         "definitionVersion": "1.0.0",

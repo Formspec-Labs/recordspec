@@ -341,6 +341,7 @@ Registered extension identifiers:
 | `CheckpointPayload.extensions` | `trellis.case_ledger.composed_response_heads.v1` | 3 | Case-ledger head composition manifest. |
 | `CheckpointPayload.extensions` | `trellis.case_ledger.case_scope_metadata.v1` | 3 | Case-scope adjudication metadata. |
 | `ExportManifestPayload.extensions` | `trellis.export.attachments.v1` | 1 | Binds optional `061-attachments.cbor` (SHA-256 digest + `inline_attachments` flag). Verifier obligations and manifest entry shape per stack ADR 0072 (evidence integrity and attachment binding). Reject-if-unknown-at-version. |
+| `ExportManifestPayload.extensions` | `trellis.export.witness-key-registry.v1` | 1 | Binds optional `031-witness-key-registry.cbor` via `witness_key_registry_digest` (SHA-256 of the registry member bytes) and `entry_count`. Reference-with-optional-inline pattern for witness-key history; small registries MAY be inlined by domain-specific adapters, but the archive member is the canonical verifier input when present. Reject-if-unknown-at-version. |
 | `ExportManifestPayload.extensions` | `trellis.export.signature-affirmations.v1` | 1 | Binds optional `062-signature-affirmations.cbor` via `signature_catalog_digest` (SHA-256 of the catalog bytes). Chain-derived WOS signature catalog; Trellis Core treats this as a registered, digest-bound extension member, while WOS row semantics are specified by [`wos-trellis-verification.md`](wos-trellis-verification.md). Reject-if-unknown-at-version. |
 | `ExportManifestPayload.extensions` | `trellis.export.intake-handoffs.v1` | 1 | Binds optional `063-intake-handoffs.cbor` via `intake_catalog_digest` (SHA-256 of the catalog bytes). Chain-derived WOS intake catalog carrying the Formspec `IntakeHandoff` plus canonical Response bytes needed for offline `responseHash` verification; Trellis Core treats this as a registered, digest-bound extension member, while WOS row semantics are specified by [`wos-trellis-verification.md`](wos-trellis-verification.md). Reject-if-unknown-at-version. |
 | `ExportManifestPayload.extensions` | `trellis.export.supersession-graph.v1` | 1 | Binds optional `064-supersession-graph.json` via `graph_digest` (SHA-256 of Trellis canonical JSON bytes). Graph is chain-derived from ADR 0066 supersession linkage; verifier obligations in §19. Reject-if-unknown-at-version. Traceability: TR-CORE-170. |
@@ -554,7 +555,7 @@ The `ephemeral_pubkey` freshness and `wrapped_dek` construction obligations for 
 
 ### 8.7 `KeyEntry` taxonomy (ADR 0006)
 
-The unified key registry admits a tagged-union `KeyEntry` discriminated by a top-level `kind` field. Five reserved classes cover Phase-1 through Phase-4 key material; an extension `tstr` escape on `kind` follows the Core §6.7 append-only registry pattern for future classes. **Phase-1 runtime restriction:** only `kind = "signing"` is populated in practice; `tenant-root`, `scope`, `subject`, and `recovery` are envelope reservations (the wire admits them; the runtime warns on emit per Companion §27 lint and the Phase-1 lint addition below).
+The unified key registry admits a tagged-union `KeyEntry` discriminated by a top-level `kind` field. Six reserved classes cover Phase-1 through Phase-4 key material; an extension `tstr` escape on `kind` follows the Core §6.7 append-only registry pattern for future classes. **Phase-1 runtime restriction:** only `kind = "signing"` is populated in the signing-key registry in practice; `tenant-root`, `scope`, `subject`, `recovery`, and `witness` are envelope reservations (the wire admits them; the runtime warns on emit per Companion §27 lint and the Phase-1 lint addition below). Witness-key history for export verification lives in the optional `031-witness-key-registry.cbor` member and its `trellis.export.witness-key-registry.v1` manifest binding.
 
 **Wire-shape backward compatibility.** A registry row MAY use either of two encodings, and verifiers MUST accept both:
 
@@ -584,17 +585,18 @@ KeyEntrySigning = {
 }
 
 KeyEntryNonSigning = {
-  kind:          "tenant-root" / "scope" / "subject" / "recovery" / tstr,
+  kind:          "tenant-root" / "scope" / "subject" / "recovery" / "witness" / tstr,
   kid:           bstr .size 16,
   suite_id:      uint,
   attributes:    TenantRootKeyAttributes / ScopeKeyAttributes /
                  SubjectKeyAttributes / RecoveryKeyAttributes /
+                 WitnessKeyAttributes /
                  { * tstr => any },
   extensions:    { * tstr => any } / null,
 }
 ```
 
-For reserved literals (`tenant-root`, `scope`, `subject`, `recovery`), `attributes` MUST decode as the corresponding structure in §8.7.2 — pairing a literal `kind` with the wrong inner map shape is a structure failure (`key_entry_attributes_shape_mismatch`). For an extension `kind` `tstr` that the verifier does not recognize, see §8.7.3 *Unknown `kind`*.
+For reserved literals (`tenant-root`, `scope`, `subject`, `recovery`, `witness`), `attributes` MUST decode as the corresponding structure in §8.7.2 — pairing a literal `kind` with the wrong inner map shape is a structure failure (`key_entry_attributes_shape_mismatch`). For an extension `kind` `tstr` that the verifier does not recognize, see §8.7.3 *Unknown `kind`*.
 
 #### 8.7.2 Reserved non-signing class shapes
 
@@ -632,6 +634,31 @@ RecoveryKeyAttributes = {
   effective_from:          timestamp,
   supersedes:              bstr .size 16 / null,
 }
+
+WitnessKeyAttributes = {
+  pubkey:                  bstr .size 32,
+  witness_kind:            "local-server" / "rfc3161-tsa" /
+                           "ethereum-anchor" / "open-timestamps" / tstr,
+  effective_from:          timestamp,
+  valid_to:                timestamp / null,
+  supersedes:              bstr .size 16 / null,
+}
+
+WitnessKeyRegistry = {
+  version:                 1,
+  entries:                 [* WitnessKeyRegistryEntry],
+}
+
+WitnessKeyRegistryEntry = {
+  kid:                     bstr .size 16,
+  pubkey:                  bstr .size 32,
+  suite_id:                uint,
+  witness_kind:            "local-server" / "rfc3161-tsa" /
+                           "ethereum-anchor" / "open-timestamps" / tstr,
+  effective_from:          timestamp,
+  valid_to:                timestamp / null,
+  supersedes:              bstr .size 16 / null,
+}
 ```
 
 #### 8.7.3 Verifier obligations for `KeyEntry` dispatch
@@ -639,16 +666,17 @@ RecoveryKeyAttributes = {
 A conforming verifier resolving a `kid` in the embedded registry MUST:
 
 1. **Decode** the registry array; for each entry detect dispatch path: top-level `kind` field present → `KeyEntry`; absent → `SigningKeyEntry` (§8.2).
-2. **Validate `kind`** against the closed taxonomy `{"signing", "tenant-root", "scope", "subject", "recovery"}` plus any registered extension. Unknown `kind` per §8.7.3 *Unknown `kind`*.
+2. **Validate `kind`** against the closed taxonomy `{"signing", "tenant-root", "scope", "subject", "recovery", "witness"}` plus any registered extension. Unknown `kind` per §8.7.3 *Unknown `kind`*.
 3. **Dispatch on `kind`:** for `"signing"`, validate the flat eight-field set (parity with §8.2); for reserved non-signing kinds, validate `attributes` against the matching CDDL group; structural mismatch → `key_entry_attributes_shape_mismatch`.
 4. **Class-specific invariants** (Phase-2+ activation; Phase-1 verifiers MAY skip with a warning):
    - `signing`: existing §8.4 lifecycle.
    - `tenant-root` / `scope`: `effective_from ≤ authored_at` for events claiming this scope.
    - `subject`: `effective_from ≤ authored_at ≤ valid_to` (when non-null) for `KeyBagEntry` wraps referencing this subject-kid.
    - `recovery`: NOT acceptable as a signing kid for any non-recovery event. A `recovery`-class kid in a COSE_Sign1 protected header for an ordinary event is a class-confusion attack; verifier MUST reject with `key_class_mismatch`.
+   - `witness`: NOT acceptable as a signing kid for an Event, Checkpoint, Export Manifest, or signing-key-registry administrative entry. Witness-class keys are only for external witness attestations or optional export-level witness verification.
 5. **Supersession acyclicity** across per-class `supersedes` chains.
 
-**Unknown `kind`.** When the verifier encounters an entry whose `kind` is not one of the five reserved literals and not in the verifier's extension registry: it MUST record `unknown_key_class` and MUST NOT coerce the entry into a reserved class. It MUST NOT set `integrity_verified = false` solely for unknown `kind` (forward-compatibility, mirrors the unknown-extension-event-type pattern). If a downstream artifact (signature, HPKE wrap, erasure-evidence subtree) requires that `kid` to be interpreted under the unknown class and the verifier lacks normative rules, it MUST fail closed for that obligation with an explicit capability-gap code.
+**Unknown `kind`.** When the verifier encounters an entry whose `kind` is not one of the six reserved literals and not in the verifier's extension registry: it MUST record `unknown_key_class` and MUST NOT coerce the entry into a reserved class. It MUST NOT set `integrity_verified = false` solely for unknown `kind` (forward-compatibility, mirrors the unknown-extension-event-type pattern). If a downstream artifact (signature, HPKE wrap, erasure-evidence subtree) requires that `kid` to be interpreted under the unknown class and the verifier lacks normative rules, it MUST fail closed for that obligation with an explicit capability-gap code.
 
 #### 8.7.4 Phase-1 lint discipline
 
@@ -1343,6 +1371,7 @@ trellis-export-<scope>-<tree_size>-<shorthash>/
   020-inclusion-proofs.cbor       ; §18.5 — dCBOR map leaf_index → proof
   025-consistency-proofs.cbor     ; §18.5 — dCBOR array of consistency proofs
   030-signing-key-registry.cbor   ; §8.5 — dCBOR array of SigningKeyEntry and LedgerServiceWrapEntry
+  031-witness-key-registry.cbor   ; OPTIONAL — dCBOR WitnessKeyRegistry (§8.7, §18.3d; `trellis.export.witness-key-registry.v1`)
   040-checkpoints.cbor            ; §18.6 — dCBOR array of Checkpoint
   050-registries/                 ; §14 — embedded domain-registry bytes
     <registry_digest_hex>.cbor    ; one file per distinct RegistryBinding
@@ -1424,6 +1453,16 @@ canonical event hash. Verifiers use this member for ADR 0067 advisory
 diagnostics; the catalog is not an integrity failure merely because an open
 clock is overdue at `sealed_at`.
 Traceability: **TR-CORE-172**.
+
+`031-witness-key-registry.cbor`, when present, is a dCBOR `WitnessKeyRegistry`
+document. The member carries witness-key history needed to verify optional
+external witness attestations without rewriting the signing-key registry used
+for canonical event signatures. If the export manifest carries
+`ExportManifestPayload.extensions["trellis.export.witness-key-registry.v1"]`,
+the member MUST be present and its SHA-256 digest MUST match
+`witness_key_registry_digest`. If the member is present without the manifest
+extension, a Phase-1 verifier treats it as unbound advisory bytes and MUST NOT
+use it for integrity claims.
 
 Members under `070-predecessors/` are optional predecessor-chain export
 packages. Each member MUST itself be a deterministic Trellis export ZIP
@@ -1615,6 +1654,9 @@ VERIFY(E) -> VerificationReport
      e. SHA-256(030-signing-key-registry.cbor) == manifest.signing_key_registry_digest
      f. For each RegistryBinding rb in manifest.registry_bindings:
           SHA-256(050-registries/<rb.registry_digest>.cbor) == rb.registry_digest
+     f2. If manifest.extensions carries `trellis.export.witness-key-registry.v1`:
+          SHA-256(031-witness-key-registry.cbor) == witness_key_registry_digest
+        and the decoded registry entry count equals `entry_count`.
      g. If manifest.extensions carries `trellis.export.supersession-graph.v1`:
           SHA-256(064-supersession-graph.json) == graph_digest.
         If `064-supersession-graph.json` is present without that manifest
@@ -2982,6 +3024,14 @@ SupersessionGraphManifestExtension = {
 OpenClocksManifestExtension = {
   open_clocks_digest: digest,
   open_clock_count:   uint,
+}
+
+; Carried under
+; ExportManifestPayload.extensions["trellis.export.witness-key-registry.v1"] (§18.3d).
+; Binds optional archive member 031-witness-key-registry.cbor.
+WitnessKeyRegistryManifestExtension = {
+  witness_key_registry_digest: digest,
+  entry_count:                 uint,
 }
 
 ExportManifestHashPreimage = {

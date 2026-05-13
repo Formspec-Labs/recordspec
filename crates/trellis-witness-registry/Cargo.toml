@@ -1,0 +1,10 @@
+[package]
+name = "trellis-witness-registry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ciborium = "0.2"
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"

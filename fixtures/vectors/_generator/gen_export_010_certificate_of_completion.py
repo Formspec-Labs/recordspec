@@ -473,7 +473,7 @@ def build_signature_affirmation_event(
     """
     record = {
         "id":          idempotency_preimage_record_id,
-        "recordKind":  "signatureAffirmation",
+        "event":       "wos.kernel.signature_affirmation",
         "timestamp":   "2026-04-22T14:30:00Z",
         "actorId":     "applicant",
         "auditLayer":  "facts",

@@ -11,14 +11,14 @@ Trellis treats that record as inline payload bytes and binds it through
 
 - `ledger_scope` = `wos-case:adr0067-fixture`
 - `sequence` = `2`
-- `prev_hash` = `af934ab5bbd4e704c9ace735e6cfb7f449c2f05fe5231ee03b04a536076cc6a4`
+- `prev_hash` = `7aff4a05ca33a52ff7ee1af3424da87861a4dd45d323d01402ad3cda4b3ea53e`
 - `event_type` = `wos.governance.clock_resolved`
-- `recordKind` = `clockResolved`
+- `event` = `wos.governance.clock_resolved`
 
 ## Pinned hashes
 
-- `content_hash` = `0e29240de315dc4d412f91096adffb0683b26578e03f6e61ad7f07be7fedeb00`
-- `author_event_hash` = `3e99618b4d65bff7ff5410be7c7a67a2ef62a65e3ec16a35765e9e8e43e65a41`
-- `canonical_event_hash` = `ca3ed2d7c6b81438489893edae75f0d2d1e58f19f437b634a823bf056854a66e`
+- `content_hash` = `4108464aaba3629931577f93e8d0aff9241b357eff54c9673cb16de12e88388f`
+- `author_event_hash` = `1018f5f23e106ad547cd58cb47d0ebd4f5c512e8558668faeff6f6a437d25c1b`
+- `canonical_event_hash` = `e02fb880cc2c1da186cb83cacc83af505f8c66137bd2239f3d2913e108dc937d`
 
 Generator: `fixtures/vectors/_generator/gen_adr0067_clocks.py`.

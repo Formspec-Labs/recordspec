@@ -16,10 +16,10 @@ The authored WOS record is the dCBOR-native record in
 
 - `caseId = "linc_case_01j5d5p0c8e9g2h3j4k5m6n7p8"`
 - `recordId = "linc_prov_01j5d5p1d9f0h3j4k5m6n7p8q9"`
-- `recordKind = "stateTransition"`
+- `event = "wos.kernel.state_transition"`
 - `fromState = "intake"`
 - `toState = "review"`
-- `event = "submitted"`
+- `inputs[0] = "submitted"`
 - `timestamp = "2026-04-21T14:30:00Z"`
 
 The Trellis event header uses `event_type = "wos.kernel.state_transition"`.

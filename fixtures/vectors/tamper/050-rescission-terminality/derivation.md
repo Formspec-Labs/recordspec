@@ -6,7 +6,7 @@ events are copied byte-for-byte from `append/011-correction`,
 `wos.governance.determination_amended` event with:
 
 - `sequence` = `3`
-- `prev_hash` = `7d3677f5dad1a17e3e5c8cb498cd2ac04ecd033c207b9285c1614d67087aa649`
+- `prev_hash` = `abeb3b6ff06035f506d93d0406b60989009548a34d86ba51b3c1adaa7a3246d2`
 - `event_type` = `wos.governance.determination_amended`
 
 The fourth event recomputes `content_hash`, `author_event_hash`, and
@@ -19,6 +19,6 @@ The failure is semantic and chain-local: the chain already observed
 amendment. Core section 19 step 4.h / TR-CORE-171 requires the verifier to
 record `rescission_terminality_violation`.
 
-Pinned failing event id: `8f4cb327446d72a0040b536c9b8794cfa6619f5a07ce86c529965cc6883a74fe`.
+Pinned failing event id: `fc5e98eaebd68b1d290d30ea2dfbed8e27de640d95bd016807e245ad76cc4101`.
 
 Generator: `fixtures/vectors/_generator/gen_tamper_050.py`.

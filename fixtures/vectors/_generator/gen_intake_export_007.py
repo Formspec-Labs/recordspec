@@ -419,11 +419,10 @@ def intake_accepted_record(
         outputs = [case_ref]
     record = {
         "id": record_id,
-        "recordKind": "intakeAccepted",
         "timestamp": timestamp,
         "actorId": actor_id,
         "auditLayer": "facts",
-        "event": "case.intake.accepted",
+        "event": "wos.kernel.intake_accepted",
         "data": data,
         "inputs": [handoff_id],
         "outputs": outputs,
@@ -450,11 +449,10 @@ def case_created_record(
         outputs = [case_ref]
     record = {
         "id": record_id,
-        "recordKind": "caseCreated",
         "timestamp": timestamp,
         "actorId": actor_id,
         "auditLayer": "facts",
-        "event": "case.created",
+        "event": "wos.kernel.case_created",
         "data": {
             "caseRef": case_ref,
             "intakeHandoffRef": handoff["handoffId"],

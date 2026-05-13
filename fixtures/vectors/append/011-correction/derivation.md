@@ -18,8 +18,8 @@ signature, and `canonical_event_hash`.
 
 ## Pinned hashes
 
-- `content_hash` = `75bbb6dde320f6a66f741c46c83826c4b261d4c0e9329167cec1cb1f92bfb7d6`
-- `author_event_hash` = `d7b60c423ae6fe6033d8fdbec926943c37970644a60e8527bbbe27126a51b416`
-- `canonical_event_hash` = `cdc659202e1bcd425cf18e36202793e7300491e0043f5d7907106dbd51421ef0`
+- `content_hash` = `2f722c9e20c48c39c88f58c309d0b28973caa00e3524e451818d499ec216df55`
+- `author_event_hash` = `1ce043a6b33b6a3491973cb1615cb39312dd151d8f560dd5a35cdaaf67522bea`
+- `canonical_event_hash` = `9608f5d61f65095cd41847b18188c686d6a4a9d1a3842bbf4043b38b987367fc`
 
 Generator: `fixtures/vectors/_generator/gen_append_011_to_015.py`.

@@ -28,8 +28,8 @@ This pins Core section 6.7 / section 28 and TR-CORE-169 at the fixture layer.
 
 ## Pinned hashes
 
-- `content_hash` = `664844849cf23dd192b8f417259472980393649479a453bb0834f1f23e02d002`
-- `author_event_hash` = `fe961a0cb52e4e87419fea6122774a7cd9bcdfa3dead8210fc8b9bac164ae4e3`
-- `canonical_event_hash` = `d20ed042de676cc31d2772b269878261635ac6faf372e93a2bd44369b6a6b4d0`
+- `content_hash` = `aa455f2e406dec21c14b9abb749d67e1a3c138044ad0588178f435de98d3adcd`
+- `author_event_hash` = `5dc4d037dbf86c7f834e6551df17512aed00490afdfe7a8a6ee0183aaa6d5a46`
+- `canonical_event_hash` = `56e4c34d5945c51d4d3c9a12b9e3808574efad05116f7f3280d7ca73771406cd`
 
 Generator: `fixtures/vectors/_generator/gen_append_011_to_015.py`.

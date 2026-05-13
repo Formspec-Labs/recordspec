@@ -405,6 +405,10 @@ def _is_interop_sidecar_path_valid(path: str) -> bool:
     return path.startswith(_INTEROP_SIDECARS_PATH_PREFIX)
 
 
+def _rust_debug_string(value: str) -> str:
+    return json.dumps(value)
+
+
 @dataclass
 class RegistryBindingInfo:
     digest_hex: str
@@ -3807,31 +3811,6 @@ def _first_array_text(outputs: list[Any]) -> Optional[str]:
     return None
 
 
-def _parse_intake_accepted_record(payload_bytes: bytes) -> dict[str, Any]:
-    v = _decode_value(payload_bytes)
-    if not isinstance(v, dict):
-        raise VerifyError("intake accepted payload root is not a map")
-    record_kind = str(_map_lookup_str(v, "recordKind"))
-    if record_kind != "intakeAccepted":
-        raise VerifyError("intake accepted payload recordKind is not intakeAccepted")
-    data = _map_lookup_map(v, "data")
-    case_ref = str(_map_lookup_str(data, "caseRef"))
-    outputs = _map_lookup_array(v, "outputs")
-    output_case_ref = _first_array_text(outputs)
-    if output_case_ref is None:
-        raise VerifyError("intake accepted outputs array is missing or empty")
-    if output_case_ref != case_ref:
-        raise VerifyError("intake accepted outputs[0] does not match data.caseRef")
-    return {
-        "intake_id": str(_map_lookup_str(data, "intakeId")),
-        "case_intent": str(_map_lookup_str(data, "caseIntent")),
-        "case_disposition": str(_map_lookup_str(data, "caseDisposition")),
-        "case_ref": case_ref,
-        "definition_url": _map_lookup_optional_text(data, "definitionUrl"),
-        "definition_version": _map_lookup_optional_text(data, "definitionVersion"),
-    }
-
-
 def _parse_intake_manifest_entries(data: bytes) -> list[dict[str, Any]]:
     v = _decode_value(data)
     if not isinstance(v, list):
@@ -4328,7 +4307,7 @@ def _verify_interop_sidecars(
         if kind not in _INTEROP_SIDECAR_REGISTERED_KINDS:
             return [], VerificationReport.fatal(
                 "interop_sidecar_kind_unknown",
-                f"interop_sidecars[{index}].kind {kind!r} is not in the ADR 0008 registry",
+                f"interop_sidecars[{index}].kind {_rust_debug_string(kind)} is not in the ADR 0008 registry",
             )
 
         # Step 2.b (derivation-version-supported) — TR-CORE-166.
@@ -4339,7 +4318,7 @@ def _verify_interop_sidecars(
         ):
             return [], VerificationReport.fatal(
                 "interop_sidecar_derivation_version_unknown",
-                f"interop_sidecars[{index}] kind={kind!r} "
+                f"interop_sidecars[{index}] kind={_rust_debug_string(kind)} "
                 f"derivation_version={derivation_version} not in supported set",
             )
 
@@ -4347,8 +4326,8 @@ def _verify_interop_sidecars(
         if not _is_interop_sidecar_path_valid(path):
             return [], VerificationReport.fatal(
                 "interop_sidecar_path_invalid",
-                f"interop_sidecars[{index}].path {path!r} does not start with "
-                f"{_INTEROP_SIDECARS_PATH_PREFIX!r}",
+                f"interop_sidecars[{index}].path {_rust_debug_string(path)} does not start with "
+                f"{_rust_debug_string(_INTEROP_SIDECARS_PATH_PREFIX)}",
             )
 
         # Step 2.d (Phase-1 lock-off — three locked kinds short-circuit
@@ -4357,7 +4336,7 @@ def _verify_interop_sidecars(
         if kind != "c2pa-manifest":
             return [], VerificationReport.fatal(
                 "interop_sidecar_phase_1_locked",
-                f"interop_sidecars[{index}] kind={kind!r} is still Phase-1 locked-off "
+                f"interop_sidecars[{index}] kind={_rust_debug_string(kind)} is still Phase-1 locked-off "
                 "(ADR 0008 / ADR 0003)",
             )
 
@@ -4367,14 +4346,14 @@ def _verify_interop_sidecars(
         if actual_bytes is None:
             return [], VerificationReport.fatal(
                 "interop_sidecar_missing",
-                f"interop_sidecars[{index}].path {path!r} is missing from the export ZIP",
+                f"interop_sidecars[{index}].path {_rust_debug_string(path)} is missing from the export ZIP",
             )
         actual_digest = domain_separated_sha256(CONTENT_DOMAIN, actual_bytes)
         if actual_digest != content_digest:
             return [], VerificationReport.fatal(
                 "interop_sidecar_content_mismatch",
                 f"interop_sidecars[{index}].content_digest does not match "
-                f"SHA-256(trellis-content-v1, {path!r})",
+                f"SHA-256(trellis-content-v1, {_rust_debug_string(path)})",
             )
 
         listed_paths.add(path)
@@ -4398,7 +4377,7 @@ def _verify_interop_sidecars(
             continue
         return [], VerificationReport.fatal(
             "interop_sidecar_unlisted_file",
-            f"{member_path!r} is present under interop-sidecars/ but not catalogued in "
+            f"{_rust_debug_string(member_path)} is present under interop-sidecars/ but not catalogued in "
             "manifest.interop_sidecars",
         )
 

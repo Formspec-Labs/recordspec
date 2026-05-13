@@ -234,15 +234,13 @@ pub(crate) fn parse_intake_manifest_entries(
 
 pub(crate) fn parse_signature_affirmation_record(
     payload_bytes: &[u8],
+    expected_event: &str,
 ) -> Result<SignatureAffirmationRecordDetails, ParseError> {
     let value = decode_value(payload_bytes)?;
     let map = value
         .as_map()
         .ok_or_else(|| "signature affirmation payload root is not a map".to_string())?;
-    let record_kind = map_lookup_text(map, "recordKind")?;
-    if record_kind != "signatureAffirmation" {
-        return Err("signature affirmation payload recordKind is not signatureAffirmation".into());
-    }
+    require_event(map, expected_event, "signature affirmation")?;
     let data = map_lookup_map(map, "data")?;
     Ok(SignatureAffirmationRecordDetails {
         signer_id: map_lookup_text(data, "signerId")?,
@@ -272,15 +270,13 @@ pub(crate) fn parse_signature_affirmation_record(
 
 pub(crate) fn parse_intake_accepted_record(
     payload_bytes: &[u8],
+    expected_event: &str,
 ) -> Result<IntakeAcceptedRecordDetails, ParseError> {
     let value = decode_value(payload_bytes)?;
     let map = value
         .as_map()
         .ok_or_else(|| "intake accepted payload root is not a map".to_string())?;
-    let record_kind = map_lookup_text(map, "recordKind")?;
-    if record_kind != "intakeAccepted" {
-        return Err("intake accepted payload recordKind is not intakeAccepted".into());
-    }
+    require_event(map, expected_event, "intake accepted")?;
     let data = map_lookup_map(map, "data")?;
     let case_ref = map_lookup_text(data, "caseRef")?;
     let outputs = map_lookup_array(map, "outputs")?;
@@ -302,15 +298,13 @@ pub(crate) fn parse_intake_accepted_record(
 
 pub(crate) fn parse_case_created_record(
     payload_bytes: &[u8],
+    expected_event: &str,
 ) -> Result<CaseCreatedRecordDetails, ParseError> {
     let value = decode_value(payload_bytes)?;
     let map = value
         .as_map()
         .ok_or_else(|| "case created payload root is not a map".to_string())?;
-    let record_kind = map_lookup_text(map, "recordKind")?;
-    if record_kind != "caseCreated" {
-        return Err("case created payload recordKind is not caseCreated".into());
-    }
+    require_event(map, expected_event, "case created")?;
     let data = map_lookup_map(map, "data")?;
     let case_ref = map_lookup_text(data, "caseRef")?;
     let outputs = map_lookup_array(map, "outputs")?;
@@ -328,6 +322,19 @@ pub(crate) fn parse_case_created_record(
         ledger_head_ref: map_lookup_text(data, "ledgerHeadRef")?,
         initiation_mode: map_lookup_text(data, "initiationMode")?,
     })
+}
+
+fn require_event(
+    map: &[(Value, Value)],
+    expected_event: &str,
+    label: &str,
+) -> Result<(), ParseError> {
+    let event = map_lookup_text(map, "event")?;
+    if event == expected_event {
+        Ok(())
+    } else {
+        Err(format!("{label} payload event is not {expected_event}").into())
+    }
 }
 
 fn parse_intake_handoff_details(value: &Value) -> Result<IntakeHandoffDetails, ParseError> {

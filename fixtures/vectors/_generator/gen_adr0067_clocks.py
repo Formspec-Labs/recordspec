@@ -261,7 +261,7 @@ def clock_started_record(
 ) -> dict:
     return {
         "id": record_id,
-        "recordKind": "clockStarted",
+        "event": "wos.governance.clock_started",
         "timestamp": timestamp,
         "auditLayer": "facts",
         "definitionVersion": "1.0.0",
@@ -290,7 +290,7 @@ def clock_resolved_record(
 ) -> dict:
     return {
         "id": record_id,
-        "recordKind": "clockResolved",
+        "event": "wos.governance.clock_resolved",
         "timestamp": timestamp,
         "auditLayer": "facts",
         "definitionVersion": "1.0.0",
@@ -443,7 +443,7 @@ Trellis treats that record as inline payload bytes and binds it through
 - `sequence` = `{spec["sequence"]}`
 - `prev_hash` = `{prev}`
 - `event_type` = `{spec["event_type"].decode("utf-8")}`
-- `recordKind` = `{spec["record"]["recordKind"]}`
+- `event` = `{spec["record"]["event"]}`
 
 ## Pinned hashes
 

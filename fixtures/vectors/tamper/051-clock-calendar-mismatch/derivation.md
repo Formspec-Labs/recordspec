@@ -9,5 +9,5 @@ digest-binds `010-events.cbor`, `020-inclusion-proofs.cbor`,
 digest-binds `open-clocks.json` through
 `trellis.export.open-clocks.v1.open_clocks_digest`.
 
-The third event is the resumed `clockStarted` segment. It keeps `clockId` and `clockKind` from the paused segment but changes `calendarRef`; verifiers localize `clock_calendar_mismatch` at `7779dc64b8ae943556ab8e6c14665a921139a9c0947d07ad21e7d0f78b912060`.
+The third event is the resumed `clockStarted` segment. It keeps `clockId` and `clockKind` from the paused segment but changes `calendarRef`; verifiers localize `clock_calendar_mismatch` at `b24d66826d5e6b1b83f27ec36f3c878bfecdd79e9670d631905d226f93afc265`.
 

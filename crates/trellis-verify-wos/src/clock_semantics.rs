@@ -15,8 +15,6 @@ use crate::event_types::{
     WOS_GOVERNANCE_CLOCK_STARTED_EVENT_TYPE,
 };
 
-const CLOCK_STARTED_RECORD_KIND: &str = "clockStarted";
-const CLOCK_RESOLVED_RECORD_KIND: &str = "clockResolved";
 const CLOCK_RESOLUTION_PAUSED: &str = "paused";
 const OPEN_CLOCKS_MEMBER: &str = "open-clocks.json";
 
@@ -38,7 +36,7 @@ pub(crate) fn validate_clock_semantics(events: &[DomainEvent]) -> Vec<DomainFind
         let Some(payload) = event.payload.as_deref() else {
             continue;
         };
-        let Ok(Some(clock_record)) = parse_clock_record(payload) else {
+        let Ok(Some(clock_record)) = parse_clock_record(payload, &event.event_type) else {
             continue;
         };
         match clock_record {
@@ -144,15 +142,27 @@ struct ClockResolvedRecord {
     resolution: String,
 }
 
-fn parse_clock_record(payload_bytes: &[u8]) -> Result<Option<ClockRecord>, String> {
+fn parse_clock_record(
+    payload_bytes: &[u8],
+    event_type: &str,
+) -> Result<Option<ClockRecord>, String> {
     let value = decode_value(payload_bytes)?;
     let map = value
         .as_map()
         .ok_or_else(|| "clock record root is not a map".to_string())?;
-    let record_kind = map_lookup_text(map, "recordKind").map_err(|error| error.to_string())?;
-    match record_kind.as_str() {
-        CLOCK_STARTED_RECORD_KIND => Ok(Some(ClockRecord::Started(parse_clock_started(map)?))),
-        CLOCK_RESOLVED_RECORD_KIND => Ok(Some(ClockRecord::Resolved(parse_clock_resolved(map)?))),
+    let payload_event = map_lookup_text(map, "event").map_err(|error| error.to_string())?;
+    if payload_event != event_type {
+        return Err(format!(
+            "clock payload event {payload_event:?} does not match envelope event {event_type:?}"
+        ));
+    }
+    match event_type {
+        WOS_GOVERNANCE_CLOCK_STARTED_EVENT_TYPE => {
+            Ok(Some(ClockRecord::Started(parse_clock_started(map)?)))
+        }
+        WOS_GOVERNANCE_CLOCK_RESOLVED_EVENT_TYPE => {
+            Ok(Some(ClockRecord::Resolved(parse_clock_resolved(map)?)))
+        }
         _ => Ok(None),
     }
 }

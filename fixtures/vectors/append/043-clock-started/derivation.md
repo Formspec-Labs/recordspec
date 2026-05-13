@@ -13,12 +13,12 @@ Trellis treats that record as inline payload bytes and binds it through
 - `sequence` = `0`
 - `prev_hash` = `null`
 - `event_type` = `wos.governance.clock_started`
-- `recordKind` = `clockStarted`
+- `event` = `wos.governance.clock_started`
 
 ## Pinned hashes
 
-- `content_hash` = `d4d8294489287eeaca8834c8315c4d53e9c4462b3894b04645d2772ba18009d7`
-- `author_event_hash` = `e4ac2f5cd68da37fc8c2d661062ae66733d14e0909480fe6b48cec1270a753ee`
-- `canonical_event_hash` = `99a543ba1d0f5ec7832230529b0b9cfbb2ce2c3a564697257ac66536baf2802e`
+- `content_hash` = `8ddd8917246a7892298cc27e6835d4f887a78fc579f31c1746291768d6fe425f`
+- `author_event_hash` = `251a8e5dcff54687a9ec13733284978b6e0b7f63e795b988e77e90ca3fb86188`
+- `canonical_event_hash` = `f7778887da517ff96c07ef010be9cc39963dbe7d15f53357e3818f45588a66ba`
 
 Generator: `fixtures/vectors/_generator/gen_adr0067_clocks.py`.

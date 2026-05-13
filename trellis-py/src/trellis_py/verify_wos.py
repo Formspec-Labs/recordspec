@@ -29,8 +29,6 @@ WOS_GOVERNANCE_DETERMINATION_RESCINDED_EVENT_TYPE = (
 WOS_GOVERNANCE_REINSTATED_EVENT_TYPE = "wos.governance.reinstated"
 WOS_GOVERNANCE_CLOCK_STARTED_EVENT_TYPE = "wos.governance.clock_started"
 WOS_GOVERNANCE_CLOCK_RESOLVED_EVENT_TYPE = "wos.governance.clock_resolved"
-CLOCK_STARTED_RECORD_KIND = "clockStarted"
-CLOCK_RESOLVED_RECORD_KIND = "clockResolved"
 CLOCK_RESOLUTION_PAUSED = "paused"
 
 
@@ -273,13 +271,19 @@ def _validate_signature_catalog(
     findings: list[WosFinding] = []
     cat_bytes = archive.get("062-signature-affirmations.cbor")
     if cat_bytes is None:
-        return [_failure("missing_signature_catalog", None, "062-signature-affirmations.cbor")]
+        return [
+            _failure(
+                "missing_signature_catalog",
+                None,
+                "export is missing 062-signature-affirmations.cbor",
+            )
+        ]
     if core._sha256(cat_bytes) != catalog_digest:
         findings.append(
             _failure(
                 "signature_catalog_digest_mismatch",
                 None,
-                "062-signature-affirmations.cbor",
+                "signature catalog digest does not match manifest extension",
             )
         )
     try:
@@ -289,41 +293,73 @@ def _validate_signature_catalog(
             _failure(
                 "signature_catalog_invalid",
                 None,
-                f"062-signature-affirmations.cbor/{exc}",
+                f"signature catalog is invalid: {exc}",
             )
         ]
     seen_row: set[bytes] = set()
     for row in entries:
         h = row["canonical_event_hash"]
         if h in seen_row:
-            findings.append(_failure("signature_catalog_duplicate_event", h, core._hex(h)))
+            findings.append(
+                _failure(
+                    "signature_catalog_duplicate_event",
+                    h,
+                    "signature catalog repeats an event hash",
+                )
+            )
         seen_row.add(h)
     for row in entries:
         h = row["canonical_event_hash"]
         det = event_by_hash.get(h)
         if det is None:
-            findings.append(_failure("signature_catalog_event_unresolved", h, core._hex(h)))
+            findings.append(
+                _failure(
+                    "signature_catalog_event_unresolved",
+                    h,
+                    "signature catalog references an event absent from the export",
+                )
+            )
             continue
         if det.event_type != WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE:
             findings.append(
-                _failure("signature_catalog_event_type_mismatch", h, core._hex(h))
+                _failure(
+                    "signature_catalog_event_type_mismatch",
+                    h,
+                    "signature catalog event is not a WOS signature affirmation",
+                )
             )
             continue
         payload = core._readable_payload_bytes(det, payload_blobs)
         if payload is None:
             findings.append(
-                _failure("signature_affirmation_payload_unreadable", h, core._hex(h))
+                _failure(
+                    "signature_affirmation_payload_unreadable",
+                    h,
+                    "signature affirmation payload is not readable",
+                )
             )
             continue
         try:
-            record = _parse_signature_affirmation_record(payload)
+            record = _parse_signature_affirmation_record(
+                payload, WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE
+            )
         except core.VerifyError as exc:
             findings.append(
-                _failure("signature_affirmation_payload_invalid", h, f"{core._hex(h)}/{exc}")
+                _failure(
+                    "signature_affirmation_payload_invalid",
+                    h,
+                    f"signature affirmation payload is invalid: {exc}",
+                )
             )
             continue
         if not core._signature_entry_matches_record(row, record):
-            findings.append(_failure("signature_catalog_mismatch", h, core._hex(h)))
+            findings.append(
+                _failure(
+                    "signature_catalog_mismatch",
+                    h,
+                    "signature catalog fields do not match the signed record",
+                )
+            )
     return findings
 
 
@@ -336,13 +372,19 @@ def _validate_intake_catalog(
     findings: list[WosFinding] = []
     cat_bytes = archive.get("063-intake-handoffs.cbor")
     if cat_bytes is None:
-        return [_failure("missing_intake_handoff_catalog", None, "063-intake-handoffs.cbor")]
+        return [
+            _failure(
+                "missing_intake_handoff_catalog",
+                None,
+                "export is missing 063-intake-handoffs.cbor",
+            )
+        ]
     if core._sha256(cat_bytes) != catalog_digest:
         findings.append(
             _failure(
                 "intake_handoff_catalog_digest_mismatch",
                 None,
-                "063-intake-handoffs.cbor",
+                "intake handoff catalog digest does not match manifest extension",
             )
         )
     try:
@@ -352,14 +394,20 @@ def _validate_intake_catalog(
             _failure(
                 "intake_handoff_catalog_invalid",
                 None,
-                f"063-intake-handoffs.cbor/{exc}",
+                f"intake handoff catalog is invalid: {exc}",
             )
         ]
     seen_row: set[bytes] = set()
     for entry in entries:
         h = entry["intake_event_hash"]
         if h in seen_row:
-            findings.append(_failure("intake_handoff_catalog_duplicate_event", h, core._hex(h)))
+            findings.append(
+                _failure(
+                    "intake_handoff_catalog_duplicate_event",
+                    h,
+                    "intake handoff catalog repeats an intake event hash",
+                )
+            )
         seen_row.add(h)
     for entry in entries:
         findings.extend(_validate_intake_entry(entry, payload_blobs, event_by_hash))
@@ -375,58 +423,151 @@ def _validate_intake_entry(
     intake_h = entry["intake_event_hash"]
     det = event_by_hash.get(intake_h)
     if det is None:
-        return [_failure("intake_event_unresolved", intake_h, core._hex(intake_h))]
+        return [
+            _failure(
+                "intake_event_unresolved",
+                intake_h,
+                "intake catalog references an event absent from the export",
+            )
+        ]
     if det.event_type != WOS_INTAKE_ACCEPTED_EVENT_TYPE:
-        return [_failure("intake_event_type_mismatch", intake_h, core._hex(intake_h))]
+        return [
+            _failure(
+                "intake_event_type_mismatch",
+                intake_h,
+                "intake catalog event is not a WOS intakeAccepted event",
+            )
+        ]
     payload = core._readable_payload_bytes(det, payload_blobs)
     if payload is None:
-        return [_failure("intake_payload_unreadable", intake_h, core._hex(intake_h))]
+        return [
+            _failure(
+                "intake_payload_unreadable",
+                intake_h,
+                "intakeAccepted payload is not readable",
+            )
+        ]
     try:
-        intake_record = core._parse_intake_accepted_record(payload)
+        intake_record = _parse_intake_accepted_record(
+            payload, WOS_INTAKE_ACCEPTED_EVENT_TYPE
+        )
     except core.VerifyError as exc:
-        return [_failure("intake_payload_invalid", intake_h, f"{core._hex(intake_h)}/{exc}")]
+        return [
+            _failure(
+                "intake_payload_invalid",
+                intake_h,
+                f"intakeAccepted payload is invalid: {exc}",
+            )
+        ]
     if not core._intake_entry_matches_record(entry, intake_record):
-        findings.append(_failure("intake_handoff_mismatch", intake_h, core._hex(intake_h)))
+        findings.append(
+            _failure(
+                "intake_handoff_mismatch",
+                intake_h,
+                "intake handoff fields do not match the intakeAccepted record",
+            )
+        )
     ok, err_detail = core._response_hash_matches(
         entry["handoff"]["response_hash"], entry["response_bytes"]
     )
     if err_detail is not None:
         findings.append(
-            _failure("intake_handoff_catalog_invalid", intake_h, f"{core._hex(intake_h)}/{err_detail}")
+            _failure(
+                "intake_handoff_catalog_invalid",
+                intake_h,
+                f"intake handoff response hash is invalid: {err_detail}",
+            )
         )
     elif not ok:
-        findings.append(_failure("intake_response_hash_mismatch", intake_h, core._hex(intake_h)))
+        findings.append(
+            _failure(
+                "intake_response_hash_mismatch",
+                intake_h,
+                "intake handoff response hash does not match response bytes",
+            )
+        )
 
     handoff = entry["handoff"]
     mode = handoff["initiation_mode"]
     case_created_hash = entry["case_created_event_hash"]
     if mode == "workflowInitiated":
         if case_created_hash is not None:
-            findings.append(_failure("case_created_handoff_mismatch", intake_h, core._hex(intake_h)))
+            findings.append(
+                _failure(
+                    "case_created_handoff_mismatch",
+                    intake_h,
+                    "workflowInitiated handoff must not carry caseCreated event hash",
+                )
+            )
         return findings
     if mode != "publicIntake":
+        findings.append(
+            _failure(
+                "intake_handoff_catalog_invalid",
+                intake_h,
+                "intake handoff initiationMode is unsupported",
+            )
+        )
         return findings
     if case_created_hash is None:
-        findings.append(_failure("case_created_handoff_mismatch", intake_h, core._hex(intake_h)))
+        findings.append(
+            _failure(
+                "case_created_handoff_mismatch",
+                intake_h,
+                "publicIntake handoff must carry caseCreated event hash",
+            )
+        )
         return findings
     case_details = event_by_hash.get(case_created_hash)
     if case_details is None:
-        findings.append(_failure("case_created_event_unresolved", case_created_hash, core._hex(case_created_hash)))
+        findings.append(
+            _failure(
+                "case_created_event_unresolved",
+                case_created_hash,
+                "caseCreated event hash is absent from the export",
+            )
+        )
         return findings
     if case_details.event_type != WOS_CASE_CREATED_EVENT_TYPE:
-        findings.append(_failure("case_created_event_type_mismatch", case_created_hash, core._hex(case_created_hash)))
+        findings.append(
+            _failure(
+                "case_created_event_type_mismatch",
+                case_created_hash,
+                "caseCreated hash does not reference a WOS caseCreated event",
+            )
+        )
         return findings
     case_payload = core._readable_payload_bytes(case_details, payload_blobs)
     if case_payload is None:
-        findings.append(_failure("case_created_payload_unreadable", case_created_hash, core._hex(case_created_hash)))
+        findings.append(
+            _failure(
+                "case_created_payload_unreadable",
+                case_created_hash,
+                "caseCreated payload is not readable",
+            )
+        )
         return findings
     try:
-        case_record = _parse_case_created_record(case_payload)
+        case_record = _parse_case_created_record(
+            case_payload, WOS_CASE_CREATED_EVENT_TYPE
+        )
     except core.VerifyError as exc:
-        findings.append(_failure("case_created_payload_invalid", case_created_hash, f"{core._hex(case_created_hash)}/{exc}"))
+        findings.append(
+            _failure(
+                "case_created_payload_invalid",
+                case_created_hash,
+                f"caseCreated payload is invalid: {exc}",
+            )
+        )
         return findings
     if not core._case_created_record_matches_handoff(entry, intake_record, case_record):
-        findings.append(_failure("case_created_handoff_mismatch", case_created_hash, core._hex(case_created_hash)))
+        findings.append(
+            _failure(
+                "case_created_handoff_mismatch",
+                case_created_hash,
+                "caseCreated fields do not match the intake handoff",
+            )
+        )
     return findings
 
 
@@ -458,28 +599,28 @@ def _validate_open_clock_export(
     ]
 
 
-def _parse_clock_record(payload_bytes: bytes) -> Optional[dict[str, Any]]:
+def _parse_clock_record(payload_bytes: bytes, event_type: str) -> Optional[dict[str, Any]]:
     value = core._decode_value(payload_bytes)
     if not isinstance(value, dict):
         raise core.VerifyError("clock record root is not a map")
-    record_kind = str(core._map_lookup_str(value, "recordKind"))
-    if record_kind not in (CLOCK_STARTED_RECORD_KIND, CLOCK_RESOLVED_RECORD_KIND):
-        return None
+    payload_event = str(core._map_lookup_str(value, "event"))
+    if payload_event != event_type:
+        raise core.VerifyError("clock payload event does not match envelope event")
     data_value = value.get("data")
     if not isinstance(data_value, dict):
         raise core.VerifyError("clock record data is not a map")
-    if record_kind == CLOCK_STARTED_RECORD_KIND:
+    if event_type == WOS_GOVERNANCE_CLOCK_STARTED_EVENT_TYPE:
         calendar_ref = data_value.get("calendarRef")
         if calendar_ref is not None and not isinstance(calendar_ref, str):
             raise core.VerifyError("calendarRef must be a string or null")
         return {
-            "recordKind": record_kind,
             "clockId": str(core._map_lookup_str(data_value, "clockId")),
             "clockKind": str(core._map_lookup_str(data_value, "clockKind")),
             "calendarRef": calendar_ref,
         }
+    if event_type != WOS_GOVERNANCE_CLOCK_RESOLVED_EVENT_TYPE:
+        return None
     return {
-        "recordKind": record_kind,
         "clockId": str(core._map_lookup_str(data_value, "clockId")),
         "resolution": str(core._map_lookup_str(data_value, "resolution")),
     }
@@ -510,13 +651,13 @@ def _validate_clock_segments(
             payload_bytes = core._readable_payload_bytes(details, payload_blobs)
             if payload_bytes is None:
                 continue
-            clock_record = _parse_clock_record(payload_bytes)
+            clock_record = _parse_clock_record(payload_bytes, details.event_type)
         except core.VerifyError:
             continue
         if clock_record is None:
             continue
         clock_id = clock_record["clockId"]
-        if clock_record["recordKind"] == CLOCK_STARTED_RECORD_KIND:
+        if details.event_type == WOS_GOVERNANCE_CLOCK_STARTED_EVENT_TYPE:
             paused_segment = paused.pop(clock_id, None)
             if paused_segment is not None and (
                 paused_segment["clockKind"] != clock_record["clockKind"]
@@ -567,7 +708,9 @@ class WosFormspecResolver:
         self, payload_bytes: bytes
     ) -> Optional[core.CertificateResponseProof]:
         try:
-            record = _parse_signature_affirmation_record(payload_bytes)
+            record = _parse_signature_affirmation_record(
+                payload_bytes, WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE
+            )
         except core.VerifyError:
             return None
         # When the record declares `signedPayloadDigestAlgorithm = "sha-256"`
@@ -597,7 +740,9 @@ class WosFormspecResolver:
 
     def resolve_principal_ref(self, payload_bytes: bytes) -> Optional[str]:
         try:
-            record = _parse_signature_affirmation_record(payload_bytes)
+            record = _parse_signature_affirmation_record(
+                payload_bytes, WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE
+            )
         except core.VerifyError:
             return None
         signer_id = record.get("signer_id")
@@ -615,7 +760,9 @@ def _optional_str(value: Any) -> Optional[str]:
     return None
 
 
-def _parse_signature_affirmation_record(payload_bytes: bytes) -> dict[str, Any]:
+def _parse_signature_affirmation_record(
+    payload_bytes: bytes, expected_event: str
+) -> dict[str, Any]:
     """Reads WOS-domain SignatureAffirmation record fields from an
     opaque payload. Moved here from `verify.py` per the Trellis Core
     dependency-inversion boundary: Core MUST NOT inspect WOS field
@@ -624,9 +771,7 @@ def _parse_signature_affirmation_record(payload_bytes: bytes) -> dict[str, Any]:
     v = core._decode_value(payload_bytes)
     if not isinstance(v, dict):
         raise core.VerifyError("signature affirmation payload root is not a map")
-    rk = str(core._map_lookup_str(v, "recordKind"))
-    if rk != "signatureAffirmation":
-        raise core.VerifyError("recordKind is not signatureAffirmation")
+    _require_event(v, expected_event, "signature affirmation")
     data = core._map_lookup_map(v, "data")
     pr = data.get("profileRef")
     pk = data.get("profileKey")
@@ -681,7 +826,35 @@ def _signature_affirmation_response_digest(record: dict[str, Any]) -> bytes:
     raise core.VerifyError("signature affirmation has no sha-256 response digest")
 
 
-def _parse_case_created_record(payload_bytes: bytes) -> dict[str, Any]:
+def _parse_intake_accepted_record(
+    payload_bytes: bytes, expected_event: str
+) -> dict[str, Any]:
+    """Reads WOS-domain intakeAccepted fields from an opaque payload."""
+    v = core._decode_value(payload_bytes)
+    if not isinstance(v, dict):
+        raise core.VerifyError("intake accepted payload root is not a map")
+    _require_event(v, expected_event, "intake accepted")
+    data = core._map_lookup_map(v, "data")
+    case_ref = str(core._map_lookup_str(data, "caseRef"))
+    outputs = core._map_lookup_array(v, "outputs")
+    output_case_ref = core._first_array_text(outputs)
+    if output_case_ref is None:
+        raise core.VerifyError("intake accepted outputs array is missing or empty")
+    if output_case_ref != case_ref:
+        raise core.VerifyError("intake accepted outputs[0] does not match data.caseRef")
+    return {
+        "intake_id": str(core._map_lookup_str(data, "intakeId")),
+        "case_intent": str(core._map_lookup_str(data, "caseIntent")),
+        "case_disposition": str(core._map_lookup_str(data, "caseDisposition")),
+        "case_ref": case_ref,
+        "definition_url": core._map_lookup_optional_text(data, "definitionUrl"),
+        "definition_version": core._map_lookup_optional_text(data, "definitionVersion"),
+    }
+
+
+def _parse_case_created_record(
+    payload_bytes: bytes, expected_event: str
+) -> dict[str, Any]:
     """Reads WOS-domain caseCreated record fields from an opaque
     payload. Moved here from `verify.py` per the Trellis Core
     dependency-inversion boundary (ADR 0004): Core MUST NOT inspect
@@ -689,9 +862,7 @@ def _parse_case_created_record(payload_bytes: bytes) -> dict[str, Any]:
     v = core._decode_value(payload_bytes)
     if not isinstance(v, dict):
         raise core.VerifyError("case created payload root is not a map")
-    record_kind = str(core._map_lookup_str(v, "recordKind"))
-    if record_kind != "caseCreated":
-        raise core.VerifyError("case created payload recordKind is not caseCreated")
+    _require_event(v, expected_event, "case created")
     data = core._map_lookup_map(v, "data")
     case_ref = str(core._map_lookup_str(data, "caseRef"))
     outputs = core._map_lookup_array(v, "outputs")
@@ -708,3 +879,14 @@ def _parse_case_created_record(payload_bytes: bytes) -> dict[str, Any]:
         "ledger_head_ref": str(core._map_lookup_str(data, "ledgerHeadRef")),
         "initiation_mode": str(core._map_lookup_str(data, "initiationMode")),
     }
+
+
+def _require_event(value: dict[str, Any], expected: str, label: str) -> None:
+    if "event" not in value:
+        raise core.VerifyError("missing `event` value")
+    event_value = value["event"]
+    if not isinstance(event_value, str):
+        raise core.VerifyError("`event` is not a text string")
+    event = event_value
+    if event != expected:
+        raise core.VerifyError(f"{label} payload event is not {expected}")
