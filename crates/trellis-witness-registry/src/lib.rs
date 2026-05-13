@@ -72,9 +72,8 @@ impl TrellisTimestamp {
         }
         let secs = nonnegative_u64(&items[0], &format!("{field}[0]"))?;
         let nanos_u64 = nonnegative_u64(&items[1], &format!("{field}[1]"))?;
-        let subsec_nanos = u32::try_from(nanos_u64).map_err(|_| {
-            WitnessRegistryError::Decode(format!("`{field}[1]` does not fit u32"))
-        })?;
+        let subsec_nanos = u32::try_from(nanos_u64)
+            .map_err(|_| WitnessRegistryError::Decode(format!("`{field}[1]` does not fit u32")))?;
         Self::new(secs, subsec_nanos)
     }
 }
@@ -232,7 +231,10 @@ impl WitnessKeyEntry {
             ));
         }
         let suite_id = lookup_u64(map, "suite_id")?;
-        let effective_from = TrellisTimestamp::from_cbor_value(lookup_value(map, "effective_from")?, "effective_from")?;
+        let effective_from = TrellisTimestamp::from_cbor_value(
+            lookup_value(map, "effective_from")?,
+            "effective_from",
+        )?;
         let valid_to = match lookup_value(map, "valid_to")? {
             Value::Null => None,
             other => Some(TrellisTimestamp::from_cbor_value(other, "valid_to")?),
