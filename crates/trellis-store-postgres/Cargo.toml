@@ -11,6 +11,7 @@ native-tls = "0.2"
 r2d2 = "0.8"
 r2d2_postgres = "0.18"
 trellis-core = { path = "../trellis-core" }
+trellis-store-postgres-shared = { path = "../trellis-store-postgres-shared" }
 trellis-types = { path = "../trellis-types" }
 
 [dev-dependencies]

@@ -54,6 +54,7 @@ use postgres_native_tls::MakeTlsConnector;
 use r2d2::{Pool, PooledConnection};
 use r2d2_postgres::PostgresConnectionManager;
 use trellis_core::LedgerStore;
+use trellis_store_postgres_shared::collision::{CollisionDecision, resolve_collision};
 use trellis_types::{StoredEvent, idempotency_key_length_in_bound};
 
 mod migrations;
@@ -453,7 +454,7 @@ WHERE scope = $1 AND sequence = $2",
                     })?;
                 let existing_canonical: Vec<u8> = row.get("canonical_event");
                 let existing_signed: Vec<u8> = row.get("signed_event");
-                if existing_canonical == canonical && existing_signed == signed {
+                if payloads_match(&existing_canonical, canonical, &existing_signed, signed) {
                     Ok(())
                 } else {
                     Err(PostgresStoreError::new(
@@ -546,7 +547,7 @@ WHERE scope = $1 AND idempotency_key = $2",
                 let existing_canonical: Vec<u8> = row.get("canonical_event");
                 let existing_signed: Vec<u8> = row.get("signed_event");
 
-                if existing_canonical == canonical && existing_signed == signed {
+                if payloads_match(&existing_canonical, canonical, &existing_signed, signed) {
                     return Ok(());
                 } else {
                     return Err(PostgresStoreError::new(
@@ -582,7 +583,7 @@ WHERE scope = $1 AND sequence = $2",
             let existing_canonical: Vec<u8> = row.get("canonical_event");
             let existing_signed: Vec<u8> = row.get("signed_event");
 
-            if existing_canonical == canonical && existing_signed == signed {
+            if payloads_match(&existing_canonical, canonical, &existing_signed, signed) {
                 Ok(())
             } else {
                 Err(PostgresStoreError::new(
@@ -604,6 +605,21 @@ fn is_unique_violation(error: &postgres::Error, constraint: &str) -> bool {
         return false;
     }
     db_err.constraint() == Some(constraint)
+}
+
+fn payloads_match(
+    existing_canonical: &[u8],
+    canonical: &[u8],
+    existing_signed: &[u8],
+    signed: &[u8],
+) -> bool {
+    matches!(
+        resolve_collision(existing_canonical, canonical),
+        CollisionDecision::Replay(_)
+    ) && matches!(
+        resolve_collision(existing_signed, signed),
+        CollisionDecision::Replay(_)
+    )
 }
 
 /// Returns `Ok(())` when the DSN names a loopback host (or Unix socket directory),

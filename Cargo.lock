@@ -1929,8 +1929,13 @@ dependencies = [
  "r2d2_postgres",
  "tempfile",
  "trellis-core",
+ "trellis-store-postgres-shared",
  "trellis-types",
 ]
+
+[[package]]
+name = "trellis-store-postgres-shared"
+version = "0.1.0"
 
 [[package]]
 name = "trellis-types"

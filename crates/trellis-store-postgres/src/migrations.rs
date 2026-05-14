@@ -12,53 +12,7 @@
 //! cannot race a duplicate apply.
 
 use crate::{PostgresStoreError, PostgresStoreErrorKind};
-
-/// Postgres advisory-lock key for the migration runner. Hand-picked,
-/// not derived; pin via constant so any operator can read its purpose.
-const ADVISORY_LOCK_KEY: i64 = 0x7472_656c_6c69_7300; // "trellis\0"
-
-/// Each entry: `(version, sql)`. SQL is one or more statements separated by `;`.
-///
-/// **Never edit a row that has shipped.** Add a new row instead.
-const MIGRATIONS: &[(i32, &str)] = &[
-    (
-        1,
-        "\
-CREATE TABLE trellis_events (
-    scope BYTEA NOT NULL,
-    sequence BIGINT NOT NULL,
-    canonical_event BYTEA NOT NULL,
-    signed_event BYTEA NOT NULL,
-    PRIMARY KEY (scope, sequence)
-);
-",
-    ),
-    (
-        2,
-        "\
-ALTER TABLE trellis_events
-    ADD COLUMN idempotency_key BYTEA NULL;
-
-CREATE UNIQUE INDEX trellis_events_scope_idempotency_uidx
-    ON trellis_events (scope, idempotency_key)
-    WHERE idempotency_key IS NOT NULL;
-
-ALTER TABLE trellis_events
-    ADD CONSTRAINT trellis_events_idempotency_key_length
-    CHECK (
-        idempotency_key IS NULL OR (
-            octet_length(idempotency_key) BETWEEN 1 AND 64
-        )
-    );
-",
-    ),
-    (
-        3,
-        "\
-ALTER TABLE trellis_events ADD COLUMN canonical_event_hash BYTEA NULL;
-",
-    ),
-];
+pub use trellis_store_postgres_shared::migrations::{ADVISORY_LOCK_KEY, MIGRATIONS};
 
 /// Apply pending migrations against an existing client (connection or pooled).
 pub(crate) fn apply<C>(client: &mut C) -> Result<(), PostgresStoreError>
@@ -116,7 +70,7 @@ CREATE TABLE IF NOT EXISTS trellis_schema_migrations (
     // silently truncating schema awareness.
     if let (Some(applied_max), Some(declared_max)) = (
         applied.iter().max().copied(),
-        MIGRATIONS.iter().map(|(v, _)| *v).max(),
+        MIGRATIONS.iter().map(|migration| migration.version).max(),
     ) && applied_max > declared_max
     {
         return Err(PostgresStoreError::new(
@@ -127,24 +81,30 @@ CREATE TABLE IF NOT EXISTS trellis_schema_migrations (
         ));
     }
 
-    for (version, sql) in MIGRATIONS {
-        if applied.contains(version) {
+    for migration in MIGRATIONS {
+        if applied.contains(&migration.version) {
             continue;
         }
-        tx.batch_execute(sql).map_err(|error| {
+        tx.batch_execute(migration.up_sql).map_err(|error| {
             PostgresStoreError::new(
                 PostgresStoreErrorKind::MigrationFailed,
-                format!("migration v{version} failed: {error}"),
+                format!(
+                    "migration v{} ({}) failed: {error}",
+                    migration.version, migration.name
+                ),
             )
         })?;
         tx.execute(
             "INSERT INTO trellis_schema_migrations (version) VALUES ($1)",
-            &[version],
+            &[&migration.version],
         )
         .map_err(|error| {
             PostgresStoreError::new(
                 PostgresStoreErrorKind::MigrationFailed,
-                format!("failed to record migration v{version} applied: {error}"),
+                format!(
+                    "failed to record migration v{} applied: {error}",
+                    migration.version
+                ),
             )
         })?;
     }
