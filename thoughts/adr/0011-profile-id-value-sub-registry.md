@@ -4,7 +4,7 @@
 
 ## Context
 
-Trellis Core already assigns the COSE protected-header label `-65539` to `profile_id`, but the spec did not yet define the value registry carried under that label. UWU-1 in `formspec-stack/REFACTOR-TODO.md` Phase 9 allocates the Formspec authored-signature profile value, and the verifier dispatcher needs a canonical registry home.
+Trellis Core already assigns the COSE protected-header label `-65539` to `profile_id`, but the spec did not yet define the value registry carried under that label. UWU-1 in `formspec-stack/thoughts/archive/plans/2026-05-12-integrity-stack-case-boundary-refactor.md` Phase 9 allocates the Formspec authored-signature profile value, and the verifier dispatcher needs a canonical registry home.
 
 ## Decision
 
@@ -23,6 +23,6 @@ Trellis Core already assigns the COSE protected-header label `-65539` to `profil
 
 ## References
 
-- `formspec-stack/REFACTOR-TODO.md` Phase 9 UWU-1.
+- `formspec-stack/thoughts/archive/plans/2026-05-12-integrity-stack-case-boundary-refactor.md` Phase 9 UWU-1.
 - `formspec-stack/thoughts/registries/profile-ids.md`.
 - `formspec-stack/thoughts/adr/0087-formspec-cose-sign1-universal-wire.md`.

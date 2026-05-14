@@ -100,7 +100,7 @@ This specification does not define:
 
 ### 1.5 Substrate authority (`integrity-stack/`)
 
-**This specification is the Trellis Core profile composition over the shared `integrity-stack/` byte substrate.** As of 2026-05-12 (per `REFACTOR-TODO.md` Phase 6), every byte-level primitive that Trellis composes is owned upstream by a substrate crate in `integrity-stack/crates/`:
+**This specification is the Trellis Core profile composition over the shared `integrity-stack/` byte substrate.** As of 2026-05-12 (per `formspec-stack/thoughts/archive/plans/2026-05-12-integrity-stack-case-boundary-refactor.md` Phase 6), every byte-level primitive that Trellis composes is owned upstream by a substrate crate in `integrity-stack/crates/`:
 
 | Trellis section | Byte primitive | Substrate authority |
 |---|---|---|

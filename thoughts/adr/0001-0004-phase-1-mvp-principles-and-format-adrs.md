@@ -331,7 +331,7 @@ actively verified to be semantically identical. Not drift; cross-check.
 - If Python maintenance burden grows disproportionately to its
   integrity contribution.
 
-**Addendum 2026-05-12 — substrate split.** Per `REFACTOR-TODO.md` Phase 6
+**Addendum 2026-05-12 — substrate split.** Per `formspec-stack/thoughts/archive/plans/2026-05-12-integrity-stack-case-boundary-refactor.md` Phase 6
 / Task 6.2, the Rust byte authority for primitive byte protocols (CBOR
 encoding, COSE_Sign1 envelope, length-prefixed domain separation,
 deterministic ZIP) now lives in `integrity-stack/crates/` (`integrity-cbor`,

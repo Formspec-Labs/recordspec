@@ -312,7 +312,7 @@ are post-MVP or adopter-triggered work.
     Implementation outcome: the adapter was not kept as a Trellis workspace
     crate. Its Ed25519 detached COSE_Sign1 encode/decode/verify round-trip was
     migrated into the shared COSE primitive test suite before deletion.
-    Stack convergence plan: [`../thoughts/plans/2026-05-09-signature-wire-convergence-plan.md`](../thoughts/plans/2026-05-09-signature-wire-convergence-plan.md).
+    Archived stack convergence plan: [`../thoughts/archive/plans/2026-05-09-signature-wire-convergence-plan.md`](../thoughts/archive/plans/2026-05-09-signature-wire-convergence-plan.md).
     Remaining: receipt-bearing certificate shape and verification remain tracked
     below; no Trellis-owned Formspec verifier adapter work remains live here.
 
@@ -321,7 +321,7 @@ are post-MVP or adopter-triggered work.
     Per Trellis ADR 0007 (as amended 2026-05-08 by ADR-0090): certificate-of-completion
     embeds VerificationReceipt for each signature in the certificate's signature-event
     entries. The receipt is carried as COSE_Sign1 bytes alongside the UCA reference.
-    Stack convergence plan: [`../thoughts/plans/2026-05-09-signature-wire-convergence-plan.md`](../thoughts/plans/2026-05-09-signature-wire-convergence-plan.md).
+    Archived stack convergence plan: [`../thoughts/archive/plans/2026-05-09-signature-wire-convergence-plan.md`](../thoughts/archive/plans/2026-05-09-signature-wire-convergence-plan.md).
     Remaining: settle the single normative receipt location (UCA payload, certificate
     signature-event row, or both with one authoritative binding rule); update
     trellis.certificate-of-completion.v1 shape per spec;
