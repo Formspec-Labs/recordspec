@@ -13,3 +13,4 @@ trellis-types = { path = "../trellis-types" }
 [dev-dependencies]
 tempfile = "3.14"
 tokio = { version = "1", features = ["full", "macros", "test-util"] }
+trellis-store-postgres = { path = "../trellis-store-postgres" }
