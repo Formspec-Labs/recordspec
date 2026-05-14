@@ -1,0 +1,15 @@
+[package]
+name = "trellis-store-postgres-async"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio-rustls", "uuid", "json", "migrate"] }
+thiserror = "1"
+trellis-store-postgres-shared = { path = "../trellis-store-postgres-shared" }
+trellis-types = { path = "../trellis-types" }
+
+[dev-dependencies]
+tempfile = "3.14"
+tokio = { version = "1", features = ["full", "macros", "test-util"] }

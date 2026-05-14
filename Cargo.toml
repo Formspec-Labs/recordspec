@@ -10,6 +10,7 @@ members = [
     "crates/trellis-witness-registry",
     "crates/trellis-store-memory",
     "crates/trellis-store-postgres-shared",
+    "crates/trellis-store-postgres-async",
     "crates/trellis-store-postgres",
     "crates/trellis-export",
     "crates/trellis-conformance",
