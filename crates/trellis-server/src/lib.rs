@@ -8,6 +8,8 @@
 
 #![forbid(unsafe_code)]
 
+mod append;
+
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -23,10 +25,11 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use http::header::AUTHORIZATION;
 use integrity_cbor::{
-    CborHelperError, Value, domain_separated_sha256, json_to_dcbor_bytes, map_lookup_bytes,
-    map_lookup_fixed_bytes, map_lookup_map,
+    CborHelperError, Value, domain_separated_sha256, map_lookup_bytes, map_lookup_fixed_bytes,
+    map_lookup_map,
 };
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use serde_json::json;
 use sqlx::PgPool;
 use stack_common_auth::{BaseClaims, Claims, JwtConfig, JwtVerifier};
@@ -36,17 +39,20 @@ use stack_common_http::idempotency::{
     IdempotencyDriverError, IdempotencyFailure, IdempotencyOperation, idempotency_middleware,
 };
 use stack_common_http::problem_response;
-use stack_common_http::tenant::{HeaderConfig, TenantHeaderConfigProvider, TenantScope};
+use stack_common_http::tenant::{
+    extract_tenant, extract_tenant_multi_producer, HeaderConfig, TenantHeaderConfigProvider,
+    TenantScope,
+};
 use stack_common_idempotency::{
     HttpReplayStore, InMemoryHttpReplayStore, ReplayOutcome, StoredResponse,
 };
 use stack_common_ops::{ComponentHealth, HealthProbe, HealthRouter};
 use tokio::sync::{Mutex, OwnedMutexGuard};
 use trellis_cddl::canonical_event_hash_preimage;
-use trellis_core::{AuthoredEvent, LedgerStore, SigningKeyMaterial as CoreSigningKey};
+use trellis_core::SigningKeyMaterial as CoreSigningKey;
 use trellis_export_writer::{
-    ExportWriterInput, PostureDeclaration as ExportPostureDeclaration,
-    RegistrySnapshot as ExportRegistrySnapshot, SigningKeyMaterial as ExportSigningKey,
+    ExportWriterInput, RegistrySnapshot as ExportRegistrySnapshot,
+    SigningKeyMaterial as ExportSigningKey,
     TrellisTimestamp, write_export,
 };
 use trellis_server_ports::{
@@ -57,11 +63,13 @@ use trellis_service_client::{
     AppendActor, ClientAttestation, ComputeContext, ComputeSensitivity, SubstrateAppendBody,
     SubstrateAppendResult, VerificationReceipt,
 };
-use trellis_types::{CONTENT_DOMAIN, EVENT_DOMAIN, StoredEvent};
+use trellis_server_ports::ComputeContext as PortComputeContext;
+use trellis_types::{EVENT_DOMAIN, StoredEvent};
 use utoipa::{OpenApi, ToSchema};
 use wos_events::{ProvenanceKind, ProvenanceRecord};
 
-const PROFILE_ID: u64 = 2;
+/// Formspec intake proof append event literal admitted at the service edge.
+pub const FORMSPEC_RESPONSE_SUBMITTED: &str = "substrate.append.response_submitted";
 const EVENT_TYPE_REGISTRY_VERSION: &str = "wos-events:2026-05-15";
 const DEFAULT_BIND_ADDR: &str = "127.0.0.1:8080";
 
@@ -135,6 +143,25 @@ pub const fn default_bind_addr() -> &'static str {
     DEFAULT_BIND_ADDR
 }
 
+fn profile_id_for_admitted_event(event_type: &str) -> Result<u64, StackError> {
+    if event_type.starts_with("wos.") {
+        Ok(integrity_verify::WOS_PROFILE_ID)
+    } else if event_type.starts_with("substrate.append.") {
+        Ok(integrity_verify::FORMSPEC_PROFILE_ID)
+    } else {
+        Err(StackError::internal(format!(
+            "unknown event type for profile dispatch: {event_type}"
+        )))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TenantHeaderMode {
+    Wos,
+    Formspec,
+    MultiProducer,
+}
+
 const WOS_EVENT_TYPES: &[&str] = &[
     "wos.kernel.state_transition",
     "wos.kernel.case_created",
@@ -187,6 +214,7 @@ impl Claims for TrellisClaims {
 pub struct ServerSigningKey {
     cose_key: Vec<u8>,
     export_key: ExportSigningKey,
+    valid_to: Option<TrellisTimestamp>,
 }
 
 impl ServerSigningKey {
@@ -207,11 +235,30 @@ impl ServerSigningKey {
                 private_seed: parsed.private_seed,
                 public_key: parsed.public_key,
                 valid_from,
+                valid_to: None,
             },
+            valid_to: None,
         })
     }
 
-    fn core_key(&self) -> CoreSigningKey {
+    #[must_use]
+    pub fn with_valid_to(mut self, valid_to: Option<TrellisTimestamp>) -> Self {
+        self.valid_to = valid_to;
+        self.export_key.valid_to = valid_to;
+        self
+    }
+
+    #[must_use]
+    pub fn is_active_at(&self, timestamp: TrellisTimestamp) -> bool {
+        self.valid_to
+            .map(|valid_to| {
+                (timestamp.unix_secs, timestamp.subsec_nanos)
+                    <= (valid_to.unix_secs, valid_to.subsec_nanos)
+            })
+            .unwrap_or(true)
+    }
+
+    pub(crate) fn core_key(&self) -> CoreSigningKey {
         CoreSigningKey::new(self.cose_key.clone())
     }
 
@@ -380,7 +427,7 @@ impl ArtifactStore for InMemoryArtifactStore {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct BundleRecord {
+pub(crate) struct BundleRecord {
     checkpoint_digest: String,
     artifact_ref: ArtifactRef,
 }
@@ -392,12 +439,12 @@ struct BundleIndex {
 }
 
 #[derive(Default)]
-struct ScopeLocks {
+pub(crate) struct ScopeLocks {
     locks: Mutex<HashMap<Vec<u8>, Arc<Mutex<()>>>>,
 }
 
 impl ScopeLocks {
-    async fn lock(&self, scope: &[u8]) -> OwnedMutexGuard<()> {
+    pub(crate) async fn lock(&self, scope: &[u8]) -> OwnedMutexGuard<()> {
         let lock = {
             let mut locks = self.locks.lock().await;
             locks
@@ -412,15 +459,15 @@ impl ScopeLocks {
 /// Cloneable Axum state for the Trellis service.
 #[derive(Clone)]
 pub struct TrellisServerState {
-    repository: Arc<dyn EventRepository>,
+    pub(crate) repository: Arc<dyn EventRepository>,
     artifact_store: Arc<dyn ArtifactStore<Error = StackError>>,
-    admission_policy: Arc<dyn EventAdmissionPolicy<Error = StackError>>,
+    pub(crate) admission_policy: Arc<dyn EventAdmissionPolicy<Error = StackError>>,
     authorizer: Arc<dyn ScopeAuthorizer<Error = StackError>>,
-    signing_key: ServerSigningKey,
-    tenant_headers: HeaderConfig,
+    pub(crate) signing_key: ServerSigningKey,
+    tenant_header_mode: TenantHeaderMode,
     replay_store: Arc<InMemoryHttpReplayStore>,
     bundles: Arc<BundleIndex>,
-    scope_locks: Arc<ScopeLocks>,
+    pub(crate) scope_locks: Arc<ScopeLocks>,
     jwt_verifier: Option<Arc<JwtVerifier<TrellisClaims>>>,
 }
 
@@ -429,15 +476,18 @@ impl TrellisServerState {
     pub fn new(
         repository: Arc<dyn EventRepository>,
         signing_key: ServerSigningKey,
-        tenant_headers: HeaderConfig,
+        tenant_header_mode: TenantHeaderMode,
     ) -> Self {
         Self {
             repository,
             artifact_store: Arc::new(InMemoryArtifactStore::default()),
-            admission_policy: Arc::new(WosEventAdmissionPolicy),
+            admission_policy: Arc::new(RoutedEventAdmissionPolicy {
+                wos: WosEventAdmissionPolicy,
+                formspec: FormspecAppendAdmissionPolicy,
+            }),
             authorizer: Arc::new(AllowAllScopeAuthorizer),
             signing_key,
-            tenant_headers,
+            tenant_header_mode,
             replay_store: Arc::new(InMemoryHttpReplayStore::new()),
             bundles: Arc::new(BundleIndex::default()),
             scope_locks: Arc::new(ScopeLocks::default()),
@@ -460,6 +510,20 @@ impl TrellisServerState {
         self
     }
 
+    #[must_use]
+    pub fn with_admission_policy(
+        mut self,
+        admission_policy: Arc<dyn EventAdmissionPolicy<Error = StackError>>,
+    ) -> Self {
+        self.admission_policy = admission_policy;
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn append_coordinator(&self) -> append::AppendCoordinator<'_> {
+        append::AppendCoordinator::new(self)
+    }
+
     fn authenticate(&self, headers: &HeaderMap) -> Result<Option<TrellisClaims>, StackError> {
         let Some(verifier) = &self.jwt_verifier else {
             return Ok(None);
@@ -475,7 +539,19 @@ impl TrellisServerState {
 
 impl TenantHeaderConfigProvider for TrellisServerState {
     fn tenant_header_config(&self) -> HeaderConfig {
-        self.tenant_headers
+        match self.tenant_header_mode {
+            TenantHeaderMode::Wos => HeaderConfig::wos(),
+            TenantHeaderMode::Formspec => HeaderConfig::formspec(),
+            TenantHeaderMode::MultiProducer => HeaderConfig::wos(),
+        }
+    }
+
+    fn extract_tenant_scope(&self, headers: &HeaderMap) -> Result<TenantScope, StackError> {
+        match self.tenant_header_mode {
+            TenantHeaderMode::MultiProducer => extract_tenant_multi_producer(headers),
+            TenantHeaderMode::Wos => extract_tenant(&HeaderConfig::wos(), headers),
+            TenantHeaderMode::Formspec => extract_tenant(&HeaderConfig::formspec(), headers),
+        }
     }
 }
 
@@ -541,6 +617,58 @@ impl HttpIdempotencyState for TrellisServerState {
         error: Self::Error,
     ) -> Response {
         problem_response(error)
+    }
+}
+
+/// Formspec aggregate admission for intake proof append events.
+#[derive(Debug, Clone, Copy)]
+pub struct FormspecAppendAdmissionPolicy;
+
+#[async_trait]
+impl EventAdmissionPolicy for FormspecAppendAdmissionPolicy {
+    type Error = StackError;
+
+    async fn admit(&self, event: &AdmissionEvent<'_>) -> Result<(), Self::Error> {
+        if event.event_type != FORMSPEC_RESPONSE_SUBMITTED {
+            return Err(StackError::bad_request(format!(
+                "event type `{}` is not a Formspec append literal",
+                event.event_type
+            )));
+        }
+        let value: serde_json::Value = serde_json::from_slice(event.payload).map_err(|error| {
+            StackError::bad_request(format!("payload is not valid JSON: {error}"))
+        })?;
+        let map = value.as_object().ok_or_else(|| {
+            StackError::bad_request("Formspec append payload must be a JSON object")
+        })?;
+        for key in ["aggregateType", "aggregateId", "payload"] {
+            if !map.contains_key(key) {
+                return Err(StackError::bad_request(format!(
+                    "Formspec append payload is missing `{key}`"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Routes admission to WOS provenance or Formspec aggregate dialects.
+#[derive(Debug, Clone, Copy)]
+pub struct RoutedEventAdmissionPolicy {
+    wos: WosEventAdmissionPolicy,
+    formspec: FormspecAppendAdmissionPolicy,
+}
+
+#[async_trait]
+impl EventAdmissionPolicy for RoutedEventAdmissionPolicy {
+    type Error = StackError;
+
+    async fn admit(&self, event: &AdmissionEvent<'_>) -> Result<(), Self::Error> {
+        if event.event_type == FORMSPEC_RESPONSE_SUBMITTED {
+            self.formspec.admit(event).await
+        } else {
+            self.wos.admit(event).await
+        }
     }
 }
 
@@ -630,7 +758,7 @@ pub fn router(state: TrellisServerState) -> Result<Router, StackError> {
         )
         .merge(
             HealthRouter::new()
-                .with_probe(TrellisHealthProbe)
+                .with_probe(TrellisHealthProbe::new(state.clone()))
                 .into_router_for_state(),
         )
         .with_state(state)
@@ -646,8 +774,9 @@ pub fn router(state: TrellisServerState) -> Result<Router, StackError> {
 /// - `TRELLIS_SIGNING_KEY_COSE_PATH`
 ///
 /// Optional:
-/// - `TRELLIS_TENANT_HEADER_SET=wos|formspec`
+/// - `TRELLIS_TENANT_HEADER_SET=wos|formspec|mixed`
 /// - `TRELLIS_JWT_HS256_SECRET`
+/// - `TRELLIS_SIGNING_KEY_VALID_TO_UNIX_SECS`
 /// - `TRELLIS_ARTIFACT_BUCKET`
 /// - `TRELLIS_ARTIFACT_PREFIX`
 /// - `TRELLIS_ARTIFACT_ENDPOINT`
@@ -663,15 +792,20 @@ pub async fn state_from_env() -> Result<TrellisServerState, StackError> {
             "failed to read TRELLIS_SIGNING_KEY_COSE_PATH: {error}"
         ))
     })?;
-    let signing_key =
-        ServerSigningKey::from_cose_key_bytes(signing_key_bytes, TrellisTimestamp::new(0, 0)?)?;
+    let signing_key_valid_to = env_optional_timestamp("TRELLIS_SIGNING_KEY_VALID_TO_UNIX_SECS")?;
+    let signing_key = ServerSigningKey::from_cose_key_bytes(
+        signing_key_bytes,
+        TrellisTimestamp::new(0, 0)?,
+    )?
+    .with_valid_to(signing_key_valid_to);
 
-    let tenant_headers = match env::var("TRELLIS_TENANT_HEADER_SET")
-        .unwrap_or_else(|_| "wos".to_string())
+    let tenant_header_mode = match env::var("TRELLIS_TENANT_HEADER_SET")
+        .unwrap_or_else(|_| "mixed".to_string())
         .as_str()
     {
-        "wos" => HeaderConfig::wos(),
-        "formspec" => HeaderConfig::formspec(),
+        "wos" => TenantHeaderMode::Wos,
+        "formspec" => TenantHeaderMode::Formspec,
+        "mixed" => TenantHeaderMode::MultiProducer,
         other => {
             return Err(StackError::bad_request(format!(
                 "unsupported TRELLIS_TENANT_HEADER_SET `{other}`"
@@ -695,7 +829,7 @@ pub async fn state_from_env() -> Result<TrellisServerState, StackError> {
         Arc::new(PostgresEventRepository::new(pool))
     };
 
-    let mut state = TrellisServerState::new(repository, signing_key, tenant_headers);
+    let mut state = TrellisServerState::new(repository, signing_key, tenant_header_mode);
     if let Some(artifact_store) = artifact_store_from_env() {
         state = state.with_artifact_store(artifact_store);
     }
@@ -730,13 +864,58 @@ fn env_optional(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-#[derive(Clone, Copy)]
-struct TrellisHealthProbe;
+fn env_optional_timestamp(name: &str) -> Result<Option<TrellisTimestamp>, StackError> {
+    let Some(raw) = env_optional(name) else {
+        return Ok(None);
+    };
+    let seconds: u64 = raw.parse().map_err(|error| {
+        StackError::bad_request(format!("{name} must be a u64 unix timestamp: {error}"))
+    })?;
+    Ok(Some(TrellisTimestamp::new(seconds, 0)?))
+}
+
+#[derive(Clone)]
+struct TrellisHealthProbe {
+    state: TrellisServerState,
+}
+
+impl TrellisHealthProbe {
+    fn new(state: TrellisServerState) -> Self {
+        Self { state }
+    }
+}
 
 #[async_trait]
 impl HealthProbe for TrellisHealthProbe {
     async fn check(&self) -> ComponentHealth {
-        ComponentHealth::ok("trellis-server")
+        let mut issues = Vec::new();
+        if let Err(error) = self.state.repository.list_scope(b"__healthz__").await {
+            issues.push(format!("repository: {error}"));
+        }
+        let probe_key = "__healthz__/artifact-roundtrip";
+        let probe_bytes = b"trellis-health-probe";
+        match self
+            .state
+            .artifact_store
+            .put(probe_key, probe_bytes)
+            .await
+        {
+            Ok(artifact_ref) => match self.state.artifact_store.get(&artifact_ref).await {
+                Ok(Some(bytes)) if bytes == probe_bytes => {}
+                Ok(Some(_)) => issues.push("artifact-store: roundtrip bytes mismatch".into()),
+                Ok(None) => issues.push("artifact-store: stored object missing".into()),
+                Err(error) => issues.push(format!("artifact-store read: {error}")),
+            },
+            Err(error) => issues.push(format!("artifact-store write: {error}")),
+        }
+        if issues.is_empty() {
+            ComponentHealth::healthy(
+                "trellis-server",
+                "repository and artifact store reachable",
+            )
+        } else {
+            ComponentHealth::degraded("trellis-server", issues.join("; "))
+        }
     }
 }
 
@@ -799,79 +978,17 @@ async fn append_event(
         })
         .await?;
 
-    let payload_json = serde_json::to_vec(&body.payload)
-        .map_err(|error| StackError::bad_request(format!("payload JSON encode failed: {error}")))?;
-    state
-        .admission_policy
-        .admit(&AdmissionEvent {
-            scope: scope.as_bytes(),
-            event_type: &body.event_type,
-            payload: &payload_json,
+    let outcome = state
+        .append_coordinator()
+        .append(append::AppendCommand {
+            scope: scope.clone(),
+            event_type: body.event_type.clone(),
+            idempotency_key: body.idempotency_key.clone(),
+            payload: body.payload.clone(),
+            compute_context: append::port_compute_context(&body),
         })
         .await?;
-
-    let _scope_guard = state.scope_locks.lock(scope.as_bytes()).await;
-    let mut events = state.repository.list_scope(scope.as_bytes()).await?;
-    let content = EventContent::from_payload(&body.payload)?;
-    if let Some(existing) = events
-        .iter()
-        .find(|event| event.idempotency_key() == Some(body.idempotency_key.as_bytes()))
-    {
-        validate_existing_replay(existing, &body.event_type, content.content_hash)?;
-        let replay_events = events
-            .iter()
-            .filter(|event| event.sequence() <= existing.sequence())
-            .cloned()
-            .collect::<Vec<_>>();
-        let bundle = publish_bundle(&state, scope.as_bytes(), &replay_events, false).await?;
-        return Ok((
-            StatusCode::CREATED,
-            Json(append_result_for_event(
-                &scope,
-                existing,
-                &body.event_type,
-                &bundle,
-            )?),
-        ));
-    }
-
-    let sequence =
-        u64::try_from(events.len()).map_err(|_| StackError::internal("event count exceeds u64"))?;
-    let prev_hash = events
-        .last()
-        .map(|event| event_hash(scope.as_bytes(), event))
-        .transpose()?;
-    let authored = build_authored_event(AuthoredEventInput {
-        scope: scope.as_bytes(),
-        sequence,
-        prev_hash,
-        event_type: &body.event_type,
-        idempotency_key: body.idempotency_key.as_bytes(),
-        content,
-        authored_at: now_timestamp()?,
-    })?;
-    let mut capture = CapturingLedgerStore::default();
-    let artifacts =
-        trellis_core::append_event(&mut capture, &state.signing_key.core_key(), &authored)
-            .map_err(|error| {
-                StackError::bad_request(format!("trellis append rejected: {error}"))
-            })?;
-    let stored = capture
-        .take()
-        .ok_or_else(|| StackError::internal("trellis core did not emit a stored event"))?
-        .with_canonical_event_hash(Some(artifacts.canonical_event_hash));
-    state.repository.append_event(stored.clone()).await?;
-    events.push(stored.clone());
-    let bundle = publish_bundle(&state, scope.as_bytes(), &events, true).await?;
-    Ok((
-        StatusCode::CREATED,
-        Json(append_result_for_event(
-            &scope,
-            &stored,
-            &body.event_type,
-            &bundle,
-        )?),
-    ))
+    Ok((StatusCode::CREATED, Json(outcome.result)))
 }
 
 #[utoipa::path(
@@ -894,7 +1011,14 @@ async fn head_bundle(
 ) -> Result<Response, StackError> {
     read_authorized(&state, &scope, &tenant_scope, &headers).await?;
     let events = state.repository.list_scope(scope.as_bytes()).await?;
-    let bundle = publish_bundle(&state, scope.as_bytes(), &events, true).await?;
+    let bundle = publish_bundle(
+        &state,
+        scope.as_bytes(),
+        &events,
+        true,
+        &append::default_public_compute_context(),
+    )
+    .await?;
     bundle_response(&state, &bundle).await
 }
 
@@ -930,7 +1054,14 @@ async fn pinned_bundle(
     };
     let Some(record) = record else {
         let events = state.repository.list_scope(scope.as_bytes()).await?;
-        let head = publish_bundle(&state, scope.as_bytes(), &events, true).await?;
+        let head = publish_bundle(
+            &state,
+            scope.as_bytes(),
+            &events,
+            true,
+            &append::default_public_compute_context(),
+        )
+        .await?;
         if head.checkpoint_digest == digest {
             return bundle_response(&state, &head).await;
         }
@@ -1004,124 +1135,19 @@ async fn read_authorized(
         .await
 }
 
-#[derive(Clone, Debug)]
-struct EventContent {
-    payload_bytes: Vec<u8>,
-    content_hash: [u8; 32],
-    nonce: [u8; 12],
+/// Returns true when the export ZIP passes the same independent verifier used in conformance.
+#[must_use]
+pub(crate) fn export_bundle_cryptographically_verified(zip_bytes: &[u8]) -> bool {
+    let report = integrity_verify::trellis::verify_export_zip(zip_bytes);
+    report.structure_verified && report.integrity_verified
 }
 
-impl EventContent {
-    fn from_payload(payload: &serde_json::Value) -> Result<Self, StackError> {
-        let payload_bytes = json_to_dcbor_bytes(payload, &[]).map_err(|error| {
-            StackError::bad_request(format!("payload CBOR encode failed: {error}"))
-        })?;
-        let content_hash = domain_separated_sha256(CONTENT_DOMAIN, &payload_bytes);
-        let nonce_hash = domain_separated_sha256(
-            "trellis-service-inline-nonce-v1",
-            &[content_hash.as_slice()].concat(),
-        );
-        let nonce = nonce_hash[..12]
-            .try_into()
-            .map_err(|_| StackError::internal("nonce slice length changed"))?;
-        Ok(Self {
-            payload_bytes,
-            content_hash,
-            nonce,
-        })
-    }
-}
-
-struct AuthoredEventInput<'a> {
-    scope: &'a [u8],
-    sequence: u64,
-    prev_hash: Option<[u8; 32]>,
-    event_type: &'a str,
-    idempotency_key: &'a [u8],
-    content: EventContent,
-    authored_at: TrellisTimestamp,
-}
-
-fn build_authored_event(input: AuthoredEventInput<'_>) -> Result<AuthoredEvent, StackError> {
-    let header = text_map(vec![
-        (
-            "event_type",
-            Value::Bytes(input.event_type.as_bytes().to_vec()),
-        ),
-        ("authored_at", timestamp_value(input.authored_at)),
-        ("retention_tier", uint(0)),
-        (
-            "classification",
-            Value::Bytes(b"x-trellis-service/public-metadata".to_vec()),
-        ),
-        ("outcome_commitment", Value::Null),
-        ("subject_ref_commitment", Value::Null),
-        ("tag_commitment", Value::Null),
-        ("witness_ref", Value::Null),
-        ("extensions", Value::Null),
-    ])?;
-    let payload_ref = text_map(vec![
-        ("ref_type", Value::Text("inline".to_string())),
-        ("ciphertext", Value::Bytes(input.content.payload_bytes)),
-        ("nonce", Value::Bytes(input.content.nonce.to_vec())),
-    ])?;
-    let key_bag = text_map(vec![("entries", Value::Array(Vec::new()))])?;
-    let authored = text_map(vec![
-        ("version", uint(1)),
-        ("ledger_scope", Value::Bytes(input.scope.to_vec())),
-        ("sequence", uint(input.sequence)),
-        (
-            "prev_hash",
-            input
-                .prev_hash
-                .map_or(Value::Null, |hash| Value::Bytes(hash.to_vec())),
-        ),
-        ("causal_deps", Value::Null),
-        (
-            "content_hash",
-            Value::Bytes(input.content.content_hash.to_vec()),
-        ),
-        ("header", header),
-        ("commitments", Value::Null),
-        ("payload_ref", payload_ref),
-        ("key_bag", key_bag),
-        (
-            "idempotency_key",
-            Value::Bytes(input.idempotency_key.to_vec()),
-        ),
-        ("extensions", Value::Null),
-    ])?;
-    let bytes = encode_value(&authored)?;
-    Ok(AuthoredEvent::new(bytes))
-}
-
-#[derive(Default)]
-struct CapturingLedgerStore {
-    event: Option<StoredEvent>,
-}
-
-impl CapturingLedgerStore {
-    fn take(&mut self) -> Option<StoredEvent> {
-        self.event.take()
-    }
-}
-
-impl LedgerStore for CapturingLedgerStore {
-    type Error = StackError;
-
-    fn append_event(&mut self, event: StoredEvent) -> Result<(), Self::Error> {
-        if self.event.replace(event).is_some() {
-            return Err(StackError::internal("multiple events captured"));
-        }
-        Ok(())
-    }
-}
-
-async fn publish_bundle(
+pub(crate) async fn publish_bundle(
     state: &TrellisServerState,
     scope: &[u8],
     events: &[StoredEvent],
     update_head: bool,
+    compute: &PortComputeContext,
 ) -> Result<BundleRecord, StackError> {
     if events.is_empty() {
         return Err(StackError::not_found("scope has no events"));
@@ -1148,15 +1174,7 @@ async fn publish_bundle(
         generator: "trellis-server".to_string(),
         generated_at,
         checkpoint_timestamps: timestamps,
-        posture_declaration: ExportPostureDeclaration {
-            provider_readable: true,
-            reader_held: false,
-            delegated_compute: false,
-            external_anchor_required: false,
-            external_anchor_name: None,
-            recovery_without_user: false,
-            metadata_leakage_summary: "public metadata append path".to_string(),
-        },
+        posture_declaration: append::export_posture_from_compute(compute),
         omitted_payload_checks: Vec::new(),
         readme_title: format!("Trellis export for {}", String::from_utf8_lossy(scope)),
         root_dir_override: None,
@@ -1169,6 +1187,11 @@ async fn publish_bundle(
         encode_path_segment(&String::from_utf8_lossy(scope)),
         checkpoint_digest.trim_start_matches("sha256:")
     );
+    if !export_bundle_cryptographically_verified(&package.zip_bytes) {
+        return Err(StackError::internal(
+            "published export bundle failed independent verification",
+        ));
+    }
     let artifact_ref = state.artifact_store.put(&key, &package.zip_bytes).await?;
     let record = BundleRecord {
         checkpoint_digest,
@@ -1188,11 +1211,12 @@ async fn publish_bundle(
     Ok(record)
 }
 
-fn append_result_for_event(
+pub(crate) fn append_result_for_event(
     scope: &str,
     event: &StoredEvent,
     event_type: &str,
     bundle: &BundleRecord,
+    export_verified: bool,
 ) -> Result<SubstrateAppendResult, StackError> {
     let canonical_hash = event_hash(scope.as_bytes(), event)?;
     let hash_hex = hex::encode(canonical_hash);
@@ -1203,8 +1227,8 @@ fn append_result_for_event(
         checkpoint_ref: format!("trellis://{scope}/checkpoints/{}", bundle.checkpoint_digest),
         bundle_ref: bundle.artifact_ref.uri.clone(),
         verification_receipt: VerificationReceipt {
-            verified: true,
-            profile_id: PROFILE_ID,
+            verified: export_verified,
+            profile_id: profile_id_for_admitted_event(event_type)?,
             event_type: event_type.to_string(),
         },
     })
@@ -1230,7 +1254,7 @@ fn bytes_response(content_type: &'static str, bytes: Vec<u8>) -> Response {
     response
 }
 
-fn validate_existing_replay(
+pub(crate) fn validate_existing_replay(
     event: &StoredEvent,
     event_type: &str,
     content_hash: [u8; 32],
@@ -1283,7 +1307,7 @@ fn event_timestamp(event: &StoredEvent) -> Result<TrellisTimestamp, StackError> 
     event_summary(event).map(|summary| summary.authored_at)
 }
 
-fn event_hash(scope: &[u8], event: &StoredEvent) -> Result<[u8; 32], StackError> {
+pub(crate) fn event_hash(scope: &[u8], event: &StoredEvent) -> Result<[u8; 32], StackError> {
     if let Some(hash) = event.canonical_event_hash() {
         return Ok(*hash);
     }
@@ -1376,14 +1400,14 @@ fn validate_digest_hex(value: &str) -> Result<(), StackError> {
     Ok(())
 }
 
-fn now_timestamp() -> Result<TrellisTimestamp, StackError> {
+pub(crate) fn now_timestamp() -> Result<TrellisTimestamp, StackError> {
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|error| StackError::internal(format!("system clock before epoch: {error}")))?;
     TrellisTimestamp::new(duration.as_secs(), duration.subsec_nanos())
 }
 
-fn timestamp_value(timestamp: TrellisTimestamp) -> Value {
+pub(crate) fn timestamp_value(timestamp: TrellisTimestamp) -> Value {
     Value::Array(vec![
         uint(timestamp.unix_secs),
         uint(u64::from(timestamp.subsec_nanos)),
@@ -1403,20 +1427,36 @@ fn event_type_registry_view() -> EventTypeRegistryView {
     }
 }
 
-fn event_type_registry_json() -> serde_json::Value {
-    json!({
-        "registryVersion": EVENT_TYPE_REGISTRY_VERSION,
-        "eventTypes": event_type_registry_view().event_types.into_iter().map(|entry| {
-            json!({
-                "eventType": entry.event_type,
-                "schemaRef": entry.schema_ref,
-            })
-        }).collect::<Vec<_>>()
-    })
-}
-
 fn event_type_registry_cbor() -> Result<Vec<u8>, StackError> {
-    encode_value(&json_to_cbor_sorted(&event_type_registry_json())?)
+    const SERVICE_CLASSIFICATION: &str = "x-trellis-service/public-metadata";
+    let mut event_types = Vec::new();
+    for event_type in WOS_EVENT_TYPES {
+        let entry = text_map(vec![
+            ("privacy_class", Value::Text("publicMetadata".to_string())),
+            ("binding_family", Value::Text("wos.kernel".to_string())),
+        ])?;
+        event_types.push((Value::Text((*event_type).to_string()), entry));
+    }
+    let formspec_entry = text_map(vec![
+        ("privacy_class", Value::Text("publicMetadata".to_string())),
+        ("binding_family", Value::Text("formspec.response".to_string())),
+    ])?;
+    event_types.push((
+        Value::Text(FORMSPEC_RESPONSE_SUBMITTED.to_string()),
+        formspec_entry,
+    ));
+    let registry = text_map(vec![
+        ("event_types", Value::Map(event_types)),
+        (
+            "classifications",
+            Value::Array(vec![Value::Text(SERVICE_CLASSIFICATION.to_string())]),
+        ),
+        (
+            "registry_version",
+            Value::Text(EVENT_TYPE_REGISTRY_VERSION.to_string()),
+        ),
+    ])?;
+    encode_value(&registry)
 }
 
 fn signing_key_registry_cbor(signing_key: &ExportSigningKey) -> Result<Vec<u8>, StackError> {
@@ -1426,22 +1466,19 @@ fn signing_key_registry_cbor(signing_key: &ExportSigningKey) -> Result<Vec<u8>, 
         ("suite_id", uint(1)),
         ("status", uint(0)),
         ("valid_from", timestamp_value(signing_key.valid_from)),
-        ("valid_to", Value::Null),
+        (
+            "valid_to",
+            signing_key
+                .valid_to
+                .map_or(Value::Null, timestamp_value),
+        ),
         ("supersedes", Value::Null),
         ("attestation", Value::Null),
     ])?;
     encode_value(&Value::Array(vec![entry]))
 }
 
-fn json_to_cbor_sorted(value: &serde_json::Value) -> Result<Value, StackError> {
-    let bytes = json_to_dcbor_bytes(value, &[]).map_err(|error| {
-        StackError::bad_request(format!("registry CBOR encode failed: {error}"))
-    })?;
-    integrity_cbor::decode_cbor_value(&bytes)
-        .map_err(|error| StackError::internal(format!("registry CBOR decode failed: {error}")))
-}
-
-fn text_map(fields: Vec<(&str, Value)>) -> Result<Value, StackError> {
+pub(crate) fn text_map(fields: Vec<(&str, Value)>) -> Result<Value, StackError> {
     canonical_map(
         fields
             .into_iter()
@@ -1467,14 +1504,14 @@ fn canonical_map(fields: Vec<(Value, Value)>) -> Result<Value, StackError> {
     ))
 }
 
-fn encode_value(value: &Value) -> Result<Vec<u8>, StackError> {
+pub(crate) fn encode_value(value: &Value) -> Result<Vec<u8>, StackError> {
     let mut bytes = Vec::new();
     ciborium::into_writer(value, &mut bytes)
         .map_err(|error| StackError::internal(format!("failed to encode CBOR: {error}")))?;
     Ok(bytes)
 }
 
-fn uint(value: u64) -> Value {
+pub(crate) fn uint(value: u64) -> Value {
     Value::Integer(value.into())
 }
 
@@ -1530,7 +1567,257 @@ mod tests {
     use tower::ServiceExt;
     use wos_events::{ProvenanceKind, ProvenanceRecord};
 
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
+
+    /// Given a fresh append, when the HTTP handler runs, then admission executes
+    /// exactly once inside the append coordinator (not duplicated in the handler).
+    #[tokio::test]
+    async fn given_fresh_append_when_http_post_then_admission_runs_once_in_coordinator() {
+        let admission_calls = Arc::new(AtomicUsize::new(0));
+        let inner = Arc::new(RoutedEventAdmissionPolicy {
+            wos: WosEventAdmissionPolicy,
+            formspec: FormspecAppendAdmissionPolicy,
+        });
+        let counting = Arc::new(CountingAdmissionPolicy {
+            inner,
+            calls: admission_calls.clone(),
+        });
+        let app = router(test_state().with_admission_policy(counting)).expect("router");
+        let response = app
+            .oneshot(post_request(
+                "/v1/scopes/case_123/events",
+                append_body("idem-coordinator-admission"),
+            ))
+            .await
+            .expect("append response");
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert_eq!(
+            admission_calls.load(Ordering::SeqCst),
+            1,
+            "append coordinator must call admission exactly once per fresh append"
+        );
+    }
+
+    /// Given a ledger idempotency replay, when the coordinator runs again with the
+    /// same key, then admission runs once per pass and the sequence is unchanged.
+    #[tokio::test]
+    async fn given_ledger_idempotency_replay_when_coordinator_runs_then_admission_once_per_pass(
+    ) {
+        let admission_calls = Arc::new(AtomicUsize::new(0));
+        let inner = Arc::new(RoutedEventAdmissionPolicy {
+            wos: WosEventAdmissionPolicy,
+            formspec: FormspecAppendAdmissionPolicy,
+        });
+        let counting = Arc::new(CountingAdmissionPolicy {
+            inner,
+            calls: admission_calls.clone(),
+        });
+        let state = test_state().with_admission_policy(counting);
+        let body: SubstrateAppendBody = serde_json::from_slice(&append_body("idem-coordinator-replay"))
+            .unwrap();
+        let command = append::AppendCommand {
+            scope: "case_123".to_string(),
+            event_type: body.event_type.clone(),
+            idempotency_key: body.idempotency_key.clone(),
+            payload: body.payload.clone(),
+            compute_context: append::port_compute_context(&body),
+        };
+        let first = state
+            .append_coordinator()
+            .append(command.clone())
+            .await
+            .expect("first append");
+        assert_eq!(first.result.sequence, 0);
+        assert_eq!(admission_calls.load(Ordering::SeqCst), 1);
+
+        let second = state
+            .append_coordinator()
+            .append(command)
+            .await
+            .expect("ledger replay");
+        assert_eq!(
+            admission_calls.load(Ordering::SeqCst),
+            2,
+            "each coordinator pass admits once; ledger replay must not duplicate events"
+        );
+        assert_eq!(second.result.sequence, first.result.sequence);
+        assert_eq!(
+            second.result.canonical_event_hash, first.result.canonical_event_hash
+        );
+    }
+
+    /// Given a WOS provenance append, when the handler completes, then the receipt
+    /// carries WOS profile id 1 (not the global Formspec profile 2).
+    #[tokio::test]
+    async fn given_wos_append_when_completed_then_receipt_profile_id_is_wos() {
+        let app = router(test_state()).expect("router");
+        let response = app
+            .oneshot(post_request(
+                "/v1/scopes/case_123/events",
+                append_body("idem-wos-profile"),
+            ))
+            .await
+            .expect("append response");
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let result: SubstrateAppendResult = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            result.verification_receipt.profile_id,
+            integrity_verify::WOS_PROFILE_ID,
+            "WOS append receipts must use profile 1"
+        );
+    }
+
+    /// Given a Formspec aggregate append, when admission runs, then the event is
+    /// accepted and the receipt carries Formspec profile id 2.
+    #[tokio::test]
+    async fn given_formspec_response_submitted_when_appended_then_profile_id_is_formspec(
+    ) {
+        let app = router(test_state()).expect("router");
+        let response = app
+            .oneshot(formspec_post_request(
+                "/v1/scopes/formspec.prod-mvp/events",
+                formspec_append_body("idem-fspec-profile"),
+            ))
+            .await
+            .expect("append response");
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let result: SubstrateAppendResult = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            result.verification_receipt.event_type,
+            FORMSPEC_RESPONSE_SUBMITTED
+        );
+        assert_eq!(
+            result.verification_receipt.profile_id,
+            integrity_verify::FORMSPEC_PROFILE_ID,
+            "Formspec append receipts must use profile 2"
+        );
+    }
+
+    #[test]
+    fn given_signing_key_with_valid_to_when_registry_cbor_built_then_valid_to_is_encoded(
+    ) {
+        let valid_from = TrellisTimestamp::new(1_700_000_000, 0).expect("valid from");
+        let valid_to = TrellisTimestamp::new(1_800_000_000, 0).expect("valid to");
+        let key_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/vectors/_keys/issuer-001.cose_key");
+        let key = fs::read(key_path).expect("fixture key");
+        let signing_key = ServerSigningKey::from_cose_key_bytes(key, valid_from)
+            .expect("parse signing key")
+            .with_valid_to(Some(valid_to));
+        let registry_cbor = signing_key_registry_cbor(&signing_key.export_key())
+            .expect("encode signing-key registry");
+        let decoded = integrity_cbor::decode_cbor_value(&registry_cbor).expect("decode registry");
+        let integrity_cbor::Value::Array(entries) = decoded else {
+            panic!("registry must be a CBOR array");
+        };
+        let integrity_cbor::Value::Map(entry) = entries
+            .first()
+            .expect("registry must contain one signing-key entry")
+        else {
+            panic!("registry entry must be a CBOR map");
+        };
+        let valid_to_value = entry
+            .iter()
+            .find_map(|(key, value)| match (key, value) {
+                (integrity_cbor::Value::Text(label), value) if label == "valid_to" => Some(value),
+                _ => None,
+            })
+            .expect("registry entry must include valid_to");
+        assert_eq!(
+            valid_to_value,
+            &integrity_cbor::Value::Array(vec![
+                integrity_cbor::Value::Integer(1_800_000_000.into()),
+                integrity_cbor::Value::Integer(0.into()),
+            ]),
+            "registry valid_to must reflect signing key expiry"
+        );
+    }
+
+    #[test]
+    fn given_corrupt_export_zip_when_verified_then_returns_false() {
+        assert!(!export_bundle_cryptographically_verified(b"not-a-valid-export-zip"));
+    }
+
+    #[tokio::test]
+    async fn given_fresh_append_when_completed_then_receipt_verified_reflects_export_verify() {
+        let app = router(test_state()).expect("router");
+        let response = app
+            .oneshot(post_request(
+                "/v1/scopes/case_123/events",
+                append_body("idem-export-verified"),
+            ))
+            .await
+            .expect("append response");
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let result: SubstrateAppendResult = serde_json::from_slice(&bytes).unwrap();
+        assert!(
+            result.verification_receipt.verified,
+            "append receipt verified must be true only after export ZIP passes independent verification"
+        );
+    }
+
+    #[tokio::test]
+    async fn given_non_public_compute_context_when_append_requested_then_bad_request() {
+        let app = router(test_state()).expect("router");
+        let mut body: serde_json::Value =
+            serde_json::from_slice(&append_body("idem-non-public-compute")).unwrap();
+        body["computeContext"]["sensitivity"] = serde_json::Value::String("readerHeld".to_string());
+        let response = app
+            .oneshot(post_request(
+                "/v1/scopes/case_123/events",
+                serde_json::to_vec(&body).unwrap(),
+            ))
+            .await
+            .expect("append response");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn openapi_append_contract_matches_json_schema() {
+        let schema_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../specs/trellis-http-api.schema.json");
+        let schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(schema_path).expect("schema file")).unwrap();
+        let openapi = serde_json::to_value(TrellisServerOpenApi::openapi()).unwrap();
+        let schema_events = schema["$defs"]["EventType"]["enum"]
+            .as_array()
+            .expect("schema EventType enum");
+        let append_body_schema = &openapi["components"]["schemas"]["SubstrateAppendBody"];
+        assert!(
+            append_body_schema["properties"].get("eventType").is_some(),
+            "OpenAPI SubstrateAppendBody must declare eventType"
+        );
+        for event_type in schema_events {
+            let literal = event_type.as_str().expect("event type literal");
+            assert!(
+                WOS_EVENT_TYPES.contains(&literal)
+                    || literal == FORMSPEC_RESPONSE_SUBMITTED,
+                "schema EventType enum must only list admitted server literals"
+            );
+        }
+        let schema_profile = &schema["$defs"]["VerificationReceipt"]["properties"]["profileId"];
+        let openapi_profile =
+            &openapi["components"]["schemas"]["VerificationReceipt"]["properties"]["profileId"];
+        assert_eq!(
+            openapi_profile["type"], "integer",
+            "OpenAPI VerificationReceipt.profileId must be integer"
+        );
+        assert_eq!(
+            schema_profile["enum"],
+            json!([1, 2]),
+            "JSON schema must enumerate WOS profile 1 and Formspec profile 2"
+        );
+        let schema_verified = &schema["$defs"]["VerificationReceipt"]["properties"]["verified"];
+        assert_eq!(
+            schema_verified["type"], "boolean",
+            "VerificationReceipt.verified must be boolean in JSON schema"
+        );
+    }
 
     #[tokio::test]
     async fn append_wos_event_publishes_bundle_and_registries() {
@@ -1567,6 +1854,81 @@ mod tests {
             .await
             .expect("registry response");
         assert_eq!(registry.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn given_same_scope_and_events_when_bundle_published_twice_then_zip_bytes_are_identical() {
+        let state = test_state();
+        let app = router(state.clone()).expect("router");
+        let response = app
+            .oneshot(post_request(
+                "/v1/scopes/case_deterministic/events",
+                append_body("idem-deterministic-1"),
+            ))
+            .await
+            .expect("append deterministic event response");
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let events = state
+            .repository
+            .list_scope(b"case_deterministic")
+            .await
+            .expect("load deterministic scope events");
+        let compute = append::default_public_compute_context();
+        let first = publish_bundle(&state, b"case_deterministic", &events, false, &compute)
+            .await
+            .expect("first publish");
+        let second = publish_bundle(&state, b"case_deterministic", &events, false, &compute)
+            .await
+            .expect("second publish");
+        let first_bytes = state
+            .artifact_store
+            .get(&first.artifact_ref)
+            .await
+            .expect("load first bundle")
+            .expect("first bundle bytes");
+        let second_bytes = state
+            .artifact_store
+            .get(&second.artifact_ref)
+            .await
+            .expect("load second bundle")
+            .expect("second bundle bytes");
+        assert_eq!(
+            first_bytes, second_bytes,
+            "publishing identical ledger state twice must produce byte-identical ZIP output"
+        );
+    }
+
+    #[tokio::test]
+    async fn given_unreachable_artifact_store_when_health_probe_runs_then_reports_degraded() {
+        struct FailingArtifactStore;
+
+        #[async_trait]
+        impl ArtifactStore for FailingArtifactStore {
+            type Error = StackError;
+
+            async fn put(
+                &self,
+                _key: &str,
+                _bytes: &[u8],
+            ) -> Result<ArtifactRef, Self::Error> {
+                Err(StackError::unavailable("artifact store offline"))
+            }
+
+            async fn get(
+                &self,
+                _artifact_ref: &ArtifactRef,
+            ) -> Result<Option<Vec<u8>>, Self::Error> {
+                Ok(None)
+            }
+        }
+
+        let state = test_state().with_artifact_store(Arc::new(FailingArtifactStore));
+        let health = TrellisHealthProbe::new(state).check().await;
+        assert_eq!(
+            health.status,
+            stack_common_ops::ComponentStatus::Degraded,
+            "unreachable artifact store must degrade readiness: {health:?}"
+        );
     }
 
     #[tokio::test]
@@ -1638,6 +2000,16 @@ mod tests {
         );
     }
 
+    #[test]
+    fn given_wos_event_types_when_checked_against_provenance_kind_then_all_resolve() {
+        for literal in WOS_EVENT_TYPES {
+            assert!(
+                ProvenanceKind::from_canonical_event_literal(literal).is_some(),
+                "WOS_EVENT_TYPES literal `{literal}` must resolve through ProvenanceKind"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn unknown_wos_event_type_is_rejected() {
         let app = router(test_state()).expect("router");
@@ -1647,6 +2019,41 @@ mod tests {
             .oneshot(post_request(
                 "/v1/scopes/case_123/events",
                 serde_json::to_vec(&value).unwrap(),
+            ))
+            .await
+            .expect("append response");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn formspec_append_rejects_wrong_event_type() {
+        let app = router(test_state()).expect("router");
+        let mut body: serde_json::Value =
+            serde_json::from_slice(&formspec_append_body("idem-fspec-wrong-type")).unwrap();
+        body["eventType"] = serde_json::Value::String("wos.kernel.case_created".to_string());
+        let response = app
+            .oneshot(formspec_post_request(
+                "/v1/scopes/formspec.prod-mvp/events",
+                serde_json::to_vec(&body).unwrap(),
+            ))
+            .await
+            .expect("append response");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn formspec_append_rejects_missing_aggregate_type() {
+        let app = router(test_state()).expect("router");
+        let mut body: serde_json::Value =
+            serde_json::from_slice(&formspec_append_body("idem-fspec-missing-aggregate")).unwrap();
+        body["payload"] = serde_json::json!({
+            "aggregateId": "resp-missing-aggregate",
+            "payload": { "status": "submitted" }
+        });
+        let response = app
+            .oneshot(formspec_post_request(
+                "/v1/scopes/formspec.prod-mvp/events",
+                serde_json::to_vec(&body).unwrap(),
             ))
             .await
             .expect("append response");
@@ -1663,8 +2070,40 @@ mod tests {
         TrellisServerState::new(
             Arc::new(InMemoryEventRepository::new()),
             signing_key,
-            HeaderConfig::wos(),
+            TenantHeaderMode::MultiProducer,
         )
+    }
+
+    fn formspec_append_body(idempotency_key: &str) -> Vec<u8> {
+        let body = SubstrateAppendBody {
+            event_type: FORMSPEC_RESPONSE_SUBMITTED.to_string(),
+            idempotency_key: idempotency_key.to_string(),
+            actor: trellis_service_client::AppendActor::service("formspec-server"),
+            payload: serde_json::json!({
+                "aggregateType": "formspec.response",
+                "aggregateId": format!("resp-{idempotency_key}"),
+                "payload": { "status": "submitted" }
+            }),
+            compute_context: trellis_service_client::ComputeContext::no_delegated_compute(
+                "formspec-server",
+            ),
+            client_attestation: None,
+        };
+        serde_json::to_vec(&body).unwrap()
+    }
+
+    fn formspec_post_request(path: &str, body: Vec<u8>) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("content-type", "application/json")
+            .header(IDEMPOTENCY_KEY_HEADER, idempotency_from_body(&body))
+            .header("x-formspec-tenant-id", "tenant-a")
+            .header("x-formspec-workspace-id", "workspace-a")
+            .header("x-formspec-environment-id", "prod")
+            .header("x-formspec-cell-id", "cell-a")
+            .body(Body::from(body))
+            .unwrap()
     }
 
     fn append_body(idempotency_key: &str) -> Vec<u8> {
@@ -1730,5 +2169,20 @@ mod tests {
     fn idempotency_from_body(body: &[u8]) -> String {
         let value: serde_json::Value = serde_json::from_slice(body).unwrap();
         value["idempotencyKey"].as_str().unwrap().to_string()
+    }
+
+    struct CountingAdmissionPolicy {
+        inner: Arc<dyn EventAdmissionPolicy<Error = StackError>>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl EventAdmissionPolicy for CountingAdmissionPolicy {
+        type Error = StackError;
+
+        async fn admit(&self, event: &AdmissionEvent<'_>) -> Result<(), Self::Error> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.inner.admit(event).await
+        }
     }
 }

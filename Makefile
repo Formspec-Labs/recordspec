@@ -22,7 +22,7 @@ help:
 	@echo "Usage:"
 	@echo "  make build          Build all Rust crates"
 	@echo "  make test           Run all tests (Rust, Python, Scripts, Specs)"
-	@echo "  make test-rust      Run all Rust tests + trellis-hpke byte oracle"
+	@echo "  make test-rust      Run all Rust tests"
 	@echo "  make test-python    Run Python conformance tests"
 	@echo "  make test-scripts   Run tests for helper scripts"
 	@echo "  make test-postgres  Run async Postgres + parity integration tests (needs initdb/pg_ctl/openssl on PATH)"
@@ -43,8 +43,6 @@ test: test-rust test-python test-scripts check-specs check-verifier-isolation
 test-rust:
 	@echo "Running Rust tests..."
 	$(CARGO) nextest run --workspace
-	@echo "Running trellis-hpke byte oracle (test-vectors feature)..."
-	$(CARGO) nextest run -p trellis-hpke --features test-vectors
 
 test-python:
 	@echo "Running Python conformance tests..."
@@ -81,7 +79,9 @@ check-specs-strict:
 	@echo "Running spec checks (strict, with renumbering guard)..."
 	TRELLIS_CHECK_RENUMBERING=1 $(PYTHON) $(SCRIPTS_DIR)/check-specs.py
 
-# Asserts `cargo tree -p trellis-verify` is HPKE-clean (no `hpke`,
+# HPKE crates (`trellis-hpke`, etc.) are exercised via `cargo nextest run --workspace`
+# in `make test`; this target only asserts the offline verifier stays HPKE-clean.
+# Asserts `cargo tree -p integrity-verify` is HPKE-clean (no `hpke`,
 # `x25519-dalek`, `chacha20poly1305`, or `hkdf`). Core §16
 # (Verification Independence) requires the offline verifier path to
 # stay free of HPKE deps; ADR 0009 §"Architectural posture" explains
