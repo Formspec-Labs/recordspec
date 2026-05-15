@@ -215,6 +215,29 @@ mod tests {
             "export ZIP mismatch at {}",
             root.display()
         );
+
+        let vector_id = manifest
+            .get("id")
+            .and_then(toml::Value::as_str)
+            .unwrap_or("");
+        if vector_id == "export/001-two-event-chain" {
+            let corpus_root = root.parent().unwrap().parent().unwrap();
+            let writer_package = trellis_export_writer::write_export(
+                trellis_export_writer::export_001_writer_input(corpus_root),
+            )
+            .unwrap_or_else(|err| {
+                panic!(
+                    "{}: export-writer corpus replay (`write_export`) failed: {err}",
+                    fixture_label(root)
+                )
+            });
+            assert_eq!(
+                writer_package.zip_bytes,
+                expected_zip,
+                "{}: `Bundle::to_zip_bytes` oracle agreed with corpus, but `write_export` differed",
+                fixture_label(root)
+            );
+        }
     }
 
     fn assert_verify_fixture_matches(root: &Path, manifest: &toml::Value) {

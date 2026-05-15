@@ -65,7 +65,7 @@ use trellis_service_client::{
 };
 use trellis_types::{EVENT_DOMAIN, StoredEvent};
 use utoipa::{OpenApi, ToSchema};
-use wos_events::{ProvenanceKind, ProvenanceRecord};
+use wos_events::{ProvenanceKind, ProvenanceRecord, SUBSTRATE_CANONICAL_EVENT_LITERALS};
 
 /// Formspec intake proof append event literal admitted at the service edge.
 pub const FORMSPEC_RESPONSE_SUBMITTED: &str = "substrate.append.response_submitted";
@@ -161,36 +161,7 @@ enum TenantHeaderMode {
     MultiProducer,
 }
 
-const WOS_EVENT_TYPES: &[&str] = &[
-    "wos.kernel.state_transition",
-    "wos.kernel.case_created",
-    "wos.kernel.intake_accepted",
-    "wos.kernel.note_added",
-    "wos.kernel.intake_rejected",
-    "wos.kernel.intake_deferred",
-    "wos.ai.capability_invocation",
-    "wos.kernel.for_each_iteration_started",
-    "wos.kernel.for_each_iteration_completed",
-    "wos.kernel.for_each_completed",
-    "wos.kernel.signature_affirmation",
-    "wos.kernel.signature_admission_failed",
-    "wos.governance.correction_authorized",
-    "wos.governance.amendment_authorized",
-    "wos.governance.determination_amended",
-    "wos.governance.rescission_authorized",
-    "wos.governance.determination_rescinded",
-    "wos.governance.reinstated",
-    "wos.governance.authorization_attestation",
-    "wos.governance.clock_started",
-    "wos.governance.clock_resolved",
-    "wos.assurance.identity_attestation",
-    "wos.assurance.key_rebind",
-    "wos.governance.clock_skew_observed",
-    "wos.kernel.commit_attempt_failure",
-    "wos.governance.authorization_rejected",
-    "wos.kernel.instance_migrated",
-    "wos.kernel.migration_pin_changed",
-];
+const WOS_EVENT_TYPES: &[&str] = SUBSTRATE_CANONICAL_EVENT_LITERALS;
 
 /// Server-owned JWT claims for optional service auth.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1555,7 +1526,7 @@ mod tests {
     use axum::http::Request;
     use stack_common_http::idempotency::IDEMPOTENCY_REPLAY_HEADER;
     use tower::ServiceExt;
-    use wos_events::{ProvenanceKind, ProvenanceRecord};
+    use wos_events::{ProvenanceKind, ProvenanceRecord, SUBSTRATE_CANONICAL_EVENT_LITERALS};
 
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -2053,6 +2024,22 @@ mod tests {
                 "WOS_EVENT_TYPES literal `{literal}` must resolve through ProvenanceKind"
             );
         }
+    }
+
+    #[test]
+    fn given_wos_event_types_when_defined_then_aliases_substrate_canonical_export() {
+        assert!(
+            std::ptr::eq(
+                WOS_EVENT_TYPES.as_ptr(),
+                SUBSTRATE_CANONICAL_EVENT_LITERALS.as_ptr()
+            ),
+            "trellis-server WOS_EVENT_TYPES must alias wos-events SUBSTRATE_CANONICAL_EVENT_LITERALS (TWREF-017)"
+        );
+        assert_eq!(
+            WOS_EVENT_TYPES.len(),
+            SUBSTRATE_CANONICAL_EVENT_LITERALS.len(),
+            "substrate literal slice length drift"
+        );
     }
 
     #[tokio::test]

@@ -32,6 +32,15 @@ class TestCheckHttpApiSchema(unittest.TestCase):
         self.module.check_defs(self.schema, self.server_source, errors)
         self.assertEqual(errors, [])
 
+    def test_given_wos_event_types_alias_when_parse_then_matches_kind_rs_table(self) -> None:
+        literals = self.module.parse_wos_event_types(self.server_source)
+        self.assertGreater(len(literals), 10)
+        self.assertIn("wos.kernel.case_created", literals)
+        self.assertEqual(literals[0], "wos.ai.capability_invocation")
+        kind_text = self.module.WOS_EVENTS_KIND_PATH.read_text(encoding="utf-8")
+        from_kind = self.module.parse_substrate_event_literals_from_kind_rs(kind_text)
+        self.assertEqual(literals, from_kind)
+
     def test_given_profile_id_const_lock_when_check_defs_then_error_emitted(self) -> None:
         schema = self.module.read_json(self.module.SCHEMA_PATH)
         schema["$defs"]["VerificationReceipt"]["properties"]["profileId"]["const"] = 2

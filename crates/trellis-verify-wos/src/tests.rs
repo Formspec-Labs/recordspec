@@ -10,7 +10,6 @@ use integrity_verify::trellis::{
     DomainEvent, DomainExport, RecordValidator, Severity, TrellisTimestamp,
 };
 
-use crate::records::parse_signature_affirmation_record;
 use crate::event_types::{
     OPEN_CLOCKS_EXPORT_EXTENSION, WOS_CASE_CREATED_EVENT_TYPE,
     WOS_GOVERNANCE_CLOCK_RESOLVED_EVENT_TYPE, WOS_GOVERNANCE_CLOCK_STARTED_EVENT_TYPE,
@@ -18,6 +17,7 @@ use crate::event_types::{
     WOS_IDENTITY_ATTESTATION_EVENT_TYPE, WOS_INTAKE_ACCEPTED_EVENT_TYPE,
     WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE,
 };
+use crate::records::parse_signature_affirmation_record;
 use crate::validator::WosRecordValidator;
 
 fn event(event_type: &str, hash_byte: u8, payload: Option<Vec<u8>>) -> DomainEvent {
@@ -82,8 +82,7 @@ fn encode_record(event_type: &str, data: Vec<(Value, Value)>) -> Vec<u8> {
 }
 
 const DOC_HASH: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-const PRESENTATION_HASH: &str =
-    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const PRESENTATION_HASH: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
 /// Given a signature affirmation payload with distinct K-2 fields, when parsed,
 /// then signingActId and presentationHash are extracted separately from
@@ -93,15 +92,24 @@ fn given_distinct_k2_fields_when_parsed_then_signing_act_and_presentation_hash_p
     let payload = encode_record(
         WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE,
         vec![
-            (Value::Text("signerId".into()), Value::Text("signer-1".into())),
+            (
+                Value::Text("signerId".into()),
+                Value::Text("signer-1".into()),
+            ),
             (Value::Text("roleId".into()), Value::Text("role-1".into())),
             (Value::Text("role".into()), Value::Text("applicant".into())),
-            (Value::Text("documentId".into()), Value::Text("application".into())),
+            (
+                Value::Text("documentId".into()),
+                Value::Text("application".into()),
+            ),
             (
                 Value::Text("signingActId".into()),
                 Value::Text("signing-act-777".into()),
             ),
-            (Value::Text("documentHash".into()), Value::Text(DOC_HASH.into())),
+            (
+                Value::Text("documentHash".into()),
+                Value::Text(DOC_HASH.into()),
+            ),
             (
                 Value::Text("presentationHash".into()),
                 Value::Text(PRESENTATION_HASH.into()),
@@ -140,18 +148,23 @@ fn given_distinct_k2_fields_when_parsed_then_signing_act_and_presentation_hash_p
                 Value::Text("signatureProvider".into()),
                 Value::Text("formspec".into()),
             ),
-            (Value::Text("ceremonyId".into()), Value::Text("ceremony-1".into())),
+            (
+                Value::Text("ceremonyId".into()),
+                Value::Text("ceremony-1".into()),
+            ),
             (
                 Value::Text("formspecResponseRef".into()),
                 Value::Text("urn:test:response:1".into()),
             ),
         ],
     );
-    let parsed =
-        parse_signature_affirmation_record(&payload, WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE)
-            .expect("parse signature affirmation");
+    let parsed = parse_signature_affirmation_record(&payload, WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE)
+        .expect("parse signature affirmation");
     assert_eq!(parsed.signing_act_id, "signing-act-777");
-    assert_eq!(parsed.source_signature_id.as_deref(), Some("source-sig-001"));
+    assert_eq!(
+        parsed.source_signature_id.as_deref(),
+        Some("source-sig-001")
+    );
     assert_eq!(parsed.document_hash, DOC_HASH);
     assert_eq!(parsed.presentation_hash, PRESENTATION_HASH);
 }

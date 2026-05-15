@@ -5,6 +5,11 @@ edition.workspace = true
 description = "Trellis Phase-1 export bundle writer"
 license.workspace = true
 
+[features]
+default = []
+# Corpus harness: exposes `export_001_writer_input` for trellis-conformance replay.
+fixture-inputs = []
+
 [dependencies]
 ciborium = "0.2"
 integrity-bundle = { path = "../../../integrity-stack/crates/integrity-bundle" }

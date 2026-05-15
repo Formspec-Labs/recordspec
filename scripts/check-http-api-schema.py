@@ -18,6 +18,10 @@ ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = ROOT / "specs" / "trellis-http-api.schema.json"
 SERVER_PATH = ROOT / "crates" / "trellis-server" / "src" / "lib.rs"
 CLIENT_PATH = ROOT / "crates" / "trellis-service-client" / "src" / "lib.rs"
+# Sibling `work-spec/` at stack root (TWREF-017): substrate literals authored once in kind.rs.
+WOS_EVENTS_KIND_PATH = (
+    ROOT.parent / "work-spec" / "crates" / "wos-events" / "src" / "provenance" / "kind.rs"
+)
 
 EXPECTED_OPERATIONS = {
     "appendEvent": ("POST", "/v1/scopes/{scope}/events"),
@@ -69,15 +73,62 @@ def parse_const_u64(source: str, name: str) -> int:
     return int(match.group(1))
 
 
-def parse_wos_event_types(source: str) -> list[str]:
-    match = re.search(
-        r"const WOS_EVENT_TYPES: &\[&str\] = &\[(?P<body>.*?)\];",
-        source,
+def parse_substrate_event_literals_from_kind_rs(kind_source: str) -> list[str]:
+    """Read literals from define_canonical_substrate_events! { ... } (authoritative table)."""
+    marker = "define_canonical_substrate_events!"
+    start = kind_source.find(marker)
+    if start == -1:
+        raise ValueError(f"{marker} not found in wos-events provenance/kind.rs")
+    brace_open = kind_source.find("{", start)
+    if brace_open == -1:
+        raise ValueError("macro invocation `{` not found after define_canonical_substrate_events!")
+    depth = 0
+    body_end = -1
+    for idx in range(brace_open, len(kind_source)):
+        char = kind_source[idx]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                body_end = idx
+                break
+    if body_end == -1:
+        raise ValueError("unterminated define_canonical_substrate_events! block in kind.rs")
+    body = kind_source[brace_open + 1 : body_end]
+    literals = re.findall(r'"([^"]+)"\s*=>', body)
+    if not literals:
+        raise ValueError("no substrate literals parsed from kind.rs macro body")
+    return literals
+
+
+def parse_wos_event_types(server_source: str) -> list[str]:
+    """Resolve admitted WOS event-type literals for schema drift checks."""
+    inline = re.search(
+        r"const\s+WOS_EVENT_TYPES:\s*&\[&str\]\s*=\s*&\[(?P<body>.*?)\]\s*;",
+        server_source,
         flags=re.S,
     )
-    if not match:
-        raise ValueError("could not find WOS_EVENT_TYPES")
-    return re.findall(r'"([^"]+)"', match.group("body"))
+    if inline:
+        found = re.findall(r'"([^"]+)"', inline.group("body"))
+        if found:
+            return found
+
+    if re.search(
+        r"const\s+WOS_EVENT_TYPES:\s*&\[&str\]\s*=\s*SUBSTRATE_CANONICAL_EVENT_LITERALS\s*;",
+        server_source,
+    ):
+        if not WOS_EVENTS_KIND_PATH.is_file():
+            raise ValueError(
+                "trellis-server aliases WOS_EVENT_TYPES to SUBSTRATE_CANONICAL_EVENT_LITERALS "
+                f"but kind.rs not found at {WOS_EVENTS_KIND_PATH} "
+                "(expected stack checkout with sibling work-spec/)"
+            )
+        return parse_substrate_event_literals_from_kind_rs(
+            WOS_EVENTS_KIND_PATH.read_text(encoding="utf-8")
+        )
+
+    raise ValueError("could not find WOS_EVENT_TYPES (inline slice or SUBSTRATE_CANONICAL_EVENT_LITERALS alias)")
 
 
 def normalize_axum_path(path: str) -> str:
@@ -172,10 +223,11 @@ def check_defs(schema: dict, server_source: str, errors: list[str]) -> None:
     formspec_event = parse_const_str(server_source, "FORMSPEC_RESPONSE_SUBMITTED")
     expected_events = server_events + [formspec_event]
     schema_events = defs["EventType"].get("enum")
-    if schema_events != expected_events:
+    # Ordering is not normative: macro table order may differ from schema enum order.
+    if sorted(schema_events or []) != sorted(expected_events):
         errors.append(
             "EventType enum drifted from trellis-server admitted literals: "
-            f"expected {expected_events}, got {schema_events}"
+            f"expected {sorted(expected_events)}, got {sorted(schema_events or [])}"
         )
     if len(schema_events or []) != len(set(schema_events or [])):
         errors.append("EventType enum contains duplicate values")

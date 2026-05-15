@@ -1,6 +1,6 @@
 """Generate byte-exact reference vector `export/001-two-event-chain`.
 
-Authoring aid only. Every construction block carries an inline Core-§ citation
+Authoring aid only. Every construction block carries an inline Core-? citation
 naming the normative paragraph that determines the bytes. This script is NOT
 normative; `derivation.md` is the spec-prose reproduction evidence. If this
 script and Core disagree, Core wins.
@@ -17,26 +17,27 @@ append chain.
 - two Checkpoints (tree_size = 1 and tree_size = 2) with the required
   `prev_checkpoint_hash` link,
 - inclusion proofs for both leaves (audit_path length 1),
-- one consistency proof record from 1 → 2 (RFC 6962 semantics),
+- one consistency proof record from 1 to 2 (RFC 6962 semantics),
 - full manifest digest bindings and registry snapshot binding,
 - no bundled verifier binaries (099-* optional members omitted).
 
 It DOES exercise the full Phase-1 export package spine:
-deterministic ZIP layout (§18.1), required archive members (§18.2), manifest
-COSE_Sign1 signature (§18.3, §7.4), digest bindings (§19 step 3), registry
-snapshot binding (§14), and checkpoint/inclusion proof material (§11, §18.5).
+deterministic ZIP layout (?18.1), required archive members (?18.2), manifest
+COSE_Sign1 signature (?18.3, ?7.4), digest bindings (?19 step 3), registry
+snapshot binding (?14), and checkpoint/inclusion proof material (?11, ?18.5).
 """
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import sys
 import zipfile
 from pathlib import Path
 
-# Runnable as `python3 fixtures/vectors/_generator/gen_export_001.py`; make the
-# sibling `_lib` package importable without installing anything.
+# Runnable as `python3 fixtures/vectors/_generator/gen_export_001.py` or with
+# `--out-dir PATH`; extend `sys.path` so sibling `_lib` is importable without install.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import cbor2  # noqa: E402
@@ -76,7 +77,7 @@ SOURCE_DOMAIN_REGISTRY_FILE = (
 
 KEY_FILE = ROOT / "_keys" / "issuer-001.cose_key"
 
-OUT_DIR = ROOT / "export" / "001-two-event-chain"
+_DEFAULT_EXPORT_001_VECTOR_DIR = ROOT / "export" / "001-two-event-chain"
 
 
 # ---------------------------------------------------------------------------
@@ -84,8 +85,8 @@ OUT_DIR = ROOT / "export" / "001-two-event-chain"
 # ---------------------------------------------------------------------------
 
 # SUITE_ID, ALG_EDDSA, COSE_LABEL_*, CBOR_TAG_COSE_SIGN1, and ZIP_FIXED_DATETIME
-# are imported from `_lib.byte_utils` — those are registry-fixed numeric
-# values (RFC 9052 + Core §7.4 / §18.1), not spec interpretations.
+# are imported from `_lib.byte_utils`; those are registry-fixed numeric
+# values (RFC 9052 + Core section references in byte_utils), not spec interpretations.
 SUITE_ID = SUITE_ID_PHASE_1
 
 # Pinned timestamps for manifest/checkpoint (Unix seconds UTC).
@@ -95,7 +96,7 @@ CHECKPOINT_TIMESTAMP_1 = ts(1745000050)
 CHECKPOINT_TIMESTAMP_2 = ts(1745000060)
 
 # ---------------------------------------------------------------------------
-# Domain tags (§9.8) and §9.1 framing.
+# Domain tags (?9.8) and ?9.1 framing.
 # ---------------------------------------------------------------------------
 
 TAG_TRELLIS_EVENT_V1 = "trellis-event-v1"
@@ -110,7 +111,7 @@ def sha256(data: bytes) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# COSE / keys (§7.4, §8.3).
+# COSE / keys (?7.4, ?8.3).
 # ---------------------------------------------------------------------------
 
 
@@ -124,12 +125,12 @@ def load_issuer_key() -> tuple[bytes, bytes]:
 
 
 def derive_kid(suite_id: int, pubkey_raw: bytes) -> bytes:
-    # §8.3 derived-kid: SHA-256(dCBOR(uint(suite_id)) || pubkey_raw)[:16]
+    # ?8.3 derived-kid: SHA-256(dCBOR(uint(suite_id)) || pubkey_raw)[:16]
     return hashlib.sha256(dcbor(suite_id) + pubkey_raw).digest()[:16]
 
 
 def build_protected_header(kid: bytes) -> dict:
-    # §7.4 three mandatory headers; dCBOR map-key ordering handled at encode.
+    # ?7.4 three mandatory headers; dCBOR map-key ordering handled at encode.
     return {
         COSE_LABEL_ALG: ALG_EDDSA,
         COSE_LABEL_KID: kid,
@@ -138,9 +139,9 @@ def build_protected_header(kid: bytes) -> dict:
 
 
 def build_sig_structure(protected_bstr: bytes, payload_bstr: bytes) -> bytes:
-    # RFC 9052 §4.4 Sig_structure for COSE_Sign1:
+    # RFC 9052 ?4.4 Sig_structure for COSE_Sign1:
     #   ["Signature1", protected, external_aad, payload]
-    # Core §7.4: external_aad is the zero-length bstr for Phase 1.
+    # Core ?7.4: external_aad is the zero-length bstr for Phase 1.
     return dcbor(["Signature1", protected_bstr, b"", payload_bstr])
 
 
@@ -153,7 +154,7 @@ def cose_sign1(seed: bytes, kid: bytes, payload_bytes: bytes) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# §9.2 canonical_event_hash and §11 Merkle.
+# ?9.2 canonical_event_hash and ?11 Merkle.
 # ---------------------------------------------------------------------------
 
 
@@ -166,14 +167,14 @@ def merkle_leaf_hash(canonical_hash: bytes) -> bytes:
     return domain_separated_sha256(TAG_TRELLIS_MERKLE_LEAF_V1, canonical_hash)
 
 def merkle_interior_hash(left_hash: bytes, right_hash: bytes) -> bytes:
-    # §11.3: domain-separated over (left_hash || right_hash) as one component.
+    # ?11.3: domain-separated over (left_hash || right_hash) as one component.
     return domain_separated_sha256(
         TAG_TRELLIS_MERKLE_INTERIOR_V1, left_hash + right_hash
     )
 
 
 # ---------------------------------------------------------------------------
-# §11.2 checkpoint and §9.6 digest.
+# ?11.2 checkpoint and ?9.6 digest.
 # ---------------------------------------------------------------------------
 
 
@@ -183,7 +184,7 @@ def checkpoint_digest(ledger_scope: bytes, checkpoint_payload: dict) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# §9.7 export manifest digest (for README convenience, not required by verifier).
+# ?9.7 export manifest digest (for README convenience, not required by verifier).
 # ---------------------------------------------------------------------------
 
 
@@ -193,7 +194,7 @@ def export_manifest_digest(ledger_scope: bytes, manifest_payload: dict) -> bytes
 
 
 # ---------------------------------------------------------------------------
-# Deterministic ZIP writer (§18.1).
+# Deterministic ZIP writer (?18.1).
 # `deterministic_zipinfo` is imported from `_lib.byte_utils`.
 # ---------------------------------------------------------------------------
 
@@ -203,8 +204,8 @@ def write_bytes(path: Path, data: bytes) -> None:
     path.write_bytes(data)
 
 
-def main() -> None:
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+def main(out_dir: Path) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     # 1) Load source events + payloads (append/001 and append/005).
     event_001_bytes = SOURCE_EVENT_001_FILE.read_bytes()
@@ -219,10 +220,10 @@ def main() -> None:
     assert payload_005["ledger_scope"] == ledger_scope
     assert payload_005["sequence"] == 1
 
-    # 2) Build 010-events.cbor (Core §18.4): 2-element dCBOR array of Event.
+    # 2) Build 010-events.cbor (Core ?18.4): 2-element dCBOR array of Event.
     events_cbor = b"\x82" + event_001_bytes + event_005_bytes
 
-    # 3) Canonical event hashes (Core §9.2) and Merkle leaf hashes (Core §11.3).
+    # 3) Canonical event hashes (Core ?9.2) and Merkle leaf hashes (Core ?11.3).
     canon_hash_0 = canonical_event_hash(ledger_scope, payload_001)
     canon_hash_1 = canonical_event_hash(ledger_scope, payload_005)
     leaf_hash_0 = merkle_leaf_hash(canon_hash_0)
@@ -230,20 +231,20 @@ def main() -> None:
     tree_head_hash_1 = leaf_hash_0
     tree_head_hash_2 = merkle_interior_hash(leaf_hash_0, leaf_hash_1)
 
-    # 4) Domain registry snapshot (Core §14.2) and binding (Core §14.3).
+    # 4) Domain registry snapshot (Core ?14.2) and binding (Core ?14.3).
     domain_registry_bytes = SOURCE_DOMAIN_REGISTRY_FILE.read_bytes()
     registry_digest = sha256(domain_registry_bytes)
     registry_digest_hex = registry_digest.hex()
     registry_binding = {
         "registry_digest": registry_digest,
-        "registry_format": 1,  # §14.3: 1 = dCBOR
+        "registry_format": 1,  # ?14.3: 1 = dCBOR
         "registry_version": "x-trellis-test/registry-009-v1",
         "bound_at_sequence": 0,
     }
 
-    write_bytes(OUT_DIR / "050-registries" / f"{registry_digest_hex}.cbor", domain_registry_bytes)
+    write_bytes(out_dir / "050-registries" / f"{registry_digest_hex}.cbor", domain_registry_bytes)
 
-    # 5) Signing-key registry snapshot (Core §8.5).
+    # 5) Signing-key registry snapshot (Core ?8.5).
     seed, pubkey_raw = load_issuer_key()
     kid = derive_kid(SUITE_ID, pubkey_raw)
     signing_key_entry = {
@@ -258,7 +259,7 @@ def main() -> None:
     }
     signing_key_registry_cbor = dcbor([signing_key_entry])
 
-    # 6) Checkpoints (Core §11.2) + signed checkpoint COSE_Sign1 (Core §7.4).
+    # 6) Checkpoints (Core ?11.2) + signed checkpoint COSE_Sign1 (Core ?7.4).
     checkpoint_payload_1 = {
         "version": 1,
         "scope": ledger_scope,
@@ -286,7 +287,7 @@ def main() -> None:
     checkpoints_cbor = b"\x82" + checkpoint_1_bytes + checkpoint_2_bytes
     head_checkpoint_digest = digest_2
 
-    # 7) Inclusion proofs (§18.5): map leaf_index -> InclusionProof.
+    # 7) Inclusion proofs (?18.5): map leaf_index -> InclusionProof.
     inclusion_proofs_obj = {
         0: {
             "leaf_index": 0,
@@ -303,23 +304,23 @@ def main() -> None:
     }
     inclusion_proofs_cbor = dcbor(inclusion_proofs_obj)
 
-    # 8) Consistency proofs (§18.5): one record linking 1 → 2 (RFC 6962 semantics).
+    # 8) Consistency proofs (Core sec.18.5): one record linking tree_size 1 to 2 (RFC 6962 semantics).
     consistency_proofs_obj = [
         {"from_tree_size": 1, "to_tree_size": 2, "proof_path": [leaf_hash_1]}
     ]
     consistency_proofs_cbor = dcbor(consistency_proofs_obj)
 
     # 9) Write the non-manifest archive members that the manifest will digest-bind.
-    write_bytes(OUT_DIR / "010-events.cbor", events_cbor)
-    write_bytes(OUT_DIR / "020-inclusion-proofs.cbor", inclusion_proofs_cbor)
-    write_bytes(OUT_DIR / "025-consistency-proofs.cbor", consistency_proofs_cbor)
-    write_bytes(OUT_DIR / "030-signing-key-registry.cbor", signing_key_registry_cbor)
-    write_bytes(OUT_DIR / "040-checkpoints.cbor", checkpoints_cbor)
+    write_bytes(out_dir / "010-events.cbor", events_cbor)
+    write_bytes(out_dir / "020-inclusion-proofs.cbor", inclusion_proofs_cbor)
+    write_bytes(out_dir / "025-consistency-proofs.cbor", consistency_proofs_cbor)
+    write_bytes(out_dir / "030-signing-key-registry.cbor", signing_key_registry_cbor)
+    write_bytes(out_dir / "040-checkpoints.cbor", checkpoints_cbor)
 
-    # 10) Human-facing members (§18.8, §18.9).
-    write_bytes(OUT_DIR / "090-verify.sh", trellis_cli_verify_script())
+    # 10) Human-facing members (?18.8, ?18.9).
+    write_bytes(out_dir / "090-verify.sh", trellis_cli_verify_script())
 
-    # README fields are normative (§18.9): scope, tree_size, head hash, posture,
+    # README fields are normative (?18.9): scope, tree_size, head hash, posture,
     # omitted checks, and verification invocation.
     posture_declaration = {
         "provider_readable": True,
@@ -334,12 +335,12 @@ def main() -> None:
         ),
     }
     omitted_payload_checks = []
-    # §18.9 README: human-facing JSON block must be real JSON (lowercase
+    # ?18.9 README: human-facing JSON block must be real JSON (lowercase
     # true/false/null), not a Python dict repr. sort_keys=True keeps two
     # runs byte-identical.
     posture_json = json.dumps(posture_declaration, indent=2, sort_keys=True)
     readme = (
-        "# Trellis Export (Fixture) — export/001-two-event-chain\n"
+        "# Trellis Export (Fixture) \u2014 export/001-two-event-chain\n"
         "\n"
         f"- scope (manifest.scope): `{ledger_scope.decode('utf-8')}`\n"
         "- tree_size (manifest.tree_size): `2`\n"
@@ -358,9 +359,9 @@ def main() -> None:
         "## Verify\n"
         "Run `./090-verify.sh` from this directory (or run your verifier directly).\n"
     ).encode("utf-8")
-    write_bytes(OUT_DIR / "098-README.md", readme)
+    write_bytes(out_dir / "098-README.md", readme)
 
-    # 11) Compute manifest digests (§18.3, §19 step 3) and write 000-manifest.cbor.
+    # 11) Compute manifest digests (?18.3, ?19 step 3) and write 000-manifest.cbor.
     manifest_payload = {
         "format": "trellis-export/1",
         "version": 1,
@@ -384,9 +385,9 @@ def main() -> None:
     }
     manifest_payload_bytes = dcbor(manifest_payload)
     signed_manifest_bytes = cose_sign1(seed, kid, manifest_payload_bytes)
-    write_bytes(OUT_DIR / "000-manifest.cbor", signed_manifest_bytes)
+    write_bytes(out_dir / "000-manifest.cbor", signed_manifest_bytes)
 
-    # 12) Assemble deterministic ZIP (§18.1, §18.2).
+    # 12) Assemble deterministic ZIP (?18.1, ?18.2).
     root_dir = f"trellis-export-{ledger_scope.decode('utf-8')}-2-{tree_head_hash_2.hex()[:8]}"
     members = [
         "000-manifest.cbor",
@@ -400,17 +401,17 @@ def main() -> None:
         "098-README.md",
     ]
 
-    zip_path = OUT_DIR / "expected-export.zip"
+    zip_path = out_dir / "expected-export.zip"
     with zipfile.ZipFile(zip_path, "w") as zf:
         for member in sorted(members):
-            data = (OUT_DIR / member).read_bytes()
+            data = (out_dir / member).read_bytes()
             arcname = f"{root_dir}/{member}"
-            # §18.1: arcnames MUST be ASCII so the ZIP "language encoding flag"
+            # ?18.1: arcnames MUST be ASCII so the ZIP "language encoding flag"
             # (general-purpose bit 11) stays cleared and two runs produce
             # byte-identical output under CPython's zipfile defaults.
             assert arcname.isascii(), arcname
             zf.writestr(deterministic_zipinfo(arcname), data)
-        # §18.1: external file attributes MUST be zero. CPython's
+        # ?18.1: external file attributes MUST be zero. CPython's
         # ZipFile._open_to_write overwrites any zero external_attr to
         # 0o600 << 16 before the central-directory entry is built; patch it
         # back to zero on every ZipInfo so the central directory bytes match
@@ -429,7 +430,7 @@ def main() -> None:
         "members": members,
         "notes": "Fixture ledger_state for export/001; pack listed members into deterministic ZIP.",
     }
-    write_bytes(OUT_DIR / "input-ledger-state.cbor", dcbor(ledger_state))
+    write_bytes(out_dir / "input-ledger-state.cbor", dcbor(ledger_state))
 
     # 14) Convenience: print stable digests for authoring `manifest.toml` and derivation.
     zip_digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
@@ -439,4 +440,20 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        description=(
+            "Regenerate fixtures/vectors/export/001-two-event-chain generator outputs "
+            "(authoring aid; not normative)."
+        )
+    )
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=_DEFAULT_EXPORT_001_VECTOR_DIR,
+        help=(
+            "Directory to receive generated artifact files "
+            "(default: committed fixture directory export/001-two-event-chain/)."
+        ),
+    )
+    args = parser.parse_args()
+    main(args.out_dir.resolve())

@@ -20,6 +20,7 @@ trellis-cddl = { path = "../trellis-cddl" }
 integrity-bundle = { path = "../../../integrity-stack/crates/integrity-bundle" }
 trellis-store-postgres-async = { path = "../trellis-store-postgres-async" }
 trellis-types = { path = "../trellis-types" }
+trellis-export-writer = { path = "../trellis-export-writer", features = ["fixture-inputs"] }
 integrity-verify = { path = "../../../integrity-stack/crates/integrity-verify" }
 trellis-verify-wos = { path = "../trellis-verify-wos" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

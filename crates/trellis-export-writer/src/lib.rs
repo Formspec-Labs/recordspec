@@ -23,6 +23,12 @@ pub use integrity_hpke::{HPKE_SUITE1_AAD, HPKE_SUITE1_INFO};
 use stack_common_error::StackError;
 use trellis_types::StoredEvent;
 
+#[cfg(any(test, feature = "fixture-inputs"))]
+mod export_001_fixture_input;
+
+#[cfg(any(test, feature = "fixture-inputs"))]
+pub use export_001_fixture_input::export_001_writer_input;
+
 const EVENT_DOMAIN: &str = "trellis-event-v1";
 const CHECKPOINT_DOMAIN: &str = "trellis-checkpoint-v1";
 const MERKLE_LEAF_DOMAIN: &str = "trellis-merkle-leaf-v1";
@@ -1081,77 +1087,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn export_001_fixture_matches_generator_zip_byte_for_byte() {
+    fn given_export_001_fixture_inputs_when_write_export_then_zip_and_members_match_fixture() {
         let root = fixtures_root();
-        let event_001_bytes = read(
-            &root,
-            "append/001-minimal-inline-payload/expected-event.cbor",
-        );
-        let event_005_bytes = read(&root, "append/005-prior-head-chain/expected-event.cbor");
-        let payload_001 = read(
-            &root,
-            "append/001-minimal-inline-payload/expected-event-payload.cbor",
-        );
-        let payload_005 = read(
-            &root,
-            "append/005-prior-head-chain/expected-event-payload.cbor",
-        );
-        let registry = read(
-            &root,
-            "append/009-signing-key-revocation/input-domain-registry.cbor",
-        );
-        let (private_seed, public_key) =
-            parse_fixture_key(&read(&root, "_keys/issuer-001.cose_key"));
-        let input = ExportWriterInput {
-            scope: b"test-response-ledger".to_vec(),
-            events: vec![
-                StoredEvent::new(
-                    b"test-response-ledger".to_vec(),
-                    0,
-                    payload_001,
-                    event_001_bytes,
-                ),
-                StoredEvent::new(
-                    b"test-response-ledger".to_vec(),
-                    1,
-                    payload_005,
-                    event_005_bytes,
-                ),
-            ],
-            registries: vec![RegistrySnapshot {
-                bytes: registry,
-                registry_format: 1,
-                registry_version: "x-trellis-test/registry-009-v1".to_string(),
-                bound_at_sequence: 0,
-            }],
-            signing_key: SigningKeyMaterial {
-                private_seed,
-                public_key,
-                valid_from: TrellisTimestamp::new(1_745_000_000, 0).expect("valid timestamp"),
-                valid_to: None,
-            },
-            generator: "x-trellis-test/export-generator-001".to_string(),
-            generated_at: TrellisTimestamp::new(1_745_000_060, 0).expect("valid timestamp"),
-            checkpoint_timestamps: vec![
-                TrellisTimestamp::new(1_745_000_050, 0).expect("valid timestamp"),
-                TrellisTimestamp::new(1_745_000_060, 0).expect("valid timestamp"),
-            ],
-            posture_declaration: PostureDeclaration {
-                provider_readable: true,
-                reader_held: false,
-                delegated_compute: false,
-                external_anchor_required: false,
-                external_anchor_name: None,
-                recovery_without_user: true,
-                metadata_leakage_summary: "Fixture export: envelope reveals event_type, authored_at (1s granularity), retention_tier, classification, ledger_scope, and COSE kid.".to_string(),
-            },
-            omitted_payload_checks: Vec::new(),
-            readme_title: "Trellis Export (Fixture) \u{2014} export/001-two-event-chain".to_string(),
-            root_dir_override: None,
-            external_anchors: Vec::new(),
-            extensions: None,
-        };
-
+        let input = crate::export_001_writer_input(root.as_path());
         let package = write_export(input).expect("write export");
         assert_eq!(
             package.root_dir,
@@ -1275,27 +1213,6 @@ mod tests {
         std::fs::read(root.join(relative)).unwrap_or_else(|error| {
             panic!("failed to read fixture {relative}: {error}");
         })
-    }
-
-    fn parse_fixture_key(bytes: &[u8]) -> ([u8; 32], [u8; 32]) {
-        let value = decode_cbor_value(bytes).expect("valid COSE key fixture");
-        let map = value.as_map().expect("COSE key is a map");
-        let private_seed = integer_label_bytes(map, -4);
-        let public_key = integer_label_bytes(map, -2);
-        (
-            private_seed.try_into().expect("seed is 32 bytes"),
-            public_key.try_into().expect("pubkey is 32 bytes"),
-        )
-    }
-
-    fn integer_label_bytes(map: &[(Value, Value)], label: i128) -> Vec<u8> {
-        map.iter()
-            .find(|(key, _)| {
-                key.as_integer()
-                    .is_some_and(|integer| i128::from(integer) == label)
-            })
-            .and_then(|(_, value)| value.as_bytes().cloned())
-            .unwrap_or_else(|| panic!("missing integer label {label}"))
     }
 
     fn root_from_inclusion_proof(
