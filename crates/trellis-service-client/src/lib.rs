@@ -126,6 +126,19 @@ pub struct SubstrateAppendRequest {
     pub client_attestation: Option<ClientAttestation>,
 }
 
+/// JSON body for `POST /v1/scopes/{scope}/events`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubstrateAppendBody {
+    pub event_type: String,
+    pub idempotency_key: String,
+    pub actor: AppendActor,
+    pub payload: serde_json::Value,
+    pub compute_context: ComputeContext,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_attestation: Option<ClientAttestation>,
+}
+
 impl SubstrateAppendRequest {
     /// Builds a request for an already-typed JSON event payload.
     ///
@@ -202,8 +215,31 @@ impl SubstrateAppendRequest {
         self
     }
 
+    #[must_use]
+    pub fn body(&self) -> SubstrateAppendBody {
+        SubstrateAppendBody {
+            event_type: self.event_type.clone(),
+            idempotency_key: self.idempotency_key.clone(),
+            actor: self.actor.clone(),
+            payload: self.payload.clone(),
+            compute_context: self.compute_context.clone(),
+            client_attestation: self.client_attestation.clone(),
+        }
+    }
+
     fn validate(&self) -> Result<(), StackError> {
         validate_scope(&self.scope)?;
+        self.body().validate()?;
+        Ok(())
+    }
+}
+
+impl SubstrateAppendBody {
+    /// Validates route-independent append body fields.
+    ///
+    /// # Errors
+    /// Returns an error when the body is missing load-bearing wire fields.
+    pub fn validate(&self) -> Result<(), StackError> {
         validate_required("event_type", &self.event_type)?;
         validate_required("idempotency_key", &self.idempotency_key)?;
         validate_required("actor.kind", &self.actor.kind)?;
@@ -213,6 +249,10 @@ impl SubstrateAppendRequest {
             &self.compute_context.declaration_id,
         )?;
         validate_required("compute_context.actor", &self.compute_context.actor)?;
+        if let Some(attestation) = &self.client_attestation {
+            validate_required("client_attestation.kid", &attestation.kid)?;
+            validate_required("client_attestation.cose_sign1", &attestation.cose_sign1)?;
+        }
         Ok(())
     }
 }
@@ -463,7 +503,7 @@ impl SubstrateClient for TrellisServiceClient {
         let response = self
             .request(reqwest::Method::POST, &path, &request.tenant_scope)
             .header(IDEMPOTENCY_KEY_HEADER, request.idempotency_key.as_str())
-            .json(&request)
+            .json(&request.body())
             .send()
             .await
             .map_err(|error| StackError::unavailable(format!("trellis append failed: {error}")))?;

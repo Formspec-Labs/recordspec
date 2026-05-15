@@ -1,0 +1,36 @@
+[package]
+name = "trellis-server"
+version.workspace = true
+edition.workspace = true
+description = "Trellis substrate HTTP service"
+license.workspace = true
+
+[dependencies]
+async-trait = "0.1"
+axum = "0.8"
+ciborium = "0.2"
+hex = "0.4"
+http = "1"
+integrity-cbor = { path = "../../../integrity-stack/crates/integrity-cbor", features = ["json"] }
+jsonwebtoken = "9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.8", features = ["postgres", "runtime-tokio-rustls"] }
+stack-common-auth = { path = "../../../stack-common/crates/stack-common-auth" }
+stack-common-error = { path = "../../../stack-common/crates/stack-common-error" }
+stack-common-http = { path = "../../../stack-common/crates/stack-common-http" }
+stack-common-idempotency = { path = "../../../stack-common/crates/stack-common-idempotency", default-features = false, features = ["replay"] }
+stack-common-ops = { path = "../../../stack-common/crates/stack-common-ops" }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+trellis-cddl = { path = "../trellis-cddl" }
+trellis-core = { path = "../trellis-core" }
+trellis-export-writer = { path = "../trellis-export-writer" }
+trellis-server-ports = { path = "../trellis-server-ports" }
+trellis-service-client = { path = "../trellis-service-client" }
+trellis-store-postgres-async = { path = "../trellis-store-postgres-async" }
+trellis-types = { path = "../trellis-types" }
+wos-events = { path = "../../../work-spec/crates/wos-events" }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
