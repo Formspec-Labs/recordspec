@@ -51,13 +51,13 @@ Apply after stack-wide heuristics (in [`../VISION.md`](../VISION.md)):
 
 **Canonical encoding + signature suite.** dCBOR (RFC 8949 §4.2.2). Ed25519 over COSE_Sign1 (`alg = -8`), with `suite_id` registry reserving ML-DSA / SLH-DSA / hybrid codepoints. SHA-256 hash construction with domain separation tags. HPKE Base-mode payload-key wrap. COSE_Sign1 checkpoints over `(tree_size, tree_head_hash, suite_id, timestamp, anchor_ref?)`.
 
-**Center-vs-adapter.** Center: `trellis-core` + `trellis-types` + `trellis-cddl` + `trellis-cose` + `trellis-verify`. Traits: storage, KMS, anchor target. Adapters: `trellis-store-memory`, `trellis-store-postgres-async`, `trellis-verify-wos`; anchor substrates via `AnchorAdapter` trait (adopters pick OpenTimestamps / Rekor / Trillian per-deployment; see spike in `thoughts/specs/2026-04-24-anchor-substrate-spike.md`).
+**Center-vs-adapter.** Center: `trellis-core` + `trellis-types` + `trellis-cddl`, with byte primitives owned by sibling `integrity-*` crates. Service boundary: `trellis-server-ports`, `trellis-service-client`, `trellis-server`, and `trellis-export-writer`. Adapters: `trellis-store-memory`, `trellis-store-postgres-async`, `trellis-verify-wos`, and interop crates; anchor substrates via `AnchorAdapter` trait (adopters pick OpenTimestamps / Rekor / Trillian per deployment; see spike in `thoughts/specs/2026-04-24-anchor-substrate-spike.md`).
 
 **Consumer crate boundary.** If code needs WOS names, Formspec field semantics, portal workflows, intake handoff rules, respondent/case-ledger policy, or consumer-specific verification policy, it belongs outside Trellis center crates. Put it in an adapter or binding crate such as `trellis-verify-wos`, `wos-*`, or `formspec-*`, and pass only stable Trellis types, opaque payloads, extension namespaces, or trait calls across the boundary.
 
-**Verification independence contract** (Core §16) is load-bearing: verifiers MUST NOT depend on derived artifacts, workflow runtime, or mutable DBs. Keep `trellis-verify` free of non-essential dependencies.
+**Verification independence contract** (Core §16) is load-bearing: verifiers MUST NOT depend on derived artifacts, workflow runtime, or mutable DBs. Keep `integrity-verify` and Trellis/WOS verifier adapters free of non-essential dependencies.
 
-**Downstream consumers.** Trellis is on our build track, co-engineered with consumers — not an external dependency they wait on. The primary downstream consumer today is the `wos-server` reference implementation, whose `EventStore` port composes `trellis-store-postgres-async` (canonical events table) plus an in-database projections schema. End-state architectural framing for that consumer: [`../workspec-server/crates/wos-server/VISION.md`](../workspec-server/crates/wos-server/VISION.md). The Phase-1 envelope invariants (`specs/trellis-core.md`) are the byte commitments wos-server's EventStore depends on; per-class DEK key-bag wrapping per [ADR-0074](../thoughts/adr/0074-formspec-native-field-level-transparency.md) inherits the same envelope discipline. "Case ledger" (Core §1.2) is the canonical scope name; "Respondent Ledger" / "Subject Ledger" naming is retired downstream when WOS-bound.
+**Downstream consumers.** Trellis is on our build track, co-engineered with consumers — not an external dependency they wait on. The primary downstream consumer today is the `wos-server` reference implementation, which calls Trellis through `trellis-service-client` and keeps WOS operational storage/projections outside the canonical substrate. End-state architectural framing for that consumer: [`../workspec-server/crates/wos-server/VISION.md`](../workspec-server/crates/wos-server/VISION.md). The Phase-1 envelope invariants (`specs/trellis-core.md`) are the byte commitments WOS append/export paths depend on; per-class DEK key-bag wrapping per [ADR-0074](../thoughts/adr/0074-formspec-native-field-level-transparency.md) inherits the same envelope discipline. "Case ledger" (Core §1.2) is the canonical scope name; "Respondent Ledger" / "Subject Ledger" naming is retired downstream when WOS-bound.
 
 ## Spec authoring contract
 
@@ -71,7 +71,7 @@ Apply after stack-wide heuristics (in [`../VISION.md`](../VISION.md)):
 # Targeted
 cargo check --workspace
 cargo nextest run -p trellis-core
-cargo nextest run -p trellis-verify
+cargo nextest run -p trellis-verify-wos
 cargo nextest run -p trellis-conformance         # full-corpus replay (G-4 oracle)
 
 # Full
