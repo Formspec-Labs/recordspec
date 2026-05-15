@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Trellis verifier-isolation CI assertion.
 #
-# Asserts that `trellis-verify`'s dependency graph does NOT include any
+# Asserts that `integrity-verify`'s dependency graph does NOT include any
 # HPKE-or-related crypto crate. The Phase-1 verifier MUST stay free of
 # HPKE so an offline core-bytes verify (Core §16 — Verification
 # Independence) does not pull in the HPKE / X25519 / AEAD / HKDF
@@ -11,11 +11,11 @@
 #   - `trellis-hpke` is a sibling crate at the same level as
 #     `trellis-core` / `trellis-cose`. The boundary is what makes Core
 #     §16 enforceable structurally (not just by prose discipline).
-#   - A future change to `trellis-cose` that pulls `trellis-hpke` in as
+#   - A future change to `integrity-cose` that pulls HPKE helpers in as
 #     a dep would silently breach the verifier-isolation invariant
-#     because every consumer of `trellis-cose` (including
-#     `trellis-verify`) would inherit HPKE.
-#   - This script is the loud-fail gate: `cargo tree -p trellis-verify`
+#     because every consumer of `integrity-cose` (including
+#     `integrity-verify`) would inherit HPKE.
+#   - This script is the loud-fail gate: `cargo tree -p integrity-verify`
 #     MUST NOT mention `hpke`, `x25519-dalek`, `chacha20poly1305`, or
 #     `hkdf`. Run via `make check-verifier-isolation` (Trellis-local)
 #     or directly in CI.
@@ -38,18 +38,18 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FORBIDDEN_RE='hpke|x25519-dalek|chacha20poly1305|hkdf'
 
 # Always target Trellis's own workspace manifest directly. The parent
-# repository root is *not* guaranteed to expose `trellis-verify` as a
-# package ID, which causes `cargo tree -p trellis-verify` to fail before
+# repository root is *not* guaranteed to expose `integrity-verify` as a
+# package ID, which causes `cargo tree -p integrity-verify` to fail before
 # we can evaluate forbidden deps.
 #
 # Test hook: `TRELLIS_MANIFEST_PATH` may override this path in unit tests.
 TRELLIS_MANIFEST="${TRELLIS_MANIFEST_PATH:-$ROOT_DIR/Cargo.toml}"
 
-echo "Asserting trellis-verify is HPKE-clean (Core §16; ADR 0009)..."
+echo "Asserting integrity-verify is HPKE-clean (Core §16; ADR 0009)..."
 echo "  manifest: $TRELLIS_MANIFEST"
 echo "  forbidden: $FORBIDDEN_RE"
 
-# `cargo tree -p trellis-verify` lists every dep + transitive in the
+# `cargo tree -p integrity-verify` lists every dep + transitive in the
 # graph. We grep for any forbidden crate name; a hit (exit 0) is a
 # regression. We invert by treating a hit as failure and absence
 # (`grep -E ... || true` returning empty) as success.
@@ -59,7 +59,7 @@ echo "  forbidden: $FORBIDDEN_RE"
 if [ -n "${TRELLIS_VERIFY_TREE_OUTPUT_FILE:-}" ]; then
     TREE_OUTPUT="$(cat "$TRELLIS_VERIFY_TREE_OUTPUT_FILE")"
 else
-    TREE_OUTPUT="$(cargo tree -p trellis-verify --edges normal,build,dev --manifest-path "$TRELLIS_MANIFEST" 2>&1)"
+    TREE_OUTPUT="$(cargo tree -p integrity-verify --edges normal,build,dev --manifest-path "$TRELLIS_MANIFEST" 2>&1)"
 fi
 
 # Filter the tree to lines that mention any of the forbidden crates.
@@ -69,7 +69,7 @@ HITS="$(printf '%s\n' "$TREE_OUTPUT" | grep -E "\b($FORBIDDEN_RE)\b" || true)"
 
 if [ -n "$HITS" ]; then
     echo
-    echo "FAIL: trellis-verify dependency graph includes a forbidden HPKE-related crate." >&2
+    echo "FAIL: integrity-verify dependency graph includes a forbidden HPKE-related crate." >&2
     echo "      Core §16 (Verification Independence) requires the offline verifier path" >&2
     echo "      to not depend on HPKE / X25519 / AEAD / HKDF. ADR 0009 §'Architectural" >&2
     echo "      posture' explains why; the sibling-crate firewall is what enforces it." >&2
@@ -83,5 +83,5 @@ if [ -n "$HITS" ]; then
     exit 1
 fi
 
-echo "OK: trellis-verify is HPKE-clean."
+echo "OK: integrity-verify is HPKE-clean."
 exit 0

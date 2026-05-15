@@ -284,7 +284,8 @@
         "wos.kernel.commit_attempt_failure",
         "wos.governance.authorization_rejected",
         "wos.kernel.instance_migrated",
-        "wos.kernel.migration_pin_changed"
+        "wos.kernel.migration_pin_changed",
+        "substrate.append.response_submitted"
       ]
     },
     "EventTypeRegistry": {
@@ -484,11 +485,12 @@
       ],
       "properties": {
         "verified": {
-          "const": true
+          "type": "boolean",
+          "description": "True only when the emitted export bundle passed the same independent verifier used in conformance (structure and integrity) at append time."
         },
         "profileId": {
           "type": "integer",
-          "const": 2
+          "enum": [1, 2]
         },
         "eventType": {
           "$ref": "#/$defs/EventType"

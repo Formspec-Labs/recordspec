@@ -160,11 +160,13 @@ def check_defs(schema: dict, server_source: str, errors: list[str]) -> None:
         return
 
     server_events = parse_wos_event_types(server_source)
+    formspec_event = parse_const_str(server_source, "FORMSPEC_RESPONSE_SUBMITTED")
+    expected_events = server_events + [formspec_event]
     schema_events = defs["EventType"].get("enum")
-    if schema_events != server_events:
+    if schema_events != expected_events:
         errors.append(
-            "EventType enum drifted from trellis-server WOS_EVENT_TYPES: "
-            f"expected {server_events}, got {schema_events}"
+            "EventType enum drifted from trellis-server admitted literals: "
+            f"expected {expected_events}, got {schema_events}"
         )
     if len(schema_events or []) != len(set(schema_events or [])):
         errors.append("EventType enum contains duplicate values")
@@ -182,18 +184,28 @@ def check_defs(schema: dict, server_source: str, errors: list[str]) -> None:
             f"expected {registry_version}, got {schema_registry_version}"
         )
 
-    profile_id = parse_const_u64(server_source, "PROFILE_ID")
+    if "profile_id_for_admitted_event" not in server_source:
+        errors.append("trellis-server must define profile_id_for_admitted_event dispatch")
     schema_profile_id = (
         defs["VerificationReceipt"]
         .get("properties", {})
         .get("profileId", {})
-        .get("const")
     )
-    if schema_profile_id != profile_id:
+    if schema_profile_id.get("const") is not None:
         errors.append(
-            "VerificationReceipt.profileId drifted from server constant: "
-            f"expected {profile_id}, got {schema_profile_id}"
+            "VerificationReceipt.profileId must not const-lock a single global profile"
         )
+    if schema_profile_id.get("enum") != [1, 2]:
+        errors.append(
+            "VerificationReceipt.profileId must allow WOS profile 1 and Formspec profile 2"
+        )
+    schema_verified = (
+        defs["VerificationReceipt"]
+        .get("properties", {})
+        .get("verified", {})
+    )
+    if schema_verified.get("type") != "boolean":
+        errors.append("VerificationReceipt.verified must be type boolean (not const-locked)")
 
     append_required = set(defs["SubstrateAppendBody"].get("required", []))
     expected_append_required = {
@@ -225,6 +237,29 @@ def check_defs(schema: dict, server_source: str, errors: list[str]) -> None:
         )
 
 
+def check_openapi_append_contract(errors: list[str]) -> None:
+    import subprocess
+
+    result = subprocess.run(
+        [
+            "cargo",
+            "test",
+            "-p",
+            "trellis-server",
+            "openapi_append_contract_matches_json_schema",
+            "--",
+            "--quiet",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        errors.append(f"OpenAPI append contract drift (run cargo test -p trellis-server): {detail}")
+
+
 def main() -> int:
     errors: list[str] = []
     try:
@@ -233,6 +268,7 @@ def main() -> int:
         client_source = CLIENT_PATH.read_text(encoding="utf-8")
         check_defs(schema, server_source, errors)
         check_operations(schema, server_source, client_source, errors)
+        check_openapi_append_contract(errors)
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         errors.append(str(exc))
 

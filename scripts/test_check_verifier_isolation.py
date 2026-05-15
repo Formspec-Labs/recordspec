@@ -33,22 +33,22 @@ class TestCheckVerifierIsolation(unittest.TestCase):
 
     def test_passes_when_no_forbidden_crates_present(self) -> None:
         result = self._run(
-            "trellis-verify v0.1.0\n"
-            "├── trellis-cose v0.1.0\n"
+            "integrity-verify v0.1.0\n"
+            "├── integrity-cose v0.1.0\n"
             "└── trellis-types v0.1.0\n"
         )
         self.assertEqual(result.returncode, 0, msg=result.stderr)
-        self.assertIn("OK: trellis-verify is HPKE-clean.", result.stdout)
+        self.assertIn("OK: integrity-verify is HPKE-clean.", result.stdout)
         self.assertIn("manifest: /tmp/trellis-test-manifest/Cargo.toml", result.stdout)
 
     def test_fails_when_forbidden_crate_present(self) -> None:
         result = self._run(
-            "trellis-verify v0.1.0\n"
+            "integrity-verify v0.1.0\n"
             "└── trellis-types v0.1.0\n"
             "    └── hkdf v0.12.4\n"
         )
         self.assertEqual(result.returncode, 1)
-        self.assertIn("FAIL: trellis-verify dependency graph includes", result.stderr)
+        self.assertIn("FAIL: integrity-verify dependency graph includes", result.stderr)
         self.assertIn("hkdf v0.12.4", result.stderr)
 
 
