@@ -1,4 +1,4 @@
-// Rust guideline compliant 2026-05-15
+// Rust guideline compliant 2026-02-21
 //! Shared Trellis service HTTP client contract.
 //!
 //! Applications append to Trellis through this crate instead of each carrying a
@@ -16,8 +16,29 @@
 //!   deserializes as [`ProvenanceRecord`] and must agree with the canonical event literal carried in
 //!   `event_type` (`WosEventAdmissionPolicy`).
 //! - **Formspec substrate** — construct via [`SubstrateAppendRequest::new_json`] with Formspec's aggregate
-//!   envelope (`aggregateType`, `aggregateId`, `payload`). Event literals live under the `substrate.append.*`
-//!   namespace (for example `substrate.append.response_submitted`) and are checked by `FormspecAppendAdmissionPolicy`.
+//!   envelope (`aggregateType`, `aggregateId`, `payload`). Today Trellis routes to [`FormspecAppendAdmissionPolicy`]
+//!   only when `event_type` equals the configured Formspec append literal (`substrate.append.response_submitted`);
+//!   additional Formspec literals require extending `RoutedEventAdmissionPolicy` alongside admission updates.
+//!
+//! ## Trust boundaries
+//!
+//! **Case scope versus URL scope (TWREF-005).** The `{scope}` path segment names a Trellis deployment namespace
+//! (tenant/workspace routing), not a governed WOS case identity by itself. Callers such as `wos-server` or
+//! `formspec-server` map their product identifiers into that scope and tenant headers. Trellis admission enforces
+//! event shape and registry literals for whatever scope is supplied; it does not substitute WOS relationship
+//! checks from other services.
+//!
+//! **Governance overlay versus substrate admission (TWREF-064).** A reference WOS HTTP surface may publish only a
+//! subset of WOS event literals while still delegating to Trellis for append. Trellis `WosEventAdmissionPolicy`
+//! admits the full `wos-events` substrate registry for callers that bear Trellis service credentials. Treat Trellis
+//! bearer scope plus admission as the substrate trust root for vocabulary allowance; WOS HTTP routing remains a
+//! narrower product gate until shared authorizers align.
+//!
+//! **Why two dialects share one crate (TWREF-065).** WOS provenance JSON and Formspec aggregate JSON are different
+//! wire shapes but share one HTTP route. `RoutedEventAdmissionPolicy` sends almost every literal through
+//! `WosEventAdmissionPolicy`; only the single Formspec append literal (`substrate.append.response_submitted`) is routed to
+//! `FormspecAppendAdmissionPolicy`. Clients must set `event_type` consistently with the constructor used so admission and
+//! profile id dispatch stay aligned.
 
 #![forbid(unsafe_code)]
 
@@ -28,10 +49,55 @@ use serde::{Deserialize, Serialize};
 use stack_common_error::StackError;
 use stack_common_http::idempotency::IDEMPOTENCY_KEY_HEADER;
 use stack_common_http::tenant::{HeaderConfig, TenantScope};
+use utoipa::openapi::{RefOr, Schema};
+use utoipa::openapi::schema::{ObjectBuilder, SchemaType, Type};
 use utoipa::ToSchema;
-use wos_events::ProvenanceRecord;
+use wos_events::{ProvenanceRecord, SUBSTRATE_CANONICAL_EVENT_LITERALS};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Formspec aggregate append `eventType` literal admitted at the Trellis HTTP edge.
+///
+/// `trellis-server` re-exports this value as `FORMSPEC_RESPONSE_SUBMITTED`. The Trellis HTTP JSON
+/// schema `$defs.EventType` enum must include the same literal (see `check-http-api-schema.py`).
+pub const FORMSPEC_APPEND_EVENT_TYPE_LITERAL: &str = "substrate.append.response_submitted";
+
+#[must_use]
+fn trellis_admitted_event_type_openapi_schema() -> RefOr<Schema> {
+    let mut values: Vec<String> = SUBSTRATE_CANONICAL_EVENT_LITERALS
+        .iter()
+        .copied()
+        .map(str::to_string)
+        .collect();
+    values.push(FORMSPEC_APPEND_EVENT_TYPE_LITERAL.to_string());
+    values.sort();
+    ObjectBuilder::new()
+        .schema_type(SchemaType::new(Type::String))
+        .enum_values(Some(values))
+        .description(Some(
+            "Admitted Trellis append literals: `wos-events` substrate registry plus Formspec append.",
+        ))
+        .into()
+}
+
+/// Maximum Trellis HTTP error response body bytes folded into [`StackError`] text.
+///
+/// Reverse proxies often return HTML pages; cap inclusion so logs and downstream copies stay bounded.
+const APPEND_HTTP_ERROR_BODY_PREVIEW_BYTES: usize = 8 * 1024;
+
+#[must_use]
+fn truncate_utf8_body_for_error_preview(mut body: String, max_bytes: usize) -> String {
+    if body.len() <= max_bytes {
+        return body;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !body.is_char_boundary(end) {
+        end -= 1;
+    }
+    body.truncate(end);
+    body.push_str("… (truncated)");
+    body
+}
 
 /// Actor block carried by the Trellis append wire body.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -118,8 +184,9 @@ impl ComputeContext {
 /// Optional direct-client attestation block.
 ///
 /// **Trellis-server (2026-05-15):** Requests that include this field are rejected with
-/// `400`; `cose_sign1` is not cryptographically verified yet. Keep the field absent until
-/// ScopeAuthorizer-backed verification lands (TWREF-022 / ADR 0099 / ADR 0103).
+/// `400`; `cose_sign1` is not cryptographically verified yet. Omit the field until
+/// verification lands (TWREF-0103). Durable deployments without `TRELLIS_PERMISSIVE_SCOPE_AUTH`
+/// use the same HTTP admission as tests (TWREF-022 narrowing).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientAttestation {
@@ -150,6 +217,7 @@ pub struct SubstrateAppendRequest {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SubstrateAppendBody {
+    #[schema(schema_with = trellis_admitted_event_type_openapi_schema)]
     pub event_type: String,
     pub idempotency_key: String,
     pub actor: AppendActor,
@@ -534,9 +602,13 @@ impl SubstrateClient for TrellisServiceClient {
             .await
             .map_err(|error| StackError::unavailable(format!("trellis append failed: {error}")))?;
         if !response.status().is_success() {
+            let status = response.status();
+            let body = truncate_utf8_body_for_error_preview(
+                response.text().await.unwrap_or_default(),
+                APPEND_HTTP_ERROR_BODY_PREVIEW_BYTES,
+            );
             return Err(StackError::unavailable(format!(
-                "trellis append returned HTTP {}",
-                response.status()
+                "trellis append returned HTTP {status}: {body}"
             )));
         }
         let result = response

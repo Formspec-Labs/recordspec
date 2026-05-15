@@ -109,7 +109,17 @@ impl S3CompatibleArtifactStore {
         Ok(built)
     }
 
-    #[cfg(test)]
+    /// Binds bucket/prefix semantics to an injected [`ObjectStore`] backend.
+    ///
+    /// Use [`Self::new`] in production so a lazy S3-compatible client is built from [`S3ObjectConfig`].
+    ///
+    /// This constructor is not `cfg(test)` because downstream workspaces (for example `formspec-server`
+    /// integration tests) compile this crate without `cfg(test)` while still needing a shared in-memory
+    /// backend for hermetic Trellis append + Formspec integrity verification.
+    ///
+    /// Prefer [`TrellisServerState::with_artifact_store`](https://docs.rs/trellis-server/latest/trellis_server/struct.TrellisServerState.html#method.with_artifact_store)
+    /// on the Trellis side so append-side `put` bytes match verifier-side `get` paths for `s3://bucket/…` refs.
+    #[must_use]
     pub fn from_object_store_for_test(
         config: S3ObjectConfig,
         prefix: impl Into<String>,
@@ -120,13 +130,6 @@ impl S3CompatibleArtifactStore {
             prefix: prefix.into(),
             store: Mutex::new(Some(store)),
         }
-    }
-
-    #[cfg(test)]
-    pub fn object_store_arc_for_test(
-        &self,
-    ) -> Result<Arc<dyn object_store::ObjectStore + Send + Sync>, StackError> {
-        self.object_store()
     }
 
     fn location_for_key(&self, key: &str) -> Result<String, StackError> {
@@ -173,6 +176,15 @@ impl ArtifactStore for S3CompatibleArtifactStore {
         let store = self.object_store()?;
         let bytes = stack_common_object_store::read_object_bytes(store.as_ref(), &location).await?;
         Ok(Some(bytes))
+    }
+}
+
+#[cfg(test)]
+impl S3CompatibleArtifactStore {
+    pub(crate) fn object_store_arc_for_test(
+        &self,
+    ) -> Result<Arc<dyn object_store::ObjectStore + Send + Sync>, StackError> {
+        self.object_store()
     }
 }
 
@@ -292,6 +304,8 @@ pub struct ScopeAuthorization<'a> {
     pub actor: &'a str,
     pub scope: &'a [u8],
     pub action: ScopeAction,
+    /// Claim names from the verified bearer JWT (`TrellisClaims.scopes`), when a token was presented.
+    pub jwt_scopes: Option<&'a [String]>,
 }
 
 /// Scope authorization port.

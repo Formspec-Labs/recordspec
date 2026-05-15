@@ -1,5 +1,15 @@
 // Rust guideline compliant 2026-02-21
 //! WOS-aware verification composed on Trellis integrity verification.
+//!
+//! Verification proves Trellis bundle structure, checkpoints, and signatures, then applies WOS-domain rules through
+//! [`WosRecordValidator`]. The validator installs [`WosFormspecResolver`] so Formspec intake digest material carried
+//! inside WOS-shaped provenance still participates in certificate / response-hash checks on the same export bundle
+//! bytes (TWREF-025). Formspec producers append under `substrate.append.*` while WOS producers append under `wos.*`,
+//! but both land in one ledger and one export ZIP interchange; this entry therefore remains the correct verifier for
+//! Formspec-origin bundles unless a future split introduces a Formspec-only `RecordValidator` with different domain
+//! findings. Operational `chain_hash` fields maintained inside `wos-server` projections are a separate diagnostic
+//! surface from the Trellis proof chain this crate audits; documentation and APIs must not present them as
+//! interchangeable legal-grade proof (TWREF-037).
 
 #![forbid(unsafe_code)]
 
@@ -19,7 +29,13 @@ pub use certificate_resolver::WosFormspecResolver;
 pub use findings::{WosFinding, WosVerificationReport};
 pub use validator::WosRecordValidator;
 
-/// Verifies a WOS export ZIP.
+/// Verifies a Trellis export ZIP using structural Trellis checks plus WOS-domain validation.
+///
+/// Callers pass raw ZIP bytes as emitted by `trellis-export-writer`. The report bundles structural failures with
+/// WOS-specific findings from [`WosRecordValidator`], including Formspec response digest resolution for applicable
+/// payloads (TWREF-025). This is the verifier entry for stacks that delegate proof to Trellis: it does not consult
+/// `wos-server` operational chain hashes, which track projection convenience rather than independent cryptographic
+/// proof (TWREF-037).
 #[must_use]
 pub fn verify_export_zip(zip: &[u8]) -> WosVerificationReport {
     integrity_verify::trellis::verify_export_zip_with_validator(zip, &WosRecordValidator).into()

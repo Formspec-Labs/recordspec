@@ -4,24 +4,24 @@
 #![forbid(unsafe_code)]
 
 use integrity_verify::trellis::{DomainEvent, DomainFinding, Severity};
+use wos_events::GOVERNANCE_DETERMINATION_WIRE_EVENT_PREFIX;
 
 use crate::event_types::{
-    WOS_GOVERNANCE_DETERMINATION_PREFIX, WOS_GOVERNANCE_DETERMINATION_RESCINDED_EVENT_TYPE,
-    WOS_GOVERNANCE_REINSTATED_EVENT_TYPE,
+    wos_governance_determination_rescinded_event_type, wos_governance_reinstated_event_type,
 };
 
 pub(crate) fn validate_rescission_terminality(events: &[DomainEvent]) -> Vec<DomainFinding> {
     let mut terminal = false;
     let mut findings = Vec::new();
     for event in events {
-        if event.event_type == WOS_GOVERNANCE_DETERMINATION_RESCINDED_EVENT_TYPE {
+        if event.event_type == wos_governance_determination_rescinded_event_type() {
             terminal = true;
-        } else if event.event_type == WOS_GOVERNANCE_REINSTATED_EVENT_TYPE {
+        } else if event.event_type == wos_governance_reinstated_event_type() {
             terminal = false;
         } else if terminal
             && event
                 .event_type
-                .starts_with(WOS_GOVERNANCE_DETERMINATION_PREFIX)
+                .starts_with(GOVERNANCE_DETERMINATION_WIRE_EVENT_PREFIX)
         {
             findings.push(DomainFinding::new(
                 "rescission_terminality_violation",

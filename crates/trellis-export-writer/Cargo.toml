@@ -19,6 +19,7 @@ integrity-hpke = { path = "../../../integrity-stack/crates/integrity-hpke" }
 serde_json = "1"
 stack-common-error = { path = "../../../stack-common/crates/stack-common-error", default-features = false }
 trellis-types = { path = "../trellis-types" }
+trellis-witness-registry = { path = "../trellis-witness-registry" }
 
 [dev-dependencies]
 trellis-verify-wos = { path = "../trellis-verify-wos" }

@@ -3503,6 +3503,7 @@ dependencies = [
  "stack-common-error",
  "trellis-types",
  "trellis-verify-wos",
+ "trellis-witness-registry",
 ]
 
 [[package]]
@@ -3532,6 +3533,7 @@ dependencies = [
  "hkdf",
  "http",
  "integrity-cbor",
+ "integrity-seam",
  "integrity-verify",
  "jsonwebtoken",
  "serde",

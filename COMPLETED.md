@@ -1535,16 +1535,21 @@ the HPKE substrate is a stable foundation for ADR 0005 (item #3, Wave
   architecture rests on Core §16 (Verification Independence): the
   offline verifier path MUST NOT pull HPKE / X25519 / AEAD / HKDF
   crypto crates. Until now, that property was prose-only. A future
-  `trellis-cose` change adding `trellis-hpke` as a dep would silently
-  breach the invariant — every consumer of `trellis-cose` (including
-  `trellis-verify`) would inherit HPKE.
+  `integrity-cose` change adding `integrity-hpke` as a dep would silently
+  breach the invariant — every consumer of `integrity-cose` (including
+  `integrity-verify`) would inherit HPKE.
   `scripts/check-verifier-isolation.sh` is the loud-fail gate:
-  `cargo tree -p trellis-verify` MUST NOT mention `hpke`,
+  `cargo tree -p integrity-verify` MUST NOT list package lines for `hpke`,
   `x25519-dalek`, `chacha20poly1305`, or `hkdf`. Wired three ways:
   `make check-verifier-isolation` (fast iteration), `make test` (CI
   runs this target), `.PHONY` + help text. Negative-case verified by
-  injecting `hpke = "=0.13.0"` as a `trellis-verify` dep; the script
+  injecting `hpke = "=0.13.0"` as an `integrity-verify` dep; the script
   flagged all four crates with diagnose hint and exited 1.
+
+  **Update (TWREF-039, 2026-05-15):** Gate retargeted from removed
+  `trellis-verify` to `integrity-verify`; HPKE sibling is `integrity-hpke`
+  under integrity-stack. Historical verification rows below cite pre-cutover
+  package names.
 
 Verification: `cargo test --workspace` clean (workspace still resolves
 to the same `Cargo.lock` entries; no consumer's resolved version

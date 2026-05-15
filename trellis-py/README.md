@@ -2,11 +2,25 @@
 
 Standalone Python implementation of Trellis Phase-1 **append**, **verify**, and **export** (deterministic ZIP), plus a local vector conformance runner. Used for G-5 ratification: behavior is fixed by `../specs/trellis-core.md` and the committed corpus under `../fixtures/vectors/`.
 
+## Working directory (monorepo vs submodule)
+
+Paths below are written for two common checkouts:
+
+| Checkout | `trellis-py` directory |
+|----------|-------------------------|
+| Trellis repo root (`.../trellis/`) | `trellis-py/` |
+| Stack monorepo root (`.../formspec-stack/`) | `trellis/trellis-py/` |
+
+Vector discovery defaults to `../fixtures/vectors` **relative to this package**, so conformance must be run with cwd inside `trellis-py`, or pass `--vectors` explicitly (CI uses `pip install -e "./trellis/trellis-py"` from the monorepo root).
+
 ## Install
 
 ```bash
-cd trellis-py
-pip install -e .
+# From Trellis repo root:
+cd trellis-py && pip install -e .
+
+# From stack monorepo root (matches CI):
+pip install -e "./trellis/trellis-py"
 ```
 
 ## APIs
@@ -19,12 +33,21 @@ pip install -e .
 ## Conformance
 
 ```bash
-# default vectors root: ../fixtures/vectors (from this package location)
+# Default vectors root: ../fixtures/vectors relative to this package — cwd must be trellis-py.
+cd trellis-py   # from Trellis root; or: cd trellis/trellis-py from stack monorepo root
 python -m trellis_py.conformance
+
+# From monorepo root without cd (after `pip install -e "./trellis/trellis-py"`):
+python3 -m trellis_py.conformance --vectors trellis/fixtures/vectors
+
+# Same, editable tree only (no pip install):
+PYTHONPATH=trellis/trellis-py/src python3 -m trellis_py.conformance --vectors trellis/fixtures/vectors
 
 # explicit path + JSON report
 python -m trellis_py.conformance --vectors /path/to/fixtures/vectors --write-report BYTE-MATCH-REPORT.json
 ```
+
+**Pytest (G-5):** from `trellis/` repo root, `cd trellis-py && python3 -m pytest -q`. From stack monorepo root, `cd trellis/trellis-py && python3 -m pytest -q`, or `PYTHONPATH=trellis/trellis-py/src python3 -m pytest trellis/trellis-py -q` if you keep cwd at the root.
 
 Exit code `0` means every vector under `append/`, `export/`, `verify/`, `tamper/`, `projection/`, and `shred/` passed.
 

@@ -1,4 +1,4 @@
-// Rust guideline compliant 2026-05-15
+// Rust guideline compliant 2026-02-21
 //! Append orchestration: admission, scope lock, core append, persistence, bundle publish.
 //!
 //! [`AppendCoordinator`] owns everything after HTTP validation/authentication passes:

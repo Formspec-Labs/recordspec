@@ -9,8 +9,8 @@ use integrity_verify::trellis::{DomainEvent, DomainExport, DomainFinding, Severi
 use trellis_types::sha256_bytes;
 
 use crate::event_types::{
-    INTAKE_EXPORT_EXTENSION, SIGNATURE_EXPORT_EXTENSION, WOS_CASE_CREATED_EVENT_TYPE,
-    WOS_INTAKE_ACCEPTED_EVENT_TYPE, WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE,
+    INTAKE_EXPORT_EXTENSION, SIGNATURE_EXPORT_EXTENSION, wos_case_created_event_type,
+    wos_intake_accepted_event_type, wos_signature_affirmation_event_type,
 };
 use crate::records::{
     CaseCreatedRecordDetails, IntakeAcceptedRecordDetails, IntakeManifestEntry,
@@ -93,7 +93,7 @@ fn validate_signature_entry(
         ));
         return;
     };
-    if event.event_type != WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE {
+    if event.event_type != wos_signature_affirmation_event_type() {
         findings.push(finding(
             "signature_catalog_event_type_mismatch",
             Some(entry.canonical_event_hash),
@@ -110,7 +110,7 @@ fn validate_signature_entry(
         return;
     };
     let record =
-        match parse_signature_affirmation_record(payload, WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE) {
+        match parse_signature_affirmation_record(payload, wos_signature_affirmation_event_type()) {
             Ok(record) => record,
             Err(error) => {
                 findings.push(finding(
@@ -196,7 +196,7 @@ fn validate_intake_entry(
         ));
         return;
     };
-    if event.event_type != WOS_INTAKE_ACCEPTED_EVENT_TYPE {
+    if event.event_type != wos_intake_accepted_event_type() {
         findings.push(finding(
             "intake_event_type_mismatch",
             Some(entry.intake_event_hash),
@@ -212,18 +212,18 @@ fn validate_intake_entry(
         ));
         return;
     };
-    let intake_record = match parse_intake_accepted_record(payload, WOS_INTAKE_ACCEPTED_EVENT_TYPE)
-    {
-        Ok(record) => record,
-        Err(error) => {
-            findings.push(finding(
-                "intake_payload_invalid",
-                Some(entry.intake_event_hash),
-                format!("intakeAccepted payload is invalid: {error}"),
-            ));
-            return;
-        }
-    };
+    let intake_record =
+        match parse_intake_accepted_record(payload, wos_intake_accepted_event_type()) {
+            Ok(record) => record,
+            Err(error) => {
+                findings.push(finding(
+                    "intake_payload_invalid",
+                    Some(entry.intake_event_hash),
+                    format!("intakeAccepted payload is invalid: {error}"),
+                ));
+                return;
+            }
+        };
     if !intake_entry_matches_record(entry, &intake_record) {
         findings.push(finding(
             "intake_handoff_mismatch",
@@ -277,7 +277,7 @@ fn validate_case_created_entry(
                 ));
                 return;
             };
-            if case_event.event_type != WOS_CASE_CREATED_EVENT_TYPE {
+            if case_event.event_type != wos_case_created_event_type() {
                 findings.push(finding(
                     "case_created_event_type_mismatch",
                     Some(case_created_hash),
@@ -293,18 +293,18 @@ fn validate_case_created_entry(
                 ));
                 return;
             };
-            let case_record = match parse_case_created_record(payload, WOS_CASE_CREATED_EVENT_TYPE)
-            {
-                Ok(record) => record,
-                Err(error) => {
-                    findings.push(finding(
-                        "case_created_payload_invalid",
-                        Some(case_created_hash),
-                        format!("caseCreated payload is invalid: {error}"),
-                    ));
-                    return;
-                }
-            };
+            let case_record =
+                match parse_case_created_record(payload, wos_case_created_event_type()) {
+                    Ok(record) => record,
+                    Err(error) => {
+                        findings.push(finding(
+                            "case_created_payload_invalid",
+                            Some(case_created_hash),
+                            format!("caseCreated payload is invalid: {error}"),
+                        ));
+                        return;
+                    }
+                };
             if !case_created_record_matches_handoff(entry, intake_record, &case_record) {
                 findings.push(finding(
                     "case_created_handoff_mismatch",

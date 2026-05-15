@@ -5,6 +5,11 @@ edition.workspace = true
 description = "Trellis substrate HTTP service"
 license.workspace = true
 
+[features]
+default = []
+# Public fixture-backed state for cross-crate integration tests (dev-deps only).
+test-harness = []
+
 [dependencies]
 async-trait = "0.1"
 axum = "0.8"
@@ -37,4 +42,5 @@ utoipa = "5"
 wos-events = { path = "../../../work-spec/crates/wos-events" }
 
 [dev-dependencies]
+integrity-seam = { path = "../../../integrity-stack/crates/integrity-seam" }
 tower = { version = "0.5", features = ["util"] }

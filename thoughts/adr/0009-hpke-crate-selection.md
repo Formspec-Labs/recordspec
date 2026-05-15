@@ -4,11 +4,11 @@
 **Status:** Accepted; implementation landed Wave 16, hardened Wave 18.
 **Supersedes:** [`thoughts/specs/2026-04-24-hpke-crate-spike.md`](../specs/2026-04-24-hpke-crate-spike.md) (kept as non-normative archive pointer).
 **Superseded by:** —
-**Related:** ADR 0001 (Phase-1 MVP principles — pure-Rust dep posture); ADR 0004 (Rust is byte authority — RFC 9180 conformance proven by `append/004` byte equality, not by branded library agreement); Core §9.4 (HPKE suite 1: RFC 9180 Base mode, X25519-HKDF-SHA256-ChaCha20Poly1305); Core §16 (verification independence — `trellis-verify` MUST NOT pull HPKE deps); ADR 0008 §ISC-05 (sibling-crate isolation discipline — same architectural pattern); `thoughts/specs/2026-04-24-anchor-substrate-spike.md` (sibling spike on adapter-tier substrates).
+**Related:** ADR 0001 (Phase-1 MVP principles — pure-Rust dep posture); ADR 0004 (Rust is byte authority — RFC 9180 conformance proven by `append/004` byte equality, not by branded library agreement); Core §9.4 (HPKE suite 1: RFC 9180 Base mode, X25519-HKDF-SHA256-ChaCha20Poly1305); Core §16 (verification independence — `integrity-verify` MUST NOT pull HPKE deps); ADR 0008 §ISC-05 (sibling-crate isolation discipline — same architectural pattern); `thoughts/specs/2026-04-24-anchor-substrate-spike.md` (sibling spike on adapter-tier substrates).
 
 ## Decision
 
-Adopt the [`hpke`](https://github.com/rozbb/rust-hpke) crate (published on crates.io as `hpke`, repo `rozbb/rust-hpke`) for the Trellis HPKE wrap/unwrap path. Pin to a single exact version in `crates/trellis-hpke/Cargo.toml`; pin every transitive crypto dep that drives byte-equal reproducibility for `append/004-hpke-wrapped-inline` (the byte oracle) at the resolved versions. Implementation lives in a sibling `trellis-hpke` crate — never in `trellis-core` or `trellis-cose` — so the dep graph cannot reach `trellis-verify` (Core §16 verification independence).
+Adopt the [`hpke`](https://github.com/rozbb/rust-hpke) crate (published on crates.io as `hpke`, repo `rozbb/rust-hpke`) for the Trellis HPKE wrap/unwrap path. Pin to a single exact version in `integrity-stack/crates/integrity-hpke/Cargo.toml`; pin every transitive crypto dep that drives byte-equal reproducibility for `append/004-hpke-wrapped-inline` (the byte oracle) at the resolved versions. Implementation lives in a sibling `integrity-hpke` crate — never in `trellis-core` or `integrity-cose` — so the dep graph cannot reach `integrity-verify` (Core §16 verification independence).
 
 Pinned deps as of Wave 16 + 18:
 
@@ -23,7 +23,7 @@ Pinned deps as of Wave 16 + 18:
 
 The fixture-only `wrap_dek_with_pinned_ephemeral` API — required for byte-exact reproduction of `append/004` — sits behind a `test-vectors` Cargo feature (default off). Production crate-graphs cannot link the carve-out path even by mistake.
 
-The verifier-isolation invariant is asserted by `scripts/check-verifier-isolation.sh` (CI-runnable; `make check-verifier-isolation`). `cargo tree -p trellis-verify` MUST NOT mention `hpke`, `x25519-dalek`, `chacha20poly1305`, or `hkdf`.
+The verifier-isolation invariant is asserted by `scripts/check-verifier-isolation.sh` (CI-runnable; `make check-verifier-isolation`). `cargo tree -p integrity-verify` (workspace manifest: `trellis/Cargo.toml`) MUST NOT list package lines for `hpke`, `x25519-dalek`, `chacha20poly1305`, or `hkdf`.
 
 ## Context
 
@@ -68,11 +68,11 @@ Until the Rust HPKE path landed, the G-5 stranger-test claim weakened on every n
 
 ### Sibling crate, not embedded in core
 
-`trellis-hpke` is a sibling crate at the same level as `trellis-core` / `trellis-cose`. Reasoning:
+`trellis-hpke` / `integrity-hpke` is a sibling crate at the same architectural tier as `trellis-core` / `integrity-cose`. Reasoning:
 
-1. **Verification independence.** `trellis-verify` depends on `trellis-cose` and `trellis-types`; it MUST NOT depend on HPKE. Sibling-crate isolation makes the boundary structural — `cargo tree -p trellis-verify` is the assertion. ADR 0008 §ISC-05 enforces the same pattern for ecosystem libraries; HPKE follows the same hygiene contract because Core §16 forbids HPKE deps from leaking into the offline verifier path.
-2. **Smaller blast radius on bumps.** A `hpke = "=0.13.0"` → `=0.14.0` pin bump touches only `trellis-hpke` and crates that explicitly depend on it; `trellis-cose` and below stay unaffected.
-3. **CI assertion target.** `scripts/check-verifier-isolation.sh` runs a single `cargo tree -p trellis-verify` filter check. The sibling-crate boundary is what makes that assertion possible to write at all.
+1. **Verification independence.** `integrity-verify` depends on `integrity-cose` and stack types; it MUST NOT depend on HPKE. Sibling-crate isolation makes the boundary structural — `cargo tree -p integrity-verify` is the assertion. ADR 0008 §ISC-05 enforces the same pattern for ecosystem libraries; HPKE follows the same hygiene contract because Core §16 forbids HPKE deps from leaking into the offline verifier path.
+2. **Smaller blast radius on bumps.** A `hpke = "=0.13.0"` → `=0.14.0` pin bump touches only `integrity-hpke` and crates that explicitly depend on it; `integrity-cose` and below stay unaffected.
+3. **CI assertion target.** `scripts/check-verifier-isolation.sh` runs a single `cargo tree -p integrity-verify` filter check. The sibling-crate boundary is what makes that assertion possible to write at all.
 
 ### Test-vector carve-out path
 
@@ -129,10 +129,10 @@ The receiver side is unchanged — `setup_receiver` (per `unwrap_dek`) reproduce
 
 1. Import the crate at the pinned version. Pin all five transitive crypto deps (`chacha20poly1305`, `hkdf`, `x25519-dalek`, `sha2`, `rand_core`) at the exact resolved versions. Document each pin in this ADR + the `Cargo.toml` `# DO NOT BUMP` comment.
 2. Implement `wrap_dek_with_pinned_ephemeral` first (matches the test-vector carve-out).
-3. Integration test (`crates/trellis-hpke/tests/append_004_byte_match.rs`): feed `append/004-hpke-wrapped-inline`'s pinned recipient pubkey + pinned ephemeral privkey + DEK plaintext + empty `info` and empty wrap `aad` (suite 1) through `wrap_dek_with_pinned_ephemeral`; assert output `ephemeral_pubkey` + `ciphertext` + `aead_tag` concatenated byte-match `KeyBagEntry.wrapped_dek` in the committed vector.
+3. Integration test (`integrity-stack/crates/integrity-hpke/tests/append_004_byte_match.rs`): feed `append/004-hpke-wrapped-inline`'s pinned recipient pubkey + pinned ephemeral privkey + DEK plaintext + empty `info` and empty wrap `aad` (suite 1) through `wrap_dek_with_pinned_ephemeral`; assert output `ephemeral_pubkey` + `ciphertext` + `aead_tag` concatenated byte-match `KeyBagEntry.wrapped_dek` in the committed vector.
 4. Once the test-vector path matches, implement `wrap_dek` (real ephemeral generation) + one round-trip test.
 5. Gate the carve-out path behind `--features test-vectors` so production binaries cannot link it.
-6. CI assertion (`scripts/check-verifier-isolation.sh` + `make check-verifier-isolation`): `cargo tree -p trellis-verify` does not mention `hpke`, `x25519-dalek`, `chacha20poly1305`, or `hkdf`.
+6. CI assertion (`scripts/check-verifier-isolation.sh` + `make check-verifier-isolation`): `cargo tree -p integrity-verify` does not list package lines for `hpke`, `x25519-dalek`, `chacha20poly1305`, or `hkdf`.
 
 ## Risk
 
@@ -140,7 +140,7 @@ The receiver side is unchanged — `setup_receiver` (per `unwrap_dek`) reproduce
 - **`#[doc(hidden)]` API drift.** `wrap_dek_with_pinned_ephemeral` reaches into `hpke::kdf::{labeled_extract, extract_and_expand, LabeledExpand}` (all `#[doc(hidden)]` but `pub`). A minor-version bump of `hpke` may make these symbols private. The byte-oracle test fails loudly in that case; the §Lifecycle clause below requires this ADR to be re-read on every bump.
 - **RFC-compliance divergence.** The Rust `hpke` crate, the inline generator (`gen_append_004.py`), and any future third-party HPKE library used in CI are independent implementations of the same RFC. A real divergence is an RFC-compliance bug in one path or a spec ambiguity. Discovery surface: the `append/004` Rust integration test (and regeneration checks against the generator) fail; resolution is spec clarification and/or upstream issue.
 - **PQ migration.** Not a current risk. When Phase-2+ adds a PQ HPKE suite, the crate's trait-generic design supports adding it; separate implementation work.
-- **Test-vector feature getting silently enabled in a release build.** `default = []` for the feature; the `# DO NOT BUMP` comment names the discipline; CI assertion would flag downstream consumers that enable `test-vectors` in production via the verifier-isolation check (because `chacha20poly1305` / `x25519-dalek` would re-enter the graph on consumers that pull `trellis-hpke --features test-vectors`).
+- **Test-vector feature getting silently enabled in a release build.** `default = []` for the feature; the `# DO NOT BUMP` comment names the discipline; CI assertion would flag downstream consumers that enable `test-vectors` in production via the verifier-isolation check (because `chacha20poly1305` / `x25519-dalek` would re-enter the graph on consumers that pull `integrity-hpke --features test-vectors`).
 
 ## Lifecycle
 
@@ -158,8 +158,9 @@ The non-normative spike doc (`thoughts/specs/2026-04-24-hpke-crate-spike.md`) is
 
 - **2026-04-24** — Selected `hpke` (rozbb/rust-hpke). Rationale §"Rationale" above.
 - **2026-04-27 (Wave 16)** — Executed against TODO item #2 (post-Wave-15 renumber). Pinned `hpke = "=0.13.0"` (latest stable), not `0.14.0-pre.2` — the pre-release pulls in `sha3 0.11.0-rc.7` whose `keccak::p1600` API drift breaks the build chain. Crate selection is what is load-bearing; the pinned version is a solvable downstream concern. Landed in a new `trellis-hpke` sibling crate (not in `trellis-core` / `trellis-cose`) to preserve Core §16 verification independence — `trellis-verify`'s dep tree does not pull HPKE crypto crates. The fixture-only `wrap_dek_with_pinned_ephemeral` path bypasses `hpke::setup_sender` and reaches the lower-level public KDF helpers + `x25519-dalek` + `chacha20poly1305` directly. Production `wrap_dek` and `unwrap_dek` go through `hpke`'s RFC-blessed public API.
-- **2026-04-27 (Wave 18)** — Hardening from Wave 16 review. (a) `=`-pinned all five transitive crypto deps at the resolved versions. (b) Added `# DO NOT BUMP` comment block in `Cargo.toml` adjacent to the `=0.13.0` `hpke` pin. (c) `wrap_dek_with_pinned_ephemeral` and the related fixture-only KDF / X25519 / AEAD imports now sit behind a `test-vectors` Cargo feature (default off); production crate-graphs cannot link the carve-out path. (d) Promoted the 2026-04-24 spike to this ADR. (e) Landed `scripts/check-verifier-isolation.sh` + `make check-verifier-isolation` as a CI assertion that `cargo tree -p trellis-verify` stays HPKE-clean.
+- **2026-04-27 (Wave 18)** — Hardening from Wave 16 review. (a) `=`-pinned all five transitive crypto deps at the resolved versions. (b) Added `# DO NOT BUMP` comment block in `Cargo.toml` adjacent to the `=0.13.0` `hpke` pin. (c) `wrap_dek_with_pinned_ephemeral` and the related fixture-only KDF / X25519 / AEAD imports now sit behind a `test-vectors` Cargo feature (default off); production crate-graphs cannot link the carve-out path. (d) Promoted the 2026-04-24 spike to this ADR. (e) Landed `scripts/check-verifier-isolation.sh` + `make check-verifier-isolation` as a CI assertion that `cargo tree -p trellis-verify` stays HPKE-clean (package ID later retargeted to `integrity-verify` — see 2026-05-15 entry).
+- **2026-05-15 (TWREF-039)** — Delete-surface hygiene: removed `trellis-verify` / `trellis-hpke` workspace packages; HPKE implementation lives under `integrity-stack/crates/integrity-hpke`, offline verifier under `integrity-stack/crates/integrity-verify`. Verifier-isolation gate now runs `cargo tree -p integrity-verify` against `trellis/Cargo.toml` (path dependency into integrity-stack).
 
 ---
 
-*End of ADR. Implementation: `crates/trellis-hpke/`. Byte oracle: `crates/trellis-hpke/tests/append_004_byte_match.rs`. Carve-out fixture: `fixtures/vectors/append/004-hpke-wrapped-inline/`. CI assertion: `scripts/check-verifier-isolation.sh`.*
+*End of ADR. Implementation: `integrity-stack/crates/integrity-hpke/`. Byte oracle: `integrity-stack/crates/integrity-hpke/tests/append_004_byte_match.rs`. Carve-out fixture: `fixtures/vectors/append/004-hpke-wrapped-inline/`. CI assertion: `scripts/check-verifier-isolation.sh` (`cargo tree -p integrity-verify`).*

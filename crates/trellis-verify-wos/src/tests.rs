@@ -11,14 +11,21 @@ use integrity_verify::trellis::{
 };
 
 use crate::event_types::{
-    OPEN_CLOCKS_EXPORT_EXTENSION, WOS_CASE_CREATED_EVENT_TYPE,
-    WOS_GOVERNANCE_CLOCK_RESOLVED_EVENT_TYPE, WOS_GOVERNANCE_CLOCK_STARTED_EVENT_TYPE,
-    WOS_GOVERNANCE_DETERMINATION_RESCINDED_EVENT_TYPE, WOS_GOVERNANCE_REINSTATED_EVENT_TYPE,
-    WOS_IDENTITY_ATTESTATION_EVENT_TYPE, WOS_INTAKE_ACCEPTED_EVENT_TYPE,
-    WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE,
+    OPEN_CLOCKS_EXPORT_EXTENSION, wos_case_created_event_type,
+    wos_governance_clock_resolved_event_type, wos_governance_clock_started_event_type,
+    wos_governance_determination_rescinded_event_type, wos_governance_reinstated_event_type,
+    wos_identity_attestation_event_type, wos_signature_affirmation_event_type,
 };
 use crate::records::parse_signature_affirmation_record;
 use crate::validator::WosRecordValidator;
+
+/// Synthetic determination-family `event_type` for rescission-terminality tests (not in the substrate registry).
+fn test_determination_family_event_after_rescission() -> String {
+    format!(
+        "{}_denied",
+        wos_events::GOVERNANCE_DETERMINATION_WIRE_EVENT_PREFIX
+    )
+}
 
 fn event(event_type: &str, hash_byte: u8, payload: Option<Vec<u8>>) -> DomainEvent {
     DomainEvent {
@@ -49,12 +56,12 @@ fn clock_started(clock_id: &str, clock_kind: &str, calendar_ref: Option<&str>) -
             Value::Text(calendar_ref.to_string()),
         ));
     }
-    encode_record(WOS_GOVERNANCE_CLOCK_STARTED_EVENT_TYPE, data)
+    encode_record(wos_governance_clock_started_event_type(), data)
 }
 
 fn clock_paused(clock_id: &str) -> Vec<u8> {
     encode_record(
-        WOS_GOVERNANCE_CLOCK_RESOLVED_EVENT_TYPE,
+        wos_governance_clock_resolved_event_type(),
         vec![
             (
                 Value::Text("clockId".into()),
@@ -90,7 +97,7 @@ const PRESENTATION_HASH: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 #[test]
 fn given_distinct_k2_fields_when_parsed_then_signing_act_and_presentation_hash_preserved() {
     let payload = encode_record(
-        WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE,
+        wos_signature_affirmation_event_type(),
         vec![
             (
                 Value::Text("signerId".into()),
@@ -158,8 +165,9 @@ fn given_distinct_k2_fields_when_parsed_then_signing_act_and_presentation_hash_p
             ),
         ],
     );
-    let parsed = parse_signature_affirmation_record(&payload, WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE)
-        .expect("parse signature affirmation");
+    let parsed =
+        parse_signature_affirmation_record(&payload, wos_signature_affirmation_event_type())
+            .expect("parse signature affirmation");
     assert_eq!(parsed.signing_act_id, "signing-act-777");
     assert_eq!(
         parsed.source_signature_id.as_deref(),
@@ -258,7 +266,7 @@ fn given_tampered_signature_catalog_export_when_verify_export_zip_then_stranger_
 fn validator_admits_wos_identity_attestation_event_type() {
     assert!(
         WosRecordValidator
-            .admits_identity_attestation_event_type(WOS_IDENTITY_ATTESTATION_EVENT_TYPE)
+            .admits_identity_attestation_event_type(wos_identity_attestation_event_type())
     );
     assert!(
         !WosRecordValidator
@@ -267,46 +275,76 @@ fn validator_admits_wos_identity_attestation_event_type() {
 }
 
 #[test]
-fn given_wos_event_type_constants_when_checked_against_provenance_kind_then_literals_match() {
-    use wos_events::ProvenanceKind;
+fn given_verify_wos_substrate_event_bindings_when_compared_to_wos_events_registry_then_literals_match_substrate_slice_and_provenance_kinds()
+ {
+    use std::collections::HashSet;
 
-    assert_eq!(
-        WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE,
-        ProvenanceKind::SignatureAffirmation
+    use wos_events::{
+        GOVERNANCE_DETERMINATION_WIRE_EVENT_PREFIX, ProvenanceKind,
+        SUBSTRATE_CANONICAL_EVENT_LITERALS,
+    };
+
+    use crate::event_types::{
+        verify_wos_tracked_substrate_kinds, wos_case_created_event_type,
+        wos_governance_clock_resolved_event_type, wos_governance_clock_started_event_type,
+        wos_governance_determination_rescinded_event_type, wos_governance_reinstated_event_type,
+        wos_identity_attestation_event_type, wos_intake_accepted_event_type,
+        wos_signature_affirmation_event_type,
+    };
+
+    let mut seen = HashSet::<&'static str>::new();
+    for &kind in verify_wos_tracked_substrate_kinds() {
+        let expected = kind
             .canonical_event_literal()
-            .expect("canonical literal")
-    );
-    assert_eq!(
-        WOS_INTAKE_ACCEPTED_EVENT_TYPE,
-        ProvenanceKind::IntakeAccepted
-            .canonical_event_literal()
-            .expect("canonical literal")
-    );
-    assert_eq!(
-        WOS_CASE_CREATED_EVENT_TYPE,
-        ProvenanceKind::CaseCreated
-            .canonical_event_literal()
-            .expect("canonical literal")
-    );
-    assert_eq!(
-        WOS_IDENTITY_ATTESTATION_EVENT_TYPE,
-        ProvenanceKind::IdentityAttestation
-            .canonical_event_literal()
-            .expect("canonical literal")
-    );
-    assert_eq!(
-        WOS_GOVERNANCE_DETERMINATION_RESCINDED_EVENT_TYPE,
-        ProvenanceKind::DeterminationRescinded
-            .canonical_event_literal()
-            .expect("canonical literal")
+            .expect("tracked kind must be in substrate registry");
+        let actual = match kind {
+            ProvenanceKind::SignatureAffirmation => wos_signature_affirmation_event_type(),
+            ProvenanceKind::IntakeAccepted => wos_intake_accepted_event_type(),
+            ProvenanceKind::CaseCreated => wos_case_created_event_type(),
+            ProvenanceKind::IdentityAttestation => wos_identity_attestation_event_type(),
+            ProvenanceKind::DeterminationRescinded => {
+                wos_governance_determination_rescinded_event_type()
+            }
+            ProvenanceKind::Reinstated => wos_governance_reinstated_event_type(),
+            ProvenanceKind::ClockStarted => wos_governance_clock_started_event_type(),
+            ProvenanceKind::ClockResolved => wos_governance_clock_resolved_event_type(),
+            other => panic!("unexpected kind in verify_wos_tracked_substrate_kinds: {other:?}"),
+        };
+        assert_eq!(
+            actual, expected,
+            "{kind:?}: verify-wos binding must match ProvenanceKind::canonical_event_literal"
+        );
+        assert!(
+            SUBSTRATE_CANONICAL_EVENT_LITERALS.contains(&actual),
+            "`{actual}` must appear exactly as a member of SUBSTRATE_CANONICAL_EVENT_LITERALS"
+        );
+        assert_eq!(
+            ProvenanceKind::from_canonical_event_literal(actual),
+            Some(kind),
+            "`{actual}` must round-trip through ProvenanceKind::from_canonical_event_literal"
+        );
+        assert!(
+            seen.insert(actual),
+            "verify-wos tracked literals must be unique; duplicate `{actual}`"
+        );
+    }
+
+    let determination_count = SUBSTRATE_CANONICAL_EVENT_LITERALS
+        .iter()
+        .filter(|lit| lit.starts_with(GOVERNANCE_DETERMINATION_WIRE_EVENT_PREFIX))
+        .count();
+    assert!(
+        determination_count >= 1,
+        "substrate registry must include at least one `{prefix}*` literal for rescission terminality",
+        prefix = GOVERNANCE_DETERMINATION_WIRE_EVENT_PREFIX
     );
 }
 
 #[test]
 fn validator_reports_rescission_terminality_as_wos_finding() {
     let findings = WosRecordValidator.validate_events(&[
-        event(WOS_GOVERNANCE_DETERMINATION_RESCINDED_EVENT_TYPE, 1, None),
-        event("wos.governance.determination_denied", 2, None),
+        event(wos_governance_determination_rescinded_event_type(), 1, None),
+        event(&test_determination_family_event_after_rescission(), 2, None),
     ]);
     assert_eq!(findings.len(), 1);
     assert_eq!(findings[0].kind, "rescission_terminality_violation");
@@ -316,9 +354,9 @@ fn validator_reports_rescission_terminality_as_wos_finding() {
 #[test]
 fn validator_allows_determination_after_reinstatement() {
     let findings = WosRecordValidator.validate_events(&[
-        event(WOS_GOVERNANCE_DETERMINATION_RESCINDED_EVENT_TYPE, 1, None),
-        event(WOS_GOVERNANCE_REINSTATED_EVENT_TYPE, 2, None),
-        event("wos.governance.determination_denied", 3, None),
+        event(wos_governance_determination_rescinded_event_type(), 1, None),
+        event(wos_governance_reinstated_event_type(), 2, None),
+        event(&test_determination_family_event_after_rescission(), 3, None),
     ]);
     assert!(findings.is_empty());
 }
@@ -332,12 +370,12 @@ fn validator_ignores_clock_shaped_payload_on_non_clock_event_type() {
     // clock_started — there is no "paused" segment to mismatch against.
     let findings = WosRecordValidator.validate_events(&[
         event(
-            "wos.kernel.case_created",
+            wos_case_created_event_type(),
             1,
             Some(clock_started("clock-1", "review", Some("fed-calendar"))),
         ),
         event(
-            "wos.governance.clock_started",
+            wos_governance_clock_started_event_type(),
             2,
             Some(clock_started("clock-1", "review", Some("state-calendar"))),
         ),
@@ -352,17 +390,17 @@ fn validator_ignores_clock_shaped_payload_on_non_clock_event_type() {
 fn validator_reports_clock_calendar_mismatch_as_wos_finding() {
     let findings = WosRecordValidator.validate_events(&[
         event(
-            "wos.governance.clock_started",
+            wos_governance_clock_started_event_type(),
             1,
             Some(clock_started("clock-1", "review", Some("fed-calendar"))),
         ),
         event(
-            "wos.governance.clock_resolved",
+            wos_governance_clock_resolved_event_type(),
             2,
             Some(clock_paused("clock-1")),
         ),
         event(
-            "wos.governance.clock_started",
+            wos_governance_clock_started_event_type(),
             3,
             Some(clock_started("clock-1", "review", Some("state-calendar"))),
         ),

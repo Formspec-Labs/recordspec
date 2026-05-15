@@ -1,3 +1,4 @@
+// Rust guideline compliant 2026-02-21
 //! Emit the Trellis substrate OpenAPI document.
 
 use std::process::ExitCode;

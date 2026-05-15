@@ -73,6 +73,24 @@ def parse_const_u64(source: str, name: str) -> int:
     return int(match.group(1))
 
 
+def parse_formspec_append_event_literal(client_source: str) -> str:
+    """Read FORMSPEC_APPEND_EVENT_TYPE_LITERAL from trellis-service-client (single string SOT)."""
+    match = re.search(
+        r'pub const FORMSPEC_APPEND_EVENT_TYPE_LITERAL: &str = "([^"]+)";',
+        client_source,
+    )
+    if not match:
+        raise ValueError(
+            "could not find pub const FORMSPEC_APPEND_EVENT_TYPE_LITERAL in trellis-service-client"
+        )
+    return match.group(1)
+
+
+def expected_admitted_event_types(server_source: str, client_source: str) -> list[str]:
+    """Sorted comparison uses these lists; order here follows server macro + Formspec suffix."""
+    return parse_wos_event_types(server_source) + [parse_formspec_append_event_literal(client_source)]
+
+
 def parse_substrate_event_literals_from_kind_rs(kind_source: str) -> list[str]:
     """Read literals from define_canonical_substrate_events! { ... } (authoritative table)."""
     marker = "define_canonical_substrate_events!"
@@ -202,7 +220,7 @@ def check_operations(schema: dict, server_source: str, client_source: str, error
             errors.append(f"trellis-service-client is missing route fragment for {path}: {fragment}")
 
 
-def check_defs(schema: dict, server_source: str, errors: list[str]) -> None:
+def check_defs(schema: dict, server_source: str, client_source: str, errors: list[str]) -> None:
     defs = require_defs(
         schema,
         errors,
@@ -219,9 +237,7 @@ def check_defs(schema: dict, server_source: str, errors: list[str]) -> None:
     if not defs:
         return
 
-    server_events = parse_wos_event_types(server_source)
-    formspec_event = parse_const_str(server_source, "FORMSPEC_RESPONSE_SUBMITTED")
-    expected_events = server_events + [formspec_event]
+    expected_events = expected_admitted_event_types(server_source, client_source)
     schema_events = defs["EventType"].get("enum")
     # Ordering is not normative: macro table order may differ from schema enum order.
     if sorted(schema_events or []) != sorted(expected_events):
@@ -296,6 +312,47 @@ def check_defs(schema: dict, server_source: str, errors: list[str]) -> None:
             "SubstrateAppendResult required fields mismatch: "
             f"expected {sorted(expected_result_required)}, got {sorted(result_required)}"
         )
+
+
+def extract_openapi_substrate_append_event_type_enum(openapi: dict) -> list[str] | None:
+    """Return admitted `eventType` enum values from emitted OpenAPI (utoipa), if present."""
+    schemas = openapi.get("components", {}).get("schemas", {})
+    if not isinstance(schemas, dict):
+        return None
+    substrate = schemas.get("SubstrateAppendBody")
+    if not isinstance(substrate, dict):
+        return None
+    props = substrate.get("properties", {})
+    if not isinstance(props, dict):
+        return None
+    event_type = props.get("eventType")
+    if not isinstance(event_type, dict):
+        return None
+    raw = event_type.get("enum")
+    if not isinstance(raw, list):
+        return None
+    return [str(x) for x in raw]
+
+
+def check_openapi_event_type_enum(
+    openapi: dict, server_source: str, client_source: str, errors: list[str]
+) -> None:
+    expected = expected_admitted_event_types(server_source, client_source)
+    openapi_vals = extract_openapi_substrate_append_event_type_enum(openapi)
+    if openapi_vals is None:
+        errors.append(
+            "OpenAPI SubstrateAppendBody.eventType must declare a string enum of admitted literals "
+            "(TWREF-094 drift guard)"
+        )
+        return
+    if sorted(openapi_vals) != sorted(expected):
+        errors.append(
+            "OpenAPI SubstrateAppendBody.eventType enum drifted from admitted literals "
+            "(wos-events substrate registry + FORMSPEC_APPEND_EVENT_TYPE_LITERAL): "
+            f"expected {sorted(expected)}, got {sorted(openapi_vals)}"
+        )
+    if len(openapi_vals) != len(set(openapi_vals)):
+        errors.append("OpenAPI SubstrateAppendBody.eventType enum contains duplicate values")
 
 
 def check_openapi_append_contract(errors: list[str]) -> None:
@@ -380,11 +437,12 @@ def main() -> int:
         schema = read_json(SCHEMA_PATH)
         server_source = SERVER_PATH.read_text(encoding="utf-8")
         client_source = CLIENT_PATH.read_text(encoding="utf-8")
-        check_defs(schema, server_source, errors)
+        check_defs(schema, server_source, client_source, errors)
         check_operations(schema, server_source, client_source, errors)
         openapi = emit_openapi_document(errors)
         if openapi is not None:
             check_openapi_operations(schema, openapi, errors)
+            check_openapi_event_type_enum(openapi, server_source, client_source, errors)
         check_openapi_append_contract(errors)
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         errors.append(str(exc))
@@ -398,7 +456,7 @@ def main() -> int:
     operation_count = len(schema["x-trellis-http-api"]["operations"])
     print(
         "Trellis HTTP API schema OK: "
-        f"{operation_count} operations, {event_count} WOS event literals."
+        f"{operation_count} operations, {event_count} admitted EventType literals (schema + OpenAPI)."
     )
     return 0
 

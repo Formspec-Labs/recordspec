@@ -8,17 +8,39 @@ The acceptance bar is the **stranger test** from [`../specs/trellis-agreement.md
 
 ## Gate label crosswalk (refactoring tracker)
 
-Normative **ratification** gates below (G-1…G-6, C/O/M-*) describe **spec-era stranger-test closure**. The stack refactor tracker ([`../../TRELLIS-WOS-REFACTOR-TODO.md`](../../TRELLIS-WOS-REFACTOR-TODO.md)) reuses **G-4…G-7** for **post-integrity-stack implementation trains** (conformance corpus, `integrity-verify-parity`, export emitter sync, cross-stack fixture walker). **The ordinal sets are independent** — when crosswalking docs, use this table, not numeric equality.
+Normative **ratification** gates below (G-1…G-6, C/O/M-*) describe **spec-era stranger-test closure**. The stack refactor tracker ([`../../TRELLIS-WOS-REFACTOR-TODO.md`](../../TRELLIS-WOS-REFACTOR-TODO.md#gates)) reuses labels **G-4…G-7** only for **post-integrity-stack protocol trains** (conformance corpus, `integrity-verify-parity`, export emitter sync, cross-stack bundle walker). **Ordinals do not line up by number** — ratification **G-6** (spec lint) is unrelated to refactor **G-6** (emitter parity); ratification **G-5** (Python stranger vs spec) is unrelated to refactor **G-5** (`integrity-verify-parity`). Use the tables below, never `G-n` equality alone. **Implemented / wired-in-CI / product-covering** for refactor rows is defined only in the parent tracker’s [refactor gate evidence matrix (I / C / P)](../../TRELLIS-WOS-REFACTOR-TODO.md#refactor-gate-evidence-matrix-i--c--p) under [Gates](../../TRELLIS-WOS-REFACTOR-TODO.md#gates) — ratification checkboxes here do not encode that rubric.
 
-Ratification **G-5** (Python stranger byte-matching) names a different milestone than refactor-tracker **G-5** (`integrity-verify-parity`): same label sequence, unrelated semantics—always resolve through the crosswalk column, never by ordinal alone.
+### Ratification G-1…G-6 → refactor tracker
 
-| Meaning | Ratification (`ratification-checklist.md`) | Refactor tracker (`TRELLIS-WOS-REFACTOR-TODO.md` gates) |
+| Ratification gate | One-line meaning | Refactor tracker gate(s) |
 | --- | --- | --- |
-| Fixture / vector discipline | G-3 byte-exact vectors; G-5 second implementation (Python stranger) | Tracker **G-7** adds cross-stack `integrity-bundle-fixtures` corpus (orthogonal numbering) |
-| Rust reference replay | G-4 reference implementation passes | Tracker **G-4** — `trellis-conformance` committed corpus |
-| Verifier parity | *(covered by G-5 stranger + G-3 vectors historically)* | Tracker **G-5** — `integrity-verify-parity` (Python ↔ Rust `integrity-verify`) |
+| **G-1** | Normalization handoff groups A–D closed | — *(spec program only)* |
+| **G-2** | Phase-1 invariant MUST coverage + companion/matrix audits | — *(spec program only)* |
+| **G-3** | Byte-exact vectors under `fixtures/vectors/` | Supplies corpus consumed by refactor **G-4**; cross-stack bundles exercised additionally by refactor **G-7** |
+| **G-4** | Rust reference workspace builds; every vector passes | **Refactor G-4** — `trellis-conformance` committed corpus replay (same intent, integrity-stack layout) |
+| **G-5** | Second implementation byte-matches (Python stranger reads specs only) | **Not** refactor **G-5**. Refactor **G-5** is Python ↔ Rust `integrity-verify` parity (`integrity-verify-parity`) — overlapping goals, different artifact |
+| **G-6** | `check-specs.py` lint clean | **Not** refactor **G-6**. Refactor **G-6** is export emitter parity (Rust writer ↔ `gen_export_001.py` ↔ verifier) |
+
+### Refactor G-4…G-7 → ratification checklist
+
+| Refactor gate | One-line meaning | Ratification checklist anchor |
+| --- | --- | --- |
+| **G-4** | `trellis-conformance` byte-exact replay over Trellis fixture corpus | **G-4** reference implementation + **G-3** vector corpus |
+| **G-5** | `integrity-verify-parity` — Python verifier oracle ↔ Rust `integrity-verify` | Related to stranger-test discipline; closest ratification anchor **G-5** (different procedure) |
+| **G-6** | Emitter parity — `trellis-export-writer` ↔ Python generator ↔ verifier round-trip | No ratification **G-6** tie-in — orthogonal to spec lint (**ratification G-6**) |
+| **G-7** | `integrity-bundle-fixtures` walker over `formspec/tests/fixtures/cross-stack/` | Extends byte discipline beyond Trellis-only vectors (**G-3**); not a ratification ordinal |
+
+**Refactor G-6 — where it is enforced:** (1) Rust writer + `trellis_verify_wos::verify_export_zip` — `trellis-export-writer` crate test `given_export_001_fixture_inputs_when_write_export_then_zip_and_members_match_fixture`; (2) same ZIP bytes — `trellis-conformance` committed-vector replay for `export/001-two-event-chain`; (3) Python generator vs committed tree — `scripts/check_export_001_generator_sync.py` (run via `trellis/Makefile` target `test-scripts`, i.e. `make test-scripts` from `trellis/` or `make -C trellis test-scripts` from the monorepo root).
 
 **This file is the evidence-of-record.** Each gate carries inline commit SHAs and artifact pointers. Tactical work needed to close open gates is tracked in [`../TODO.md`](../TODO.md). A separate `ratification-evidence.md` registry existed briefly as a parallel view; it was removed because the inline evidence pointers here are sufficient and the duplication drifted.
+
+### Ratification vs stack refactor evidence (TWREF-040 / TWREF-042)
+
+Checklist gates **G-1…G-6** below are **ratification** closure: stranger-test artifacts, vectors, and `check-specs.py` discipline at the cited evidence dates. They are **not** a substitute for the stack refactor tracker’s **implemented / wired-in-CI / product-covering** matrix in [`../../TRELLIS-WOS-REFACTOR-TODO.md#refactor-gate-evidence-matrix-i--c--p`](../../TRELLIS-WOS-REFACTOR-TODO.md#refactor-gate-evidence-matrix-i--c--p).
+
+- **Ratification G-6** (this file) = `python3 scripts/check-specs.py` lint clean — unrelated ordinal to **refactor G-6** (export emitter parity: Rust `trellis-export-writer` ↔ `gen_export_001.py` ↔ verifier). Refactor G-6 enforcement includes `trellis/Makefile` target `test-scripts` (run as `make test-scripts` **from `trellis/`**, i.e. `$(MAKE) -C trellis test-scripts` from the monorepo root).
+
+Commands cited here (`cargo nextest run …`, `python3 scripts/check-specs.py`, `python3 -m trellis_py.conformance`) describe **Trellis workspace / ratification** runs. Root `make test` / stack CI fan-out is authoritative for “what CI runs” only where stack workflows duplicate those commands; do not read a ratification checkbox as “prod MVP product-covering” unless prose explicitly says so.
 
 ## Global gates
 
@@ -65,4 +87,4 @@ Ratification **G-5** (Python stranger byte-matching) names a different milestone
 
 ## Natural stopping point
 
-Ratification is complete: all gates above are checked, the stranger test has landed an independently-written second implementation that byte-matches every vector, and the lint reports zero violations.
+Ratification is complete: all gates above are checked, the stranger test has landed an independently-written second implementation that byte-matches every vector, and the lint reports zero violations. That bar is **spec-era closure** for Trellis normative documents — not, by itself, the refactor tracker’s **product-covering** column for compose-backed or fleet-shaped runtime (see *Ratification vs stack refactor evidence* above and [`TRELLIS-WOS-REFACTOR-TODO.md#refactor-gate-evidence-matrix-i--c--p`](../../TRELLIS-WOS-REFACTOR-TODO.md#refactor-gate-evidence-matrix-i--c--p)).

@@ -16,7 +16,7 @@ const WOS_FORMSPEC_RESOLVER: WosFormspecResolver = WosFormspecResolver::new();
 
 impl RecordValidator for WosRecordValidator {
     fn admits_identity_attestation_event_type(&self, event_type: &str) -> bool {
-        event_type == crate::event_types::WOS_IDENTITY_ATTESTATION_EVENT_TYPE
+        event_type == crate::event_types::wos_identity_attestation_event_type()
     }
 
     fn validate_events(&self, events: &[DomainEvent]) -> Vec<DomainFinding> {

@@ -13,8 +13,8 @@ use serde_json::Value as JsonValue;
 use trellis_types::{map_lookup_map, map_lookup_optional_value, map_lookup_text};
 
 use crate::event_types::{
-    OPEN_CLOCKS_EXPORT_EXTENSION, WOS_GOVERNANCE_CLOCK_RESOLVED_EVENT_TYPE,
-    WOS_GOVERNANCE_CLOCK_STARTED_EVENT_TYPE,
+    OPEN_CLOCKS_EXPORT_EXTENSION, wos_governance_clock_resolved_event_type,
+    wos_governance_clock_started_event_type,
 };
 
 const CLOCK_RESOLUTION_PAUSED: &str = "paused";
@@ -30,8 +30,8 @@ pub(crate) fn validate_clock_semantics(events: &[DomainEvent]) -> Vec<DomainFind
         // semantics gate on `event_type`, not on payload shape. A non-clock
         // event whose payload happens to deserialize as a clock record MUST
         // NOT participate in segment validation.
-        if event.event_type != WOS_GOVERNANCE_CLOCK_STARTED_EVENT_TYPE
-            && event.event_type != WOS_GOVERNANCE_CLOCK_RESOLVED_EVENT_TYPE
+        if event.event_type != wos_governance_clock_started_event_type()
+            && event.event_type != wos_governance_clock_resolved_event_type()
         {
             continue;
         }
@@ -158,14 +158,12 @@ fn parse_clock_record(
             "clock payload event {payload_event:?} does not match envelope event {event_type:?}"
         ));
     }
-    match event_type {
-        WOS_GOVERNANCE_CLOCK_STARTED_EVENT_TYPE => {
-            Ok(Some(ClockRecord::Started(parse_clock_started(map)?)))
-        }
-        WOS_GOVERNANCE_CLOCK_RESOLVED_EVENT_TYPE => {
-            Ok(Some(ClockRecord::Resolved(parse_clock_resolved(map)?)))
-        }
-        _ => Ok(None),
+    if event_type == wos_governance_clock_started_event_type() {
+        Ok(Some(ClockRecord::Started(parse_clock_started(map)?)))
+    } else if event_type == wos_governance_clock_resolved_event_type() {
+        Ok(Some(ClockRecord::Resolved(parse_clock_resolved(map)?)))
+    } else {
+        Ok(None)
     }
 }
 

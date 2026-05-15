@@ -76,7 +76,7 @@ cargo nextest run -p trellis-conformance         # full-corpus replay (G-4 oracl
 
 # Full
 cargo nextest run --workspace
-cd trellis-py && python3 -m pytest -q     # stranger cross-check (G-5 oracle)
+cd trellis/trellis-py && python3 -m pytest -q   # from stack monorepo root; `cd trellis-py` from Trellis repo root
 python3 scripts/check-specs.py            # spec discipline + fixture coverage
 
 # Batched vector rollout only

@@ -22,6 +22,8 @@ use integrity_cose::{
 pub use integrity_hpke::{HPKE_SUITE1_AAD, HPKE_SUITE1_INFO};
 use stack_common_error::StackError;
 use trellis_types::StoredEvent;
+#[doc(inline)]
+pub use trellis_witness_registry::WitnessKeyRegistry;
 
 #[cfg(any(test, feature = "fixture-inputs"))]
 mod export_001_fixture_input;
@@ -41,6 +43,9 @@ pub const EVENTS_MEMBER: &str = "010-events.cbor";
 pub const INCLUSION_PROOFS_MEMBER: &str = "020-inclusion-proofs.cbor";
 pub const CONSISTENCY_PROOFS_MEMBER: &str = "025-consistency-proofs.cbor";
 pub const SIGNING_KEY_REGISTRY_MEMBER: &str = "030-signing-key-registry.cbor";
+/// Core §18.2 / §18.3d — optional when no witness policy; required in the ZIP when
+/// [`ExportWriterInput::witness_key_registry`](ExportWriterInput::witness_key_registry) is set.
+pub const WITNESS_KEY_REGISTRY_MEMBER: &str = "031-witness-key-registry.cbor";
 pub const CHECKPOINTS_MEMBER: &str = "040-checkpoints.cbor";
 pub const REGISTRY_DIR: &str = "050-registries";
 pub const VERIFY_MEMBER: &str = "090-verify.sh";
@@ -199,6 +204,13 @@ pub struct ExportWriterInput {
     pub root_dir_override: Option<String>,
     pub external_anchors: Vec<Value>,
     pub extensions: Option<Value>,
+    /// When set, the writer emits `031-witness-key-registry.cbor` and merges
+    /// `ExportManifestPayload.extensions["trellis.export.witness-key-registry.v1"]`
+    /// (`witness_key_registry_digest`, `entry_count`) per Core §18.3d.
+    ///
+    /// If [`Self::extensions`] already includes that key, the writer replaces it
+    /// with values derived from this registry so the manifest matches the member.
+    pub witness_key_registry: Option<WitnessKeyRegistry>,
 }
 
 /// Complete export writer output.
@@ -243,9 +255,16 @@ struct RegistryBindingMaterial {
 /// Writes a Trellis Phase-1 export package.
 ///
 /// # Errors
-/// Returns an error when the ledger snapshot is empty or inconsistent, CBOR
-/// encoding fails, signatures cannot be assembled, or bundle serialization
-/// rejects a member path.
+/// Returns `bad_request` when the snapshot violates export preconditions (empty
+/// scope or events, mismatched checkpoints, invalid events) or when
+/// [`ExportWriterInput::extensions`] claims `trellis.export.witness-key-registry.v1`
+/// while [`ExportWriterInput::witness_key_registry`] is unset.
+///
+/// Returns `bad_request` when [`ExportWriterInput::witness_key_registry`] fails
+/// canonical encoding (invalid entry material).
+///
+/// Returns `internal` for CBOR map construction, ZIP serialization, or other
+/// defects treated as implementation faults.
 pub fn write_export(input: ExportWriterInput) -> Result<ExportPackage, StackError> {
     validate_top_level_input(&input)?;
     let events = prepare_events(&input)?;
@@ -286,6 +305,18 @@ pub fn write_export(input: ExportWriterInput) -> Result<ExportPackage, StackErro
         &registry_material,
     )?;
 
+    let witness_registry_cbor: Option<Vec<u8>> = match &input.witness_key_registry {
+        None => None,
+        Some(registry) => Some(registry.to_cbor().map_err(|error| {
+            StackError::bad_request(format!("witness_key_registry is invalid: {error}"))
+        })?),
+    };
+    let manifest_extensions = manifest_extensions_value(
+        &input,
+        input.witness_key_registry.as_ref(),
+        witness_registry_cbor.as_deref(),
+    )?;
+
     let manifest_payload = manifest_payload_cbor(ManifestPayloadInput {
         input: &input,
         tree_size: events.len(),
@@ -299,6 +330,7 @@ pub fn write_export(input: ExportWriterInput) -> Result<ExportPackage, StackErro
         checkpoints_cbor: &checkpoints_cbor,
         inclusion_proofs_cbor: &inclusion_proofs_cbor,
         consistency_proofs_cbor: &consistency_proofs_cbor,
+        manifest_extensions,
     })?;
     let signed_manifest = sign_cose(&input.signing_key, &manifest_payload);
     let manifest_digest = export_manifest_digest(&input.scope, &manifest_payload);
@@ -324,6 +356,12 @@ pub fn write_export(input: ExportWriterInput) -> Result<ExportPackage, StackErro
         format!("{root_dir}/{SIGNING_KEY_REGISTRY_MEMBER}"),
         signing_key_registry_cbor,
     ));
+    if let Some(bytes) = witness_registry_cbor {
+        bundle.add_entry(BundleEntry::new(
+            format!("{root_dir}/{WITNESS_KEY_REGISTRY_MEMBER}"),
+            bytes,
+        ));
+    }
     bundle.add_entry(BundleEntry::new(
         format!("{root_dir}/{CHECKPOINTS_MEMBER}"),
         checkpoints_cbor,
@@ -355,6 +393,57 @@ pub fn write_export(input: ExportWriterInput) -> Result<ExportPackage, StackErro
         head_checkpoint_digest,
         tree_head_hash,
     })
+}
+
+/// Core §18.3d manifest.extensions key binding `031-witness-key-registry.cbor`.
+const WITNESS_REGISTRY_MANIFEST_EXTENSION: &str = "trellis.export.witness-key-registry.v1";
+
+fn manifest_extensions_value(
+    input: &ExportWriterInput,
+    registry: Option<&WitnessKeyRegistry>,
+    witness_registry_cbor: Option<&[u8]>,
+) -> Result<Value, StackError> {
+    match (registry, witness_registry_cbor) {
+        (None, None) => Ok(input.extensions.clone().unwrap_or(Value::Null)),
+        (Some(registry), Some(cbor)) => {
+            let entry_count = u64::try_from(registry.entries.len()).map_err(|_| {
+                StackError::internal("witness registry entry count exceeds u64::MAX")
+            })?;
+            merge_witness_registry_manifest_extension(
+                input.extensions.as_ref(),
+                sha256_bytes(cbor),
+                entry_count,
+            )
+        }
+        (None, Some(_)) | (Some(_), None) => Err(StackError::internal(
+            "witness_key_registry field and encoded witness registry bytes disagree",
+        )),
+    }
+}
+
+fn merge_witness_registry_manifest_extension(
+    base_extensions: Option<&Value>,
+    digest: [u8; 32],
+    entry_count: u64,
+) -> Result<Value, StackError> {
+    let mut pairs: Vec<(Value, Value)> = Vec::new();
+    if let Some(Value::Map(entries)) = base_extensions {
+        for (key, value) in entries {
+            if key.as_text() == Some(WITNESS_REGISTRY_MANIFEST_EXTENSION) {
+                continue;
+            }
+            pairs.push((key.clone(), value.clone()));
+        }
+    }
+    let witness_payload = text_map(vec![
+        ("entry_count", uint(entry_count)),
+        ("witness_key_registry_digest", Value::Bytes(digest.to_vec())),
+    ])?;
+    pairs.push((
+        Value::Text(WITNESS_REGISTRY_MANIFEST_EXTENSION.to_string()),
+        witness_payload,
+    ));
+    canonical_map(pairs)
 }
 
 fn validate_top_level_input(input: &ExportWriterInput) -> Result<(), StackError> {
@@ -393,6 +482,18 @@ fn validate_top_level_input(input: &ExportWriterInput) -> Result<(), StackError>
     }
     if let Some(root_dir) = &input.root_dir_override {
         validate_ascii_path_segment(root_dir, "root_dir_override")?;
+    }
+    if input.witness_key_registry.is_none() {
+        if let Some(Value::Map(entries)) = &input.extensions
+            && entries
+                .iter()
+                .any(|(key, _)| key.as_text() == Some(WITNESS_REGISTRY_MANIFEST_EXTENSION))
+        {
+            return Err(StackError::bad_request(
+                "manifest extensions include trellis.export.witness-key-registry.v1 \
+                 but witness_key_registry was not provided",
+            ));
+        }
     }
     Ok(())
 }
@@ -702,6 +803,7 @@ struct ManifestPayloadInput<'a> {
     checkpoints_cbor: &'a [u8],
     inclusion_proofs_cbor: &'a [u8],
     consistency_proofs_cbor: &'a [u8],
+    manifest_extensions: Value,
 }
 
 fn manifest_payload_cbor(args: ManifestPayloadInput<'_>) -> Result<Vec<u8>, StackError> {
@@ -753,10 +855,7 @@ fn manifest_payload_cbor(args: ManifestPayloadInput<'_>) -> Result<Vec<u8>, Stac
             "omitted_payload_checks",
             Value::Array(args.input.omitted_payload_checks.clone()),
         ),
-        (
-            "extensions",
-            args.input.extensions.clone().unwrap_or(Value::Null),
-        ),
+        ("extensions", args.manifest_extensions.clone()),
     ])?;
     encode_value(&manifest_payload)
 }
@@ -1084,6 +1183,11 @@ fn hex_lower(bytes: &[u8]) -> String {
 mod tests {
     use std::path::{Path, PathBuf};
 
+    use integrity_cbor::{decode_cbor_value, map_lookup_bytes, map_lookup_map, map_lookup_u64};
+    use trellis_witness_registry::{
+        TrellisTimestamp as WitnessRegistryTimestamp, WitnessKeyEntry, WitnessKind,
+    };
+
     use super::*;
 
     #[test]
@@ -1177,9 +1281,147 @@ mod tests {
             root_dir_override: None,
             external_anchors: Vec::new(),
             extensions: None,
+            witness_key_registry: None,
         };
         let error = write_export(input).expect_err("empty export must reject");
         assert!(error.to_string().contains("requires at least one"));
+    }
+
+    /// Core §18.3d — policy is explicit `witness_key_registry` presence on [`ExportWriterInput`].
+    #[test]
+    fn write_export_emits_witness_registry_when_registry_provided() {
+        let root = fixtures_root();
+        let mut input = crate::export_001_writer_input(root.as_path());
+        let registry = WitnessKeyRegistry::new(Vec::new());
+        input.witness_key_registry = Some(registry.clone());
+
+        let package = write_export(input).expect("write export");
+        let member = package
+            .member_bytes(WITNESS_KEY_REGISTRY_MEMBER)
+            .expect("031 witness member must be present");
+
+        assert_eq!(
+            WitnessKeyRegistry::from_cbor(member).expect("round trip"),
+            registry
+        );
+        assert_eq!(member, registry.to_cbor().expect("encode"));
+
+        let manifest = decode_cbor_value(&package.manifest_payload).expect("manifest CBOR");
+        let map = manifest.as_map().expect("manifest map");
+        let extensions = map_lookup_map(map, "extensions").expect("extensions");
+        let ext_key = "trellis.export.witness-key-registry.v1";
+        let binding = extensions
+            .iter()
+            .find(|(k, _)| k.as_text() == Some(ext_key))
+            .map(|(_, v)| v)
+            .expect("witness manifest extension");
+        let binding_map = binding.as_map().expect("binding map");
+        let digest = map_lookup_bytes(binding_map, "witness_key_registry_digest").expect("digest");
+        assert_eq!(
+            digest.as_slice(),
+            sha256_bytes(member).as_slice(),
+            "manifest digest must match witness member bytes (Core 18.3d)"
+        );
+        assert_eq!(
+            map_lookup_u64(binding_map, "entry_count").expect("count"),
+            0
+        );
+
+        let verification = trellis_verify_wos::verify_export_zip(&package.zip_bytes);
+        assert!(
+            verification.trellis.structure_verified && verification.trellis.integrity_verified,
+            "witness member must not break export verification: {verification:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_witness_manifest_extension_without_registry() {
+        let root = fixtures_root();
+        let mut input = crate::export_001_writer_input(root.as_path());
+        let stale_binding = text_map(vec![
+            ("entry_count", uint(0)),
+            (
+                "witness_key_registry_digest",
+                Value::Bytes([0xee; 32].to_vec()),
+            ),
+        ])
+        .expect("stale witness binding");
+        input.extensions = Some(
+            canonical_map(vec![(
+                Value::Text(WITNESS_REGISTRY_MANIFEST_EXTENSION.to_string()),
+                stale_binding,
+            )])
+            .expect("extensions map"),
+        );
+        input.witness_key_registry = None;
+        let error = write_export(input).expect_err("extension without registry must reject");
+        assert!(
+            error.to_string().contains("witness_key_registry was not provided"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn witness_registry_encode_failure_is_bad_request() {
+        let root = fixtures_root();
+        let mut input = crate::export_001_writer_input(root.as_path());
+        let bad_entry = WitnessKeyEntry {
+            kid: [1u8; 16],
+            pubkey: vec![2u8; 31],
+            suite_id: 1,
+            effective_from: WitnessRegistryTimestamp::new(1, 0).expect("timestamp"),
+            valid_to: None,
+            supersedes: None,
+            witness_kind: WitnessKind::LocalServer,
+        };
+        input.witness_key_registry = Some(WitnessKeyRegistry::new(vec![bad_entry]));
+        let error = write_export(input).expect_err("invalid witness material must reject");
+        assert!(
+            error.to_string().contains("witness_key_registry is invalid"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn write_export_overrides_presupplied_witness_extension_with_derived_digest() {
+        let root = fixtures_root();
+        let mut input = crate::export_001_writer_input(root.as_path());
+        let registry = WitnessKeyRegistry::new(Vec::new());
+        let stale_binding = text_map(vec![
+            ("entry_count", uint(99)),
+            (
+                "witness_key_registry_digest",
+                Value::Bytes([0xdd; 32].to_vec()),
+            ),
+        ])
+        .expect("stale binding");
+        input.extensions = Some(
+            canonical_map(vec![(
+                Value::Text(WITNESS_REGISTRY_MANIFEST_EXTENSION.to_string()),
+                stale_binding,
+            )])
+            .expect("extensions map"),
+        );
+        input.witness_key_registry = Some(registry.clone());
+        let package = write_export(input).expect("write export");
+        let member = package
+            .member_bytes(WITNESS_KEY_REGISTRY_MEMBER)
+            .expect("witness member");
+        let manifest = decode_cbor_value(&package.manifest_payload).expect("manifest CBOR");
+        let map = manifest.as_map().expect("manifest map");
+        let extensions = map_lookup_map(map, "extensions").expect("extensions");
+        let binding_map = extensions
+            .iter()
+            .find(|(k, _)| k.as_text() == Some(WITNESS_REGISTRY_MANIFEST_EXTENSION))
+            .map(|(_, v)| v.as_map().expect("binding"))
+            .expect("witness extension");
+        let digest = map_lookup_bytes(binding_map, "witness_key_registry_digest")
+            .expect("witness_key_registry_digest");
+        assert_eq!(digest.as_slice(), sha256_bytes(member).as_slice());
+        assert_eq!(
+            map_lookup_u64(binding_map, "entry_count").expect("entry_count"),
+            0
+        );
     }
 
     #[test]

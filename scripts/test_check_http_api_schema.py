@@ -29,7 +29,7 @@ class TestCheckHttpApiSchema(unittest.TestCase):
 
     def test_given_live_schema_when_check_defs_then_no_errors(self) -> None:
         errors: list[str] = []
-        self.module.check_defs(self.schema, self.server_source, errors)
+        self.module.check_defs(self.schema, self.server_source, self.client_source, errors)
         self.assertEqual(errors, [])
 
     def test_given_wos_event_types_alias_when_parse_then_matches_kind_rs_table(self) -> None:
@@ -45,7 +45,7 @@ class TestCheckHttpApiSchema(unittest.TestCase):
         schema = self.module.read_json(self.module.SCHEMA_PATH)
         schema["$defs"]["VerificationReceipt"]["properties"]["profileId"]["const"] = 2
         errors: list[str] = []
-        self.module.check_defs(schema, self.server_source, errors)
+        self.module.check_defs(schema, self.server_source, self.client_source, errors)
         self.assertIn(
             "VerificationReceipt.profileId must not const-lock a single global profile",
             errors,
@@ -66,7 +66,7 @@ class TestCheckHttpApiSchema(unittest.TestCase):
         event_types.remove("wos.kernel.case_created")
         schema["$defs"]["EventType"]["enum"] = event_types
         errors: list[str] = []
-        self.module.check_defs(schema, self.server_source, errors)
+        self.module.check_defs(schema, self.server_source, self.client_source, errors)
         self.assertTrue(
             any("EventType enum drifted from trellis-server admitted literals" in error for error in errors),
             msg=errors,
@@ -80,7 +80,7 @@ class TestCheckHttpApiSchema(unittest.TestCase):
             "synthetic-drift"
         )
         errors: list[str] = []
-        self.module.check_defs(schema, self.server_source, errors)
+        self.module.check_defs(schema, self.server_source, self.client_source, errors)
         self.assertTrue(
             any("EventTypeRegistry.registryVersion drifted from server constant" in error for error in errors),
             msg=errors,
@@ -91,7 +91,7 @@ class TestCheckHttpApiSchema(unittest.TestCase):
     ) -> None:
         server_source = self.server_source.replace("profile_id_for_admitted_event", "removed_dispatch")
         errors: list[str] = []
-        self.module.check_defs(self.schema, server_source, errors)
+        self.module.check_defs(self.schema, server_source, self.client_source, errors)
         self.assertTrue(
             any("profile_id_for_admitted_event dispatch" in error for error in errors),
             msg=errors,
@@ -122,6 +122,53 @@ class TestCheckHttpApiSchema(unittest.TestCase):
         self.module.check_openapi_operations(schema, openapi, errors)
         self.assertTrue(
             any("OpenAPI operationId mismatch" in error for error in errors),
+            msg=errors,
+        )
+
+    def test_given_openapi_event_type_plain_string_when_check_openapi_event_type_enum_then_error(
+        self,
+    ) -> None:
+        openapi = {
+            "components": {
+                "schemas": {
+                    "SubstrateAppendBody": {
+                        "properties": {"eventType": {"type": "string"}},
+                    }
+                }
+            }
+        }
+        errors: list[str] = []
+        self.module.check_openapi_event_type_enum(
+            openapi, self.server_source, self.client_source, errors
+        )
+        self.assertTrue(
+            any("must declare a string enum" in e for e in errors),
+            msg=errors,
+        )
+
+    def test_given_openapi_event_type_enum_drift_when_check_openapi_event_type_enum_then_error(
+        self,
+    ) -> None:
+        openapi = {
+            "components": {
+                "schemas": {
+                    "SubstrateAppendBody": {
+                        "properties": {
+                            "eventType": {
+                                "type": "string",
+                                "enum": ["wos.kernel.case_created", "synthetic.extra.literal"],
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        errors: list[str] = []
+        self.module.check_openapi_event_type_enum(
+            openapi, self.server_source, self.client_source, errors
+        )
+        self.assertTrue(
+            any("OpenAPI SubstrateAppendBody.eventType enum drifted" in e for e in errors),
             msg=errors,
         )
 

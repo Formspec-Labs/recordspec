@@ -28,7 +28,7 @@ help:
 	@echo "  make test-postgres  Run async Postgres + parity integration tests (needs initdb/pg_ctl/openssl on PATH)"
 	@echo "  make check-specs    Run spec discipline and coverage lint"
 	@echo "  make check-specs-strict  Run check-specs + vector-renumbering guard (CI variant)"
-	@echo "  make check-verifier-isolation  Assert trellis-verify dep graph stays HPKE-clean (Core §16)"
+	@echo "  make check-verifier-isolation  Assert integrity-verify stays HPKE-clean (Core §16)"
 	@echo "  make lint           Run Rust clippy"
 	@echo "  make fmt            Check Rust formatting"
 	@echo "  make clean          Clean build artifacts"
@@ -56,6 +56,8 @@ test-scripts:
 	$(PYTHON) $(SCRIPTS_DIR)/test_check_vector_renumbering.py
 	$(PYTHON) $(SCRIPTS_DIR)/test_check_verifier_isolation.py
 	$(PYTHON) $(SCRIPTS_DIR)/check-http-api-schema.py
+	# Refactor G-6 slice: Python gen_export_001.py vs committed export/001-two-event-chain (not ratification G-6 spec lint).
+	# Rust writer + verifier legs: trellis-export-writer crate test + trellis-conformance replay — see ratification-checklist.md#gate-label-crosswalk-refactoring-tracker.
 	$(PYTHON) $(SCRIPTS_DIR)/check_export_001_generator_sync.py
 
 # Targeted run of the Postgres-side integration suite. `cargo nextest run --workspace`
@@ -80,8 +82,9 @@ check-specs-strict:
 	@echo "Running spec checks (strict, with renumbering guard)..."
 	TRELLIS_CHECK_RENUMBERING=1 $(PYTHON) $(SCRIPTS_DIR)/check-specs.py
 
-# HPKE crates (`trellis-hpke`, etc.) are exercised via `cargo nextest run --workspace`
-# in `make test`; this target only asserts the offline verifier stays HPKE-clean.
+# HPKE lives in `integrity-hpke` (integrity-stack); service and conformance crates
+# exercise it via `cargo nextest run --workspace` in `make test`. This target only
+# asserts the offline verifier package (`integrity-verify`) stays HPKE-clean.
 # Asserts `cargo tree -p integrity-verify` is HPKE-clean (no `hpke`,
 # `x25519-dalek`, `chacha20poly1305`, or `hkdf`). Core §16
 # (Verification Independence) requires the offline verifier path to
