@@ -1,4 +1,4 @@
-"""Deterministic export ZIP (Core §18, matches trellis-export)."""
+"""Deterministic export ZIP (Core §18; aligns with `integrity-bundle` / `trellis-export-writer`)."""
 
 from __future__ import annotations
 

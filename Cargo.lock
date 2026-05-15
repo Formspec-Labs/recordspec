@@ -3562,6 +3562,7 @@ name = "trellis-server-ports"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "object_store",
  "stack-common-error",
  "stack-common-object-store",
  "stack-common-postgres",

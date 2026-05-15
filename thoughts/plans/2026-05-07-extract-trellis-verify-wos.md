@@ -1,4 +1,4 @@
-# Plan: Extract WOS-aware verification from `trellis-verify` → `trellis-verify-wos` (sibling crate, in `trellis/`)
+# Plan: Extract WOS-aware verification (`trellis-verify-wos`, composed on `integrity-verify`)
 
 ## Context
 

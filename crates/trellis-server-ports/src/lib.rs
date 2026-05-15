@@ -1,14 +1,19 @@
 // Rust guideline compliant 2026-02-21
 //! Composition-root port contracts for the Trellis service boundary.
 //!
+//! HTTP request-body replay/idempotency is **not** a port here—it is enforced by
+//! `stack-common-http` middleware using `stack-common-idempotency` replay traits
+//! (`HttpReplayStore` / `InMemoryHttpReplayStore` in `trellis-server`). Older
+//! `IdempotencyStore` port stubs were retired (TWREF-055).
+//!
 //! This crate owns the service-facing seams. Protocol byte construction stays
 //! in `trellis-core` / `trellis-types`; deployment volatility lives behind the
 //! traits here.
-
 #![forbid(unsafe_code)]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::Infallible;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 pub use stack_common_error::StackError;
@@ -63,10 +68,21 @@ pub trait ArtifactStore: Send + Sync {
 }
 
 /// S3-compatible artifact-store adapter backed by shared stack object helpers.
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct S3CompatibleArtifactStore {
     config: S3ObjectConfig,
     prefix: String,
+    store: Mutex<Option<Arc<dyn object_store::ObjectStore + Send + Sync>>>,
+}
+
+impl std::fmt::Debug for S3CompatibleArtifactStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let initialized = self.store.lock().ok().map(|g| g.is_some()).unwrap_or(false);
+        f.debug_struct("S3CompatibleArtifactStore")
+            .field("config", &self.config)
+            .field("prefix", &self.prefix)
+            .field("store_initialized", &initialized)
+            .finish()
+    }
 }
 
 impl S3CompatibleArtifactStore {
@@ -75,7 +91,42 @@ impl S3CompatibleArtifactStore {
         Self {
             config,
             prefix: prefix.into(),
+            store: Mutex::new(None),
         }
+    }
+
+    fn object_store(&self) -> Result<Arc<dyn object_store::ObjectStore + Send + Sync>, StackError> {
+        let mut guard = self
+            .store
+            .lock()
+            .map_err(|_| StackError::internal("object store mutex poisoned"))?;
+        if let Some(existing) = guard.as_ref() {
+            return Ok(Arc::clone(existing));
+        }
+        let built = Arc::new(stack_common_object_store::build_s3_store(&self.config)?)
+            as Arc<dyn object_store::ObjectStore + Send + Sync>;
+        *guard = Some(Arc::clone(&built));
+        Ok(built)
+    }
+
+    #[cfg(test)]
+    pub fn from_object_store_for_test(
+        config: S3ObjectConfig,
+        prefix: impl Into<String>,
+        store: Arc<dyn object_store::ObjectStore + Send + Sync>,
+    ) -> Self {
+        Self {
+            config,
+            prefix: prefix.into(),
+            store: Mutex::new(Some(store)),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn object_store_arc_for_test(
+        &self,
+    ) -> Result<Arc<dyn object_store::ObjectStore + Send + Sync>, StackError> {
+        self.object_store()
     }
 
     fn location_for_key(&self, key: &str) -> Result<String, StackError> {
@@ -109,16 +160,18 @@ impl ArtifactStore for S3CompatibleArtifactStore {
     async fn put(&self, key: &str, bytes: &[u8]) -> Result<ArtifactRef, Self::Error> {
         let location = self.location_for_key(key)?;
         let uri = self.uri_for_location(&location);
+        stack_common_object_store::parse_s3_object_uri(&self.config, &uri)?;
+        let store = self.object_store()?;
         let evidence =
-            stack_common_object_store::write_s3_object_bytes(&self.config, &uri, bytes).await?;
+            stack_common_object_store::write_object_bytes(store.as_ref(), &location, bytes).await?;
         Ok(ArtifactRef::with_evidence(uri, evidence))
     }
 
     async fn get(&self, artifact_ref: &ArtifactRef) -> Result<Option<Vec<u8>>, Self::Error> {
         let location =
             stack_common_object_store::parse_s3_object_uri(&self.config, &artifact_ref.uri)?;
-        let store = stack_common_object_store::build_s3_store(&self.config)?;
-        let bytes = stack_common_object_store::read_object_bytes(&store, &location).await?;
+        let store = self.object_store()?;
+        let bytes = stack_common_object_store::read_object_bytes(store.as_ref(), &location).await?;
         Ok(Some(bytes))
     }
 }
@@ -711,6 +764,26 @@ mod tests {
                 .expect("location"),
             "case exports/case_1/export_bundle.zip"
         );
+    }
+
+    #[tokio::test]
+    async fn given_repeated_puts_when_s3_artifact_store_then_reuses_object_store_client() {
+        use object_store::memory::InMemory;
+
+        let config = S3ObjectConfig {
+            bucket: "proof-bundles".to_string(),
+            endpoint: None,
+            region: None,
+        };
+        let backend = Arc::new(InMemory::new()) as Arc<dyn object_store::ObjectStore + Send + Sync>;
+        let store = S3CompatibleArtifactStore::from_object_store_for_test(config, "pfx/", backend);
+        let first = store.object_store_arc_for_test().expect("store handle");
+        store.put("a", b"1").await.expect("put");
+        let second = store.object_store_arc_for_test().expect("store handle");
+        assert!(Arc::ptr_eq(&first, &second));
+        store.put("b", b"2").await.expect("put2");
+        let third = store.object_store_arc_for_test().expect("store handle");
+        assert!(Arc::ptr_eq(&first, &third));
     }
 
     #[tokio::test]

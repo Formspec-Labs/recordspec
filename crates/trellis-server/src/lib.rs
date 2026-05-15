@@ -5,6 +5,18 @@
 //! calls and Trellis Core byte construction. Consumers share the
 //! `trellis-service-client` wire DTOs; this crate owns admission,
 //! authorization, persistence, export publication, and registry reads.
+//!
+//! **HTTP replay idempotency** is enforced only through
+//! [`stack_common_idempotency::InMemoryHttpReplayStore`] wired into
+//! [`stack_common_http::idempotency::HttpIdempotencyState`] middleware (ADR
+//! 0092c). There is no parallel `IdempotencyStore` port in `trellis-server-ports`.
+//!
+//! **Governance overlay:** `wos-server` may restrict which WOS literals it emits
+//! over HTTP before calling Trellis, while Trellis admits the union of WOS registry
+//! literals plus Formspec append dialect subjects to admission policy. Bearer
+//! credentials targeting Trellis are therefore a substrate trust root broader than
+//! `wos-server` route gates until production `ScopeAuthorizer` wiring replaces
+//! dev-only permissive startup — see ADR 0106 and TWREF-064.
 
 #![forbid(unsafe_code)]
 
@@ -70,6 +82,25 @@ use wos_events::{ProvenanceKind, ProvenanceRecord, SUBSTRATE_CANONICAL_EVENT_LIT
 pub const FORMSPEC_RESPONSE_SUBMITTED: &str = "substrate.append.response_submitted";
 const EVENT_TYPE_REGISTRY_VERSION: &str = "wos-events:2026-05-15";
 const DEFAULT_BIND_ADDR: &str = "127.0.0.1:8080";
+
+/// Guard for `state_from_env`: refuses durable deployments that would silently use an
+/// allow-all `ScopeAuthorizer` without an explicit bypass (TWREF-022).
+///
+/// # Errors
+/// Returns [`StackError`] when Postgres/object-store-backed startup must not proceed.
+pub(crate) fn assert_allow_all_scope_authorizer_startup_permitted(
+    trellis_storage_is_memory: bool,
+    trellis_permissive_scope_auth: bool,
+) -> Result<(), StackError> {
+    if trellis_storage_is_memory || trellis_permissive_scope_auth {
+        return Ok(());
+    }
+    Err(StackError::bad_request(
+        "trellis-server refuses to start: AllowAllScopeAuthorizer is allowed only \
+         for explicit dev/demo (`TRELLIS_STORAGE=memory` or `TRELLIS_PERMISSIVE_SCOPE_AUTH=1`). \
+         Production requires a scoped ScopeAuthorizer; see TWREF-022 / ADR 0099.",
+    ))
+}
 
 /// OpenAPI registry for the Trellis substrate service.
 #[derive(Debug, OpenApi)]
@@ -743,6 +774,8 @@ pub fn router(state: TrellisServerState) -> Result<Router, StackError> {
 /// - `TRELLIS_SIGNING_KEY_COSE_PATH`
 ///
 /// Optional:
+/// - `TRELLIS_STORAGE=memory` (in-memory repository; skips `TRELLIS_DATABASE_URL`)
+/// - `TRELLIS_PERMISSIVE_SCOPE_AUTH=1` (explicitly allow startup with `AllowAllScopeAuthorizer` when not memory storage)
 /// - `TRELLIS_TENANT_HEADER_SET=wos|formspec|mixed`
 /// - `TRELLIS_JWT_HS256_SECRET`
 /// - `TRELLIS_SIGNING_KEY_VALID_TO_UNIX_SECS`
@@ -754,6 +787,16 @@ pub fn router(state: TrellisServerState) -> Result<Router, StackError> {
 /// # Errors
 /// Returns an error when config is missing or backend setup fails.
 pub async fn state_from_env() -> Result<TrellisServerState, StackError> {
+    let trellis_storage_is_memory = matches!(env::var("TRELLIS_STORAGE").as_deref(), Ok("memory"));
+    let trellis_permissive_scope_auth = matches!(
+        env::var("TRELLIS_PERMISSIVE_SCOPE_AUTH").as_deref(),
+        Ok("1")
+    );
+    assert_allow_all_scope_authorizer_startup_permitted(
+        trellis_storage_is_memory,
+        trellis_permissive_scope_auth,
+    )?;
+
     let signing_key_path = env::var("TRELLIS_SIGNING_KEY_COSE_PATH")
         .map_err(|_| StackError::bad_request("TRELLIS_SIGNING_KEY_COSE_PATH is required"))?;
     let signing_key_bytes = fs::read(&signing_key_path).map_err(|error| {
@@ -780,9 +823,7 @@ pub async fn state_from_env() -> Result<TrellisServerState, StackError> {
         }
     };
 
-    let repository: Arc<dyn EventRepository> = if env::var("TRELLIS_STORAGE").as_deref()
-        == Ok("memory")
-    {
+    let repository: Arc<dyn EventRepository> = if trellis_storage_is_memory {
         Arc::new(InMemoryEventRepository::new())
     } else {
         let database_url = env::var("TRELLIS_DATABASE_URL")
@@ -921,6 +962,12 @@ async fn append_event(
 ) -> Result<(StatusCode, Json<SubstrateAppendResult>), StackError> {
     validate_scope(&scope)?;
     body.validate()?;
+    if body.client_attestation.is_some() {
+        return Err(StackError::bad_request(
+            "clientAttestation is not verified on trellis-server in this release—omit it. \
+             ADR 0103/Q2 cryptographic verification pending (TWREF-0103).",
+        ));
+    }
     validate_idempotency_header(&headers, &body.idempotency_key)?;
     validate_compute_context(&body)?;
     let claims = state.authenticate(&headers)?;
@@ -1803,6 +1850,114 @@ mod tests {
         assert_eq!(
             schema_verified["type"], "boolean",
             "VerificationReceipt.verified must be boolean in JSON schema"
+        );
+    }
+
+    #[test]
+    fn given_durable_deployment_without_permissive_env_when_startup_guard_checked_then_refused() {
+        let err =
+            super::assert_allow_all_scope_authorizer_startup_permitted(false, false).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("AllowAllScopeAuthorizer"), "{message}",);
+        assert!(message.contains("TRELLIS_PERMISSIVE_SCOPE_AUTH"));
+    }
+
+    #[test]
+    fn given_memory_storage_when_startup_guard_checked_then_allow_all_allowed() {
+        super::assert_allow_all_scope_authorizer_startup_permitted(true, false).unwrap();
+    }
+
+    #[test]
+    fn given_explicit_permissive_when_startup_guard_checked_then_allow_all_allowed() {
+        super::assert_allow_all_scope_authorizer_startup_permitted(false, true).unwrap();
+    }
+
+    #[tokio::test]
+    async fn given_client_attestation_when_http_append_then_bad_request() {
+        let app = router(test_state()).expect("router");
+        let mut body: SubstrateAppendBody =
+            serde_json::from_slice(&append_body("idem-client-attestation-present")).unwrap();
+        body.client_attestation = Some(ClientAttestation {
+            kid: "fixture-kid".into(),
+            cose_sign1: "deadbeef".into(),
+        });
+        let response = app
+            .oneshot(post_request(
+                "/v1/scopes/case_123/events",
+                serde_json::to_vec(&body).unwrap(),
+            ))
+            .await
+            .expect("append response");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let ctype = response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            ctype.contains("application/problem+json"),
+            "expected application/problem+json, got {ctype:?}"
+        );
+        let bytes = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        let problem: serde_json::Value = serde_json::from_slice(&bytes).expect("problem body");
+        let mut message = problem
+            .get("title")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .to_string();
+        if let Some(detail) = problem.get("detail").and_then(|value| value.as_str()) {
+            if !message.is_empty() {
+                message.push(' ');
+            }
+            message.push_str(detail);
+        }
+        assert!(
+            message.contains("clientAttestation"),
+            "problem title/detail should cite clientAttestation, got {problem:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn given_fresh_append_when_coordinator_completes_then_persisted_hash_matches_wire() {
+        let repo = Arc::new(InMemoryEventRepository::new());
+        let state = TrellisServerState::new(
+            repo.clone(),
+            test_signing_key(),
+            TenantHeaderMode::MultiProducer,
+        );
+        let body: SubstrateAppendBody =
+            serde_json::from_slice(&append_body("idem-coordinator-persisted-hash")).unwrap();
+        let command = append::AppendCommand {
+            scope: "case_123".to_string(),
+            event_type: body.event_type.clone(),
+            idempotency_key: body.idempotency_key.clone(),
+            payload: body.payload.clone(),
+            compute_context: append::port_compute_context(&body),
+        };
+        let outcome = state
+            .append_coordinator()
+            .append(command)
+            .await
+            .expect("coordinator append");
+        let stored = repo
+            .list_scope(b"case_123")
+            .await
+            .expect("list scope")
+            .pop()
+            .expect("one event");
+        let hex_digest = outcome
+            .result
+            .canonical_event_hash
+            .strip_prefix("sha256:")
+            .expect("hash prefix");
+        let bytes = hex::decode(hex_digest).expect("digest hex");
+        let hash: [u8; 32] = bytes.try_into().expect("canonical hash is 32 bytes");
+        assert_eq!(
+            stored
+                .canonical_event_hash()
+                .expect("persisted substrate hash"),
+            &hash,
+            "coordinator commits before returning the append receipt canonical hash field",
         );
     }
 

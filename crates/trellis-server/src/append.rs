@@ -1,5 +1,12 @@
 // Rust guideline compliant 2026-05-15
 //! Append orchestration: admission, scope lock, core append, persistence, bundle publish.
+//!
+//! [`AppendCoordinator`] owns everything after HTTP validation/authentication passes:
+//! admission, per-scope serialization, ledger key replay, canonical event construction via
+//! `trellis_core`, repository append, deterministic export ZIP publication with independent
+//! verification, and materialized substrate receipt fields. Bearer tokens, outer
+//! `ScopeAuthorizer`, and HTTP body replay/idempotency live in the parent HTTP handlers and
+//! middleware, not inside this module (TWREF-021).
 
 use hkdf::Hkdf;
 use integrity_cbor::{Value, domain_separated_sha256, json_to_dcbor_bytes};

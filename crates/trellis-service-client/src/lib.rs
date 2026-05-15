@@ -1,10 +1,23 @@
 // Rust guideline compliant 2026-05-15
-//! Shared Trellis service client contract.
+//! Shared Trellis service HTTP client contract.
 //!
 //! Applications append to Trellis through this crate instead of each carrying a
 //! bespoke substrate dialect. The core trait is intentionally small; the
 //! extension trait owns ergonomic constructors for product-facing event
 //! payloads such as WOS provenance records.
+//!
+//! ## Append dialects (single HTTP route)
+//!
+//! All producers post to [`SubstrateClient::append_event`] (`POST /v1/scopes/{scope}/events`).
+//! The Trellis service admission router (`trellis-server` `RoutedEventAdmissionPolicy`)
+//! validates one of two dialects before append commits:
+//!
+//! - **WOS provenance** — construct via [`SubstrateAppendRequest::from_wos_provenance`]. The JSON body
+//!   deserializes as [`ProvenanceRecord`] and must agree with the canonical event literal carried in
+//!   `event_type` (`WosEventAdmissionPolicy`).
+//! - **Formspec substrate** — construct via [`SubstrateAppendRequest::new_json`] with Formspec's aggregate
+//!   envelope (`aggregateType`, `aggregateId`, `payload`). Event literals live under the `substrate.append.*`
+//!   namespace (for example `substrate.append.response_submitted`) and are checked by `FormspecAppendAdmissionPolicy`.
 
 #![forbid(unsafe_code)]
 
@@ -103,6 +116,10 @@ impl ComputeContext {
 }
 
 /// Optional direct-client attestation block.
+///
+/// **Trellis-server (2026-05-15):** Requests that include this field are rejected with
+/// `400`; `cose_sign1` is not cryptographically verified yet. Keep the field absent until
+/// ScopeAuthorizer-backed verification lands (TWREF-022 / ADR 0099 / ADR 0103).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientAttestation {
@@ -123,6 +140,8 @@ pub struct SubstrateAppendRequest {
     pub actor: AppendActor,
     pub payload: serde_json::Value,
     pub compute_context: ComputeContext,
+    /// Optional client attestation reserved for direct-signer flows — **omit** for
+    /// `trellis-server` until verification is implemented (see [`ClientAttestation`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_attestation: Option<ClientAttestation>,
 }
@@ -136,6 +155,8 @@ pub struct SubstrateAppendBody {
     pub actor: AppendActor,
     pub payload: serde_json::Value,
     pub compute_context: ComputeContext,
+    /// Optional client attestation reserved for direct-signer flows — **omit** for
+    /// `trellis-server` until verification is implemented (see [`ClientAttestation`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_attestation: Option<ClientAttestation>,
 }
@@ -258,7 +279,11 @@ impl SubstrateAppendBody {
     }
 }
 
-/// Verification receipt nested in an append response.
+/// Substrate append HTTP/OpenAPI DTO: export verification summary for this append.
+///
+/// This is a **server projection** field on the JSON append response (`SubstrateAppendResult`),
+/// not a Formspec/WOS spec-suite schema artifact. Formspec cryptographic receipts in authored
+/// artifacts remain spec-defined; operators integrate Trellis using this DTO and the bundle ref.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct VerificationReceipt {

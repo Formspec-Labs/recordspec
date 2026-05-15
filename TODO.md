@@ -251,19 +251,19 @@ Quality-of-implementation work: parity guards extending with new vectors, certif
 
    Size S. Score [5/4/4]=20. Per Trellis ADR 0007 (as amended 2026-05-08 by ADR-0090): certificate-of-completion embeds VerificationReceipt for each signature in certificate's signature-event entries. Receipt is carried as COSE_Sign1 bytes alongside the UCA reference. Archived stack convergence plan: thoughts/archive/plans/2026-05-09-signature-wire-convergence-plan.md. GATE: receipt-bytes production lives in Formspec adapters (`fs-n6vp` WebCrypto, `fs-wxoz` ring, `fs-fmc9` Trellis-COSE) — the previously-named TRELLIS-FORMSPEC-SIGNATURE-ADAPTER-001 work was retired during stack convergence; Trellis embeds bytes once Formspec adapters produce them.
 
-   **Acceptance:** Settle single normative receipt location (UCA payload, certificate signature-event row, or both with one authoritative binding rule); update trellis.certificate-of-completion.v1 shape per spec; update Rust verifier (trellis-verify certificate finalization) to validate receipt-aware certificate; update Python mirror; update trellis/specs/trellis-requirements-matrix.md with TR-CORE rows for receipt-bearing certificates.
+   **Acceptance:** Settle single normative receipt location (UCA payload, certificate signature-event row, or both with one authoritative binding rule); update trellis.certificate-of-completion.v1 shape per spec; update Rust verification (`integrity-verify` / `trellis-verify-wos` certificate path) to validate receipt-aware certificates; update Python mirror; update trellis/specs/trellis-requirements-matrix.md with TR-CORE rows for receipt-bearing certificates.
 
 **P3 — sustaining:**
 
 - **Trellis #19a — TRELLIS-COSE-PRIMITIVE-BOUNDARY-001: clarify Trellis COSE substrate** `[6/3/5]=30` · `fs-j6am` · P3
 
-   Size S. Score [6/3/5]=30. trellis-cose currently re-exports shared COSE_Sign1 primitives used by Trellis event-signing construction and trellis-verify parsing. Formspec detached-payload parsing also re-exports same shared primitive through its compatibility crate.
+   Size S. Score [6/3/5]=30. `integrity-cose` owns shared COSE_Sign1 primitives; Trellis may retain thin `trellis-cose` shims over `integrity_cose` for legacy import paths. Export/offline verification consumes the same primitive surface through `integrity-verify` / `trellis-verify-wos`. Formspec detached-payload parsing re-exports the shared primitive through its compatibility crate.
 
    **Acceptance:** Keep Trellis-specific constructors and Formspec adapter policy layered above the shared primitive; add profile-equivalence vectors when new overlapping Sig_structure behavior lands.
 
 - **Trellis #20 — TRELLIS-003 residue: prev_hash write guard at append time** · `fs-ycws` · P3
 
-   Size XS. DDIA remediation landed sequence-continuity validation + SequenceGap error in both stores (store-postgres:371-397, store-memory:129-140) plus canonical_event_hash BYTEA NULL migration v3. prev_hash comparison between incoming event and predecessor's stored hash is explicitly DEFERRED: store-postgres/src/lib.rs:391 carries TODO(TRELLIS-003). StoredEvent does not yet carry prev_hash field; trellis-verify performs full prev_hash chain verification at read time (trellis-verify/src/lib.rs:647-670 + VerificationFailureKind::PrevHashMismatch), so integrity guarantee holds — gap is defense-in-depth at write path. Land when StoredEvent gains prev_hash and append path can compare without schema-breaking migration.
+   Size XS. DDIA remediation landed sequence-continuity validation + SequenceGap error in both stores (store-postgres:371-397, store-memory:129-140) plus canonical_event_hash BYTEA NULL migration v3. prev_hash comparison between incoming event and predecessor's stored hash is explicitly DEFERRED: store-postgres/src/lib.rs:391 carries TODO(TRELLIS-003). StoredEvent does not yet carry prev_hash field; `integrity-verify` (Trellis export / chain verification) performs full prev_hash chain verification at read time (`integrity-stack/crates/integrity-verify`, failure kind `PrevHashMismatch`), so integrity guarantee holds — gap is defense-in-depth at write path. Land when StoredEvent gains prev_hash and append path can compare without schema-breaking migration.
 
    **Acceptance:**
      - Add prev_hash: Option<[u8;32]> to StoredEvent (backward-compatible).
