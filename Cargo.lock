@@ -2993,6 +2993,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "trellis-export-writer"
+version = "0.1.0"
+dependencies = [
+ "ciborium",
+ "integrity-bundle",
+ "integrity-cbor",
+ "integrity-cose",
+ "integrity-hpke",
+ "serde_json",
+ "stack-common-error",
+ "trellis-types",
+ "trellis-verify-wos",
+]
+
+[[package]]
 name = "trellis-hpke"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,19 @@
+[package]
+name = "trellis-export-writer"
+version.workspace = true
+edition.workspace = true
+description = "Trellis Phase-1 export bundle writer"
+license.workspace = true
+
+[dependencies]
+ciborium = "0.2"
+integrity-bundle = { path = "../../../integrity-stack/crates/integrity-bundle" }
+integrity-cbor = { path = "../../../integrity-stack/crates/integrity-cbor" }
+integrity-cose = { path = "../../../integrity-stack/crates/integrity-cose" }
+integrity-hpke = { path = "../../../integrity-stack/crates/integrity-hpke" }
+serde_json = "1"
+stack-common-error = { path = "../../../stack-common/crates/stack-common-error", default-features = false }
+trellis-types = { path = "../trellis-types" }
+
+[dev-dependencies]
+trellis-verify-wos = { path = "../trellis-verify-wos" }
