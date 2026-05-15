@@ -53,8 +53,8 @@ use postgres::{Client, NoTls, Transaction};
 use postgres_native_tls::MakeTlsConnector;
 use r2d2::{Pool, PooledConnection};
 use r2d2_postgres::PostgresConnectionManager;
+use stack_common_idempotency::byte_collision::{CollisionDecision, resolve_collision};
 use trellis_core::LedgerStore;
-use trellis_store_postgres_shared::collision::{CollisionDecision, resolve_collision};
 use trellis_types::{StoredEvent, idempotency_key_length_in_bound};
 
 mod migrations;

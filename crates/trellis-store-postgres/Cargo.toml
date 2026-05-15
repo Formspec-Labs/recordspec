@@ -10,6 +10,7 @@ postgres-native-tls = "0.5"
 native-tls = "0.2"
 r2d2 = "0.8"
 r2d2_postgres = "0.18"
+stack-common-idempotency = { path = "../../../stack-common/crates/stack-common-idempotency", default-features = false }
 trellis-core = { path = "../trellis-core" }
 trellis-store-postgres-shared = { path = "../trellis-store-postgres-shared" }
 trellis-types = { path = "../trellis-types" }

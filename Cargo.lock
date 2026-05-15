@@ -2387,6 +2387,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
+name = "stack-common-idempotency"
+version = "0.1.0"
+
+[[package]]
 name = "stringprep"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2777,6 +2781,7 @@ dependencies = [
  "postgres-native-tls",
  "r2d2",
  "r2d2_postgres",
+ "stack-common-idempotency",
  "tempfile",
  "trellis-core",
  "trellis-store-postgres-shared",
@@ -2788,6 +2793,7 @@ name = "trellis-store-postgres-async"
 version = "0.1.0"
 dependencies = [
  "sqlx",
+ "stack-common-idempotency",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",

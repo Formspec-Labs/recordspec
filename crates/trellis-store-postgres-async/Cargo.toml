@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio-rustls", "uuid", "json", "migrate"] }
+stack-common-idempotency = { path = "../../../stack-common/crates/stack-common-idempotency", default-features = false }
 thiserror = "1"
 trellis-store-postgres-shared = { path = "../trellis-store-postgres-shared" }
 trellis-types = { path = "../trellis-types" }

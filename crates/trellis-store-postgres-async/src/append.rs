@@ -1,7 +1,7 @@
 //! Async append helpers for caller-owned Postgres transactions.
 
 use sqlx::{Postgres, Transaction};
-use trellis_store_postgres_shared::collision::{CollisionDecision, resolve_collision};
+use stack_common_idempotency::byte_collision::{CollisionDecision, resolve_collision};
 use trellis_types::{StoredEvent, idempotency_key_length_in_bound};
 
 /// Error returned when async append cannot complete.
