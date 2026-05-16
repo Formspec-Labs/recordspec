@@ -10,13 +10,18 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use stack_common_error::StackError;
-use trellis_admission_formspec::{
-    FORMSPEC_RESPONSE_SUBMITTED, FormspecAppendAdmissionPolicy, formspec_event_type_specs,
-};
+use trellis_admission_formspec::{FormspecAppendAdmissionPolicy, formspec_event_type_specs};
 use trellis_admission_wos::{WosEventAdmissionPolicy, wos_event_family, wos_event_type_specs};
 use trellis_server_ports::{
     AdmissionEvent, AdmittedEvent, EventAdmissionPolicy, EventTypeSpec,
 };
+
+/// Formspec intake-proof append literal admitted at the Trellis service edge.
+///
+/// Re-exported through the composition module so generic Trellis service
+/// modules pull the literal through this single seam instead of depending on
+/// `trellis-admission-formspec` directly (Boundary Gate).
+pub use trellis_admission_formspec::FORMSPEC_RESPONSE_SUBMITTED;
 
 /// Routed default admission policy: WOS for canonical WOS literals, Formspec for the
 /// `substrate.append.response_submitted` aggregate literal.

@@ -87,7 +87,7 @@ use trellis_types::{EVENT_DOMAIN, StoredEvent};
 use crate::openapi::EventTypeRegistryView;
 
 /// Formspec intake proof append event literal admitted at the service edge.
-pub use trellis_admission_formspec::FORMSPEC_RESPONSE_SUBMITTED;
+pub use composition::FORMSPEC_RESPONSE_SUBMITTED;
 const EVENT_TYPE_REGISTRY_VERSION: &str = "wos-events:2026-05-15";
 const DEFAULT_BIND_ADDR: &str = "127.0.0.1:8080";
 
