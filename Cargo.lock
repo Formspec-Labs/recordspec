@@ -3438,6 +3438,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "trellis-admission-formspec"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "integrity-verify",
+ "serde_json",
+ "stack-common-error",
+ "tokio",
+ "trellis-server-ports",
+]
+
+[[package]]
+name = "trellis-admission-wos"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "integrity-verify",
+ "serde_json",
+ "stack-common-error",
+ "tokio",
+ "trellis-server-ports",
+ "wos-events",
+]
+
+[[package]]
 name = "trellis-cddl"
 version = "0.1.0"
 dependencies = [
@@ -3548,6 +3573,8 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
+ "trellis-admission-formspec",
+ "trellis-admission-wos",
  "trellis-cddl",
  "trellis-core",
  "trellis-export-writer",

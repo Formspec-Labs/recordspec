@@ -819,7 +819,7 @@ pub trait RegistryBinder: Send + Sync {
         &mut self,
         scope: &[u8],
         event_type: &str,
-        schema_ref: &str,
+        schema_ref: SchemaRef,
         bound_at_sequence: u64,
     ) -> Result<RegistryBinding, Self::Error>;
 
@@ -845,12 +845,9 @@ impl RegistryBinder for InMemoryRegistryBinder {
         &mut self,
         scope: &[u8],
         event_type: &str,
-        schema_ref: &str,
+        schema_ref: SchemaRef,
         bound_at_sequence: u64,
     ) -> Result<RegistryBinding, Self::Error> {
-        let schema_ref = SchemaRef::new(schema_ref.to_string()).unwrap_or_else(|error| {
-            unreachable!("Infallible binder still produced unvalidated schema ref: {error}")
-        });
         let binding = RegistryBinding {
             scope: scope.to_vec(),
             event_type: event_type.to_string(),
@@ -1090,12 +1087,14 @@ mod tests {
     #[tokio::test]
     async fn registry_binder_resolves_largest_binding_not_after_sequence() {
         let mut binder = InMemoryRegistryBinder::default();
+        let schema_v1 = SchemaRef::new("schema:v1").expect("valid schema");
+        let schema_v2 = SchemaRef::new("schema:v2").expect("valid schema");
         binder
-            .bind_event_type(b"case-1", "wos.kernel.case_created", "schema:v1", 2)
+            .bind_event_type(b"case-1", "wos.kernel.case_created", schema_v1, 2)
             .await
             .expect("bind v1");
         binder
-            .bind_event_type(b"case-1", "wos.kernel.case_created", "schema:v2", 5)
+            .bind_event_type(b"case-1", "wos.kernel.case_created", schema_v2, 5)
             .await
             .expect("bind v2");
 

@@ -121,7 +121,7 @@ impl<'a> AppendCoordinator<'a> {
             .iter()
             .find(|event| event.idempotency_key() == Some(command.idempotency_key.as_bytes()))
         {
-            validate_existing_replay(existing, &command.event_type, content.content_hash)?;
+            validate_existing_replay(existing, &admitted.event_type, content.content_hash)?;
             let replay_events = events
                 .iter()
                 .filter(|event| event.sequence() <= existing.sequence())
@@ -159,7 +159,7 @@ impl<'a> AppendCoordinator<'a> {
             scope: command.scope.as_bytes(),
             sequence,
             prev_hash,
-            event_type: &command.event_type,
+            event_type: &admitted.event_type,
             idempotency_key: command.idempotency_key.as_bytes(),
             content,
             authored_at: now_timestamp()?,

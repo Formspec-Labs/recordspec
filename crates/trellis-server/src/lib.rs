@@ -33,6 +33,7 @@
 mod admission;
 mod append;
 mod artifacts;
+mod composition;
 mod event_repository;
 mod http;
 pub mod openapi;
@@ -40,7 +41,7 @@ mod scope_startup;
 mod state;
 
 #[doc(inline)]
-pub use admission::{FormspecAppendAdmissionPolicy, RoutedEventAdmissionPolicy, WosEventAdmissionPolicy};
+pub use composition::DefaultAdmissionPolicy;
 
 
 use artifacts::BundleRecord;
@@ -82,12 +83,11 @@ use trellis_service_client::{
     VerificationReceipt,
 };
 use trellis_types::{EVENT_DOMAIN, StoredEvent};
-use wos_events::SUBSTRATE_CANONICAL_EVENT_LITERALS;
 
 use crate::openapi::EventTypeRegistryView;
 
 /// Formspec intake proof append event literal admitted at the service edge.
-pub use trellis_service_client::FORMSPEC_APPEND_EVENT_TYPE_LITERAL as FORMSPEC_RESPONSE_SUBMITTED;
+pub use trellis_admission_formspec::FORMSPEC_RESPONSE_SUBMITTED;
 const EVENT_TYPE_REGISTRY_VERSION: &str = "wos-events:2026-05-15";
 const DEFAULT_BIND_ADDR: &str = "127.0.0.1:8080";
 
@@ -102,8 +102,6 @@ pub enum TenantHeaderMode {
     Formspec,
     MultiProducer,
 }
-
-const WOS_EVENT_TYPES: &[&str] = SUBSTRATE_CANONICAL_EVENT_LITERALS;
 
 /// Server-owned JWT claims for optional service auth.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -383,11 +381,11 @@ pub(crate) fn timestamp_value(timestamp: TrellisTimestamp) -> Value {
 pub(crate) fn event_type_registry_view() -> EventTypeRegistryView {
     EventTypeRegistryView {
         registry_version: EVENT_TYPE_REGISTRY_VERSION.to_string(),
-        event_types: WOS_EVENT_TYPES
-            .iter()
-            .map(|event_type| crate::openapi::EventTypeRegistryEntry {
-                event_type: (*event_type).to_string(),
-                schema_ref: format!("wos-events://{event_type}"),
+        event_types: composition::default_event_type_specs()
+            .into_iter()
+            .map(|spec| crate::openapi::EventTypeRegistryEntry {
+                event_type: spec.event_type,
+                schema_ref: spec.schema_ref.into_string(),
             })
             .collect(),
     }
@@ -396,24 +394,16 @@ pub(crate) fn event_type_registry_view() -> EventTypeRegistryView {
 fn event_type_registry_cbor() -> Result<Vec<u8>, StackError> {
     const SERVICE_CLASSIFICATION: &str = "x-trellis-service/public-metadata";
     let mut event_types = Vec::new();
-    for event_type in WOS_EVENT_TYPES {
+    for spec in composition::default_event_type_specs() {
         let entry = text_map(vec![
             ("privacy_class", Value::Text("publicMetadata".to_string())),
-            ("binding_family", Value::Text("wos.kernel".to_string())),
+            (
+                "binding_family",
+                Value::Text(composition::binding_family_for(&spec.event_type)),
+            ),
         ])?;
-        event_types.push((Value::Text((*event_type).to_string()), entry));
+        event_types.push((Value::Text(spec.event_type.clone()), entry));
     }
-    let formspec_entry = text_map(vec![
-        ("privacy_class", Value::Text("publicMetadata".to_string())),
-        (
-            "binding_family",
-            Value::Text("formspec.response".to_string()),
-        ),
-    ])?;
-    event_types.push((
-        Value::Text(FORMSPEC_RESPONSE_SUBMITTED.to_string()),
-        formspec_entry,
-    ));
     let registry = text_map(vec![
         ("event_types", Value::Map(event_types)),
         (
@@ -593,10 +583,7 @@ mod tests {
     #[tokio::test]
     async fn given_fresh_append_when_http_post_then_admission_runs_once_in_coordinator() {
         let admission_calls = Arc::new(AtomicUsize::new(0));
-        let inner = Arc::new(RoutedEventAdmissionPolicy {
-            wos: WosEventAdmissionPolicy,
-            formspec: FormspecAppendAdmissionPolicy,
-        });
+        let inner = Arc::new(DefaultAdmissionPolicy::new());
         let counting = Arc::new(CountingAdmissionPolicy {
             inner,
             calls: admission_calls.clone(),
@@ -622,10 +609,7 @@ mod tests {
     #[tokio::test]
     async fn given_ledger_idempotency_replay_when_coordinator_runs_then_admission_once_per_pass() {
         let admission_calls = Arc::new(AtomicUsize::new(0));
-        let inner = Arc::new(RoutedEventAdmissionPolicy {
-            wos: WosEventAdmissionPolicy,
-            formspec: FormspecAppendAdmissionPolicy,
-        });
+        let inner = Arc::new(DefaultAdmissionPolicy::new());
         let counting = Arc::new(CountingAdmissionPolicy {
             inner,
             calls: admission_calls.clone(),
@@ -1398,26 +1382,20 @@ mod tests {
     }
 
     #[test]
-    fn given_wos_event_types_when_checked_against_provenance_kind_then_all_resolve() {
-        for literal in WOS_EVENT_TYPES {
-            assert!(
-                ProvenanceKind::from_canonical_event_literal(literal).is_some(),
-                "WOS_EVENT_TYPES literal `{literal}` must resolve through ProvenanceKind"
-            );
-        }
-    }
-
-    #[test]
-    fn given_wos_event_types_when_defined_then_aliases_substrate_canonical_export() {
+    fn given_admission_wos_literals_when_defined_then_aliases_substrate_canonical_export() {
+        // TWREF-017: the WOS admission adapter's canonical literal table must
+        // remain the same slice as `wos-events::SUBSTRATE_CANONICAL_EVENT_LITERALS`.
+        // After DI-001 the alias lives in trellis-admission-wos; this test guards
+        // against drift through the parent trellis-server build.
         assert!(
             std::ptr::eq(
-                WOS_EVENT_TYPES.as_ptr(),
+                trellis_admission_wos::WOS_CANONICAL_EVENT_LITERALS.as_ptr(),
                 SUBSTRATE_CANONICAL_EVENT_LITERALS.as_ptr()
             ),
-            "trellis-server WOS_EVENT_TYPES must alias wos-events SUBSTRATE_CANONICAL_EVENT_LITERALS (TWREF-017)"
+            "trellis-admission-wos::WOS_CANONICAL_EVENT_LITERALS must alias wos-events SUBSTRATE_CANONICAL_EVENT_LITERALS (TWREF-017)"
         );
         assert_eq!(
-            WOS_EVENT_TYPES.len(),
+            trellis_admission_wos::WOS_CANONICAL_EVENT_LITERALS.len(),
             SUBSTRATE_CANONICAL_EVENT_LITERALS.len(),
             "substrate literal slice length drift"
         );

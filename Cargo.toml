@@ -7,6 +7,8 @@ members = [
     "crates/trellis-export-writer",
     "crates/trellis-service-client",
     "crates/trellis-server",
+    "crates/trellis-admission-wos",
+    "crates/trellis-admission-formspec",
     "crates/trellis-verify-wos",
     "crates/trellis-witness-registry",
     "crates/trellis-store-memory",

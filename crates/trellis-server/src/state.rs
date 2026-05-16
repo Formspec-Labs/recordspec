@@ -29,10 +29,8 @@ use trellis_server_ports::{
     ArtifactStore, EventAdmissionPolicy, S3CompatibleArtifactStore, S3ObjectConfig, ScopeAuthorizer,
 };
 
-use crate::admission::{
-    AllowAllScopeAuthorizer, FormspecAppendAdmissionPolicy, RoutedEventAdmissionPolicy,
-    ScopedAllowlistScopeAuthorizer, WosEventAdmissionPolicy,
-};
+use crate::admission::{AllowAllScopeAuthorizer, ScopedAllowlistScopeAuthorizer};
+use crate::composition::default_admission_policy;
 use crate::append::{AppendRunner, DefaultAppendRunner};
 use crate::artifacts::{BundleIndex, InMemoryArtifactStore, ScopeLocks};
 use crate::event_repository::{EventRepository, InMemoryEventRepository, PostgresEventRepository};
@@ -69,10 +67,7 @@ impl TrellisServerState {
         Self {
             repository,
             artifact_store: Arc::new(InMemoryArtifactStore::default()),
-            admission_policy: Arc::new(RoutedEventAdmissionPolicy {
-                wos: WosEventAdmissionPolicy,
-                formspec: FormspecAppendAdmissionPolicy,
-            }),
+            admission_policy: default_admission_policy(),
             authorizer: Arc::new(AllowAllScopeAuthorizer),
             signing_key,
             tenant_header_mode,
