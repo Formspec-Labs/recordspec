@@ -249,7 +249,7 @@ Quality-of-implementation work: parity guards extending with new vectors, certif
 **P2 — standard:**
 
 - **Trellis #19 — TRELLIS-CERTIFICATE-RECEIPT-EMBEDDING-001: embed VerificationReceipt in COC** `[5/4/4]=20` · `fs-qlgh` · P2
-   links T4-SIG-CERT-001 — embed VerificationReceipt in Trellis… `fs-p92r`, FORMSPEC-SIGNATURE-ADAPTER-TRELLIS-001 — Optional… `fs-fmc9`
+   links T4-SIG-CERT-001 — embed VerificationReceipt in Trellis… `fs-p92r`, FORMSPEC-SIGNATURE-ADAPTER-TRELLIS-001 — Trellis-side… `fs-fmc9`
 
    Size S. Score [5/4/4]=20. Per Trellis ADR 0007 (as amended 2026-05-08 by ADR-0090): certificate-of-completion embeds VerificationReceipt for each signature in certificate's signature-event entries. Receipt is carried as COSE_Sign1 bytes alongside the UCA reference. Archived stack convergence plan: thoughts/archive/plans/2026-05-09-signature-wire-convergence-plan.md. GATE: receipt-bytes production lives in Formspec adapters (`fs-n6vp` WebCrypto, `fs-wxoz` ring, `fs-fmc9` Trellis-COSE) — the previously-named TRELLIS-FORMSPEC-SIGNATURE-ADAPTER-001 work was retired during stack convergence; Trellis embeds bytes once Formspec adapters produce them.
 
