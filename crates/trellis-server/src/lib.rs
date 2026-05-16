@@ -6,6 +6,11 @@
 //! `trellis-service-client` wire DTOs; this crate owns admission,
 //! authorization, persistence, export publication, and registry reads.
 //!
+//! Axum routing is exposed via [`router`]; durable bootstrap and HTTP replay state via
+//! [`TrellisServerState`] / [`state_from_env`] (implemented in `src/http.rs` and `src/state.rs`).
+//! This file remains a large composition root (profile dispatch, bundle publication, CBOR/registry
+//! helpers, and related tests), not a thin re-export-only façade.
+//!
 //! **HTTP replay idempotency** is enforced only through
 //! [`stack_common_idempotency::InMemoryHttpReplayStore`] wired into
 //! [`stack_common_http::idempotency::HttpIdempotencyState`] middleware (ADR
@@ -29,15 +34,16 @@ mod admission;
 mod append;
 mod artifacts;
 mod event_repository;
+mod http;
 pub mod openapi;
 mod scope_startup;
+mod state;
 
 #[doc(inline)]
 pub use admission::{FormspecAppendAdmissionPolicy, RoutedEventAdmissionPolicy, WosEventAdmissionPolicy};
 
-use admission::{AllowAllScopeAuthorizer, ScopedAllowlistScopeAuthorizer};
 
-use artifacts::{BundleIndex, BundleRecord, InMemoryArtifactStore, ScopeLocks};
+use artifacts::BundleRecord;
 
 #[doc(inline)]
 pub use event_repository::{EventRepository, InMemoryEventRepository, PostgresEventRepository};
@@ -47,54 +53,31 @@ pub use scope_startup::TrellisScopeAuthorizerStartupInputs;
 #[doc(inline)]
 pub use openapi::TrellisServerOpenApi;
 
+#[doc(inline)]
+pub use http::router;
+#[doc(inline)]
+pub use state::{TrellisServerState, state_from_env};
+
 #[cfg(feature = "test-harness")]
 pub mod test_harness;
 
-use std::env;
-use std::fs;
-use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use async_trait::async_trait;
-use axum::extract::{Path, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
-use axum::middleware;
-use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
-use axum::{Json, Router};
-use http::header::AUTHORIZATION;
 use integrity_cbor::{
     CborHelperError, Value, domain_separated_sha256, map_lookup_bytes, map_lookup_fixed_bytes,
     map_lookup_map,
 };
 use serde::{Deserialize, Serialize};
-use stack_common_auth::{BaseClaims, Claims, JwtConfig, JwtVerifier};
-use stack_common_error::{ErrorCode, ProblemJson, StackError};
-use stack_common_http::idempotency::{
-    HttpIdempotencyState, IDEMPOTENCY_KEY_HEADER, IdempotencyCall, IdempotencyDecision,
-    IdempotencyDriverError, IdempotencyFailure, IdempotencyOperation, idempotency_middleware,
-};
-use stack_common_http::problem_response;
-use stack_common_http::tenant::{
-    HeaderConfig, TenantHeaderConfigProvider, TenantScope, extract_tenant,
-    extract_tenant_multi_producer,
-};
-use stack_common_idempotency::{
-    HttpReplayStore, InMemoryHttpReplayStore, ReplayOutcome, StoredResponse,
-};
-use stack_common_ops::{ComponentHealth, HealthProbe, HealthRouter};
+use stack_common_auth::{BaseClaims, Claims};
+use stack_common_error::StackError;
 use trellis_cddl::canonical_event_hash_preimage;
 use trellis_core::SigningKeyMaterial as CoreSigningKey;
 use trellis_export_writer::{
     ExportWriterInput, RegistrySnapshot as ExportRegistrySnapshot,
     SigningKeyMaterial as ExportSigningKey, TrellisTimestamp, write_export,
 };
-use trellis_server_ports::{
-    ArtifactStore, EventAdmissionPolicy, S3CompatibleArtifactStore, S3ObjectConfig, ScopeAction,
-    ScopeAuthorization, ScopeAuthorizer,
-};
 use trellis_service_client::{
-    ComputeContext, ComputeSensitivity, SubstrateAppendBody, SubstrateAppendResult,
+    ComputeContext, SubstrateAppendResult,
     VerificationReceipt,
 };
 use trellis_types::{EVENT_DOMAIN, StoredEvent};
@@ -207,689 +190,6 @@ impl ServerSigningKey {
     }
 }
 
-/// Cloneable Axum state for the Trellis service.
-#[derive(Clone)]
-pub struct TrellisServerState {
-    pub(crate) repository: Arc<dyn EventRepository>,
-    artifact_store: Arc<dyn ArtifactStore<Error = StackError>>,
-    pub(crate) admission_policy: Arc<dyn EventAdmissionPolicy<Error = StackError>>,
-    authorizer: Arc<dyn ScopeAuthorizer<Error = StackError>>,
-    pub(crate) signing_key: ServerSigningKey,
-    tenant_header_mode: TenantHeaderMode,
-    replay_store: Arc<InMemoryHttpReplayStore>,
-    bundles: Arc<BundleIndex>,
-    pub(crate) scope_locks: Arc<ScopeLocks>,
-    jwt_verifier: Option<Arc<JwtVerifier<TrellisClaims>>>,
-    /// True when [`state_from_env`] used durable storage without `TRELLIS_PERMISSIVE_SCOPE_AUTH=1`.
-    production_like_scope_posture: bool,
-    /// True while the built-in [`AllowAllScopeAuthorizer`] from [`Self::new`] is still installed.
-    scope_authorizer_allow_all: bool,
-    append_runner: Arc<dyn AppendRunner>,
-}
-
-/// Runs append orchestration after HTTP validation and outer authorization (TWREF-021).
-///
-/// Production wiring delegates to [`AppendCoordinator`]; tests may substitute a recorder that
-/// forwards to [`DefaultAppendRunner`] without monkeypatching globals.
-#[async_trait]
-pub(crate) trait AppendRunner: Send + Sync {
-    async fn run_append(
-        &self,
-        state: &TrellisServerState,
-        command: append::AppendCommand,
-    ) -> Result<append::AppendOutcome, StackError>;
-}
-
-/// Production [`AppendRunner`] implementation (`AppendCoordinator::append`).
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct DefaultAppendRunner;
-
-#[async_trait]
-impl AppendRunner for DefaultAppendRunner {
-    async fn run_append(
-        &self,
-        state: &TrellisServerState,
-        command: append::AppendCommand,
-    ) -> Result<append::AppendOutcome, StackError> {
-        state.append_coordinator().append(command).await
-    }
-}
-
-impl TrellisServerState {
-    #[must_use]
-    pub fn new(
-        repository: Arc<dyn EventRepository>,
-        signing_key: ServerSigningKey,
-        tenant_header_mode: TenantHeaderMode,
-    ) -> Self {
-        Self {
-            repository,
-            artifact_store: Arc::new(InMemoryArtifactStore::default()),
-            admission_policy: Arc::new(RoutedEventAdmissionPolicy {
-                wos: WosEventAdmissionPolicy,
-                formspec: FormspecAppendAdmissionPolicy,
-            }),
-            authorizer: Arc::new(AllowAllScopeAuthorizer),
-            signing_key,
-            tenant_header_mode,
-            replay_store: Arc::new(InMemoryHttpReplayStore::new()),
-            bundles: Arc::new(BundleIndex::default()),
-            scope_locks: Arc::new(ScopeLocks::default()),
-            jwt_verifier: None,
-            production_like_scope_posture: false,
-            scope_authorizer_allow_all: true,
-            append_runner: Arc::new(DefaultAppendRunner),
-        }
-    }
-
-    /// Test-only: replace the append runner (constructor injection for delegation proofs).
-    #[cfg(test)]
-    pub(crate) fn with_append_runner(mut self, runner: Arc<dyn AppendRunner>) -> Self {
-        self.append_runner = runner;
-        self
-    }
-
-    #[must_use]
-    pub fn production_like_scope_posture(&self) -> bool {
-        self.production_like_scope_posture
-    }
-
-    #[must_use]
-    pub fn with_production_like_scope_posture(mut self, production_like: bool) -> Self {
-        self.production_like_scope_posture = production_like;
-        self
-    }
-
-    #[must_use]
-    pub fn with_artifact_store(
-        mut self,
-        artifact_store: Arc<dyn ArtifactStore<Error = StackError>>,
-    ) -> Self {
-        self.artifact_store = artifact_store;
-        self
-    }
-
-    #[must_use]
-    pub fn with_jwt_verifier(mut self, verifier: JwtVerifier<TrellisClaims>) -> Self {
-        self.jwt_verifier = Some(Arc::new(verifier));
-        self
-    }
-
-    #[must_use]
-    pub fn with_admission_policy(
-        mut self,
-        admission_policy: Arc<dyn EventAdmissionPolicy<Error = StackError>>,
-    ) -> Self {
-        self.admission_policy = admission_policy;
-        self
-    }
-
-    #[must_use]
-    pub fn with_scope_authorizer(
-        mut self,
-        authorizer: Arc<dyn ScopeAuthorizer<Error = StackError>>,
-    ) -> Self {
-        self.authorizer = authorizer;
-        self.scope_authorizer_allow_all = false;
-        self
-    }
-
-    /// Refuses misleading compositions: production-like posture must not run with allow-all scope auth.
-    ///
-    /// # Errors
-    /// When the state would advertise production scope posture while still using dev-only authorization.
-    pub fn ensure_serving_posture_twref022(&self) -> Result<(), StackError> {
-        if !self.production_like_scope_posture {
-            return Ok(());
-        }
-        if self.scope_authorizer_allow_all {
-            return Err(StackError::bad_request(
-                "trellis-server refuses to build router: production_like_scope_posture requires \
-                 a scoped ScopeAuthorizer (JWT scopes allowlist), not AllowAll—set \
-                 TRELLIS_PERMISSIVE_SCOPE_AUTH=1 for explicit dev bypass (TWREF-022).",
-            ));
-        }
-        if self.jwt_verifier.is_none() {
-            return Err(StackError::bad_request(
-                "trellis-server refuses to build router: production_like_scope_posture requires \
-                 TRELLIS_JWT_HS256_SECRET / jwt_verifier (TWREF-022).",
-            ));
-        }
-        Ok(())
-    }
-
-    #[must_use]
-    pub(crate) fn append_coordinator(&self) -> append::AppendCoordinator<'_> {
-        append::AppendCoordinator::new(self)
-    }
-
-    fn authenticate(&self, headers: &HeaderMap) -> Result<Option<TrellisClaims>, StackError> {
-        let Some(verifier) = &self.jwt_verifier else {
-            return Ok(None);
-        };
-        let token = headers
-            .get(AUTHORIZATION)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.strip_prefix("Bearer "))
-            .ok_or_else(|| {
-                StackError::new(
-                    ErrorCode::new("INFRA-4010").expect("static error code is valid"),
-                    StatusCode::UNAUTHORIZED,
-                    "missing bearer token",
-                )
-            })?;
-        verifier.verify(token).map(Some)
-    }
-}
-
-impl TenantHeaderConfigProvider for TrellisServerState {
-    fn tenant_header_config(&self) -> HeaderConfig {
-        match self.tenant_header_mode {
-            TenantHeaderMode::Wos => HeaderConfig::wos(),
-            TenantHeaderMode::Formspec => HeaderConfig::formspec(),
-            TenantHeaderMode::MultiProducer => HeaderConfig::wos(),
-        }
-    }
-
-    fn extract_tenant_scope(&self, headers: &HeaderMap) -> Result<TenantScope, StackError> {
-        match self.tenant_header_mode {
-            TenantHeaderMode::MultiProducer => extract_tenant_multi_producer(headers),
-            TenantHeaderMode::Wos => extract_tenant(&HeaderConfig::wos(), headers),
-            TenantHeaderMode::Formspec => extract_tenant(&HeaderConfig::formspec(), headers),
-        }
-    }
-}
-
-#[async_trait]
-impl HttpIdempotencyState for TrellisServerState {
-    type Error = StackError;
-
-    async fn reserve_http_idempotency(
-        &self,
-        call: &IdempotencyCall,
-    ) -> Result<IdempotencyDecision, IdempotencyDriverError<Self::Error>> {
-        match self
-            .replay_store
-            .check(
-                &tenant_replay_scope(call),
-                &call.request.key,
-                &call.request.request_hash,
-            )
-            .await
-            .map_err(IdempotencyDriverError::store)?
-        {
-            ReplayOutcome::Fresh => Ok(IdempotencyDecision::Fresh),
-            ReplayOutcome::Replay(response) => Ok(IdempotencyDecision::Replay(response)),
-            ReplayOutcome::Conflict => Ok(IdempotencyDecision::Conflict),
-        }
-    }
-
-    async fn record_http_idempotency_response(
-        &self,
-        call: &IdempotencyCall,
-        response: StoredResponse,
-    ) -> Result<(), IdempotencyDriverError<Self::Error>> {
-        self.replay_store
-            .record(
-                &tenant_replay_scope(call),
-                &call.request.key,
-                &call.request.request_hash,
-                response,
-            )
-            .await
-            .map_err(IdempotencyDriverError::store)
-    }
-
-    fn idempotency_failure_response(&self, failure: IdempotencyFailure) -> Response {
-        let error = match failure {
-            IdempotencyFailure::MissingKey => StackError::bad_request("idempotency key required"),
-            IdempotencyFailure::RequestBodyCaptureFailed => {
-                StackError::bad_request("request body capture failed")
-            }
-            IdempotencyFailure::Conflict => {
-                StackError::conflict("idempotency key reused with a different body")
-            }
-            IdempotencyFailure::ResponseBodyCaptureFailed => {
-                StackError::internal("response body capture failed")
-            }
-        };
-        problem_response(error)
-    }
-
-    fn idempotency_store_error_response(
-        &self,
-        _operation: IdempotencyOperation,
-        error: Self::Error,
-    ) -> Response {
-        problem_response(error)
-    }
-}
-
-/// Builds the Trellis Axum router.
-///
-/// # Errors
-/// Returns an error when shared HTTP middleware cannot be constructed.
-pub fn router(state: TrellisServerState) -> Result<Router, StackError> {
-    state.ensure_serving_posture_twref022()?;
-    let http_layer = stack_common_http::MiddlewareBuilder::new()
-        .with_request_id()
-        .with_tracing()
-        .with_catch_panic()
-        .build()
-        .map_err(|error| StackError::internal(format!("http middleware: {error}")))?;
-
-    let append = post(append_event).route_layer(middleware::from_fn_with_state(
-        state.clone(),
-        idempotency_middleware::<TrellisServerState>,
-    ));
-
-    Ok(Router::new()
-        .route("/openapi.json", get(openapi::openapi_json))
-        .route("/v1/scopes/{scope}/events", append)
-        .route("/v1/scopes/{scope}/bundles/head", get(head_bundle))
-        .route(
-            "/v1/scopes/{scope}/bundles/{checkpoint_digest}",
-            get(pinned_bundle),
-        )
-        .route(
-            "/v1/scopes/{scope}/registries/signing-keys",
-            get(signing_key_registry),
-        )
-        .route(
-            "/v1/scopes/{scope}/registries/event-types",
-            get(event_type_registry),
-        )
-        .merge(
-            HealthRouter::new()
-                .with_probe(TrellisHealthProbe::new(state.clone()))
-                .into_router_for_state(),
-        )
-        .with_state(state)
-        .layer(http_layer))
-}
-
-/// Builds a server state from environment variables.
-///
-/// Required unless `TRELLIS_STORAGE=memory`:
-/// - `TRELLIS_DATABASE_URL`
-///
-/// Always required:
-/// - `TRELLIS_SIGNING_KEY_COSE_PATH`
-///
-/// Optional:
-/// - `TRELLIS_STORAGE=memory` (in-memory repository; skips `TRELLIS_DATABASE_URL`)
-/// - `TRELLIS_PERMISSIVE_SCOPE_AUTH=1` (durable storage: keep `AllowAllScopeAuthorizer`; optional JWT)
-/// - `TRELLIS_JWT_HS256_SECRET` (**required** for durable storage unless `TRELLIS_PERMISSIVE_SCOPE_AUTH=1`; optional otherwise)
-/// - `TRELLIS_TENANT_HEADER_SET=wos|formspec|mixed`
-/// - `TRELLIS_SIGNING_KEY_VALID_TO_UNIX_SECS`
-/// - `TRELLIS_ARTIFACT_BUCKET`
-/// - `TRELLIS_ARTIFACT_PREFIX`
-/// - `TRELLIS_ARTIFACT_ENDPOINT`
-/// - `TRELLIS_ARTIFACT_REGION`
-///
-/// # Errors
-/// Returns an error when config is missing or backend setup fails.
-pub async fn state_from_env() -> Result<TrellisServerState, StackError> {
-    let scope_inputs = TrellisScopeAuthorizerStartupInputs::from_env();
-    let trellis_storage_is_memory = scope_inputs.storage_is_memory;
-
-    let signing_key_path = env::var("TRELLIS_SIGNING_KEY_COSE_PATH")
-        .map_err(|_| StackError::bad_request("TRELLIS_SIGNING_KEY_COSE_PATH is required"))?;
-    let signing_key_bytes = fs::read(&signing_key_path).map_err(|error| {
-        StackError::bad_request(format!(
-            "failed to read TRELLIS_SIGNING_KEY_COSE_PATH: {error}"
-        ))
-    })?;
-    let signing_key_valid_to = env_optional_timestamp("TRELLIS_SIGNING_KEY_VALID_TO_UNIX_SECS")?;
-    let signing_key =
-        ServerSigningKey::from_cose_key_bytes(signing_key_bytes, TrellisTimestamp::new(0, 0)?)?
-            .with_valid_to(signing_key_valid_to);
-
-    let tenant_header_mode = match env::var("TRELLIS_TENANT_HEADER_SET")
-        .unwrap_or_else(|_| "mixed".to_string())
-        .as_str()
-    {
-        "wos" => TenantHeaderMode::Wos,
-        "formspec" => TenantHeaderMode::Formspec,
-        "mixed" => TenantHeaderMode::MultiProducer,
-        other => {
-            return Err(StackError::bad_request(format!(
-                "unsupported TRELLIS_TENANT_HEADER_SET `{other}`"
-            )));
-        }
-    };
-
-    let repository: Arc<dyn EventRepository> = if trellis_storage_is_memory {
-        Arc::new(InMemoryEventRepository::new())
-    } else {
-        let database_url = env::var("TRELLIS_DATABASE_URL")
-            .map_err(|_| StackError::bad_request("TRELLIS_DATABASE_URL is required"))?;
-        let pool = trellis_store_postgres_async::build_pool(&database_url, 10)
-            .await
-            .map_err(|error| StackError::unavailable(format!("postgres pool: {error}")))?;
-        trellis_store_postgres_async::run_migrations(&pool)
-            .await
-            .map_err(|error| StackError::unavailable(format!("postgres migrations: {error}")))?;
-        Arc::new(PostgresEventRepository::new(pool))
-    };
-
-    let mut state = TrellisServerState::new(repository, signing_key, tenant_header_mode);
-    if let Some(artifact_store) = artifact_store_from_env() {
-        state = state.with_artifact_store(artifact_store);
-    }
-
-    let jwt_secret = env::var("TRELLIS_JWT_HS256_SECRET")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
-
-    if trellis_storage_is_memory || scope_inputs.permissive_scope_auth {
-        if let Some(secret) = jwt_secret {
-            state = state.with_jwt_verifier(JwtVerifier::from_hs256(
-                trellis_jwt_config(),
-                secret.as_bytes(),
-            ));
-        }
-        return Ok(state);
-    }
-
-    let Some(secret) = jwt_secret else {
-        return Err(StackError::bad_request(
-            "TRELLIS_JWT_HS256_SECRET is required when using durable storage without \
-             TRELLIS_PERMISSIVE_SCOPE_AUTH=1 (TWREF-022). For dev/demo only, set \
-             TRELLIS_PERMISSIVE_SCOPE_AUTH=1 to keep AllowAll scope authorization.",
-        ));
-    };
-
-    state = state
-        .with_jwt_verifier(JwtVerifier::from_hs256(
-            trellis_jwt_config(),
-            secret.as_bytes(),
-        ))
-        .with_scope_authorizer(Arc::new(ScopedAllowlistScopeAuthorizer));
-    Ok(state.with_production_like_scope_posture(true))
-}
-
-#[must_use]
-fn trellis_jwt_config() -> JwtConfig {
-    JwtConfig {
-        algorithm: jsonwebtoken::Algorithm::HS256,
-        validate_exp: true,
-        validate_iss: None,
-        validate_aud: None,
-        leeway_secs: 30,
-    }
-}
-
-fn artifact_store_from_env() -> Option<Arc<dyn ArtifactStore<Error = StackError>>> {
-    let bucket = env_optional("TRELLIS_ARTIFACT_BUCKET")?;
-    let prefix = env_optional("TRELLIS_ARTIFACT_PREFIX").unwrap_or_else(|| "trellis".to_string());
-    let config = S3ObjectConfig {
-        bucket,
-        endpoint: env_optional("TRELLIS_ARTIFACT_ENDPOINT"),
-        region: env_optional("TRELLIS_ARTIFACT_REGION"),
-    };
-    Some(Arc::new(S3CompatibleArtifactStore::new(config, prefix)))
-}
-
-fn env_optional(name: &str) -> Option<String> {
-    env::var(name)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-}
-
-fn env_optional_timestamp(name: &str) -> Result<Option<TrellisTimestamp>, StackError> {
-    let Some(raw) = env_optional(name) else {
-        return Ok(None);
-    };
-    let seconds: u64 = raw.parse().map_err(|error| {
-        StackError::bad_request(format!("{name} must be a u64 unix timestamp: {error}"))
-    })?;
-    Ok(Some(TrellisTimestamp::new(seconds, 0)?))
-}
-
-#[derive(Clone)]
-struct TrellisHealthProbe {
-    state: TrellisServerState,
-}
-
-impl TrellisHealthProbe {
-    fn new(state: TrellisServerState) -> Self {
-        Self { state }
-    }
-}
-
-#[async_trait]
-impl HealthProbe for TrellisHealthProbe {
-    async fn check(&self) -> ComponentHealth {
-        let mut issues = Vec::new();
-        if let Err(error) = self.state.repository.list_scope(b"__healthz__").await {
-            issues.push(format!("repository: {error}"));
-        }
-        let probe_key = "__healthz__/artifact-roundtrip";
-        let probe_bytes = b"trellis-health-probe";
-        match self.state.artifact_store.put(probe_key, probe_bytes).await {
-            Ok(artifact_ref) => match self.state.artifact_store.get(&artifact_ref).await {
-                Ok(Some(bytes)) if bytes == probe_bytes => {}
-                Ok(Some(_)) => issues.push("artifact-store: roundtrip bytes mismatch".into()),
-                Ok(None) => issues.push("artifact-store: stored object missing".into()),
-                Err(error) => issues.push(format!("artifact-store read: {error}")),
-            },
-            Err(error) => issues.push(format!("artifact-store write: {error}")),
-        }
-        if issues.is_empty() {
-            ComponentHealth::healthy("trellis-server", "repository and artifact store reachable")
-        } else {
-            ComponentHealth::degraded("trellis-server", issues.join("; "))
-        }
-    }
-}
-
-#[utoipa::path(
-    post,
-    path = "/v1/scopes/{scope}/events",
-    params(
-        ("scope" = String, Path, description = "Trellis ledger scope."),
-        ("idempotency-key" = String, Header, description = "HTTP replay key; must match body idempotencyKey.")
-    ),
-    request_body = SubstrateAppendBody,
-    responses(
-        (status = 201, description = "Event appended and proof bundle published.", body = SubstrateAppendResult),
-        (status = 400, description = "Invalid append request.", body = ProblemJson, content_type = "application/problem+json"),
-        (status = 401, description = "Service token rejected.", body = ProblemJson, content_type = "application/problem+json"),
-        (status = 403, description = "Scope action forbidden.", body = ProblemJson, content_type = "application/problem+json"),
-        (status = 409, description = "Idempotency key or sequence conflict.", body = ProblemJson, content_type = "application/problem+json"),
-        (status = 503, description = "Substrate dependency unavailable.", body = ProblemJson, content_type = "application/problem+json")
-    ),
-    tag = "events",
-    operation_id = "appendEvent",
-)]
-async fn append_event(
-    State(state): State<TrellisServerState>,
-    Path(scope): Path<String>,
-    _tenant_scope: TenantScope,
-    headers: HeaderMap,
-    Json(body): Json<SubstrateAppendBody>,
-) -> Result<(StatusCode, Json<SubstrateAppendResult>), StackError> {
-    validate_scope(&scope)?;
-    body.validate()?;
-    reject_unverified_client_attestation(&body)?;
-    validate_idempotency_header(&headers, &body.idempotency_key)?;
-    validate_compute_context(&body)?;
-    let claims = state.authenticate(&headers)?;
-    let actor_subject = claims
-        .as_ref()
-        .map(|claims| claims.base().sub.as_str())
-        .unwrap_or(body.actor.subject.as_str());
-    let jwt_scopes = claims.as_ref().map(|c| c.scopes.as_slice());
-    state
-        .authorizer
-        .authorize(&ScopeAuthorization {
-            actor: actor_subject,
-            scope: scope.as_bytes(),
-            action: ScopeAction::Append,
-            jwt_scopes,
-        })
-        .await?;
-
-    let command = append::AppendCommand {
-        scope: scope.clone(),
-        event_type: body.event_type.clone(),
-        idempotency_key: body.idempotency_key.clone(),
-        payload: body.payload.clone(),
-        compute_context: append::port_compute_context(&body),
-    };
-    let outcome = state.append_runner.run_append(&state, command).await?;
-    Ok((StatusCode::CREATED, Json(outcome.result)))
-}
-
-#[utoipa::path(
-    get,
-    path = "/v1/scopes/{scope}/bundles/head",
-    params(("scope" = String, Path, description = "Trellis ledger scope.")),
-    responses(
-        (status = 200, description = "Current Trellis export bundle.", content_type = "application/zip"),
-        (status = 404, description = "Scope has no bundle.", body = ProblemJson, content_type = "application/problem+json"),
-        (status = 503, description = "Bundle store unavailable.", body = ProblemJson, content_type = "application/problem+json")
-    ),
-    tag = "bundles",
-    operation_id = "getHeadBundle",
-)]
-async fn head_bundle(
-    State(state): State<TrellisServerState>,
-    Path(scope): Path<String>,
-    tenant_scope: TenantScope,
-    headers: HeaderMap,
-) -> Result<Response, StackError> {
-    read_authorized(&state, &scope, &tenant_scope, &headers).await?;
-    let events = state.repository.list_scope(scope.as_bytes()).await?;
-    let bundle = publish_bundle(
-        &state,
-        scope.as_bytes(),
-        &events,
-        true,
-        &append::default_public_compute_context(),
-    )
-    .await?;
-    bundle_response(&state, &bundle).await
-}
-
-#[utoipa::path(
-    get,
-    path = "/v1/scopes/{scope}/bundles/{checkpointDigest}",
-    params(
-        ("scope" = String, Path, description = "Trellis ledger scope."),
-        ("checkpointDigest" = String, Path, description = "Checkpoint digest in `sha256:<64 hex>` form.")
-    ),
-    responses(
-        (status = 200, description = "Pinned Trellis export bundle.", content_type = "application/zip"),
-        (status = 400, description = "Invalid checkpoint digest.", body = ProblemJson, content_type = "application/problem+json"),
-        (status = 404, description = "Pinned checkpoint bundle not found.", body = ProblemJson, content_type = "application/problem+json"),
-        (status = 503, description = "Bundle store unavailable.", body = ProblemJson, content_type = "application/problem+json")
-    ),
-    tag = "bundles",
-    operation_id = "getBundleByCheckpointDigest",
-)]
-async fn pinned_bundle(
-    State(state): State<TrellisServerState>,
-    Path((scope, checkpoint_digest)): Path<(String, String)>,
-    tenant_scope: TenantScope,
-    headers: HeaderMap,
-) -> Result<Response, StackError> {
-    read_authorized(&state, &scope, &tenant_scope, &headers).await?;
-    let digest = normalize_checkpoint_digest(&checkpoint_digest)?;
-    let record = {
-        let by_digest = state.bundles.by_digest.lock().await;
-        by_digest
-            .get(&(scope.as_bytes().to_vec(), digest.clone()))
-            .cloned()
-    };
-    let Some(record) = record else {
-        let events = state.repository.list_scope(scope.as_bytes()).await?;
-        let head = publish_bundle(
-            &state,
-            scope.as_bytes(),
-            &events,
-            true,
-            &append::default_public_compute_context(),
-        )
-        .await?;
-        if head.checkpoint_digest == digest {
-            return bundle_response(&state, &head).await;
-        }
-        return Err(StackError::not_found("checkpoint bundle not found"));
-    };
-    bundle_response(&state, &record).await
-}
-
-#[utoipa::path(
-    get,
-    path = "/v1/scopes/{scope}/registries/signing-keys",
-    params(("scope" = String, Path, description = "Trellis ledger scope.")),
-    responses(
-        (status = 200, description = "CBOR signing-key registry snapshot.", content_type = "application/cbor"),
-        (status = 503, description = "Registry unavailable.", body = ProblemJson, content_type = "application/problem+json")
-    ),
-    tag = "registries",
-    operation_id = "getSigningKeyRegistry",
-)]
-async fn signing_key_registry(
-    State(state): State<TrellisServerState>,
-    Path(scope): Path<String>,
-    tenant_scope: TenantScope,
-    headers: HeaderMap,
-) -> Result<Response, StackError> {
-    read_authorized(&state, &scope, &tenant_scope, &headers).await?;
-    let bytes = signing_key_registry_cbor(&state.signing_key.export_key())?;
-    Ok(bytes_response("application/cbor", bytes))
-}
-
-#[utoipa::path(
-    get,
-    path = "/v1/scopes/{scope}/registries/event-types",
-    params(("scope" = String, Path, description = "Trellis ledger scope.")),
-    responses(
-        (status = 200, description = "Event-type registry projection.", body = EventTypeRegistryView),
-        (status = 503, description = "Registry unavailable.", body = ProblemJson, content_type = "application/problem+json")
-    ),
-    tag = "registries",
-    operation_id = "getEventTypeRegistry",
-)]
-async fn event_type_registry(
-    State(state): State<TrellisServerState>,
-    Path(scope): Path<String>,
-    tenant_scope: TenantScope,
-    headers: HeaderMap,
-) -> Result<Json<EventTypeRegistryView>, StackError> {
-    read_authorized(&state, &scope, &tenant_scope, &headers).await?;
-    Ok(Json(event_type_registry_view()))
-}
-
-async fn read_authorized(
-    state: &TrellisServerState,
-    scope: &str,
-    _tenant_scope: &TenantScope,
-    headers: &HeaderMap,
-) -> Result<(), StackError> {
-    validate_scope(scope)?;
-    let claims = state.authenticate(headers)?;
-    let actor = claims
-        .as_ref()
-        .map(|claims| claims.base().sub.as_str())
-        .unwrap_or("anonymous");
-    let jwt_scopes = claims.as_ref().map(|c| c.scopes.as_slice());
-    state
-        .authorizer
-        .authorize(&ScopeAuthorization {
-            actor,
-            scope: scope.as_bytes(),
-            action: ScopeAction::Read,
-            jwt_scopes,
-        })
-        .await
-}
-
 /// Returns true when the export ZIP passes the same independent verifier used in conformance.
 #[must_use]
 pub(crate) fn export_bundle_cryptographically_verified(zip_bytes: &[u8]) -> bool {
@@ -981,26 +281,6 @@ pub(crate) fn append_result_for_event(
             event_type: event_type.to_string(),
         },
     })
-}
-
-async fn bundle_response(
-    state: &TrellisServerState,
-    bundle: &BundleRecord,
-) -> Result<Response, StackError> {
-    let bytes = state
-        .artifact_store
-        .get(&bundle.artifact_ref)
-        .await?
-        .ok_or_else(|| StackError::not_found("bundle artifact bytes not found"))?;
-    Ok(bytes_response("application/zip", bytes))
-}
-
-fn bytes_response(content_type: &'static str, bytes: Vec<u8>) -> Response {
-    let mut response = bytes.into_response();
-    response
-        .headers_mut()
-        .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
-    response
 }
 
 pub(crate) fn validate_existing_replay(
@@ -1095,75 +375,6 @@ fn value_to_u64(value: &Value, label: &str) -> Result<u64, StackError> {
         .map_err(|_| StackError::bad_request(format!("{label} is negative or too large")))
 }
 
-fn validate_idempotency_header(headers: &HeaderMap, body_key: &str) -> Result<(), StackError> {
-    let header_key = headers
-        .get(IDEMPOTENCY_KEY_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .ok_or_else(|| StackError::bad_request("idempotency key required"))?;
-    if header_key != body_key {
-        return Err(StackError::bad_request(
-            "idempotency header must match request idempotencyKey",
-        ));
-    }
-    Ok(())
-}
-
-fn validate_compute_context(body: &SubstrateAppendBody) -> Result<(), StackError> {
-    if body.compute_context.sensitivity != ComputeSensitivity::PublicMetadata {
-        return Err(StackError::bad_request(
-            "this Trellis server path only admits publicMetadata payloads",
-        ));
-    }
-    Ok(())
-}
-
-/// Rejects any `clientAttestation` object: COSE_Sign1 is not verified yet (TWREF-0103).
-///
-/// **Narrowing:** Until verification lands, the field must be omitted on the wire. When the JSON
-/// object is present, [`SubstrateAppendBody::validate`] rejects empty `kid` / `cose_sign1` before
-/// this check runs. Durable non-permissive startups enforce JWT scope allowlists on append
-/// ([`TrellisServerState::production_like_scope_posture`]) in addition to this admission rule (TWREF-022).
-fn reject_unverified_client_attestation(body: &SubstrateAppendBody) -> Result<(), StackError> {
-    if body.client_attestation.is_some() {
-        return Err(StackError::bad_request(
-            "clientAttestation is not verified on trellis-server—omit this field. \
-             COSE_Sign1 is not validated in this release (TWREF-0103).",
-        ));
-    }
-    Ok(())
-}
-
-fn validate_scope(scope: &str) -> Result<(), StackError> {
-    if scope.trim().is_empty() {
-        return Err(StackError::bad_request("scope is required"));
-    }
-    if scope.contains('/') {
-        return Err(StackError::bad_request("scope must be one path segment"));
-    }
-    if !scope.is_ascii() {
-        return Err(StackError::bad_request("scope must be ASCII"));
-    }
-    Ok(())
-}
-
-fn normalize_checkpoint_digest(value: &str) -> Result<String, StackError> {
-    if let Some(hex) = value.strip_prefix("sha256:") {
-        validate_digest_hex(hex)?;
-        Ok(value.to_string())
-    } else {
-        validate_digest_hex(value)?;
-        Ok(format!("sha256:{value}"))
-    }
-}
-
-fn validate_digest_hex(value: &str) -> Result<(), StackError> {
-    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(StackError::bad_request(
-            "checkpoint digest must be sha256:<64 hex chars>",
-        ));
-    }
-    Ok(())
-}
 
 pub(crate) fn now_timestamp() -> Result<TrellisTimestamp, StackError> {
     let duration = SystemTime::now()
@@ -1179,7 +390,7 @@ pub(crate) fn timestamp_value(timestamp: TrellisTimestamp) -> Value {
     ])
 }
 
-fn event_type_registry_view() -> EventTypeRegistryView {
+pub(crate) fn event_type_registry_view() -> EventTypeRegistryView {
     EventTypeRegistryView {
         registry_version: EVENT_TYPE_REGISTRY_VERSION.to_string(),
         event_types: WOS_EVENT_TYPES
@@ -1227,7 +438,7 @@ fn event_type_registry_cbor() -> Result<Vec<u8>, StackError> {
     encode_value(&registry)
 }
 
-fn signing_key_registry_cbor(signing_key: &ExportSigningKey) -> Result<Vec<u8>, StackError> {
+pub(crate) fn signing_key_registry_cbor(signing_key: &ExportSigningKey) -> Result<Vec<u8>, StackError> {
     let entry = text_map(vec![
         ("kid", Value::Bytes(signing_key.kid().to_vec())),
         ("pubkey", Value::Bytes(signing_key.public_key.to_vec())),
@@ -1285,17 +496,6 @@ fn cbor_bad_request(error: CborHelperError) -> StackError {
     StackError::bad_request(error.to_string())
 }
 
-fn tenant_replay_scope(call: &IdempotencyCall) -> String {
-    let tenant = header_value(&call.headers, "x-wos-tenant-id")
-        .or_else(|| header_value(&call.headers, "x-formspec-tenant-id"))
-        .unwrap_or("unknown-tenant");
-    format!("{tenant}:{}", call.request.scope)
-}
-
-fn header_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
-    headers.get(name).and_then(|value| value.to_str().ok())
-}
-
 fn encode_path_segment(value: &str) -> String {
     let mut out = String::new();
     for byte in value.bytes() {
@@ -1327,14 +527,25 @@ mod tests {
     use axum::http::Request;
     use integrity_seam::OsSecureRandom;
     use jsonwebtoken::Algorithm;
-    use stack_common_auth::JwtIssuer;
-    use stack_common_http::idempotency::IDEMPOTENCY_REPLAY_HEADER;
+    use stack_common_auth::{JwtConfig, JwtIssuer, JwtVerifier};
+    use stack_common_http::idempotency::{IDEMPOTENCY_KEY_HEADER, IDEMPOTENCY_REPLAY_HEADER};
+    use stack_common_ops::HealthProbe;
     use tower::ServiceExt;
     use trellis_server_ports::{AdmissionEvent, ArtifactRef};
-    use trellis_service_client::ClientAttestation;
+    use trellis_service_client::{ClientAttestation, SubstrateAppendBody};
     use wos_events::{ProvenanceKind, ProvenanceRecord, SUBSTRATE_CANONICAL_EVENT_LITERALS};
 
+    use crate::append::{AppendRunner, DefaultAppendRunner};
+    use crate::admission::ScopedAllowlistScopeAuthorizer;
+    use crate::state::TrellisHealthProbe;
+
+    use std::fs;
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use async_trait::async_trait;
+    use axum::http::StatusCode;
+    use trellis_server_ports::{ArtifactStore, EventAdmissionPolicy};
 
     use super::*;
 

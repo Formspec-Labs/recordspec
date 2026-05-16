@@ -8,6 +8,7 @@
 //! `ScopeAuthorizer`, and HTTP body replay/idempotency live in the parent HTTP handlers and
 //! middleware, not inside this module (TWREF-021).
 
+use async_trait::async_trait;
 use hkdf::Hkdf;
 use integrity_cbor::{Value, domain_separated_sha256, json_to_dcbor_bytes};
 use sha2::{Digest, Sha256};
@@ -40,6 +41,34 @@ pub struct AppendOutcome {
     pub result: SubstrateAppendResult,
     #[allow(dead_code)]
     pub stored: StoredEvent,
+}
+
+/// Runs append orchestration after HTTP validation and outer authorization (TWREF-021).
+///
+/// Production wiring delegates to [`AppendCoordinator`]; tests may substitute a recorder that
+/// forwards to [`DefaultAppendRunner`] without monkeypatching globals.
+#[async_trait]
+pub(crate) trait AppendRunner: Send + Sync {
+    async fn run_append(
+        &self,
+        state: &TrellisServerState,
+        command: AppendCommand,
+    ) -> Result<AppendOutcome, StackError>;
+}
+
+/// Production [`AppendRunner`] implementation (`AppendCoordinator::append`).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct DefaultAppendRunner;
+
+#[async_trait]
+impl AppendRunner for DefaultAppendRunner {
+    async fn run_append(
+        &self,
+        state: &TrellisServerState,
+        command: AppendCommand,
+    ) -> Result<AppendOutcome, StackError> {
+        state.append_coordinator().append(command).await
+    }
 }
 
 /// Owns the append transaction boundary: admission → lock → build → commit → publish.

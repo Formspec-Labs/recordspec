@@ -23,11 +23,11 @@ use utoipa::{OpenApi, ToSchema};
         (url = "/", description = "Trellis service root."),
     ),
     paths(
-        crate::append_event,
-        crate::head_bundle,
-        crate::pinned_bundle,
-        crate::signing_key_registry,
-        crate::event_type_registry,
+        crate::http::append_event,
+        crate::http::head_bundle,
+        crate::http::pinned_bundle,
+        crate::http::signing_key_registry,
+        crate::http::event_type_registry,
         openapi_json,
     ),
     components(schemas(

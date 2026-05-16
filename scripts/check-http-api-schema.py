@@ -17,6 +17,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = ROOT / "specs" / "trellis-http-api.schema.json"
 SERVER_PATH = ROOT / "crates" / "trellis-server" / "src" / "lib.rs"
+# TWREF-086: Axum `.route(` calls live in `http.rs`; `lib.rs` keeps admission/constants.
+HTTP_ROUTER_PATH = ROOT / "crates" / "trellis-server" / "src" / "http.rs"
 CLIENT_PATH = ROOT / "crates" / "trellis-service-client" / "src" / "lib.rs"
 # Sibling `work-spec/` at stack root (TWREF-017): substrate literals authored once in kind.rs.
 WOS_EVENTS_KIND_PATH = (
@@ -75,15 +77,17 @@ def parse_const_u64(source: str, name: str) -> int:
 
 def parse_formspec_append_event_literal(client_source: str) -> str:
     """Read FORMSPEC_APPEND_EVENT_TYPE_LITERAL from trellis-service-client (single string SOT)."""
-    match = re.search(
+    patterns = (
         r'pub const FORMSPEC_APPEND_EVENT_TYPE_LITERAL: &str = "([^"]+)";',
-        client_source,
+        r"pub const FORMSPEC_APPEND_EVENT_TYPE_LITERAL: &'static str = \"([^\"]+)\";",
     )
-    if not match:
-        raise ValueError(
-            "could not find pub const FORMSPEC_APPEND_EVENT_TYPE_LITERAL in trellis-service-client"
-        )
-    return match.group(1)
+    for pat in patterns:
+        match = re.search(pat, client_source)
+        if match:
+            return match.group(1)
+    raise ValueError(
+        "could not find pub const FORMSPEC_APPEND_EVENT_TYPE_LITERAL in trellis-service-client"
+    )
 
 
 def expected_admitted_event_types(server_source: str, client_source: str) -> list[str]:
@@ -157,6 +161,13 @@ def parse_router_paths(source: str) -> set[str]:
     return {normalize_axum_path(path) for path in re.findall(r'\.route\(\s*"([^"]+)"', source)}
 
 
+def trellis_server_router_paths(lib_rs: str) -> set[str]:
+    paths = parse_router_paths(lib_rs)
+    if HTTP_ROUTER_PATH.is_file():
+        paths |= parse_router_paths(HTTP_ROUTER_PATH.read_text(encoding="utf-8"))
+    return paths
+
+
 def normalize_openapi_path(path: str) -> str:
     return path.replace("{checkpoint_digest}", "{checkpointDigest}")
 
@@ -209,7 +220,7 @@ def check_operations(schema: dict, server_source: str, client_source: str, error
     if "idempotency-key" not in append.get("requiredHeaders", []):
         errors.append("appendEvent must require idempotency-key header")
 
-    router_paths = parse_router_paths(server_source)
+    router_paths = trellis_server_router_paths(server_source)
     expected_paths = {path for _, path in EXPECTED_OPERATIONS.values()}
     if not expected_paths.issubset(router_paths):
         missing = sorted(expected_paths - router_paths)
