@@ -90,6 +90,7 @@ These literals MUST NOT be required by a Trellis Core verifier.
 | WOS-TV-024 | The SHA-256 digest of `067-policy-closure.cbor` MUST equal `closure_digest`. A mismatch is `policy_closure_digest_mismatch`. |
 | WOS-TV-025 | `067-policy-closure.cbor` MUST be canonical CBOR with `closure_schema_version = 1`, a `closure_version` that matches the manifest extension, a `verifier_boundary` map, and a non-empty `artifacts` array. |
 | WOS-TV-026 | The `verifier_boundary` MUST state that the bundle supplies admission-policy evidence, not authoritative trust roots, verifier adapter allowlists, or server operational configuration. The `artifacts` array MUST cover effective intent URI, method URI, posture-floor, signer-authority-shape, identity-proofing-primitive, default, deny-rule, tombstone, and validity-window inputs that could change whether a signature act was admitted. |
+| WOS-TV-027 | If an export contains one or more `wos.kernel.signature_affirmation` events and has neither `trellis.export.policy-closure.v1` nor `067-policy-closure.cbor`, the WOS validator MUST report advisory `policy_closure_missing_for_signed_scope`. This advisory MUST NOT by itself fail composed integrity and MUST NOT be emitted for exports with no signature-affirmation events. |
 
 ## 4. SignedAct Projection
 
@@ -175,6 +176,12 @@ bundle. Required artifact kinds are:
 - `wos.signature-defaults.v1`
 - `wos.signature-deny-rules.v1`
 - `wos.signature-tombstones.v1`
+
+An export that contains signature-affirmation events but omits both the policy
+closure extension and member has no verifier-available evidence for the
+admission policy in force for those signatures. The WOS validator reports this
+as advisory `policy_closure_missing_for_signed_scope`; the absence remains a
+valid no-policy-claim branch for exports with no signature-affirmation events.
 
 ## 6. WOS Tamper Kinds
 

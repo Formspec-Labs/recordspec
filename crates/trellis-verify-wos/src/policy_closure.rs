@@ -6,12 +6,13 @@
 use std::collections::BTreeSet;
 
 use ciborium::Value;
-use integrity_verify::trellis::{DomainExport, DomainFinding, Severity};
+use integrity_verify::trellis::{DomainEvent, DomainExport, DomainFinding, Severity};
 use trellis_types::{
     map_lookup_array, map_lookup_bool, map_lookup_fixed_bytes, map_lookup_map,
     map_lookup_optional_value, map_lookup_text, map_lookup_u64, sha256_bytes,
 };
 
+const EXPORT_MANIFEST_MEMBER: &str = "000-manifest.cbor";
 const POLICY_CLOSURE_EXPORT_EXTENSION: &str = "trellis.export.policy-closure.v1";
 const POLICY_CLOSURE_MEMBER: &str = "067-policy-closure.cbor";
 const POLICY_CLOSURE_SCHEMA_VERSION: u64 = 1;
@@ -39,7 +40,7 @@ pub(crate) fn validate_policy_closure(export: &DomainExport<'_>) -> Vec<DomainFi
         .get(POLICY_CLOSURE_EXPORT_EXTENSION);
     let member_bytes = export.members.get(POLICY_CLOSURE_MEMBER);
     match (extension_bytes, member_bytes) {
-        (None, None) => Vec::new(),
+        (None, None) => missing_policy_closure_for_signed_scope(export),
         (None, Some(_)) => vec![finding(
             "policy_closure_unbound",
             "067-policy-closure.cbor is present without trellis.export.policy-closure.v1",
@@ -52,6 +53,29 @@ pub(crate) fn validate_policy_closure(export: &DomainExport<'_>) -> Vec<DomainFi
             validate_bound_policy_closure(extension_bytes, member_bytes)
         }
     }
+}
+
+fn missing_policy_closure_for_signed_scope(export: &DomainExport<'_>) -> Vec<DomainFinding> {
+    if is_export_bundle(export) && contains_signature_affirmation(export.events) {
+        vec![advisory(
+            "policy_closure_missing_for_signed_scope",
+            "export contains signature affirmation events but no policy closure evidence",
+        )]
+    } else {
+        Vec::new()
+    }
+}
+
+fn is_export_bundle(export: &DomainExport<'_>) -> bool {
+    // Parsed export ZIPs carry the signed manifest; projection-only unit contexts may not.
+    export.members.contains_key(EXPORT_MANIFEST_MEMBER)
+}
+
+fn contains_signature_affirmation(events: &[DomainEvent]) -> bool {
+    let signature_affirmation = crate::event_types::wos_signature_affirmation_event_type();
+    events
+        .iter()
+        .any(|event| event.event_type == signature_affirmation)
 }
 
 fn validate_bound_policy_closure(
@@ -214,11 +238,15 @@ fn finding(kind: impl Into<String>, message: impl Into<String>) -> DomainFinding
     DomainFinding::new(kind, None, Severity::Failure, message)
 }
 
+fn advisory(kind: impl Into<String>, message: impl Into<String>) -> DomainFinding {
+    DomainFinding::new(kind, None, Severity::Advisory, message)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
-    use integrity_verify::trellis::{DomainExport, RecordValidator};
+    use integrity_verify::trellis::{DomainEvent, DomainExport, RecordValidator, TrellisTimestamp};
 
     use super::*;
     use crate::validator::WosRecordValidator;
@@ -239,6 +267,37 @@ mod tests {
         });
 
         assert!(findings.is_empty(), "{findings:#?}");
+    }
+
+    #[test]
+    fn policy_closure_absence_is_quiet_without_signature_affirmations() {
+        let members = bundle_members();
+        let manifest_extensions = BTreeMap::new();
+
+        let findings = validate_policy_closure(&DomainExport {
+            events: &[],
+            members: &members,
+            manifest_extensions: &manifest_extensions,
+        });
+
+        assert!(findings.is_empty(), "{findings:#?}");
+    }
+
+    #[test]
+    fn policy_closure_missing_for_signed_scope_is_advisory() {
+        let members = bundle_members();
+        let manifest_extensions = BTreeMap::new();
+        let events = vec![signature_affirmation_event()];
+
+        let findings = validate_policy_closure(&DomainExport {
+            events: &events,
+            members: &members,
+            manifest_extensions: &manifest_extensions,
+        });
+
+        assert_eq!(findings.len(), 1, "{findings:#?}");
+        assert_eq!(findings[0].kind, "policy_closure_missing_for_signed_scope");
+        assert_eq!(findings[0].severity, Severity::Advisory);
     }
 
     #[test]
@@ -373,6 +432,22 @@ mod tests {
             "formspec"
         } else {
             "wos"
+        }
+    }
+
+    fn bundle_members() -> BTreeMap<String, Vec<u8>> {
+        BTreeMap::from([(EXPORT_MANIFEST_MEMBER.to_string(), Vec::new())])
+    }
+
+    fn signature_affirmation_event() -> DomainEvent {
+        DomainEvent {
+            event_type: crate::event_types::wos_signature_affirmation_event_type().to_string(),
+            payload: None,
+            canonical_event_hash: [0x67; 32],
+            authored_at: TrellisTimestamp {
+                seconds: 1,
+                nanos: 0,
+            },
         }
     }
 
