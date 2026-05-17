@@ -364,7 +364,7 @@ pub(crate) fn signature_entry_matches_record(
         && entry.profile_ref == record.profile_ref
         && entry.profile_key == record.profile_key
         && entry.formspec_response_ref == record.formspec_response_ref
-        && entry.signing_act_id == record.signing_act_id
+        && record.signing_act_id.as_ref() == Some(&entry.signing_act_id)
         && entry.presentation_hash == record.presentation_hash
         && entry.witnessed_signature_ref == record.witnessed_signature_ref
 }

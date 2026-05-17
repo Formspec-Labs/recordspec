@@ -43,6 +43,7 @@ KEY_ISSUER_001 = ROOT / "_keys" / "issuer-001.cose_key"
 
 OUT_EXPORT_006 = ROOT / "export" / "006-signature-affirmations-inline"
 OUT_EXPORT_007 = ROOT / "export" / "007-signature-admission-failed-inline"
+OUT_EXPORT_008 = ROOT / "export" / "008-signed-acts-fallback-act-id"
 OUT_VERIFY_014 = ROOT / "verify" / "014-export-006-signature-row-mismatch"
 OUT_VERIFY_019 = ROOT / "verify" / "019-export-006-signed-acts-projection-mismatch"
 OUT_VERIFY_020 = ROOT / "verify" / "020-export-006-signed-acts-unsupported-rule"
@@ -60,7 +61,11 @@ WOS_SIGNATURE_ADMISSION_FAILED_EVENT_TYPE = "wos.kernel.signature_admission_fail
 EXTENSION_KEY = "trellis.export.signature-affirmations.v1"
 SIGNED_ACTS_EXTENSION_KEY = "trellis.export.signed-acts.v1"
 SIGNED_ACTS_MEMBER = "066-signed-acts.cbor"
-SIGNED_ACTS_DERIVATION_RULE = "signed-act-projection-wos-formspec-v1"
+SIGNED_ACTS_DERIVATION_RULE_V1 = "signed-act-projection-wos-formspec-v1"
+SIGNED_ACTS_DERIVATION_RULE_V2 = "signed-act-projection-wos-formspec-v2"
+SIGNED_ACTS_DERIVATION_RULE = SIGNED_ACTS_DERIVATION_RULE_V1
+FALLBACK_ACT_ID_DERIVATION_RULE = "signed-act-projection-act-id-v1"
+UNSUPPORTED_SIGNED_ACTS_DERIVATION_RULE = "signed-act-projection-wos-formspec-unsupported"
 POLICY_CLOSURE_EXTENSION_KEY = "trellis.export.policy-closure.v1"
 POLICY_CLOSURE_MEMBER = "067-policy-closure.cbor"
 POLICY_CLOSURE_VERSION = "wos-formspec-signature-policy-closure-2026-05-16"
@@ -251,20 +256,41 @@ def sorted_source_refs(refs: list[dict]) -> list[dict]:
     )
 
 
-def signed_act_projection(canonical_event_hash: bytes, wos_record: dict) -> dict:
+def signed_act_projection(
+    canonical_event_hash: bytes,
+    wos_record: dict,
+    *,
+    fallback_act_id_allowed: bool = False,
+) -> dict:
     event_type = wos_record.get("event")
     if event_type == WOS_SIGNATURE_ADMISSION_FAILED_EVENT_TYPE:
         return rejected_signed_act_projection(canonical_event_hash, wos_record)
     if event_type != WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE:
         raise ValueError(f"unsupported signed-act source event {event_type!r}")
-    return admitted_signed_act_projection(canonical_event_hash, wos_record)
+    return admitted_signed_act_projection(
+        canonical_event_hash,
+        wos_record,
+        fallback_act_id_allowed=fallback_act_id_allowed,
+    )
 
 
-def admitted_signed_act_projection(canonical_event_hash: bytes, wos_record: dict) -> dict:
+def admitted_signed_act_projection(
+    canonical_event_hash: bytes,
+    wos_record: dict,
+    *,
+    fallback_act_id_allowed: bool = False,
+) -> dict:
     data = wos_record["data"]
     source_response_ref = data.get("sourceResponseRef") or data["formspecResponseRef"]
+    source_refs = sorted_source_refs(
+        [source_ref(canonical_event_hash, "signature-affirmation")]
+    )
     return {
-        "act_id": data["signingActId"],
+        "act_id": projected_act_id(
+            data.get("signingActId"),
+            source_refs,
+            fallback_act_id_allowed=fallback_act_id_allowed,
+        ),
         "signer": {
             "id": data["signerId"],
             "role": data["role"],
@@ -299,9 +325,7 @@ def admitted_signed_act_projection(canonical_event_hash: bytes, wos_record: dict
         },
         "witness_of": data.get("witnessedSignatureRef"),
         "signed_at": data["signedAt"],
-        "source_refs": sorted_source_refs(
-            [source_ref(canonical_event_hash, "signature-affirmation")]
-        ),
+        "source_refs": source_refs,
     }
 
 
@@ -350,8 +374,36 @@ def rejected_signed_act_projection(canonical_event_hash: bytes, wos_record: dict
     }
 
 
-def signed_acts_catalog(canonical_event_hash: bytes, wos_record: dict) -> bytes:
-    acts = [signed_act_projection(canonical_event_hash, wos_record)]
+def projected_act_id(
+    signing_act_id: object,
+    source_refs: list[dict],
+    *,
+    fallback_act_id_allowed: bool = False,
+) -> str:
+    if isinstance(signing_act_id, str):
+        return signing_act_id
+    if signing_act_id is not None:
+        raise ValueError("signingActId must be text")
+    if not fallback_act_id_allowed:
+        raise KeyError("signingActId")
+    digest = hashlib.sha256(dcbor(source_refs)).hexdigest()
+    return f"{FALLBACK_ACT_ID_DERIVATION_RULE}:{digest}"
+
+
+def signed_acts_catalog(
+    canonical_event_hash: bytes,
+    wos_record: dict,
+    *,
+    derivation_rule: str = SIGNED_ACTS_DERIVATION_RULE,
+) -> bytes:
+    fallback_act_id_allowed = derivation_rule == SIGNED_ACTS_DERIVATION_RULE_V2
+    acts = [
+        signed_act_projection(
+            canonical_event_hash,
+            wos_record,
+            fallback_act_id_allowed=fallback_act_id_allowed,
+        )
+    ]
     acts.sort(
         key=lambda act: (
             act["act_id"],
@@ -362,7 +414,7 @@ def signed_acts_catalog(canonical_event_hash: bytes, wos_record: dict) -> bytes:
     return dcbor(
         {
             "projection_schema_version": 1,
-            "derivation_rule_id": SIGNED_ACTS_DERIVATION_RULE,
+            "derivation_rule_id": derivation_rule,
             "acts": acts,
         }
     )
@@ -922,6 +974,212 @@ content are null.
     )
 
 
+def build_export_008() -> None:
+    OUT_EXPORT_008.mkdir(parents=True, exist_ok=True)
+
+    seed, pubkey = load_seed_and_pubkey(KEY_ISSUER_001)
+    kid = derive_kid(SUITE_ID_PHASE_1, pubkey)
+    scope = b"wos-case:sba-poc_case_signed_acts_fallback"
+    wos_record = cbor2.loads((APPEND_019 / "input-wos-record.dcbor").read_bytes())
+    del wos_record["data"]["signingActId"]
+    event_bytes, canonical_event_hash = build_event_from_wos_record(
+        seed=seed,
+        kid=kid,
+        scope=scope,
+        sequence=0,
+        prev_hash=None,
+        wos_record=wos_record,
+        idempotency_key=sha256(b"export-008-signed-acts-fallback-act-id"),
+        authored_at=ts(1776877862),
+    )
+    leaf_hash = merkle_leaf_hash(canonical_event_hash)
+
+    members_data: dict[str, bytes] = {}
+    events_cbor = dcbor([cbor2.loads(event_bytes)])
+    members_data["010-events.cbor"] = events_cbor
+    inclusion_proofs = dcbor(
+        {
+            0: {
+                "leaf_index": 0,
+                "tree_size": 1,
+                "leaf_hash": leaf_hash,
+                "audit_path": [],
+            }
+        }
+    )
+    members_data["020-inclusion-proofs.cbor"] = inclusion_proofs
+    consistency_proofs = dcbor([])
+    members_data["025-consistency-proofs.cbor"] = consistency_proofs
+
+    signing_key_registry = build_signing_key_registry(kid, pubkey)
+    members_data["030-signing-key-registry.cbor"] = signing_key_registry
+
+    checkpoint_payload = {
+        "version": 1,
+        "scope": scope,
+        "tree_size": 1,
+        "tree_head_hash": leaf_hash,
+        "timestamp": ts(1776877862),
+        "anchor_ref": None,
+        "prev_checkpoint_hash": None,
+        "extensions": None,
+    }
+    head_checkpoint_digest = checkpoint_digest(scope, checkpoint_payload)
+    members_data["040-checkpoints.cbor"] = dcbor(
+        [
+            cbor2.loads(
+                cose_sign1(seed, kid, dcbor(checkpoint_payload), ARTIFACT_TYPE_CHECKPOINT)
+            )
+        ]
+    )
+
+    domain_registry = build_domain_registry()
+    domain_registry_digest = sha256(domain_registry)
+    domain_registry_member = f"050-registries/{domain_registry_digest.hex()}.cbor"
+    members_data[domain_registry_member] = domain_registry
+
+    signed_acts = signed_acts_catalog(
+        canonical_event_hash,
+        wos_record,
+        derivation_rule=SIGNED_ACTS_DERIVATION_RULE_V2,
+    )
+    members_data[SIGNED_ACTS_MEMBER] = signed_acts
+    policy_closure_bytes = policy_closure(domain_registry_digest)
+    members_data[POLICY_CLOSURE_MEMBER] = policy_closure_bytes
+
+    members_data["090-verify.sh"] = trellis_cli_verify_script()
+    members_data["098-README.md"] = (
+        "# Trellis Export (Fixture) — export/008-signed-acts-fallback-act-id\n\n"
+        "WOS-T4 signature export fixture whose readable `SignatureAffirmation` "
+        "payload has no shared signing act id. `066-signed-acts.cbor` uses "
+        "`signed-act-projection-wos-formspec-v2` and derives `act_id` from "
+        "sorted source references under `signed-act-projection-act-id-v1`.\n"
+    ).encode("utf-8")
+
+    manifest_payload = {
+        "format": "trellis-export/1",
+        "version": 1,
+        "generator": "x-trellis-test/export-generator-008-signed-acts-fallback",
+        "generated_at": ts(1776877862),
+        "scope": scope,
+        "tree_size": 1,
+        "head_checkpoint_digest": head_checkpoint_digest,
+        "registry_bindings": [
+            {
+                "registry_digest": domain_registry_digest,
+                "registry_format": 1,
+                "registry_version": "x-trellis-test/registry-signature-v1",
+                "bound_at_sequence": 0,
+            }
+        ],
+        "signing_key_registry_digest": sha256(signing_key_registry),
+        "events_digest": sha256(events_cbor),
+        "checkpoints_digest": sha256(members_data["040-checkpoints.cbor"]),
+        "inclusion_proofs_digest": sha256(inclusion_proofs),
+        "consistency_proofs_digest": sha256(consistency_proofs),
+        "payloads_inlined": False,
+        "external_anchors": [],
+        "posture_declaration": {
+            "provider_readable": True,
+            "reader_held": False,
+            "delegated_compute": False,
+            "external_anchor_required": False,
+            "external_anchor_name": None,
+            "recovery_without_user": True,
+            "metadata_leakage_summary": "WOS-T4 fallback SignedAct id fixture with readable WOS payload bytes.",
+        },
+        "head_format_version": 1,
+        "omitted_payload_checks": [],
+        "extensions": {
+            SIGNED_ACTS_EXTENSION_KEY: {
+                "catalog_digest": sha256(signed_acts),
+                "catalog_ref": SIGNED_ACTS_MEMBER,
+                "derivation_rule": SIGNED_ACTS_DERIVATION_RULE_V2,
+            },
+            POLICY_CLOSURE_EXTENSION_KEY: {
+                "closure_digest": sha256(policy_closure_bytes),
+                "closure_ref": POLICY_CLOSURE_MEMBER,
+                "closure_version": POLICY_CLOSURE_VERSION,
+            },
+        },
+    }
+    members_data["000-manifest.cbor"] = cose_sign1(
+        seed, kid, dcbor(manifest_payload), ARTIFACT_TYPE_MANIFEST
+    )
+
+    for member, member_bytes in members_data.items():
+        write_bytes(OUT_EXPORT_008 / member, member_bytes)
+
+    members = sorted(members_data)
+    root_dir = f"trellis-export-{scope.decode('utf-8')}-1-{leaf_hash.hex()[:8]}"
+    zip_bytes = write_zip(
+        OUT_EXPORT_008 / "expected-export.zip",
+        root_dir=root_dir,
+        members=members,
+        data=members_data,
+    )
+    ledger_state = {
+        "version": 1,
+        "scope": scope,
+        "tree_size": 1,
+        "root_dir": root_dir,
+        "members": members,
+        "notes": "Fixture ledger_state for export/008-signed-acts-fallback-act-id; pack listed members into deterministic ZIP.",
+    }
+    write_bytes(OUT_EXPORT_008 / "input-ledger-state.cbor", dcbor(ledger_state))
+    write_text(
+        OUT_EXPORT_008 / "manifest.toml",
+        f'''id          = "export/008-signed-acts-fallback-act-id"
+op          = "export"
+status      = "active"
+description = """Single-event WOS-T4 export that carries a WOS `SignatureAffirmation` without `data.signingActId` and binds verifier-facing `066-signed-acts.cbor` using the v2 fallback act-id rule."""
+
+[coverage]
+tr_core = [
+    "TR-CORE-006",
+    "TR-CORE-062",
+    "TR-CORE-064",
+    "TR-CORE-065",
+    "TR-CORE-067",
+    "TR-CORE-110",
+    "TR-CORE-134",
+]
+tr_op = [
+    "TR-OP-072",
+    "TR-OP-122",
+]
+
+[inputs]
+ledger_state = "input-ledger-state.cbor"
+
+[expected]
+zip        = "expected-export.zip"
+zip_sha256 = "{hashlib.sha256(zip_bytes).hexdigest()}"
+
+[derivation]
+document = "derivation.md"
+''',
+    )
+    write_text(
+        OUT_EXPORT_008 / "derivation.md",
+        """# Derivation — `export/008-signed-acts-fallback-act-id`
+
+This fixture realizes the additive SignedAct projection rule for source rows
+that do not carry a shared signing act id.
+
+It packages a single readable WOS `SignatureAffirmation` payload copied from
+`append/019-wos-signature-affirmation` with `data.signingActId` removed. The
+manifest binds `066-signed-acts.cbor` under
+`signed-act-projection-wos-formspec-v2`. The projected row derives `act_id`
+as `signed-act-projection-act-id-v1:<sha256>` over the canonical CBOR bytes of
+the sorted `source_refs` array.
+
+The signed source event remains authoritative. The fallback id is only
+correlation data for deterministic projection and verifier reporting.
+""",
+    )
+
+
 def write_verify_vector() -> None:
     root_dir, members, data, manifest_payload = export_members_from_dir(OUT_EXPORT_006)
     catalog = cbor2.loads(data["062-signature-affirmations.cbor"])
@@ -1054,7 +1312,7 @@ def write_signed_acts_unsupported_rule_verify_vector() -> None:
     manifest_payload_verify = copy.deepcopy(manifest_payload)
     manifest_payload_verify["extensions"][SIGNED_ACTS_EXTENSION_KEY][
         "derivation_rule"
-    ] = "signed-act-projection-wos-formspec-v2"
+    ] = UNSUPPORTED_SIGNED_ACTS_DERIVATION_RULE
     data_verify = dict(data)
     data_verify["000-manifest.cbor"] = cose_sign1(
         seed, kid, dcbor(manifest_payload_verify), ARTIFACT_TYPE_MANIFEST
@@ -1097,7 +1355,7 @@ document = "derivation.md"
 
 This fixture starts from `export/006-signature-affirmations-inline`, changes the
 `trellis.export.signed-acts.v1.derivation_rule` manifest-extension value to
-`signed-act-projection-wos-formspec-v2`, and re-signs `000-manifest.cbor`.
+`signed-act-projection-wos-formspec-unsupported`, and re-signs `000-manifest.cbor`.
 The ZIP remains structurally valid and all member digests match archive
 contents, but the WOS validator has no registered derivation implementation
 for that rule ID and must reject it as `signed_acts_catalog_invalid` without
@@ -1261,6 +1519,7 @@ digest bound by `trellis.export.policy-closure.v1.closure_digest`.
 def main() -> None:
     build_export_006()
     build_export_007()
+    build_export_008()
     write_verify_vector()
     write_signed_acts_verify_vector()
     write_signed_acts_unsupported_rule_verify_vector()

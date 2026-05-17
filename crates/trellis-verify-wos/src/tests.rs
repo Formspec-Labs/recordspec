@@ -169,7 +169,7 @@ fn given_distinct_k2_fields_when_parsed_then_signing_act_and_presentation_hash_p
     let parsed =
         parse_signature_affirmation_record(&payload, wos_signature_affirmation_event_type())
             .expect("parse signature affirmation");
-    assert_eq!(parsed.signing_act_id, "signing-act-777");
+    assert_eq!(parsed.signing_act_id.as_deref(), Some("signing-act-777"));
     assert_eq!(
         parsed.source_signature_id.as_deref(),
         Some("source-sig-001")
@@ -231,7 +231,7 @@ fn given_wrong_presentation_hash_when_catalog_compared_then_entry_does_not_match
         profile_ref: entry.profile_ref.clone(),
         profile_key: entry.profile_key.clone(),
         formspec_response_ref: entry.formspec_response_ref.clone(),
-        signing_act_id: entry.signing_act_id.clone(),
+        signing_act_id: Some(entry.signing_act_id.clone()),
         presentation_hash: DOC_HASH.to_string(),
         witnessed_signature_ref: None,
         primitive_verification: Value::Map(vec![]),
@@ -406,6 +406,40 @@ fn given_signature_admission_failed_export_when_layered_report_then_rejected_pro
     let zip_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
         "../../fixtures/vectors/export/007-signature-admission-failed-inline/expected-export.zip",
     );
+    let bytes = std::fs::read(&zip_path).unwrap_or_else(|error| {
+        panic!(
+            "fixture expected-export.zip must exist at {}: {error}",
+            zip_path.display()
+        );
+    });
+    let report = crate::verify_export_zip(&bytes);
+    let layered = report.layered_report();
+
+    assert!(layered.substrate.structure_verified, "{layered:#?}");
+    assert!(layered.substrate.integrity_verified, "{layered:#?}");
+    assert!(
+        report
+            .wos_findings
+            .iter()
+            .all(|finding| finding.severity != Severity::Failure),
+        "{report:#?}"
+    );
+    assert_eq!(layered.verdict.cryptographic_integrity, VerdictState::Pass);
+    assert_eq!(layered.verdict.projection_integrity, VerdictState::Pass);
+    assert_eq!(layered.verdict.domain_admissibility, VerdictState::Pass);
+    assert_eq!(
+        layered.verdict.relying_party_result,
+        RelyingPartyResult::Valid
+    );
+}
+
+/// Given a valid export whose signature source lacks a shared signing act id,
+/// when layered verification runs, then the v2 fallback act-id projection
+/// validates through the public sealed-bundle path.
+#[test]
+fn given_signed_acts_fallback_id_export_when_layered_report_then_projection_validates() {
+    let zip_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/vectors/export/008-signed-acts-fallback-act-id/expected-export.zip");
     let bytes = std::fs::read(&zip_path).unwrap_or_else(|error| {
         panic!(
             "fixture expected-export.zip must exist at {}: {error}",

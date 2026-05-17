@@ -7,6 +7,7 @@ WOS-specific catalog interpretation.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -21,7 +22,10 @@ OPEN_CLOCKS_EXPORT_EXTENSION = "trellis.export.open-clocks.v1"
 OPEN_CLOCKS_MEMBER = "open-clocks.json"
 SIGNED_ACTS_EXPORT_EXTENSION = "trellis.export.signed-acts.v1"
 SIGNED_ACTS_MEMBER = "066-signed-acts.cbor"
-SIGNED_ACTS_DERIVATION_RULE = "signed-act-projection-wos-formspec-v1"
+SIGNED_ACTS_DERIVATION_RULE_V1 = "signed-act-projection-wos-formspec-v1"
+SIGNED_ACTS_DERIVATION_RULE_V2 = "signed-act-projection-wos-formspec-v2"
+SIGNED_ACTS_DERIVATION_RULE = SIGNED_ACTS_DERIVATION_RULE_V1
+FALLBACK_ACT_ID_DERIVATION_RULE = "signed-act-projection-act-id-v1"
 POLICY_CLOSURE_EXPORT_EXTENSION = "trellis.export.policy-closure.v1"
 POLICY_CLOSURE_MEMBER = "067-policy-closure.cbor"
 POLICY_CLOSURE_SCHEMA_VERSION = 1
@@ -616,13 +620,34 @@ def _validate_signed_acts_projection(
             )
         )
     try:
-        cbor2.loads(catalog_bytes)
+        catalog_value = cbor2.loads(catalog_bytes)
     except Exception as exc:
         findings.append(
             _failure(
                 "signed_acts_catalog_invalid",
                 None,
                 f"066-signed-acts.cbor is invalid CBOR: {exc}",
+            )
+        )
+        return findings
+    if extension["derivation_rule"] not in _signed_acts_derivation_rules():
+        supported = ", ".join(sorted(_signed_acts_derivation_rules()))
+        findings.append(
+            _failure(
+                "signed_acts_catalog_invalid",
+                None,
+                f"unsupported signed acts derivation_rule {extension['derivation_rule']}; supported rules: {supported}",
+            )
+        )
+        return findings
+    try:
+        _validate_signed_acts_catalog_root(catalog_value, extension["derivation_rule"])
+    except core.VerifyError as exc:
+        findings.append(
+            _failure(
+                "signed_acts_catalog_invalid",
+                None,
+                f"066-signed-acts.cbor is invalid: {exc}",
             )
         )
         return findings
@@ -644,6 +669,19 @@ def _validate_signed_acts_projection(
     return findings
 
 
+def _validate_signed_acts_catalog_root(value: Any, derivation_rule: str) -> None:
+    if not isinstance(value, dict):
+        raise core.VerifyError("signed acts catalog root is not a map")
+    if value.get("projection_schema_version") != 1:
+        raise core.VerifyError("projection_schema_version must be 1")
+    if value.get("derivation_rule_id") != derivation_rule:
+        raise core.VerifyError(
+            f"derivation_rule_id must match manifest derivation_rule {derivation_rule}"
+        )
+    if not isinstance(value.get("acts"), list):
+        raise core.VerifyError("acts must be an array")
+
+
 def _derive_signed_acts_catalog(
     derivation_rule: str,
     events: list[core.ParsedSign1], payload_blobs: dict[bytes, bytes]
@@ -660,11 +698,33 @@ def _derive_signed_acts_catalog(
 def _signed_acts_derivation_rules() -> dict[
     str, Callable[[list[core.ParsedSign1], dict[bytes, bytes]], bytes]
 ]:
-    return {SIGNED_ACTS_DERIVATION_RULE: _derive_signed_acts_catalog_v1}
+    return {
+        SIGNED_ACTS_DERIVATION_RULE_V1: _derive_signed_acts_catalog_v1,
+        SIGNED_ACTS_DERIVATION_RULE_V2: _derive_signed_acts_catalog_v2,
+    }
 
 
 def _derive_signed_acts_catalog_v1(
     events: list[core.ParsedSign1], payload_blobs: dict[bytes, bytes]
+) -> bytes:
+    return _derive_signed_acts_catalog_for_rule(
+        events, payload_blobs, SIGNED_ACTS_DERIVATION_RULE_V1, False
+    )
+
+
+def _derive_signed_acts_catalog_v2(
+    events: list[core.ParsedSign1], payload_blobs: dict[bytes, bytes]
+) -> bytes:
+    return _derive_signed_acts_catalog_for_rule(
+        events, payload_blobs, SIGNED_ACTS_DERIVATION_RULE_V2, True
+    )
+
+
+def _derive_signed_acts_catalog_for_rule(
+    events: list[core.ParsedSign1],
+    payload_blobs: dict[bytes, bytes],
+    derivation_rule: str,
+    fallback_act_id_allowed: bool,
 ) -> bytes:
     acts: list[dict[str, Any]] = []
     for event in events:
@@ -680,7 +740,9 @@ def _derive_signed_acts_catalog_v1(
             record = _parse_signature_affirmation_record(
                 payload, WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE
             )
-            acts.append(_project_admitted_act(details, record))
+            acts.append(
+                _project_admitted_act(details, record, fallback_act_id_allowed)
+            )
         elif details.event_type == WOS_SIGNATURE_ADMISSION_FAILED_EVENT_TYPE:
             payload = core._readable_payload_bytes(details, payload_blobs)
             if payload is None:
@@ -703,7 +765,7 @@ def _derive_signed_acts_catalog_v1(
     return cbor2.dumps(
         {
             "projection_schema_version": 1,
-            "derivation_rule_id": SIGNED_ACTS_DERIVATION_RULE,
+            "derivation_rule_id": derivation_rule,
             "acts": acts,
         },
         canonical=True,
@@ -750,13 +812,21 @@ def _correlate_projected_acts(acts: list[dict[str, Any]]) -> list[dict[str, Any]
 
 
 def _project_admitted_act(
-    details: core.EventDetails, record: dict[str, Any]
+    details: core.EventDetails,
+    record: dict[str, Any],
+    fallback_act_id_allowed: bool,
 ) -> dict[str, Any]:
     intent = record.get("signing_intent")
     if not isinstance(intent, str):
         raise core.VerifyError("signature affirmation missing signingIntent")
+    source_refs = _sorted_source_refs(
+        [_source_ref(details, "signature-affirmation")]
+    )
+    act_id = _projected_act_id(
+        record.get("signing_act_id"), source_refs, fallback_act_id_allowed
+    )
     return {
-        "act_id": record["signing_act_id"],
+        "act_id": act_id,
         "signer": {
             "id": record["signer_id"],
             "role": record["role"],
@@ -793,9 +863,7 @@ def _project_admitted_act(
         },
         "witness_of": record.get("witnessed_signature_ref"),
         "signed_at": record["signed_at"],
-        "source_refs": _sorted_source_refs(
-            [_source_ref(details, "signature-affirmation")]
-        ),
+        "source_refs": source_refs,
     }
 
 
@@ -850,6 +918,22 @@ def _source_ref(details: core.EventDetails, kind: str) -> dict[str, Any]:
         "kind": kind,
         "ref": details.canonical_event_hash,
     }
+
+
+def _projected_act_id(
+    signing_act_id: object,
+    source_refs: list[dict[str, Any]],
+    fallback_act_id_allowed: bool,
+) -> str:
+    if isinstance(signing_act_id, str):
+        return signing_act_id
+    if signing_act_id is not None:
+        raise core.VerifyError("signingActId must be text")
+    if not fallback_act_id_allowed:
+        raise core.VerifyError("signature affirmation missing signingActId")
+    source_ref_bytes = cbor2.dumps(source_refs, canonical=True)
+    digest = hashlib.sha256(source_ref_bytes).hexdigest()
+    return f"{FALLBACK_ACT_ID_DERIVATION_RULE}:{digest}"
 
 
 def _sorted_source_refs(source_refs: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1368,6 +1452,15 @@ def _optional_str(value: Any) -> Optional[str]:
     return None
 
 
+def _optional_text_field(data: dict[str, Any], key: str) -> Optional[str]:
+    value = data.get(key)
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    raise core.VerifyError(f"{key} must be text")
+
+
 def _parse_signature_affirmation_record(
     payload_bytes: bytes, expected_event: str
 ) -> dict[str, Any]:
@@ -1420,7 +1513,7 @@ def _parse_signature_affirmation_record(
         "source_response_ref": core._map_lookup_str_alias(
             data, "sourceResponseRef", "formspecResponseRef"
         ),
-        "signing_act_id": str(core._map_lookup_str(data, "signingActId")),
+        "signing_act_id": _optional_text_field(data, "signingActId"),
         "presentation_hash": str(core._map_lookup_str(data, "presentationHash")),
         "primitive_verification": data.get("primitiveVerification"),
         "witnessed_signature_ref": _optional_str(data.get("witnessedSignatureRef")),

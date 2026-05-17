@@ -24,6 +24,7 @@ AUTHORING_FILES = {"manifest.toml", "derivation.md"}
 GENERATED_DIRS = [
     ("export", "006-signature-affirmations-inline"),
     ("export", "007-signature-admission-failed-inline"),
+    ("export", "008-signed-acts-fallback-act-id"),
     ("verify", "014-export-006-signature-row-mismatch"),
     ("verify", "019-export-006-signed-acts-projection-mismatch"),
     ("verify", "020-export-006-signed-acts-unsupported-rule"),
@@ -58,6 +59,7 @@ def run_generator(tmp: Path) -> None:
     module = load_generator()
     module.OUT_EXPORT_006 = tmp / "export" / "006-signature-affirmations-inline"
     module.OUT_EXPORT_007 = tmp / "export" / "007-signature-admission-failed-inline"
+    module.OUT_EXPORT_008 = tmp / "export" / "008-signed-acts-fallback-act-id"
     module.OUT_VERIFY_014 = tmp / "verify" / "014-export-006-signature-row-mismatch"
     module.OUT_VERIFY_019 = tmp / "verify" / "019-export-006-signed-acts-projection-mismatch"
     module.OUT_VERIFY_020 = tmp / "verify" / "020-export-006-signed-acts-unsupported-rule"
@@ -166,6 +168,10 @@ def check_python_verifier_vectors() -> None:
     assert_no_wos_failures(
         verify_wos,
         VECTORS / "export/007-signature-admission-failed-inline/expected-export.zip"
+    )
+    assert_no_wos_failures(
+        verify_wos,
+        VECTORS / "export/008-signed-acts-fallback-act-id/expected-export.zip"
     )
     assert_wos_failure(
         verify_wos,

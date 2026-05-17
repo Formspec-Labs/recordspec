@@ -103,7 +103,39 @@ def test_signed_acts_nested_map_oracle_matches_rust_canonical_bytes() -> None:
 def test_signed_acts_v1_derivation_rule_is_registry_backed() -> None:
     rules = verify_wos._signed_acts_derivation_rules()  # noqa: SLF001
 
-    assert verify_wos.SIGNED_ACTS_DERIVATION_RULE in rules
+    assert verify_wos.SIGNED_ACTS_DERIVATION_RULE_V1 in rules
+    assert verify_wos.SIGNED_ACTS_DERIVATION_RULE_V2 in rules
+
+
+def test_signed_acts_v2_derives_fallback_act_id_from_source_refs() -> None:
+    details = _event_details(b"\x11" * 32)
+    act = verify_wos._project_admitted_act(  # noqa: SLF001
+        details, _signature_record(signing_act_id=None), True
+    )
+
+    assert str(act["act_id"]).startswith("signed-act-projection-act-id-v1:")
+
+
+def test_signed_acts_v2_treats_null_signing_act_id_as_absent() -> None:
+    assert (  # noqa: SLF001
+        verify_wos._optional_text_field({"signingActId": None}, "signingActId")
+        is None
+    )
+    details = _event_details(b"\x11" * 32)
+    act = verify_wos._project_admitted_act(  # noqa: SLF001
+        details, _signature_record(signing_act_id=None), True
+    )
+
+    assert str(act["act_id"]).startswith("signed-act-projection-act-id-v1:")
+
+
+def test_signed_acts_v1_rejects_missing_signing_act_id() -> None:
+    details = _event_details(b"\x11" * 32)
+
+    with pytest.raises(core.VerifyError, match="missing signingActId"):
+        verify_wos._project_admitted_act(  # noqa: SLF001
+            details, _signature_record(signing_act_id=None), False
+        )
 
 
 def test_signed_acts_unknown_derivation_rule_is_failure_without_v1_fallback() -> None:
@@ -118,7 +150,7 @@ def test_signed_acts_unknown_derivation_rule_is_failure_without_v1_fallback() ->
     extension = {
         "catalog_ref": verify_wos.SIGNED_ACTS_MEMBER,
         "catalog_digest": core._sha256(catalog_bytes),  # noqa: SLF001
-        "derivation_rule": "signed-act-projection-wos-formspec-v2",
+        "derivation_rule": "signed-act-projection-wos-formspec-unsupported",
     }
 
     findings = verify_wos._validate_signed_acts_projection(  # noqa: SLF001
@@ -133,6 +165,40 @@ def test_signed_acts_unknown_derivation_rule_is_failure_without_v1_fallback() ->
     assert any(
         finding.kind == "signed_acts_catalog_invalid"
         and "unsupported signed acts derivation_rule" in finding.detail
+        for finding in findings
+    )
+    assert all(
+        finding.kind != "signed_acts_projection_mismatch" for finding in findings
+    )
+
+
+def test_signed_acts_catalog_rule_mismatch_is_invalid_catalog() -> None:
+    catalog_bytes = cbor2.dumps(
+        {
+            "projection_schema_version": 1,
+            "derivation_rule_id": verify_wos.SIGNED_ACTS_DERIVATION_RULE_V1,
+            "acts": [],
+        },
+        canonical=True,
+    )
+    extension = {
+        "catalog_ref": verify_wos.SIGNED_ACTS_MEMBER,
+        "catalog_digest": core._sha256(catalog_bytes),  # noqa: SLF001
+        "derivation_rule": verify_wos.SIGNED_ACTS_DERIVATION_RULE_V2,
+    }
+
+    findings = verify_wos._validate_signed_acts_projection(  # noqa: SLF001
+        archive={verify_wos.SIGNED_ACTS_MEMBER: catalog_bytes},
+        events=[],
+        payload_blobs={},
+        manifest_map={
+            "extensions": {verify_wos.SIGNED_ACTS_EXPORT_EXTENSION: extension}
+        },
+    )
+
+    assert any(
+        finding.kind == "signed_acts_catalog_invalid"
+        and "derivation_rule_id must match" in finding.detail
         for finding in findings
     )
     assert all(
@@ -186,6 +252,52 @@ def _projected_act(act_id: str, signer: str, source_ref: bytes) -> dict[str, obj
                 "ref": source_ref,
             }
         ],
+    }
+
+
+def _event_details(canonical_event_hash: bytes) -> core.EventDetails:
+    return core.EventDetails(
+        scope=b"scope",
+        sequence=1,
+        authored_at=core.TrellisTimestamp(1, 0),
+        event_type=verify_wos.WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE,
+        classification="x-test",
+        prev_hash=None,
+        author_event_hash=b"\x00" * 32,
+        content_hash=b"\x01" * 32,
+        canonical_event_hash=canonical_event_hash,
+        idempotency_key=b"idem",
+        payload_ref_inline=None,
+        payload_ref_external=False,
+        transition=None,
+    )
+
+
+def _signature_record(signing_act_id: object) -> dict[str, object]:
+    return {
+        "signer_id": "signer-1",
+        "role": "Applicant",
+        "role_id": "applicant",
+        "document_id": "doc-1",
+        "document_ref": {"documentId": "doc-1", "locale": "en-US"},
+        "signed_payload_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "signed_payload_digest_algorithm": "sha-256",
+        "presentation_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "document_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "document_hash_algorithm": "sha-256",
+        "signing_intent": "urn:wos:signing-intent:applicant-signature",
+        "consent_reference": {"ref": "consent-1"},
+        "source_response_ref": "response-1",
+        "source_signature_system": "formspec",
+        "source_signature_id": "sig-1",
+        "signature_provider": "formspec",
+        "ceremony_id": "ceremony-1",
+        "profile_ref": None,
+        "profile_key": None,
+        "primitive_verification": {"status": "verified"},
+        "witnessed_signature_ref": None,
+        "signed_at": "2026-05-17T00:00:00Z",
+        "signing_act_id": signing_act_id,
     }
 
 

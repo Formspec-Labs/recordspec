@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use integrity_cbor::{
     Value, decode_cbor_value, map_lookup_bytes, map_lookup_map, map_lookup_optional_text,
-    map_lookup_optional_value, map_lookup_text, map_lookup_value,
+    map_lookup_optional_value, map_lookup_text, map_lookup_value, sha256_bytes,
 };
 use stack_common_error::StackError;
 use time::OffsetDateTime;
@@ -25,7 +25,9 @@ use crate::composition::{
     wos_signature_admission_failed_event_type, wos_signature_affirmation_event_type,
 };
 
-const SIGNED_ACTS_DERIVATION_RULE: &str = "signed-act-projection-wos-formspec-v1";
+const SIGNED_ACTS_DERIVATION_RULE_V1: &str = "signed-act-projection-wos-formspec-v1";
+const SIGNED_ACTS_DERIVATION_RULE_V2: &str = "signed-act-projection-wos-formspec-v2";
+const FALLBACK_ACT_ID_DERIVATION_RULE: &str = "signed-act-projection-act-id-v1";
 const POLICY_CLOSURE_VERSION: &str = "wos-formspec-signature-policy-closure-2026-05-16";
 
 /// Optional export-profile members supplied to `trellis-export-writer`.
@@ -60,6 +62,7 @@ struct ProjectedAct {
     act_id: String,
     signed_at: String,
     first_source_ref: Vec<u8>,
+    uses_fallback_act_id: bool,
     value: Value,
 }
 
@@ -72,6 +75,7 @@ struct CorrelatedAct {
 #[derive(Clone, Debug)]
 struct SignedActsDerivation {
     bytes: Vec<u8>,
+    derivation_rule: &'static str,
     policy_closure_eligible: bool,
 }
 
@@ -96,7 +100,7 @@ struct SignatureAffirmationRecordDetails {
     profile_ref: Option<String>,
     profile_key: Option<String>,
     formspec_response_ref: String,
-    signing_act_id: String,
+    signing_act_id: Option<String>,
     presentation_hash: String,
     witnessed_signature_ref: Option<String>,
     primitive_verification: Value,
@@ -137,7 +141,7 @@ pub(crate) fn build_export_profile_members(
     Ok(ExportProfileMembers {
         signed_acts_catalog: Some(SignedActsCatalogMember {
             bytes: signed_acts.bytes,
-            derivation_rule: SIGNED_ACTS_DERIVATION_RULE.to_string(),
+            derivation_rule: signed_acts.derivation_rule.to_string(),
         }),
         policy_closure,
     })
@@ -181,11 +185,16 @@ fn signed_acts_catalog(
     }
     let mut acts = correlate_projected_acts(acts)?;
     acts.sort_by(compare_projected_acts);
+    let derivation_rule = if acts.iter().any(|act| act.uses_fallback_act_id) {
+        SIGNED_ACTS_DERIVATION_RULE_V2
+    } else {
+        SIGNED_ACTS_DERIVATION_RULE_V1
+    };
     let catalog = crate::text_map(vec![
         ("projection_schema_version", crate::uint(1)),
         (
             "derivation_rule_id",
-            Value::Text(SIGNED_ACTS_DERIVATION_RULE.to_string()),
+            Value::Text(derivation_rule.to_string()),
         ),
         (
             "acts",
@@ -194,6 +203,7 @@ fn signed_acts_catalog(
     ])?;
     Ok(Some(SignedActsDerivation {
         bytes: crate::encode_value(&catalog)?,
+        derivation_rule,
         policy_closure_eligible,
     }))
 }
@@ -227,6 +237,7 @@ fn correlate_projected_acts(acts: Vec<ProjectedAct>) -> Result<Vec<ProjectedAct>
                 )));
             }
             Some(existing) => {
+                existing.act.uses_fallback_act_id |= act.uses_fallback_act_id;
                 existing.source_refs.extend(refs);
             }
             None => {
@@ -255,6 +266,7 @@ fn correlate_projected_acts(acts: Vec<ProjectedAct>) -> Result<Vec<ProjectedAct>
                 act_id: correlated.act.act_id,
                 signed_at: correlated.act.signed_at,
                 first_source_ref,
+                uses_fallback_act_id: correlated.act.uses_fallback_act_id,
                 value,
             })
         })
@@ -421,7 +433,7 @@ fn parse_signature_affirmation_record(
             "sourceResponseRef",
             "formspecResponseRef",
         )?,
-        signing_act_id: map_lookup_text(data, "signingActId").map_err(cbor_bad_request)?,
+        signing_act_id: map_lookup_optional_text(data, "signingActId").map_err(cbor_bad_request)?,
         presentation_hash: map_lookup_text(data, "presentationHash").map_err(cbor_bad_request)?,
         witnessed_signature_ref: map_lookup_optional_text(data, "witnessedSignatureRef")
             .map_err(cbor_bad_request)?,
@@ -460,6 +472,8 @@ fn project_admitted_act(
 ) -> Result<ProjectedAct, StackError> {
     let source_ref = source_ref(canonical_event_hash, "signature-affirmation")?;
     let source_refs = sorted_source_refs(vec![source_ref.clone()])?;
+    let (act_id, uses_fallback_act_id) =
+        projected_act_id(record.signing_act_id.as_deref(), &source_refs)?;
     let signing_intent = record
         .signing_intent
         .as_deref()
@@ -531,7 +545,7 @@ fn project_admitted_act(
         ("failure_reason", Value::Null),
     ])?;
     let value = crate::text_map(vec![
-        ("act_id", Value::Text(record.signing_act_id.clone())),
+        ("act_id", Value::Text(act_id.clone())),
         ("signer", signer),
         ("bound", bound),
         ("intent", Value::Text(signing_intent.to_string())),
@@ -545,9 +559,10 @@ fn project_admitted_act(
         ("source_refs", source_refs),
     ])?;
     Ok(ProjectedAct {
-        act_id: record.signing_act_id.clone(),
+        act_id,
         signed_at: record.signed_at.clone(),
         first_source_ref: crate::encode_value(&source_ref)?,
+        uses_fallback_act_id,
         value,
     })
 }
@@ -618,8 +633,28 @@ fn project_rejected_act(
         act_id: record.signature_id.clone(),
         signed_at: record.emitted_at.clone(),
         first_source_ref: crate::encode_value(&source_ref)?,
+        uses_fallback_act_id: false,
         value,
     })
+}
+
+fn projected_act_id(
+    signing_act_id: Option<&str>,
+    source_refs: &Value,
+) -> Result<(String, bool), StackError> {
+    if let Some(signing_act_id) = signing_act_id {
+        return Ok((signing_act_id.to_string(), false));
+    }
+    let source_ref_bytes = crate::encode_value(source_refs)?;
+    let digest = sha256_bytes(&source_ref_bytes);
+    Ok((
+        format!(
+            "{}:{}",
+            FALLBACK_ACT_ID_DERIVATION_RULE,
+            hex::encode(digest)
+        ),
+        true,
+    ))
 }
 
 fn source_ref(canonical_event_hash: [u8; 32], kind: &str) -> Result<Value, StackError> {
@@ -826,10 +861,243 @@ mod tests {
         );
     }
 
+    #[test]
+    fn fallback_act_id_is_stable_for_sorted_source_refs() {
+        let first = source_ref([0x22; 32], "signature-affirmation").expect("source ref");
+        let second = source_ref([0x11; 32], "signature-affirmation").expect("source ref");
+        let left = sorted_source_refs(vec![first.clone(), second.clone()]).expect("refs");
+        let right = sorted_source_refs(vec![second, first]).expect("refs");
+
+        let (left_id, left_used_fallback) = projected_act_id(None, &left).expect("fallback act id");
+        let (right_id, right_used_fallback) =
+            projected_act_id(None, &right).expect("fallback act id");
+
+        assert!(left_used_fallback);
+        assert!(right_used_fallback);
+        assert_eq!(left_id, right_id);
+        assert!(left_id.starts_with("signed-act-projection-act-id-v1:"));
+    }
+
+    #[test]
+    fn signed_acts_catalog_uses_v2_when_exporter_derives_fallback_act_id() {
+        let scope = b"scope";
+        let event = stored_signature_event_without_signing_act_id(scope, [0x11; 32]);
+
+        let signed_acts = signed_acts_catalog(scope, &[event])
+            .expect("derive")
+            .expect("signed acts");
+
+        assert_eq!(signed_acts.derivation_rule, SIGNED_ACTS_DERIVATION_RULE_V2);
+        assert!(
+            act_id_from_catalog(&signed_acts.bytes).starts_with("signed-act-projection-act-id-v1:")
+        );
+    }
+
+    #[test]
+    fn signed_acts_catalog_treats_null_signing_act_id_as_absent() {
+        let scope = b"scope";
+        let absent = stored_signature_event_without_signing_act_id(scope, [0x11; 32]);
+        let explicit_null = stored_signature_event_with_null_signing_act_id(scope, [0x11; 32]);
+
+        let absent = signed_acts_catalog(scope, &[absent])
+            .expect("derive")
+            .expect("signed acts");
+        let explicit_null = signed_acts_catalog(scope, &[explicit_null])
+            .expect("derive")
+            .expect("signed acts");
+
+        assert_eq!(absent.derivation_rule, SIGNED_ACTS_DERIVATION_RULE_V2);
+        assert_eq!(
+            act_id_from_catalog(&absent.bytes),
+            act_id_from_catalog(&explicit_null.bytes)
+        );
+    }
+
     fn encode_source_ref(source_byte: u8) -> Vec<u8> {
         let source_ref =
             source_ref([source_byte; 32], "signature-affirmation").expect("source ref");
         crate::encode_value(&source_ref).expect("source ref bytes")
+    }
+
+    fn act_id_from_catalog(catalog: &[u8]) -> String {
+        let decoded = decode_cbor_value(catalog).expect("decode catalog");
+        let root = decoded.as_map().expect("catalog root");
+        let acts = map_lookup_optional_value(root, "acts")
+            .and_then(Value::as_array)
+            .expect("acts");
+        let act = acts[0].as_map().expect("act");
+        map_lookup_optional_value(act, "act_id")
+            .and_then(Value::as_text)
+            .expect("act id")
+            .to_string()
+    }
+
+    fn signature_payload_with_consent(consent_reference: Value) -> Value {
+        crate::text_map(vec![
+            (
+                "event",
+                Value::Text(wos_signature_affirmation_event_type().to_string()),
+            ),
+            (
+                "data",
+                crate::text_map(vec![
+                    ("signerId", Value::Text("signer-1".to_string())),
+                    ("roleId", Value::Text("applicant".to_string())),
+                    ("role", Value::Text("Applicant".to_string())),
+                    ("documentId", Value::Text("doc-1".to_string())),
+                    ("signingActId", Value::Text("act-1".to_string())),
+                    (
+                        "documentHash",
+                        Value::Text("sha256:1111111111111111111111111111111111111111111111111111111111111111".to_string()),
+                    ),
+                    (
+                        "presentationHash",
+                        Value::Text("sha256:2222222222222222222222222222222222222222222222222222222222222222".to_string()),
+                    ),
+                    ("documentHashAlgorithm", Value::Text("sha-256".to_string())),
+                    (
+                        "sourceSignatureSystem",
+                        Value::Text("formspec".to_string()),
+                    ),
+                    ("sourceSignatureId", Value::Text("sig-1".to_string())),
+                    (
+                        "signedPayloadDigest",
+                        Value::Text("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string()),
+                    ),
+                    (
+                        "signedPayloadDigestAlgorithm",
+                        Value::Text("sha-256".to_string()),
+                    ),
+                    (
+                        "signingIntent",
+                        Value::Text("urn:formspec:signing-intent:accept@1".to_string()),
+                    ),
+                    (
+                        "signedAt",
+                        Value::Text("2026-05-17T00:00:00Z".to_string()),
+                    ),
+                    (
+                        "identityBinding",
+                        crate::text_map(vec![("ref", Value::Text("identity-1".to_string()))])
+                            .expect("identity"),
+                    ),
+                    ("consentReference", consent_reference),
+                    ("signatureProvider", Value::Text("formspec-ring".to_string())),
+                    ("ceremonyId", Value::Text("ceremony-1".to_string())),
+                    ("sourceResponseRef", Value::Text("response-1".to_string())),
+                    (
+                        "primitiveVerification",
+                        crate::text_map(vec![("status", Value::Text("verified".to_string()))])
+                            .expect("primitive"),
+                    ),
+                    ("witnessedSignatureRef", Value::Null),
+                ])
+                .expect("data"),
+            ),
+        ])
+        .expect("payload")
+    }
+
+    fn stored_signature_event_without_signing_act_id(
+        scope: &[u8],
+        event_hash: [u8; 32],
+    ) -> StoredEvent {
+        let payload = signature_payload_with_consent(Value::Map(vec![]));
+        stored_signature_event(
+            scope,
+            remove_data_field(payload, "signingActId"),
+            event_hash,
+        )
+    }
+
+    fn stored_signature_event_with_null_signing_act_id(
+        scope: &[u8],
+        event_hash: [u8; 32],
+    ) -> StoredEvent {
+        let payload = signature_payload_with_consent(Value::Map(vec![]));
+        stored_signature_event(
+            scope,
+            replace_data_field(payload, "signingActId", Value::Null),
+            event_hash,
+        )
+    }
+
+    fn stored_signature_event(scope: &[u8], payload: Value, event_hash: [u8; 32]) -> StoredEvent {
+        let payload = crate::encode_value(&payload).expect("payload");
+        let canonical_event = crate::text_map(vec![
+            (
+                "header",
+                crate::text_map(vec![(
+                    "event_type",
+                    Value::Bytes(wos_signature_affirmation_event_type().as_bytes().to_vec()),
+                )])
+                .expect("header"),
+            ),
+            (
+                "payload_ref",
+                crate::text_map(vec![
+                    ("ref_type", Value::Text("inline".to_string())),
+                    ("ciphertext", Value::Bytes(payload)),
+                ])
+                .expect("payload ref"),
+            ),
+        ])
+        .expect("canonical event");
+        let canonical_event = crate::encode_value(&canonical_event).expect("canonical event");
+        StoredEvent::new(scope.to_vec(), 0, canonical_event.clone(), canonical_event)
+            .with_canonical_event_hash(Some(event_hash))
+    }
+
+    fn remove_data_field(payload: Value, field: &str) -> Value {
+        let Value::Map(root) = payload else {
+            panic!("payload must be a map");
+        };
+        Value::Map(
+            root.into_iter()
+                .map(|(key, value)| {
+                    if key.as_text() != Some("data") {
+                        return (key, value);
+                    }
+                    let Value::Map(data) = value else {
+                        panic!("data must be a map");
+                    };
+                    let filtered = data
+                        .into_iter()
+                        .filter(|(data_key, _)| data_key.as_text() != Some(field))
+                        .collect();
+                    (key, Value::Map(filtered))
+                })
+                .collect(),
+        )
+    }
+
+    fn replace_data_field(payload: Value, field: &str, replacement: Value) -> Value {
+        let Value::Map(root) = payload else {
+            panic!("payload must be a map");
+        };
+        Value::Map(
+            root.into_iter()
+                .map(|(key, value)| {
+                    if key.as_text() != Some("data") {
+                        return (key, value);
+                    }
+                    let Value::Map(data) = value else {
+                        panic!("data must be a map");
+                    };
+                    let replaced = data
+                        .into_iter()
+                        .map(|(data_key, data_value)| {
+                            if data_key.as_text() == Some(field) {
+                                (data_key, replacement.clone())
+                            } else {
+                                (data_key, data_value)
+                            }
+                        })
+                        .collect();
+                    (key, Value::Map(replaced))
+                })
+                .collect(),
+        )
     }
 
     fn projected_act(act_id: &str, signer: &str, source_byte: u8) -> ProjectedAct {
@@ -849,6 +1117,7 @@ mod tests {
             act_id: act_id.to_string(),
             signed_at: "2026-05-17T00:00:00Z".to_string(),
             first_source_ref: crate::encode_value(&source_ref).expect("source ref key"),
+            uses_fallback_act_id: false,
             value,
         }
     }

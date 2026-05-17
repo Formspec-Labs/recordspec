@@ -1,0 +1,29 @@
+id          = "export/008-signed-acts-fallback-act-id"
+op          = "export"
+status      = "active"
+description = """Single-event WOS-T4 export that carries a WOS `SignatureAffirmation` without `data.signingActId` and binds verifier-facing `066-signed-acts.cbor` using the v2 fallback act-id rule."""
+
+[coverage]
+tr_core = [
+    "TR-CORE-006",
+    "TR-CORE-062",
+    "TR-CORE-064",
+    "TR-CORE-065",
+    "TR-CORE-067",
+    "TR-CORE-110",
+    "TR-CORE-134",
+]
+tr_op = [
+    "TR-OP-072",
+    "TR-OP-122",
+]
+
+[inputs]
+ledger_state = "input-ledger-state.cbor"
+
+[expected]
+zip        = "expected-export.zip"
+zip_sha256 = "82c44d8ffff5a16a07aa33a05cfc4c882699e6946e481d8d25da03a3ac29d481"
+
+[derivation]
+document = "derivation.md"

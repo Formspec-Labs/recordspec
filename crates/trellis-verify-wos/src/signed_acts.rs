@@ -22,7 +22,9 @@ use crate::records::{
 
 const SIGNED_ACTS_EXPORT_EXTENSION: &str = "trellis.export.signed-acts.v1";
 const SIGNED_ACTS_MEMBER: &str = "066-signed-acts.cbor";
-const SIGNED_ACTS_DERIVATION_RULE: &str = "signed-act-projection-wos-formspec-v1";
+const SIGNED_ACTS_DERIVATION_RULE_V1: &str = "signed-act-projection-wos-formspec-v1";
+const SIGNED_ACTS_DERIVATION_RULE_V2: &str = "signed-act-projection-wos-formspec-v2";
+const FALLBACK_ACT_ID_DERIVATION_RULE: &str = "signed-act-projection-act-id-v1";
 
 type SignedActsDeriver = fn(&[DomainEvent]) -> Result<Vec<u8>, String>;
 
@@ -44,6 +46,7 @@ struct ProjectedAct {
     act_id: String,
     signed_at: String,
     first_source_ref: Vec<u8>,
+    uses_fallback_act_id: bool,
     value: Value,
 }
 
@@ -107,14 +110,17 @@ fn validate_bound_signed_acts_projection(
             "signed acts catalog digest does not match manifest extension",
         ));
     }
-    if let Err(error) = decode_value(member_bytes) {
-        findings.push(finding(
-            "signed_acts_catalog_invalid",
-            None,
-            format!("066-signed-acts.cbor is invalid CBOR: {error}"),
-        ));
-        return findings;
-    }
+    let catalog_value = match decode_value(member_bytes) {
+        Ok(value) => value,
+        Err(error) => {
+            findings.push(finding(
+                "signed_acts_catalog_invalid",
+                None,
+                format!("066-signed-acts.cbor is invalid CBOR: {error}"),
+            ));
+            return findings;
+        }
+    };
     let derivation_rule = match signed_acts_derivation_rule(&extension.derivation_rule) {
         Some(rule) => rule,
         None => {
@@ -130,6 +136,16 @@ fn validate_bound_signed_acts_projection(
             return findings;
         }
     };
+    if let Err(error) =
+        validate_signed_acts_catalog_root(&catalog_value, &extension.derivation_rule)
+    {
+        findings.push(finding(
+            "signed_acts_catalog_invalid",
+            None,
+            format!("066-signed-acts.cbor is invalid: {error}"),
+        ));
+        return findings;
+    }
 
     let derived = match (derivation_rule.derive)(export.events) {
         Ok(bytes) => bytes,
@@ -148,6 +164,28 @@ fn validate_bound_signed_acts_projection(
     findings
 }
 
+fn validate_signed_acts_catalog_root(value: &Value, derivation_rule: &str) -> Result<(), String> {
+    let map = value
+        .as_map()
+        .ok_or_else(|| "signed acts catalog root is not a map".to_string())?;
+    let expected_version = Value::Integer(1.into());
+    if map_lookup_value(map, "projection_schema_version") != Some(&expected_version) {
+        return Err("projection_schema_version must be 1".to_string());
+    }
+    let catalog_rule = map_lookup_value(map, "derivation_rule_id")
+        .and_then(Value::as_text)
+        .ok_or_else(|| "derivation_rule_id must be text".to_string())?;
+    if catalog_rule != derivation_rule {
+        return Err(format!(
+            "derivation_rule_id must match manifest derivation_rule {derivation_rule}"
+        ));
+    }
+    if !map_lookup_value(map, "acts").is_some_and(|acts| acts.as_array().is_some()) {
+        return Err("acts must be an array".to_string());
+    }
+    Ok(())
+}
+
 fn signed_acts_derivation_rule(rule_id: &str) -> Option<SignedActsDerivationRule> {
     signed_acts_derivation_rules()
         .into_iter()
@@ -161,11 +199,17 @@ fn supported_signed_acts_derivation_rules() -> Vec<&'static str> {
         .collect()
 }
 
-fn signed_acts_derivation_rules() -> [SignedActsDerivationRule; 1] {
-    [SignedActsDerivationRule {
-        id: SIGNED_ACTS_DERIVATION_RULE,
-        derive: derive_signed_acts_catalog,
-    }]
+fn signed_acts_derivation_rules() -> [SignedActsDerivationRule; 2] {
+    [
+        SignedActsDerivationRule {
+            id: SIGNED_ACTS_DERIVATION_RULE_V1,
+            derive: derive_signed_acts_catalog_v1,
+        },
+        SignedActsDerivationRule {
+            id: SIGNED_ACTS_DERIVATION_RULE_V2,
+            derive: derive_signed_acts_catalog_v2,
+        },
+    ]
 }
 
 fn parse_signed_acts_export_extension(bytes: &[u8]) -> Result<SignedActsExportExtension, String> {
@@ -185,7 +229,19 @@ fn parse_signed_acts_export_extension(bytes: &[u8]) -> Result<SignedActsExportEx
     })
 }
 
-fn derive_signed_acts_catalog(events: &[DomainEvent]) -> Result<Vec<u8>, String> {
+fn derive_signed_acts_catalog_v1(events: &[DomainEvent]) -> Result<Vec<u8>, String> {
+    derive_signed_acts_catalog_with_rule(events, SIGNED_ACTS_DERIVATION_RULE_V1, false)
+}
+
+fn derive_signed_acts_catalog_v2(events: &[DomainEvent]) -> Result<Vec<u8>, String> {
+    derive_signed_acts_catalog_with_rule(events, SIGNED_ACTS_DERIVATION_RULE_V2, true)
+}
+
+fn derive_signed_acts_catalog_with_rule(
+    events: &[DomainEvent],
+    derivation_rule: &'static str,
+    fallback_act_id_allowed: bool,
+) -> Result<Vec<u8>, String> {
     let mut acts = Vec::new();
     for event in events {
         if event.event_type == wos_signature_affirmation_event_type() {
@@ -198,7 +254,11 @@ fn derive_signed_acts_catalog(events: &[DomainEvent]) -> Result<Vec<u8>, String>
             let record =
                 parse_signature_affirmation_record(payload, wos_signature_affirmation_event_type())
                     .map_err(|error| error.to_string())?;
-            acts.push(project_admitted_act(event, &record)?);
+            acts.push(project_admitted_act(
+                event,
+                &record,
+                fallback_act_id_allowed,
+            )?);
         } else if event.event_type == wos_signature_admission_failed_event_type() {
             let payload = event.payload.as_deref().ok_or_else(|| {
                 format!(
@@ -220,7 +280,7 @@ fn derive_signed_acts_catalog(events: &[DomainEvent]) -> Result<Vec<u8>, String>
         ("projection_schema_version", uint(1)),
         (
             "derivation_rule_id",
-            Value::Text(SIGNED_ACTS_DERIVATION_RULE.to_string()),
+            Value::Text(derivation_rule.to_string()),
         ),
         (
             "acts",
@@ -255,6 +315,7 @@ fn correlate_projected_acts(acts: Vec<ProjectedAct>) -> Result<Vec<ProjectedAct>
                 ));
             }
             Some(existing) => {
+                existing.act.uses_fallback_act_id |= act.uses_fallback_act_id;
                 existing.source_refs.extend(refs);
             }
             None => {
@@ -283,6 +344,7 @@ fn correlate_projected_acts(acts: Vec<ProjectedAct>) -> Result<Vec<ProjectedAct>
                 act_id: correlated.act.act_id,
                 signed_at: correlated.act.signed_at,
                 first_source_ref,
+                uses_fallback_act_id: correlated.act.uses_fallback_act_id,
                 value,
             })
         })
@@ -339,9 +401,15 @@ fn replace_source_refs(value: &Value, source_refs: Value) -> Result<Value, Strin
 fn project_admitted_act(
     event: &DomainEvent,
     record: &SignatureAffirmationRecordDetails,
+    fallback_act_id_allowed: bool,
 ) -> Result<ProjectedAct, String> {
     let source_ref = source_ref(event, "signature-affirmation")?;
     let source_refs = sorted_source_refs(vec![source_ref.clone()])?;
+    let (act_id, uses_fallback_act_id) = projected_act_id(
+        record.signing_act_id.as_deref(),
+        &source_refs,
+        fallback_act_id_allowed,
+    )?;
     let witness_of = option_text(record.witnessed_signature_ref.as_deref());
     let signing_intent = record
         .signing_intent
@@ -414,7 +482,7 @@ fn project_admitted_act(
         ("failure_reason", Value::Null),
     ])?;
     let value = text_map(vec![
-        ("act_id", Value::Text(record.signing_act_id.clone())),
+        ("act_id", Value::Text(act_id.clone())),
         ("signer", signer),
         ("bound", bound),
         ("intent", Value::Text(signing_intent.to_string())),
@@ -425,9 +493,10 @@ fn project_admitted_act(
         ("source_refs", source_refs),
     ])?;
     Ok(ProjectedAct {
-        act_id: record.signing_act_id.clone(),
+        act_id,
         signed_at: record.signed_at.clone(),
         first_source_ref: encode_value(&source_ref)?,
+        uses_fallback_act_id,
         value,
     })
 }
@@ -498,8 +567,42 @@ fn project_rejected_act(
         act_id: record.signature_id.clone(),
         signed_at: record.emitted_at.clone(),
         first_source_ref: encode_value(&source_ref)?,
+        uses_fallback_act_id: false,
         value,
     })
+}
+
+fn projected_act_id(
+    signing_act_id: Option<&str>,
+    source_refs: &Value,
+    fallback_act_id_allowed: bool,
+) -> Result<(String, bool), String> {
+    if let Some(signing_act_id) = signing_act_id {
+        return Ok((signing_act_id.to_string(), false));
+    }
+    if !fallback_act_id_allowed {
+        return Err("signature affirmation missing signingActId".to_string());
+    }
+    let source_ref_bytes = encode_value(source_refs)?;
+    let digest = sha256_bytes(&source_ref_bytes);
+    Ok((
+        format!(
+            "{}:{}",
+            FALLBACK_ACT_ID_DERIVATION_RULE,
+            hex_encode(&digest)
+        ),
+        true,
+    ))
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 fn source_ref(event: &DomainEvent, kind: &str) -> Result<Value, String> {
@@ -620,7 +723,7 @@ mod tests {
     #[test]
     fn signed_acts_projection_validates_when_catalog_matches_derivation() {
         let event = signature_event();
-        let catalog = derive_signed_acts_catalog(std::slice::from_ref(&event)).expect("derive");
+        let catalog = derive_signed_acts_catalog_v1(std::slice::from_ref(&event)).expect("derive");
         let extension = extension_for(&catalog);
         let mut members = BTreeMap::new();
         members.insert(SIGNED_ACTS_MEMBER.to_string(), catalog);
@@ -668,7 +771,7 @@ mod tests {
                 ("projection_schema_version", uint(1)),
                 (
                     "derivation_rule_id",
-                    Value::Text(SIGNED_ACTS_DERIVATION_RULE.to_string()),
+                    Value::Text(SIGNED_ACTS_DERIVATION_RULE_V1.to_string()),
                 ),
                 ("acts", Value::Array(Vec::new())),
             ])
@@ -698,11 +801,11 @@ mod tests {
     #[test]
     fn signed_acts_v1_derivation_rule_is_registry_backed() {
         let event = signature_event();
-        let catalog = derive_signed_acts_catalog(std::slice::from_ref(&event)).expect("derive");
-        let rule = signed_acts_derivation_rule(SIGNED_ACTS_DERIVATION_RULE)
+        let catalog = derive_signed_acts_catalog_v1(std::slice::from_ref(&event)).expect("derive");
+        let rule = signed_acts_derivation_rule(SIGNED_ACTS_DERIVATION_RULE_V1)
             .expect("v1 signed acts derivation rule registered");
 
-        assert_eq!(rule.id, SIGNED_ACTS_DERIVATION_RULE);
+        assert_eq!(rule.id, SIGNED_ACTS_DERIVATION_RULE_V1);
         assert_eq!(
             (rule.derive)(std::slice::from_ref(&event)).expect("derive"),
             catalog
@@ -710,10 +813,107 @@ mod tests {
     }
 
     #[test]
-    fn signed_acts_unknown_derivation_rule_is_failure_without_v1_fallback() {
+    fn signed_acts_v2_derivation_rule_derives_fallback_act_id() {
+        let event = signature_event_without_signing_act_id();
+        let catalog = derive_signed_acts_catalog_v2(std::slice::from_ref(&event)).expect("derive");
+        let decoded = decode_value(&catalog).expect("decode catalog");
+        let root = decoded.as_map().expect("catalog root");
+        let derivation_rule = map_lookup_value(root, "derivation_rule_id")
+            .and_then(Value::as_text)
+            .expect("derivation rule");
+        let acts = map_lookup_value(root, "acts")
+            .and_then(Value::as_array)
+            .expect("acts");
+        let act = acts[0].as_map().expect("act");
+        let act_id = map_lookup_value(act, "act_id")
+            .and_then(Value::as_text)
+            .expect("act id");
+
+        assert_eq!(derivation_rule, SIGNED_ACTS_DERIVATION_RULE_V2);
+        assert!(act_id.starts_with("signed-act-projection-act-id-v1:"));
+    }
+
+    #[test]
+    fn signed_acts_v2_treats_null_signing_act_id_as_absent() {
+        let absent = signature_event_without_signing_act_id();
+        let explicit_null = signature_event_with_null_signing_act_id();
+        let absent_catalog =
+            derive_signed_acts_catalog_v2(std::slice::from_ref(&absent)).expect("derive");
+        let null_catalog =
+            derive_signed_acts_catalog_v2(std::slice::from_ref(&explicit_null)).expect("derive");
+
+        assert_eq!(
+            act_id_from_catalog(&absent_catalog),
+            act_id_from_catalog(&null_catalog)
+        );
+        assert!(act_id_from_catalog(&null_catalog).starts_with("signed-act-projection-act-id-v1:"));
+    }
+
+    #[test]
+    fn signed_acts_v1_derivation_rule_rejects_missing_signing_act_id() {
+        let event = signature_event_without_signing_act_id();
+        let error = derive_signed_acts_catalog_v1(std::slice::from_ref(&event))
+            .expect_err("v1 requires signingActId");
+
+        assert!(error.contains("signature affirmation missing signingActId"));
+    }
+
+    #[test]
+    fn signed_acts_v2_projection_validates_when_catalog_matches_derivation() {
+        let event = signature_event_without_signing_act_id();
+        let catalog = derive_signed_acts_catalog_v2(std::slice::from_ref(&event)).expect("derive");
+        let extension = extension_for_rule(&catalog, SIGNED_ACTS_DERIVATION_RULE_V2);
+        let mut members = BTreeMap::new();
+        members.insert(SIGNED_ACTS_MEMBER.to_string(), catalog);
+        let mut manifest_extensions = BTreeMap::new();
+        manifest_extensions.insert(SIGNED_ACTS_EXPORT_EXTENSION.to_string(), extension);
+
+        let findings = WosRecordValidator.validate_export(DomainExport {
+            events: &[event],
+            members: &members,
+            manifest_extensions: &manifest_extensions,
+        });
+
+        assert!(findings.is_empty(), "{findings:#?}");
+    }
+
+    #[test]
+    fn signed_acts_catalog_rule_mismatch_is_invalid_catalog() {
         let event = signature_event();
-        let catalog = derive_signed_acts_catalog(std::slice::from_ref(&event)).expect("derive");
-        let extension = extension_for_rule(&catalog, "signed-act-projection-wos-formspec-v2");
+        let catalog = derive_signed_acts_catalog_v1(std::slice::from_ref(&event)).expect("derive");
+        let extension = extension_for_rule(&catalog, SIGNED_ACTS_DERIVATION_RULE_V2);
+        let mut members = BTreeMap::new();
+        members.insert(SIGNED_ACTS_MEMBER.to_string(), catalog);
+        let mut manifest_extensions = BTreeMap::new();
+        manifest_extensions.insert(SIGNED_ACTS_EXPORT_EXTENSION.to_string(), extension);
+
+        let findings = WosRecordValidator.validate_export(DomainExport {
+            events: &[event],
+            members: &members,
+            manifest_extensions: &manifest_extensions,
+        });
+
+        assert!(
+            findings.iter().any(|finding| {
+                finding.kind == "signed_acts_catalog_invalid"
+                    && finding.message.contains("derivation_rule_id must match")
+            }),
+            "{findings:#?}"
+        );
+        assert!(
+            findings
+                .iter()
+                .all(|finding| finding.kind != "signed_acts_projection_mismatch"),
+            "{findings:#?}"
+        );
+    }
+
+    #[test]
+    fn signed_acts_unknown_derivation_rule_is_failure_without_rule_substitution() {
+        let event = signature_event();
+        let catalog = derive_signed_acts_catalog_v1(std::slice::from_ref(&event)).expect("derive");
+        let extension =
+            extension_for_rule(&catalog, "signed-act-projection-wos-formspec-unsupported");
         let mut members = BTreeMap::new();
         members.insert(SIGNED_ACTS_MEMBER.to_string(), catalog);
         let mut manifest_extensions = BTreeMap::new();
@@ -755,7 +955,7 @@ mod tests {
             ),
         ]));
 
-        let catalog = derive_signed_acts_catalog(&[event]).expect("derive");
+        let catalog = derive_signed_acts_catalog_v1(&[event]).expect("derive");
         let decoded = decode_value(&catalog).expect("decode derived catalog");
         let root = decoded.as_map().expect("catalog root");
         let acts = map_lookup_value(root, "acts")
@@ -786,7 +986,7 @@ mod tests {
             ),
         ]));
 
-        let error = derive_signed_acts_catalog(&[event]).expect_err("duplicate key rejects");
+        let error = derive_signed_acts_catalog_v1(&[event]).expect_err("duplicate key rejects");
 
         assert!(
             error.contains("duplicate canonical CBOR map key"),
@@ -811,7 +1011,7 @@ mod tests {
                 ("projection_schema_version", uint(1)),
                 (
                     "derivation_rule_id",
-                    Value::Text(SIGNED_ACTS_DERIVATION_RULE.to_string()),
+                    Value::Text(SIGNED_ACTS_DERIVATION_RULE_V1.to_string()),
                 ),
                 ("acts", Value::Array(Vec::new())),
             ])
@@ -892,7 +1092,7 @@ mod tests {
             signature_event_with_signer_and_hash("signer-1", 0x11),
         ];
 
-        let catalog = derive_signed_acts_catalog(&events).expect("derive");
+        let catalog = derive_signed_acts_catalog_v1(&events).expect("derive");
         let decoded = decode_value(&catalog).expect("decode derived catalog");
         let root = decoded.as_map().expect("catalog root");
         let acts = map_lookup_value(root, "acts")
@@ -926,7 +1126,7 @@ mod tests {
                 ("projection_schema_version", uint(1)),
                 (
                     "derivation_rule_id",
-                    Value::Text(SIGNED_ACTS_DERIVATION_RULE.to_string()),
+                    Value::Text(SIGNED_ACTS_DERIVATION_RULE_V1.to_string()),
                 ),
                 ("acts", Value::Array(Vec::new())),
             ])
@@ -967,7 +1167,7 @@ mod tests {
     }
 
     fn extension_for(catalog: &[u8]) -> Vec<u8> {
-        extension_for_rule(catalog, SIGNED_ACTS_DERIVATION_RULE)
+        extension_for_rule(catalog, SIGNED_ACTS_DERIVATION_RULE_V1)
     }
 
     fn extension_for_rule(catalog: &[u8], derivation_rule: &str) -> Vec<u8> {
@@ -987,6 +1187,89 @@ mod tests {
 
     fn signature_event() -> DomainEvent {
         signature_event_with_signer_and_hash("signer-1", 0x11)
+    }
+
+    fn signature_event_without_signing_act_id() -> DomainEvent {
+        let mut event = signature_event();
+        let payload = decode_value(event.payload.as_deref().expect("payload")).expect("payload");
+        event.payload =
+            Some(encode_value(&remove_data_field(payload, "signingActId")).expect("payload"));
+        event
+    }
+
+    fn signature_event_with_null_signing_act_id() -> DomainEvent {
+        let mut event = signature_event();
+        let payload = decode_value(event.payload.as_deref().expect("payload")).expect("payload");
+        event.payload = Some(
+            encode_value(&replace_data_field(payload, "signingActId", Value::Null))
+                .expect("payload"),
+        );
+        event
+    }
+
+    fn act_id_from_catalog(catalog: &[u8]) -> String {
+        let decoded = decode_value(catalog).expect("decode catalog");
+        let root = decoded.as_map().expect("catalog root");
+        let acts = map_lookup_value(root, "acts")
+            .and_then(Value::as_array)
+            .expect("acts");
+        let act = acts[0].as_map().expect("act");
+        map_lookup_value(act, "act_id")
+            .and_then(Value::as_text)
+            .expect("act id")
+            .to_string()
+    }
+
+    fn remove_data_field(payload: Value, field: &str) -> Value {
+        let Value::Map(root) = payload else {
+            panic!("payload must be a map");
+        };
+        Value::Map(
+            root.into_iter()
+                .map(|(key, value)| {
+                    if key.as_text() != Some("data") {
+                        return (key, value);
+                    }
+                    let Value::Map(data) = value else {
+                        panic!("data must be a map");
+                    };
+                    let filtered = data
+                        .into_iter()
+                        .filter(|(data_key, _)| data_key.as_text() != Some(field))
+                        .collect();
+                    (key, Value::Map(filtered))
+                })
+                .collect(),
+        )
+    }
+
+    fn replace_data_field(payload: Value, field: &str, replacement: Value) -> Value {
+        let Value::Map(root) = payload else {
+            panic!("payload must be a map");
+        };
+        Value::Map(
+            root.into_iter()
+                .map(|(key, value)| {
+                    if key.as_text() != Some("data") {
+                        return (key, value);
+                    }
+                    let Value::Map(data) = value else {
+                        panic!("data must be a map");
+                    };
+                    let replaced = data
+                        .into_iter()
+                        .map(|(data_key, data_value)| {
+                            if data_key.as_text() == Some(field) {
+                                (data_key, replacement.clone())
+                            } else {
+                                (data_key, data_value)
+                            }
+                        })
+                        .collect();
+                    (key, Value::Map(replaced))
+                })
+                .collect(),
+        )
     }
 
     fn projected_act(act_id: &str, signer: &str, source_byte: u8) -> ProjectedAct {
@@ -1014,6 +1297,7 @@ mod tests {
             act_id: act_id.to_string(),
             signed_at: "2026-05-17T00:00:00Z".to_string(),
             first_source_ref: encode_value(&source_ref).expect("source ref key"),
+            uses_fallback_act_id: false,
             value,
         }
     }

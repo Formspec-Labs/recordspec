@@ -87,7 +87,7 @@ pub(crate) struct SignatureAffirmationRecordDetails {
     pub(crate) profile_ref: Option<String>,
     pub(crate) profile_key: Option<String>,
     pub(crate) formspec_response_ref: String,
-    pub(crate) signing_act_id: String,
+    pub(crate) signing_act_id: Option<String>,
     pub(crate) presentation_hash: String,
     pub(crate) witnessed_signature_ref: Option<String>,
     pub(crate) primitive_verification: Value,
@@ -292,7 +292,7 @@ pub(crate) fn parse_signature_affirmation_record(
             "sourceResponseRef",
             "formspecResponseRef",
         )?,
-        signing_act_id: map_lookup_text(data, "signingActId")?,
+        signing_act_id: map_lookup_optional_text(data, "signingActId")?,
         presentation_hash: map_lookup_text(data, "presentationHash")?,
         witnessed_signature_ref: map_lookup_optional_text(data, "witnessedSignatureRef")?,
         primitive_verification: map_lookup_optional_value(data, "primitiveVerification")
