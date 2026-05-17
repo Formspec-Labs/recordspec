@@ -53,6 +53,12 @@ pub const REGISTRY_DIR: &str = "050-registries";
 /// Trellis binds the bytes in the export manifest, but WOS/Formspec profile
 /// validators own the projection semantics and deterministic re-derivation.
 pub const SIGNED_ACTS_MEMBER: &str = "066-signed-acts.cbor";
+/// Composition-owned effective policy closure.
+///
+/// Trellis binds the bytes in the export manifest. WOS/Formspec verifiers own
+/// the policy-closure shape and the boundary between bundle evidence, verifier
+/// trust configuration, and runtime operational configuration.
+pub const POLICY_CLOSURE_MEMBER: &str = "067-policy-closure.cbor";
 pub const VERIFY_MEMBER: &str = "090-verify.sh";
 pub const README_MEMBER: &str = "098-README.md";
 
@@ -122,6 +128,13 @@ pub struct RegistrySnapshot {
 pub struct SignedActsCatalogMember {
     pub bytes: Vec<u8>,
     pub derivation_rule: String,
+}
+
+/// Caller-supplied effective policy closure.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PolicyClosureMember {
+    pub bytes: Vec<u8>,
+    pub closure_version: String,
 }
 
 /// Export posture declaration carried in the manifest and rendered into the
@@ -229,6 +242,13 @@ pub struct ExportWriterInput {
     /// digest. WOS/Formspec verifiers re-derive the catalog from layered records
     /// and decide whether the projection is semantically usable.
     pub signed_acts_catalog: Option<SignedActsCatalogMember>,
+    /// Optional composition-owned `067-policy-closure.cbor` rule-evidence
+    /// snapshot.
+    ///
+    /// The writer binds the bytes and closure version. WOS/Formspec verifiers
+    /// enforce that the member is case-policy evidence, not verifier trust-root
+    /// or adapter allowlist configuration.
+    pub policy_closure: Option<PolicyClosureMember>,
 }
 
 /// Complete export writer output.
@@ -390,6 +410,12 @@ pub fn write_export(input: ExportWriterInput) -> Result<ExportPackage, StackErro
             catalog.bytes.clone(),
         ));
     }
+    if let Some(closure) = &input.policy_closure {
+        bundle.add_entry(BundleEntry::new(
+            format!("{root_dir}/{POLICY_CLOSURE_MEMBER}"),
+            closure.bytes.clone(),
+        ));
+    }
     bundle.add_entry(BundleEntry::new(
         format!("{root_dir}/{CHECKPOINTS_MEMBER}"),
         checkpoints_cbor,
@@ -427,6 +453,8 @@ pub fn write_export(input: ExportWriterInput) -> Result<ExportPackage, StackErro
 const WITNESS_REGISTRY_MANIFEST_EXTENSION: &str = "trellis.export.witness-key-registry.v1";
 /// Composition-owned manifest extension binding `066-signed-acts.cbor`.
 const SIGNED_ACTS_MANIFEST_EXTENSION: &str = "trellis.export.signed-acts.v1";
+/// Composition-owned manifest extension binding `067-policy-closure.cbor`.
+const POLICY_CLOSURE_MANIFEST_EXTENSION: &str = "trellis.export.policy-closure.v1";
 
 fn manifest_extensions_value(
     input: &ExportWriterInput,
@@ -449,12 +477,20 @@ fn manifest_extensions_value(
             "witness_key_registry field and encoded witness registry bytes disagree",
         ))?,
     };
-    match &input.signed_acts_catalog {
+    let with_signed_acts = match &input.signed_acts_catalog {
         None => Ok(with_witness.unwrap_or(Value::Null)),
         Some(catalog) => merge_signed_acts_manifest_extension(
             with_witness.as_ref(),
             sha256_bytes(&catalog.bytes),
             &catalog.derivation_rule,
+        ),
+    }?;
+    match &input.policy_closure {
+        None => Ok(with_signed_acts),
+        Some(closure) => merge_policy_closure_manifest_extension(
+            Some(&with_signed_acts),
+            sha256_bytes(&closure.bytes),
+            &closure.closure_version,
         ),
     }
 }
@@ -506,6 +542,35 @@ fn merge_signed_acts_manifest_extension(
     pairs.push((
         Value::Text(SIGNED_ACTS_MANIFEST_EXTENSION.to_string()),
         signed_acts_payload,
+    ));
+    canonical_map(pairs)
+}
+
+fn merge_policy_closure_manifest_extension(
+    base_extensions: Option<&Value>,
+    digest: [u8; 32],
+    closure_version: &str,
+) -> Result<Value, StackError> {
+    let mut pairs: Vec<(Value, Value)> = Vec::new();
+    if let Some(Value::Map(entries)) = base_extensions {
+        for (key, value) in entries {
+            if key.as_text() == Some(POLICY_CLOSURE_MANIFEST_EXTENSION) {
+                continue;
+            }
+            pairs.push((key.clone(), value.clone()));
+        }
+    }
+    let closure_payload = text_map(vec![
+        ("closure_digest", Value::Bytes(digest.to_vec())),
+        (
+            "closure_ref",
+            Value::Text(POLICY_CLOSURE_MEMBER.to_string()),
+        ),
+        ("closure_version", Value::Text(closure_version.to_string())),
+    ])?;
+    pairs.push((
+        Value::Text(POLICY_CLOSURE_MANIFEST_EXTENSION.to_string()),
+        closure_payload,
     ));
     canonical_map(pairs)
 }
@@ -571,6 +636,18 @@ fn validate_top_level_input(input: &ExportWriterInput) -> Result<(), StackError>
             ));
         }
     }
+    if input.policy_closure.is_none() {
+        if let Some(Value::Map(entries)) = &input.extensions
+            && entries
+                .iter()
+                .any(|(key, _)| key.as_text() == Some(POLICY_CLOSURE_MANIFEST_EXTENSION))
+        {
+            return Err(StackError::bad_request(
+                "manifest extensions include trellis.export.policy-closure.v1 \
+                 but policy_closure was not provided",
+            ));
+        }
+    }
     if let Some(catalog) = &input.signed_acts_catalog {
         if catalog.bytes.is_empty() {
             return Err(StackError::bad_request(
@@ -583,6 +660,21 @@ fn validate_top_level_input(input: &ExportWriterInput) -> Result<(), StackError>
         if catalog.derivation_rule.trim().is_empty() {
             return Err(StackError::bad_request(
                 "signed_acts_catalog derivation_rule must not be empty",
+            ));
+        }
+    }
+    if let Some(closure) = &input.policy_closure {
+        if closure.bytes.is_empty() {
+            return Err(StackError::bad_request(
+                "policy_closure bytes must not be empty",
+            ));
+        }
+        decode_cbor_value(&closure.bytes).map_err(|error| {
+            StackError::bad_request(format!("policy_closure is invalid CBOR: {error}"))
+        })?;
+        if closure.closure_version.trim().is_empty() {
+            return Err(StackError::bad_request(
+                "policy_closure closure_version must not be empty",
             ));
         }
     }
@@ -1386,6 +1478,7 @@ mod tests {
             extensions: None,
             witness_key_registry: None,
             signed_acts_catalog: None,
+            policy_closure: None,
         };
         let error = write_export(input).expect_err("empty export must reject");
         assert!(error.to_string().contains("requires at least one"));
@@ -1621,6 +1714,129 @@ mod tests {
             error
                 .to_string()
                 .contains("signed_acts_catalog was not provided"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn write_export_binds_policy_closure_when_provided() {
+        let root = fixtures_root();
+        let mut input = crate::export_001_writer_input(root.as_path());
+        let closure = PolicyClosureMember {
+            bytes: encode_value(
+                &text_map(vec![
+                    ("closure_schema_version", uint(1)),
+                    (
+                        "closure_version",
+                        Value::Text("policy-closure-test-v1".to_string()),
+                    ),
+                    (
+                        "verifier_boundary",
+                        text_map(vec![
+                            ("bundle_admission_policy_evidence", Value::Bool(true)),
+                            ("bundle_trust_roots_authoritative", Value::Bool(false)),
+                            ("verifier_supplied_trust_roots_required", Value::Bool(true)),
+                            (
+                                "verifier_supplied_adapter_allowlists_required",
+                                Value::Bool(true),
+                            ),
+                            ("server_operational_config_included", Value::Bool(false)),
+                        ])
+                        .expect("boundary"),
+                    ),
+                    (
+                        "artifacts",
+                        Value::Array(vec![
+                            text_map(vec![
+                                ("owner", Value::Text("wos".to_string())),
+                                ("kind", Value::Text("intent-registry".to_string())),
+                                ("version", Value::Text("2026-05-16".to_string())),
+                                ("ref", Value::Text("urn:test:registry:intents".to_string())),
+                                ("digest_algorithm", Value::Text("sha-256".to_string())),
+                                ("digest", Value::Bytes([0xcc; 32].to_vec())),
+                                (
+                                    "valid_from",
+                                    Value::Text("2026-05-16T00:00:00Z".to_string()),
+                                ),
+                                ("valid_to", Value::Null),
+                            ])
+                            .expect("artifact"),
+                        ]),
+                    ),
+                ])
+                .expect("closure"),
+            )
+            .expect("closure bytes"),
+            closure_version: "policy-closure-test-v1".to_string(),
+        };
+        let expected_digest = sha256_bytes(&closure.bytes);
+        input.policy_closure = Some(closure);
+
+        let package = write_export(input).expect("write export");
+        let member = package
+            .member_bytes(POLICY_CLOSURE_MEMBER)
+            .expect("067 policy closure member");
+        assert_eq!(sha256_bytes(member), expected_digest);
+
+        let manifest = decode_cbor_value(&package.manifest_payload).expect("manifest CBOR");
+        let map = manifest.as_map().expect("manifest map");
+        let extensions = map_lookup_map(map, "extensions").expect("extensions");
+        let binding_map = extensions
+            .iter()
+            .find(|(k, _)| k.as_text() == Some(POLICY_CLOSURE_MANIFEST_EXTENSION))
+            .map(|(_, v)| v.as_map().expect("binding"))
+            .expect("policy closure extension");
+        assert_eq!(
+            map_lookup_bytes(binding_map, "closure_digest")
+                .expect("closure_digest")
+                .as_slice(),
+            expected_digest.as_slice()
+        );
+        assert_eq!(
+            binding_map
+                .iter()
+                .find(|(key, _)| key.as_text() == Some("closure_ref"))
+                .and_then(|(_, value)| value.as_text()),
+            Some(POLICY_CLOSURE_MEMBER)
+        );
+        assert_eq!(
+            binding_map
+                .iter()
+                .find(|(key, _)| key.as_text() == Some("closure_version"))
+                .and_then(|(_, value)| value.as_text()),
+            Some("policy-closure-test-v1")
+        );
+    }
+
+    #[test]
+    fn rejects_policy_closure_manifest_extension_without_member() {
+        let root = fixtures_root();
+        let mut input = crate::export_001_writer_input(root.as_path());
+        let stale_binding = text_map(vec![
+            ("closure_digest", Value::Bytes([0xdd; 32].to_vec())),
+            (
+                "closure_ref",
+                Value::Text(POLICY_CLOSURE_MEMBER.to_string()),
+            ),
+            (
+                "closure_version",
+                Value::Text("policy-closure-test-v1".to_string()),
+            ),
+        ])
+        .expect("stale policy closure binding");
+        input.extensions = Some(
+            canonical_map(vec![(
+                Value::Text(POLICY_CLOSURE_MANIFEST_EXTENSION.to_string()),
+                stale_binding,
+            )])
+            .expect("extensions map"),
+        );
+        input.policy_closure = None;
+        let error = write_export(input).expect_err("extension without closure must reject");
+        assert!(
+            error
+                .to_string()
+                .contains("policy_closure was not provided"),
             "{error}"
         );
     }

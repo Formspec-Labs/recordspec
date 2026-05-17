@@ -85,6 +85,11 @@ These literals MUST NOT be required by a Trellis Core verifier.
 | WOS-TV-019 | A SignedAct row derived from `wos.kernel.signature_affirmation` MUST project signer, bound subject, intent, consent, admission, witness, timestamp, and source-reference fields from the signed WOS record only; missing `signingIntent` is a closed failure, not an advisory. |
 | WOS-TV-020 | A SignedAct row derived from `wos.kernel.signature_admission_failed` MUST set `admission.outcome = "rejected"` and carry the failure reason and evidence-binding values from the signed WOS record. |
 | WOS-TV-021 | `066-signed-acts.cbor` is a verifier/reporting projection only. A WOS validator MUST NOT accept a signature, failure, signer, response reference, or bound-subject claim solely because it appears in the projection; the signed source event remains the authority. |
+| WOS-TV-022 | If `trellis.export.policy-closure.v1` is present, `067-policy-closure.cbor` MUST be present. If `067-policy-closure.cbor` is present without the extension, the WOS validator MUST report `policy_closure_unbound`. |
+| WOS-TV-023 | The `trellis.export.policy-closure.v1` extension MUST be a CBOR map carrying `closure_digest`, `closure_ref = "067-policy-closure.cbor"`, and `closure_version`. Invalid extension shape or an invalid closure member is `policy_closure_invalid`; absent member is `missing_policy_closure`. |
+| WOS-TV-024 | The SHA-256 digest of `067-policy-closure.cbor` MUST equal `closure_digest`. A mismatch is `policy_closure_digest_mismatch`. |
+| WOS-TV-025 | `067-policy-closure.cbor` MUST be canonical CBOR with `closure_schema_version = 1`, a `closure_version` that matches the manifest extension, a `verifier_boundary` map, and a non-empty `artifacts` array. |
+| WOS-TV-026 | The `verifier_boundary` MUST state that the bundle supplies admission-policy evidence, not authoritative trust roots, verifier adapter allowlists, or server operational configuration. The `artifacts` array MUST cover effective intent URI, method URI, posture-floor, signer-authority-shape, identity-proofing-primitive, default, deny-rule, tombstone, and validity-window inputs that could change whether a signature act was admitted. |
 
 ## 4. SignedAct Projection
 
@@ -128,7 +133,50 @@ Malformed required fields fail the projection. No relying party may treat the
 projection as independent evidence; every claim in it must be recoverable from
 the signed WOS source event.
 
-## 5. WOS Tamper Kinds
+## 5. Effective Policy Closure
+
+`067-policy-closure.cbor` is bundle-resident admission-policy evidence for
+WOS/Formspec exports. It is intentionally narrower than "configuration": it
+travels with the bundle only when it could change whether a signed act was
+admitted. Verifier trust roots, verifier adapter allowlists, and server runtime
+environment variables remain verifier- or operator-supplied configuration and
+MUST NOT be treated as authoritative because they appear in this member.
+
+The closure root is canonical CBOR:
+
+```text
+{
+  "closure_schema_version": 1,
+  "closure_version": tstr,
+  "sealed_at": tstr,
+  "owner_scope": tstr,
+  "verifier_boundary": {
+    "bundle_admission_policy_evidence": true,
+    "bundle_trust_roots_authoritative": false,
+    "verifier_supplied_trust_roots_required": true,
+    "verifier_supplied_adapter_allowlists_required": true,
+    "server_operational_config_included": false
+  },
+  "artifacts": [...]
+}
+```
+
+Each artifact row carries `owner`, `kind`, `version`, `ref`,
+`digest_algorithm = "sha-256"`, `digest`, `valid_from`, and `valid_to`. Rows
+may point at public registries or owner-local policy snapshots, but the digest
+and validity window in the closure are the effective evidence for the exported
+bundle. Required artifact kinds are:
+
+- `formspec.signing-intent-registry.v1`
+- `formspec.signature-method-registry.v1`
+- `wos.signature-posture-floors.v1`
+- `wos.signer-authority-shape.v1`
+- `wos.identity-proofing-primitives.v1`
+- `wos.signature-defaults.v1`
+- `wos.signature-deny-rules.v1`
+- `wos.signature-tombstones.v1`
+
+## 6. WOS Tamper Kinds
 
 WOS composed reports may use these `tamper_kind` values in fixture manifests and
 human-facing diagnostics:
@@ -140,6 +188,10 @@ human-facing diagnostics:
 | `signature_catalog_digest_mismatch` | WOS-TV-004 |
 | `intake_handoff_catalog_digest_mismatch` | WOS-TV-007 |
 | `missing_signed_acts_catalog` | WOS-TV-014 / WOS-TV-015 |
+| `missing_policy_closure` | WOS-TV-022 / WOS-TV-023 |
+| `policy_closure_digest_mismatch` | WOS-TV-024 |
+| `policy_closure_invalid` | WOS-TV-023 / WOS-TV-025 / WOS-TV-026 |
+| `policy_closure_unbound` | WOS-TV-022 |
 | `signed_acts_catalog_digest_mismatch` | WOS-TV-016 |
 | `signed_acts_catalog_invalid` | WOS-TV-015 / WOS-TV-018 |
 | `signed_acts_catalog_unbound` | WOS-TV-014 |
@@ -151,7 +203,7 @@ wrong event types, and field mismatches. Fixture `tamper_kind` values remain the
 stable compatibility vocabulary; implementation-specific subcodes should be
 reported as WOS findings, not added to the Core enum.
 
-## 6. Implementation Mapping
+## 7. Implementation Mapping
 
 The Rust implementation lives in `crates/trellis-verify-wos`. It depends on
 `integrity-verify::trellis` and composes through the Core domain-validator seam.

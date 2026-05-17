@@ -293,6 +293,40 @@ fn given_signed_acts_projection_mismatch_when_layered_report_then_projection_blo
     assert_eq!(layered.verdict.blocking_reasons, ["projection_mismatch"]);
 }
 
+/// Given a valid substrate export with a policy-closure digest mismatch, when
+/// layered verification runs, then substrate integrity passes while the
+/// relying-party verdict fails domain admissibility.
+#[test]
+fn given_policy_closure_digest_mismatch_when_layered_report_then_domain_blocks_verdict() {
+    let zip_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/vectors/tamper/056-policy-closure-digest-mismatch/input-export.zip");
+    let bytes = std::fs::read(&zip_path).unwrap_or_else(|error| {
+        panic!(
+            "fixture input-export.zip must exist at {}: {error}",
+            zip_path.display()
+        );
+    });
+    let report = crate::verify_export_zip(&bytes);
+    let layered = report.layered_report();
+
+    assert!(layered.substrate.structure_verified, "{layered:#?}");
+    assert!(layered.substrate.integrity_verified, "{layered:#?}");
+    assert!(
+        report
+            .wos_findings
+            .iter()
+            .any(|finding| finding.kind == "policy_closure_digest_mismatch")
+    );
+    assert_eq!(layered.verdict.cryptographic_integrity, VerdictState::Pass);
+    assert_eq!(layered.verdict.projection_integrity, VerdictState::Pass);
+    assert_eq!(layered.verdict.domain_admissibility, VerdictState::Fail);
+    assert_eq!(
+        layered.verdict.relying_party_result,
+        RelyingPartyResult::Invalid
+    );
+    assert_eq!(layered.verdict.blocking_reasons, ["domain_admissibility"]);
+}
+
 #[test]
 fn validator_admits_wos_identity_attestation_event_type() {
     assert!(

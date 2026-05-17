@@ -91,6 +91,28 @@ def test_signed_acts_projection_mismatch_blocks_relying_party_verdict() -> None:
     assert report.integrity_verified is False
 
 
+def test_policy_closure_digest_mismatch_blocks_domain_verdict() -> None:
+    export_zip = (
+        TRELLIS_ROOT
+        / "fixtures/vectors/tamper/056-policy-closure-digest-mismatch/input-export.zip"
+    ).read_bytes()
+
+    report = verify_wos.verify_export_zip(export_zip)
+
+    assert report.substrate.structure_verified is True
+    assert report.substrate.integrity_verified is True
+    assert any(
+        finding.kind == "policy_closure_digest_mismatch"
+        for finding in report.wos_findings
+    )
+    assert report.verdict.cryptographic_integrity == "pass"
+    assert report.verdict.projection_integrity == "pass"
+    assert report.verdict.domain_admissibility == "fail"
+    assert report.verdict.relying_party_result == "invalid"
+    assert report.verdict.blocking_reasons == ["domain_admissibility"]
+    assert report.integrity_verified is False
+
+
 def test_clock_event_type_constants_match_f13_literals() -> None:
     assert (
         verify_wos.WOS_GOVERNANCE_CLOCK_STARTED_EVENT_TYPE

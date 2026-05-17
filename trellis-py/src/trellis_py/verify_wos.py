@@ -22,6 +22,19 @@ OPEN_CLOCKS_MEMBER = "open-clocks.json"
 SIGNED_ACTS_EXPORT_EXTENSION = "trellis.export.signed-acts.v1"
 SIGNED_ACTS_MEMBER = "066-signed-acts.cbor"
 SIGNED_ACTS_DERIVATION_RULE = "signed-act-projection-wos-formspec-v1"
+POLICY_CLOSURE_EXPORT_EXTENSION = "trellis.export.policy-closure.v1"
+POLICY_CLOSURE_MEMBER = "067-policy-closure.cbor"
+POLICY_CLOSURE_SCHEMA_VERSION = 1
+REQUIRED_POLICY_CLOSURE_ARTIFACT_KINDS = {
+    "formspec.signing-intent-registry.v1",
+    "formspec.signature-method-registry.v1",
+    "wos.signature-posture-floors.v1",
+    "wos.signer-authority-shape.v1",
+    "wos.identity-proofing-primitives.v1",
+    "wos.signature-defaults.v1",
+    "wos.signature-deny-rules.v1",
+    "wos.signature-tombstones.v1",
+}
 WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE = "wos.kernel.signature_affirmation"
 WOS_SIGNATURE_ADMISSION_FAILED_EVENT_TYPE = "wos.kernel.signature_admission_failed"
 WOS_INTAKE_ACCEPTED_EVENT_TYPE = "wos.kernel.intake_accepted"
@@ -312,6 +325,7 @@ def _validate_export(
         )
     findings.extend(_validate_open_clock_export(archive, manifest_map, generated_at))
     findings.extend(_validate_signed_acts_projection(archive, events, payload_blobs, manifest_map))
+    findings.extend(_validate_policy_closure(archive, manifest_map))
     return findings
 
 
@@ -398,6 +412,153 @@ def _parse_signed_acts_export_extension(manifest_map: dict) -> Optional[dict[str
         "catalog_digest": core._map_lookup_fixed_bytes(ext, "catalog_digest", 32),
         "derivation_rule": derivation_rule,
     }
+
+
+def _parse_policy_closure_export_extension(manifest_map: dict) -> Optional[dict[str, Any]]:
+    exts = core._map_lookup_optional_extensions(manifest_map)
+    if exts is None:
+        return None
+    ext = exts.get(POLICY_CLOSURE_EXPORT_EXTENSION)
+    if ext is None:
+        return None
+    if not isinstance(ext, dict):
+        raise core.VerifyError("policy closure export extension is not a map")
+    closure_ref = core._map_lookup_str(ext, "closure_ref")
+    closure_version = core._map_lookup_str(ext, "closure_version")
+    if not isinstance(closure_ref, str):
+        raise core.VerifyError("policy closure closure_ref is not text")
+    if not isinstance(closure_version, str):
+        raise core.VerifyError("policy closure closure_version is not text")
+    return {
+        "closure_ref": closure_ref,
+        "closure_digest": core._map_lookup_fixed_bytes(ext, "closure_digest", 32),
+        "closure_version": closure_version,
+    }
+
+
+def _validate_policy_closure(
+    archive: dict[str, bytes],
+    manifest_map: dict,
+) -> list[WosFinding]:
+    has_member = POLICY_CLOSURE_MEMBER in archive
+    try:
+        extension = _parse_policy_closure_export_extension(manifest_map)
+    except core.VerifyError as exc:
+        return [
+            _failure(
+                "policy_closure_invalid",
+                None,
+                f"policy closure export extension is invalid: {exc}",
+            )
+        ]
+    if extension is None and not has_member:
+        return []
+    if extension is None:
+        return [
+            _failure(
+                "policy_closure_unbound",
+                None,
+                "067-policy-closure.cbor is present without trellis.export.policy-closure.v1",
+            )
+        ]
+    if not has_member:
+        return [
+            _failure(
+                "missing_policy_closure",
+                None,
+                "export is missing 067-policy-closure.cbor",
+            )
+        ]
+
+    findings: list[WosFinding] = []
+    closure_bytes = archive[POLICY_CLOSURE_MEMBER]
+    if extension["closure_ref"] != POLICY_CLOSURE_MEMBER:
+        findings.append(
+            _failure(
+                "policy_closure_invalid",
+                None,
+                f"policy closure_ref must be {POLICY_CLOSURE_MEMBER}, got {extension['closure_ref']}",
+            )
+        )
+    if core._sha256(closure_bytes) != extension["closure_digest"]:
+        findings.append(
+            _failure(
+                "policy_closure_digest_mismatch",
+                None,
+                "policy closure digest does not match manifest extension",
+            )
+        )
+    try:
+        _validate_policy_closure_member(closure_bytes, extension["closure_version"])
+    except Exception as exc:  # noqa: BLE001
+        findings.append(
+            _failure(
+                "policy_closure_invalid",
+                None,
+                f"067-policy-closure.cbor is invalid: {exc}",
+            )
+        )
+    return findings
+
+
+def _validate_policy_closure_member(
+    closure_bytes: bytes, expected_version: str
+) -> None:
+    closure = cbor2.loads(closure_bytes)
+    if not isinstance(closure, dict):
+        raise core.VerifyError("policy closure is not a map")
+    schema_version = core._map_lookup_u64(closure, "closure_schema_version")
+    if schema_version != POLICY_CLOSURE_SCHEMA_VERSION:
+        raise core.VerifyError(
+            f"closure_schema_version must be {POLICY_CLOSURE_SCHEMA_VERSION}, got {schema_version}"
+        )
+    closure_version = core._map_lookup_str(closure, "closure_version")
+    if closure_version != expected_version:
+        raise core.VerifyError(
+            f"closure_version {closure_version} does not match manifest extension {expected_version}"
+        )
+    verifier_boundary = core._map_lookup_map(closure, "verifier_boundary")
+    _require_bool(verifier_boundary, "bundle_admission_policy_evidence", True)
+    _require_bool(verifier_boundary, "bundle_trust_roots_authoritative", False)
+    _require_bool(verifier_boundary, "verifier_supplied_trust_roots_required", True)
+    _require_bool(
+        verifier_boundary, "verifier_supplied_adapter_allowlists_required", True
+    )
+    _require_bool(verifier_boundary, "server_operational_config_included", False)
+
+    artifacts = core._map_lookup_array(closure, "artifacts")
+    if not artifacts:
+        raise core.VerifyError("artifacts must not be empty")
+    seen: set[str] = set()
+    for index, artifact in enumerate(artifacts):
+        if not isinstance(artifact, dict):
+            raise core.VerifyError(f"artifacts[{index}] is not a map")
+        kind = _validate_policy_closure_artifact(artifact, index)
+        seen.add(kind)
+    missing = sorted(REQUIRED_POLICY_CLOSURE_ARTIFACT_KINDS - seen)
+    if missing:
+        raise core.VerifyError(f"artifacts missing required kind {missing[0]}")
+
+
+def _validate_policy_closure_artifact(artifact: dict, index: int) -> str:
+    for field in ("owner", "kind", "version", "ref", "valid_from"):
+        value = core._map_lookup_str(artifact, field)
+        if value.strip() == "":
+            raise core.VerifyError(f"artifacts[{index}].{field} must not be empty")
+    algorithm = core._map_lookup_str(artifact, "digest_algorithm")
+    if algorithm != "sha-256":
+        raise core.VerifyError(f"artifacts[{index}].digest_algorithm must be sha-256")
+    core._map_lookup_fixed_bytes(artifact, "digest", 32)
+    valid_to = artifact.get("valid_to")
+    if valid_to is not None and not isinstance(valid_to, str):
+        raise core.VerifyError(f"artifacts[{index}].valid_to must be text or null")
+    return core._map_lookup_str(artifact, "kind")
+
+
+def _require_bool(m: dict, key: str, expected: bool) -> None:
+    actual = core._map_lookup_bool(m, key)
+    if actual != expected:
+        raise core.VerifyError(f"{key} must be {expected}")
 
 
 def _validate_signed_acts_projection(

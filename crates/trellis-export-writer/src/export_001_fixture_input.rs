@@ -123,5 +123,6 @@ pub fn export_001_writer_input(vectors_root: &Path) -> ExportWriterInput {
         extensions: None,
         witness_key_registry: None,
         signed_acts_catalog: None,
+        policy_closure: None,
     }
 }

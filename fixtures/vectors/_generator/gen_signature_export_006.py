@@ -46,6 +46,7 @@ OUT_VERIFY_014 = ROOT / "verify" / "014-export-006-signature-row-mismatch"
 OUT_VERIFY_019 = ROOT / "verify" / "019-export-006-signed-acts-projection-mismatch"
 OUT_TAMPER_014 = ROOT / "tamper" / "014-signature-catalog-digest-mismatch"
 OUT_TAMPER_055 = ROOT / "tamper" / "055-signed-acts-catalog-digest-mismatch"
+OUT_TAMPER_056 = ROOT / "tamper" / "056-policy-closure-digest-mismatch"
 
 TAG_TRELLIS_CHECKPOINT_V1 = "trellis-checkpoint-v1"
 TAG_TRELLIS_MERKLE_LEAF_V1 = "trellis-merkle-leaf-v1"
@@ -53,6 +54,19 @@ EXTENSION_KEY = "trellis.export.signature-affirmations.v1"
 SIGNED_ACTS_EXTENSION_KEY = "trellis.export.signed-acts.v1"
 SIGNED_ACTS_MEMBER = "066-signed-acts.cbor"
 SIGNED_ACTS_DERIVATION_RULE = "signed-act-projection-wos-formspec-v1"
+POLICY_CLOSURE_EXTENSION_KEY = "trellis.export.policy-closure.v1"
+POLICY_CLOSURE_MEMBER = "067-policy-closure.cbor"
+POLICY_CLOSURE_VERSION = "wos-formspec-signature-policy-closure-2026-05-16"
+POLICY_CLOSURE_ARTIFACT_KINDS = [
+    "formspec.signing-intent-registry.v1",
+    "formspec.signature-method-registry.v1",
+    "wos.signature-posture-floors.v1",
+    "wos.signer-authority-shape.v1",
+    "wos.identity-proofing-primitives.v1",
+    "wos.signature-defaults.v1",
+    "wos.signature-deny-rules.v1",
+    "wos.signature-tombstones.v1",
+]
 
 
 def sha256(data: bytes) -> bytes:
@@ -287,6 +301,45 @@ def signed_acts_catalog(canonical_event_hash: bytes, wos_record: dict) -> bytes:
     )
 
 
+def owner_for_policy_artifact(kind: str) -> str:
+    return "formspec" if kind.startswith("formspec.") else "wos"
+
+
+def policy_artifact(kind: str, index: int, domain_registry_digest: bytes) -> dict:
+    return {
+        "owner": owner_for_policy_artifact(kind),
+        "kind": kind,
+        "version": "2026-05-16",
+        "ref": f"urn:formspec-stack:test-policy:{kind}:2026-05-16",
+        "digest_algorithm": "sha-256",
+        "digest": sha256(kind.encode("utf-8") + domain_registry_digest + bytes([index])),
+        "valid_from": "2026-05-16T00:00:00Z",
+        "valid_to": None,
+    }
+
+
+def policy_closure(domain_registry_digest: bytes) -> bytes:
+    return dcbor(
+        {
+            "closure_schema_version": 1,
+            "closure_version": POLICY_CLOSURE_VERSION,
+            "sealed_at": "2026-05-16T18:31:00Z",
+            "owner_scope": "wos.case.signature-admission",
+            "verifier_boundary": {
+                "bundle_admission_policy_evidence": True,
+                "bundle_trust_roots_authoritative": False,
+                "verifier_supplied_trust_roots_required": True,
+                "verifier_supplied_adapter_allowlists_required": True,
+                "server_operational_config_included": False,
+            },
+            "artifacts": [
+                policy_artifact(kind, index, domain_registry_digest)
+                for index, kind in enumerate(POLICY_CLOSURE_ARTIFACT_KINDS)
+            ],
+        }
+    )
+
+
 def build_export_006() -> None:
     OUT_EXPORT_006.mkdir(parents=True, exist_ok=True)
 
@@ -347,6 +400,8 @@ def build_export_006() -> None:
     members_data["062-signature-affirmations.cbor"] = signature_catalog
     signed_acts = signed_acts_catalog(canonical_event_hash, wos_record)
     members_data[SIGNED_ACTS_MEMBER] = signed_acts
+    policy_closure_bytes = policy_closure(domain_registry_digest)
+    members_data[POLICY_CLOSURE_MEMBER] = policy_closure_bytes
 
     members_data["090-verify.sh"] = trellis_cli_verify_script()
     members_data["098-README.md"] = (
@@ -354,8 +409,9 @@ def build_export_006() -> None:
         "WOS-T4 signature export fixture. `062-signature-affirmations.cbor` is a "
         "chain-derived catalog over a readable WOS `SignatureAffirmation` payload "
         "and `066-signed-acts.cbor` is the verifier-facing signing projection. "
-        "Both are re-derived from signed chain records; neither creates new "
-        "semantic authority.\n"
+        "`067-policy-closure.cbor` carries the effective admission-policy evidence "
+        "used at export time, while verifier trust roots and adapter allowlists "
+        "remain verifier-supplied configuration.\n"
     ).encode("utf-8")
 
     manifest_payload = {
@@ -401,6 +457,11 @@ def build_export_006() -> None:
                 "catalog_ref": SIGNED_ACTS_MEMBER,
                 "derivation_rule": SIGNED_ACTS_DERIVATION_RULE,
             },
+            POLICY_CLOSURE_EXTENSION_KEY: {
+                "closure_digest": sha256(policy_closure_bytes),
+                "closure_ref": POLICY_CLOSURE_MEMBER,
+                "closure_version": POLICY_CLOSURE_VERSION,
+            },
         },
     }
     members_data["000-manifest.cbor"] = cose_sign1(seed, kid, dcbor(manifest_payload), ARTIFACT_TYPE_MANIFEST)
@@ -430,7 +491,7 @@ def build_export_006() -> None:
         f'''id          = "export/006-signature-affirmations-inline"
 op          = "export"
 status      = "active"
-description = """Single-event WOS-T4 export that carries a WOS `SignatureAffirmation` event, binds `062-signature-affirmations.cbor` through `trellis.export.signature-affirmations.v1`, and binds verifier-facing `066-signed-acts.cbor` through `trellis.export.signed-acts.v1`."""
+description = """Single-event WOS-T4 export that carries a WOS `SignatureAffirmation` event, binds `062-signature-affirmations.cbor` through `trellis.export.signature-affirmations.v1`, binds verifier-facing `066-signed-acts.cbor` through `trellis.export.signed-acts.v1`, and binds effective policy evidence through `067-policy-closure.cbor` / `trellis.export.policy-closure.v1`."""
 
 [coverage]
 tr_core = [
@@ -472,12 +533,19 @@ event as the only event in the export, and derives
 It also derives `066-signed-acts.cbor`, a verifier-facing projection over the
 same signed record with nested signer, bound-subject, consent, admission, and
 source-reference sections.
+The export also includes `067-policy-closure.cbor`, the effective
+admission-policy evidence snapshot for this signing profile. That closure
+records intent/method registries, posture floors, authority shape, defaults,
+deny rules, tombstones, and validity windows, but it explicitly leaves trust
+roots, adapter allowlists, and server operational configuration to the verifier
+or runtime environment.
 
 Both catalogs are chain-derived rather than independently authored. Each row names
 the admitting `canonical_event_hash` and repeats the WOS evidence fields needed
 for verifier/reporting surfaces to summarize the signing act without redefining
-canonical authority. The human-facing certificate remains a derived artifact;
-the signed Trellis export remains the authority.
+canonical authority. The policy closure is evidence, not executable verifier
+configuration. The human-facing certificate remains a derived artifact; the
+signed Trellis export remains the authority.
 """,
     )
 
@@ -707,12 +775,64 @@ digest bound by `trellis.export.signed-acts.v1.catalog_digest`.
     )
 
 
+def write_policy_closure_tamper_vector() -> None:
+    root_dir, members, data, _manifest_payload = export_members_from_dir(OUT_EXPORT_006)
+    closure = cbor2.loads(data[POLICY_CLOSURE_MEMBER])
+    tampered_closure = copy.deepcopy(closure)
+    tampered_closure["artifacts"][0]["version"] = "2026-05-17"
+    data_tampered = dict(data)
+    data_tampered[POLICY_CLOSURE_MEMBER] = dcbor(tampered_closure)
+
+    OUT_TAMPER_056.mkdir(parents=True, exist_ok=True)
+    write_zip(
+        OUT_TAMPER_056 / "input-export.zip",
+        root_dir=root_dir,
+        members=members,
+        data=data_tampered,
+    )
+    write_text(
+        OUT_TAMPER_056 / "manifest.toml",
+        '''id          = "tamper/056-policy-closure-digest-mismatch"
+op          = "tamper"
+status      = "active"
+description = """Policy-closure export tamper. Mutates `067-policy-closure.cbor` after manifest signing so the required archive spine remains intact but the `trellis.export.policy-closure.v1.closure_digest` check fails."""
+
+[coverage]
+tr_core = ["TR-CORE-061"]
+tr_op = ["TR-OP-122"]
+
+[inputs]
+export_zip = "input-export.zip"
+
+[expected.report]
+structure_verified   = true
+integrity_verified   = false
+readability_verified = true
+tamper_kind          = "policy_closure_digest_mismatch"
+
+[derivation]
+document = "derivation.md"
+''',
+    )
+    write_text(
+        OUT_TAMPER_056 / "derivation.md",
+        """# Derivation — `tamper/056-policy-closure-digest-mismatch`
+
+This fixture starts from `export/006-signature-affirmations-inline`, mutates
+`067-policy-closure.cbor`, and leaves the signed `000-manifest.cbor` unchanged.
+The verifier must localize the failure to the effective policy-closure evidence
+digest bound by `trellis.export.policy-closure.v1.closure_digest`.
+""",
+    )
+
+
 def main() -> None:
     build_export_006()
     write_verify_vector()
     write_signed_acts_verify_vector()
     write_tamper_vector()
     write_signed_acts_tamper_vector()
+    write_policy_closure_tamper_vector()
 
 
 if __name__ == "__main__":

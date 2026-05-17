@@ -222,6 +222,7 @@ pub(crate) async fn publish_bundle(
         extensions: None,
         witness_key_registry: None,
         signed_acts_catalog: None,
+        policy_closure: None,
     })?;
     let checkpoint_digest = format!("sha256:{}", hex::encode(package.head_checkpoint_digest));
     let key = format!(

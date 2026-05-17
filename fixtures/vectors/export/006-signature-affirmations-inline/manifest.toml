@@ -1,7 +1,7 @@
 id          = "export/006-signature-affirmations-inline"
 op          = "export"
 status      = "active"
-description = """Single-event WOS-T4 export that carries a WOS `SignatureAffirmation` event, binds `062-signature-affirmations.cbor` through `trellis.export.signature-affirmations.v1`, and binds verifier-facing `066-signed-acts.cbor` through `trellis.export.signed-acts.v1`."""
+description = """Single-event WOS-T4 export that carries a WOS `SignatureAffirmation` event, binds `062-signature-affirmations.cbor` through `trellis.export.signature-affirmations.v1`, binds verifier-facing `066-signed-acts.cbor` through `trellis.export.signed-acts.v1`, and binds effective policy evidence through `067-policy-closure.cbor` / `trellis.export.policy-closure.v1`."""
 
 [coverage]
 tr_core = [
@@ -24,7 +24,7 @@ ledger_state = "input-ledger-state.cbor"
 
 [expected]
 zip        = "expected-export.zip"
-zip_sha256 = "e3d5cb9756ab26e6b80d8d6db5be6de115dea52bb3f16a4855c3ef4ccc771bac"
+zip_sha256 = "dae7e391c2feaaaf74f3e58f9e641027939998cacd4258cc19121157bb5b1052"
 
 [derivation]
 document = "derivation.md"

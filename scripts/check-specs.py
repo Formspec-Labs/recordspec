@@ -83,6 +83,10 @@ TAMPER_KIND_ENUM = frozenset({
     "signature_catalog_digest_mismatch",  # WOS-TV-004.
     "intake_handoff_catalog_digest_mismatch",  # WOS-TV-007.
     "missing_signed_acts_catalog",  # WOS-TV-014 / WOS-TV-015.
+    "missing_policy_closure",  # WOS-TV-022 / WOS-TV-023.
+    "policy_closure_digest_mismatch",  # WOS-TV-024.
+    "policy_closure_invalid",  # WOS-TV-023 / WOS-TV-025 / WOS-TV-026.
+    "policy_closure_unbound",  # WOS-TV-022.
     "signed_acts_catalog_digest_mismatch",  # WOS-TV-016.
     "signed_acts_catalog_invalid",  # WOS-TV-015 / WOS-TV-018.
     "signed_acts_catalog_unbound",  # WOS-TV-014.

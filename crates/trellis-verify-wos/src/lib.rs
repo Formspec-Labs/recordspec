@@ -18,6 +18,7 @@ mod certificate_resolver;
 mod clock_semantics;
 mod event_types;
 mod findings;
+mod policy_closure;
 mod records;
 mod rescission;
 mod signed_acts;
