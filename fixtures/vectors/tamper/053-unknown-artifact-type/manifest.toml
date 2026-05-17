@@ -1,0 +1,36 @@
+id          = "tamper/053-unknown-artifact-type"
+op          = "tamper"
+status      = "active"
+description = """ADR 0109 protected-header tamper: the envelope is derived from \
+`append/001-minimal-inline-payload/expected-event.cbor`, but the signed protected \
+header's `artifact_type` value at COSE label `-65538` is changed from the closed \
+value `"event"` to `"x-adr0109-unknown"`. The signature bytes are intentionally \
+left unchanged; conforming verifiers reject the closed-enum violation before \
+signature verification."""
+
+[coverage]
+tr_core = [
+    "TR-CORE-035",
+    "TR-CORE-052",
+    "TR-CORE-060",
+    "TR-CORE-061",
+]
+
+[inputs]
+ledger               = "input-tampered-ledger.cbor"
+tampered_event       = "input-tampered-event.cbor"
+signing_key_registry = "input-signing-key-registry.cbor"
+
+[expected.report]
+structure_verified   = false
+integrity_verified   = false
+readability_verified = false
+tamper_kind          = "malformed_cose"
+
+tampered_event_sha256 = "47fe399f262bd01838b1439050b3f43d8a289f2777d102618a2df9a1a6058fd9"
+tampered_ledger_sha256 = "cf60716e842fbe4cc073dd86efc032883cbcdfdd4fee05fc5f7d47c3154bb492"
+baseline_event_sha256 = "8d18bcd820945b4c5575a44823d79685858914ee5893ac3c9e4b8ec183273815"
+idempotency_key = "tamper-unknown-artifact-type-053"
+
+[derivation]
+document = "derivation.md"

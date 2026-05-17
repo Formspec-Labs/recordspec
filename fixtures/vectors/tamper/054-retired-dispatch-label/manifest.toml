@@ -1,0 +1,35 @@
+id          = "tamper/054-retired-dispatch-label"
+op          = "tamper"
+status      = "active"
+description = """ADR 0109 tombstone tamper: the envelope is derived from \
+`append/001-minimal-inline-payload/expected-event.cbor`, but the signed protected \
+header adds retired COSE label `-65539`. The signature bytes are intentionally \
+left unchanged; conforming verifiers reject the tombstoned dispatch slot before \
+signature verification."""
+
+[coverage]
+tr_core = [
+    "TR-CORE-035",
+    "TR-CORE-052",
+    "TR-CORE-060",
+    "TR-CORE-061",
+]
+
+[inputs]
+ledger               = "input-tampered-ledger.cbor"
+tampered_event       = "input-tampered-event.cbor"
+signing_key_registry = "input-signing-key-registry.cbor"
+
+[expected.report]
+structure_verified   = false
+integrity_verified   = false
+readability_verified = false
+tamper_kind          = "malformed_cose"
+
+tampered_event_sha256 = "acaf994620b8dc0adbe2cb0ba03beba39c973cfe26d5cd12d1182a8dcfda72a1"
+tampered_ledger_sha256 = "2fc9802041b4086ba3fef01d4689625f0c6b73ec97e6768da1cf677197e54bd6"
+baseline_event_sha256 = "8d18bcd820945b4c5575a44823d79685858914ee5893ac3c9e4b8ec183273815"
+idempotency_key = "tamper-retired-dispatch-label-054"
+
+[derivation]
+document = "derivation.md"

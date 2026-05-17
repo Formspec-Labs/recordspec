@@ -24,5 +24,5 @@ Trellis Core had assigned COSE protected-header label `-65539` to integer dispat
 ## References
 
 - `formspec-stack/thoughts/archive/plans/2026-05-12-integrity-stack-case-boundary-refactor.md` Phase 9 UWU-1.
-- `formspec-stack/thoughts/registries/profile-ids.md`.
+- Deleted stack-root dispatch-value registry mirror.
 - `formspec-stack/thoughts/adr/0087-formspec-cose-sign1-universal-wire.md`.

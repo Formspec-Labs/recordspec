@@ -23,11 +23,17 @@ from trellis_py.codec import (
 )
 from trellis_py.constants import (
     ALG_EDDSA,
+    ARTIFACT_TYPE_CHECKPOINT,
+    ARTIFACT_TYPE_EVENT,
+    ARTIFACT_TYPE_MANIFEST,
+    ARTIFACT_TYPES,
     AUTHOR_EVENT_DOMAIN,
     CHECKPOINT_DOMAIN,
     CONTENT_DOMAIN,
     COSE_LABEL_ALG,
+    COSE_LABEL_ARTIFACT_TYPE,
     COSE_LABEL_KID,
+    COSE_LABEL_RETIRED_DISPATCH_ID,
     COSE_LABEL_SUITE_ID,
     EVENT_DOMAIN,
     MERKLE_INTERIOR_DOMAIN,
@@ -343,6 +349,7 @@ class ParsedSign1:
     kid: bytes
     alg: int
     suite_id: int
+    artifact_type: str
     payload: Optional[bytes]
     signature: bytes
 
@@ -746,6 +753,25 @@ def _map_lookup_int_label_bytes(m: dict, label: int) -> bytes:
     return v
 
 
+def _map_lookup_int_label_text(m: dict, label: int) -> str:
+    if label not in m:
+        if label == COSE_LABEL_ARTIFACT_TYPE:
+            raise VerifyError(
+                "ArtifactTypeMissing: missing COSE label -65538 artifact_type",
+                kind="malformed_cose",
+            )
+        raise VerifyError(f"missing COSE label {label} text string")
+    v = m[label]
+    if not isinstance(v, str):
+        if label == COSE_LABEL_ARTIFACT_TYPE:
+            raise VerifyError(
+                "ArtifactTypeInvalid: COSE label -65538 artifact_type is not a text string",
+                kind="malformed_cose",
+            )
+        raise VerifyError("not text string")
+    return v
+
+
 def _parse_sign1_value(value: Any) -> ParsedSign1:
     if not isinstance(value, CBORTag) or value.tag != 18:
         raise VerifyError("value is not a tag-18 COSE_Sign1 item")
@@ -771,14 +797,26 @@ def _parse_sign1_value(value: Any) -> ParsedSign1:
     protected_value = _decode_value(protected_bytes)
     if not isinstance(protected_value, dict):
         raise VerifyError("protected header does not decode to a map")
+    if COSE_LABEL_RETIRED_DISPATCH_ID in protected_value:
+        raise VerifyError(
+            "RetiredDispatchLabelPresent: retired protected-header label -65539 is present",
+            kind="malformed_cose",
+        )
     kid = _map_lookup_int_label_bytes(protected_value, COSE_LABEL_KID)
     alg = _map_lookup_int_label(protected_value, COSE_LABEL_ALG)
     suite_id = _map_lookup_int_label(protected_value, COSE_LABEL_SUITE_ID)
+    artifact_type = _map_lookup_int_label_text(protected_value, COSE_LABEL_ARTIFACT_TYPE)
+    if artifact_type not in ARTIFACT_TYPES:
+        raise VerifyError(
+            f"ArtifactTypeUnknown: unknown artifact_type {artifact_type!r}",
+            kind="malformed_cose",
+        )
     return ParsedSign1(
         protected_bytes=protected_bytes,
         kid=kid,
         alg=alg,
         suite_id=suite_id,
+        artifact_type=artifact_type,
         payload=payload,
         signature=sig_field,
     )
@@ -2451,10 +2489,15 @@ def _verify_event_set(
                 "unresolvable_manifest_kid",
                 "event kid is not resolvable via the provided signing-key registry",
             )
-        if event.alg != ALG_EDDSA or event.suite_id != suite_i:
+        if (
+            event.alg != ALG_EDDSA
+            or event.suite_id != suite_i
+            or event.artifact_type != ARTIFACT_TYPE_EVENT
+        ):
             return VerificationReport.fatal(
                 "unsupported_suite",
-                "event protected header does not match the Trellis Phase-1 suite",
+                "event protected header does not match the Trellis Phase-1 event suite; "
+                f"artifact_type={event.artifact_type}",
             )
         if not _verify_signature(event, key_entry.public_key):
             try:
@@ -4422,9 +4465,15 @@ def verify_export_zip(
             "manifest_structure_invalid", f"manifest is not a valid COSE_Sign1 envelope: {exc}"
         )
 
-    if manifest.alg != ALG_EDDSA or manifest.suite_id != SUITE_ID_PHASE_1:
+    if (
+        manifest.alg != ALG_EDDSA
+        or manifest.suite_id != SUITE_ID_PHASE_1
+        or manifest.artifact_type != ARTIFACT_TYPE_MANIFEST
+    ):
         return VerificationReport.fatal(
-            "unsupported_suite", "manifest protected header does not match the Trellis Phase-1 suite"
+            "unsupported_suite",
+            "manifest protected header does not match the Trellis Phase-1 manifest suite; "
+            f"artifact_type={manifest.artifact_type}",
         )
 
     manifest_entry = registry.get(manifest.kid)
@@ -4706,6 +4755,16 @@ def verify_export_zip(
                 "unresolvable_manifest_kid",
                 "checkpoint kid is not resolvable via the embedded signing-key registry",
             )
+        if (
+            checkpoint.alg != ALG_EDDSA
+            or checkpoint.suite_id != SUITE_ID_PHASE_1
+            or checkpoint.artifact_type != ARTIFACT_TYPE_CHECKPOINT
+        ):
+            return VerificationReport.fatal(
+                "unsupported_suite",
+                "checkpoint protected header does not match the Trellis Phase-1 checkpoint suite; "
+                f"artifact_type={checkpoint.artifact_type}",
+            )
         if not _verify_signature(checkpoint, ck_entry.public_key):
             return VerificationReport.fatal(
                 "checkpoint_signature_invalid", "checkpoint COSE signature is invalid"
@@ -4926,8 +4985,10 @@ def verify_tampered_ledger(
         )
     try:
         events = _parse_sign1_array(ledger)
-    except Exception:  # noqa: BLE001
-        events = []
+    except VerifyError as exc:
+        return VerificationReport.fatal(exc.kind or "malformed_cose", str(exc))
+    except Exception as exc:  # noqa: BLE001
+        return VerificationReport.fatal("malformed_cose", str(exc))
     if not events:
         return VerificationReport.fatal(
             "malformed_cose", "ledger is not a non-empty dCBOR array of COSE_Sign1 events"
