@@ -125,7 +125,7 @@ mod tests {
         });
         let payload_bytes = serde_json::to_vec(&payload).expect("serialize payload");
         let event = AdmissionEvent {
-            scope: b"formspec.prod-mvp",
+            scope: b"formspec.managed-single-cell",
             event_type: FORMSPEC_RESPONSE_SUBMITTED,
             payload: payload_bytes.as_slice(),
         };
@@ -148,7 +148,7 @@ mod tests {
     #[tokio::test]
     async fn given_wrong_literal_when_admits_then_rejects_before_payload_parse() {
         let event = AdmissionEvent {
-            scope: b"formspec.prod-mvp",
+            scope: b"formspec.managed-single-cell",
             event_type: "wos.kernel.case_created",
             payload: b"{}",
         };
@@ -170,7 +170,7 @@ mod tests {
         });
         let payload_bytes = serde_json::to_vec(&payload).expect("serialize payload");
         let event = AdmissionEvent {
-            scope: b"formspec.prod-mvp",
+            scope: b"formspec.managed-single-cell",
             event_type: FORMSPEC_RESPONSE_SUBMITTED,
             payload: payload_bytes.as_slice(),
         };
@@ -187,7 +187,7 @@ mod tests {
     #[tokio::test]
     async fn given_malformed_payload_when_admits_then_rejects() {
         let event = AdmissionEvent {
-            scope: b"formspec.prod-mvp",
+            scope: b"formspec.managed-single-cell",
             event_type: FORMSPEC_RESPONSE_SUBMITTED,
             payload: b"not-json",
         };

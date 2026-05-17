@@ -737,7 +737,7 @@ mod tests {
         let app = router(test_state()).expect("router");
         let response = app
             .oneshot(formspec_post_request(
-                "/v1/scopes/formspec.prod-mvp/events",
+                "/v1/scopes/formspec.managed-single-cell/events",
                 formspec_append_body("idem-fspec-profile"),
             ))
             .await
@@ -1843,7 +1843,7 @@ mod tests {
         body["eventType"] = serde_json::Value::String("wos.kernel.case_created".to_string());
         let response = app
             .oneshot(formspec_post_request(
-                "/v1/scopes/formspec.prod-mvp/events",
+                "/v1/scopes/formspec.managed-single-cell/events",
                 serde_json::to_vec(&body).unwrap(),
             ))
             .await
@@ -1862,7 +1862,7 @@ mod tests {
         });
         let response = app
             .oneshot(formspec_post_request(
-                "/v1/scopes/formspec.prod-mvp/events",
+                "/v1/scopes/formspec.managed-single-cell/events",
                 serde_json::to_vec(&body).unwrap(),
             ))
             .await
