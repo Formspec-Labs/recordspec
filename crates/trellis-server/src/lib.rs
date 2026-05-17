@@ -1301,10 +1301,8 @@ mod tests {
         );
 
         let report = trellis_verify_wos::verify_export_zip(&bundle_bytes);
-        assert!(
-            report.wos_findings.is_empty() && report.relying_party_valid(),
-            "{report:#?}"
-        );
+        assert_missing_policy_closure_advisory(&report);
+        assert!(report.relying_party_valid(), "{report:#?}");
     }
 
     #[tokio::test]
@@ -1351,10 +1349,8 @@ mod tests {
         );
 
         let report = trellis_verify_wos::verify_export_zip(&bundle_bytes);
-        assert!(
-            report.wos_findings.is_empty() && report.relying_party_valid(),
-            "{report:#?}"
-        );
+        assert_missing_policy_closure_advisory(&report);
+        assert!(report.relying_party_valid(), "{report:#?}");
     }
 
     #[tokio::test]
@@ -1868,6 +1864,20 @@ mod tests {
             .await
             .expect("append response");
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    fn assert_missing_policy_closure_advisory(report: &trellis_verify_wos::WosVerificationReport) {
+        assert_eq!(
+            report.wos_findings.len(),
+            1,
+            "signed-scope bundle without closure evidence should emit one advisory: {report:#?}"
+        );
+        let finding = &report.wos_findings[0];
+        assert_eq!(finding.kind, "policy_closure_missing_for_signed_scope");
+        assert_eq!(
+            finding.severity,
+            integrity_verify::trellis::Severity::Advisory
+        );
     }
 
     fn test_signing_key() -> ServerSigningKey {
