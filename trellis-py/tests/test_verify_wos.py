@@ -92,6 +92,14 @@ def test_signed_acts_projection_mismatch_blocks_relying_party_verdict() -> None:
     assert report.integrity_verified is False
 
 
+def test_signed_acts_nested_map_oracle_matches_rust_canonical_bytes() -> None:
+    value = {"consent": {"z": "last", "a": "first"}}
+
+    assert cbor2.dumps(value, canonical=True) == bytes.fromhex(
+        "a167636f6e73656e74a26161656669727374617a646c617374"
+    )
+
+
 def test_signature_catalog_signing_act_mismatch_fails_domain_validation() -> None:
     export_zip = (
         TRELLIS_ROOT

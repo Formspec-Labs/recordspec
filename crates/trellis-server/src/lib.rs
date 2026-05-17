@@ -65,8 +65,8 @@ pub mod test_harness;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use integrity_cbor::{
-    CborHelperError, Value, domain_separated_sha256, map_lookup_bytes, map_lookup_fixed_bytes,
-    map_lookup_map,
+    CborHelperError, Value, domain_separated_sha256, encode_canonical_cbor_value, map_lookup_bytes,
+    map_lookup_fixed_bytes, map_lookup_map,
 };
 use serde::{Deserialize, Serialize};
 use stack_common_auth::{BaseClaims, Claims};
@@ -491,10 +491,8 @@ fn canonical_map(fields: Vec<(Value, Value)>) -> Result<Value, StackError> {
 }
 
 pub(crate) fn encode_value(value: &Value) -> Result<Vec<u8>, StackError> {
-    let mut bytes = Vec::new();
-    ciborium::into_writer(value, &mut bytes)
-        .map_err(|error| StackError::internal(format!("failed to encode CBOR: {error}")))?;
-    Ok(bytes)
+    encode_canonical_cbor_value(value)
+        .map_err(|error| StackError::internal(format!("failed to encode CBOR: {error}")))
 }
 
 pub(crate) fn uint(value: u64) -> Value {
@@ -560,6 +558,34 @@ mod tests {
     use trellis_server_ports::{ArtifactStore, EventAdmissionPolicy};
 
     use super::*;
+
+    #[test]
+    fn encode_value_canonicalizes_nested_maps() {
+        let value = Value::Map(vec![(
+            Value::Text("consent".to_string()),
+            Value::Map(vec![
+                (
+                    Value::Text("z".to_string()),
+                    Value::Text("last".to_string()),
+                ),
+                (
+                    Value::Text("a".to_string()),
+                    Value::Text("first".to_string()),
+                ),
+            ]),
+        )]);
+
+        let bytes = encode_value(&value).expect("canonical bytes");
+        let decoded = integrity_cbor::decode_cbor_value(&bytes).expect("decode canonical bytes");
+        let root = decoded.as_map().expect("root map");
+        let consent = root[0].1.as_map().expect("consent map");
+        let keys = consent
+            .iter()
+            .map(|(key, _)| key.as_text().expect("text key"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(keys, vec!["a", "z"]);
+    }
 
     #[derive(Clone)]
     struct RecordingAppendRunner {

@@ -8,7 +8,9 @@ use std::collections::BTreeSet;
 
 use ciborium::Value;
 use integrity_verify::trellis::{DomainEvent, DomainExport, DomainFinding, Severity};
-use trellis_types::{map_lookup_fixed_bytes, map_lookup_text, sha256_bytes};
+use trellis_types::{
+    encode_canonical_cbor_value, map_lookup_fixed_bytes, map_lookup_text, sha256_bytes,
+};
 
 use crate::event_types::{
     wos_signature_admission_failed_event_type, wos_signature_affirmation_event_type,
@@ -464,9 +466,7 @@ fn decode_value(bytes: &[u8]) -> Result<Value, String> {
 }
 
 fn encode_value(value: &Value) -> Result<Vec<u8>, String> {
-    let mut bytes = Vec::new();
-    ciborium::into_writer(value, &mut bytes).map_err(|error| error.to_string())?;
-    Ok(bytes)
+    encode_canonical_cbor_value(value).map_err(|error| error.to_string())
 }
 
 fn finding(
@@ -564,6 +564,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn signed_acts_projection_canonicalizes_nested_payload_maps() {
+        let event = signature_event_with_consent(Value::Map(vec![
+            (
+                Value::Text("z".to_string()),
+                Value::Text("last".to_string()),
+            ),
+            (
+                Value::Text("a".to_string()),
+                Value::Text("first".to_string()),
+            ),
+        ]));
+
+        let catalog = derive_signed_acts_catalog(&[event]).expect("derive");
+        let decoded = decode_value(&catalog).expect("decode derived catalog");
+        let root = decoded.as_map().expect("catalog root");
+        let acts = map_lookup_value(root, "acts")
+            .and_then(Value::as_array)
+            .expect("acts");
+        let act = acts.first().expect("one act").as_map().expect("act map");
+        let consent = map_lookup_value(act, "consent")
+            .and_then(Value::as_map)
+            .expect("consent map");
+        let keys = consent
+            .iter()
+            .map(|(key, _)| key.as_text().expect("text key"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(keys, vec!["a", "z"]);
+    }
+
     fn extension_for(catalog: &[u8]) -> Vec<u8> {
         encode_value(
             &text_map(vec![
@@ -583,6 +614,12 @@ mod tests {
     }
 
     fn signature_event() -> DomainEvent {
+        signature_event_with_consent(
+            text_map(vec![("ref", Value::Text("consent-1".to_string()))]).expect("consent"),
+        )
+    }
+
+    fn signature_event_with_consent(consent_reference: Value) -> DomainEvent {
         let payload = text_map(vec![
             (
                 "event",
@@ -644,8 +681,7 @@ mod tests {
                     ),
                     (
                         "consentReference",
-                        text_map(vec![("ref", Value::Text("consent-1".to_string()))])
-                            .expect("consent"),
+                        consent_reference,
                     ),
                     (
                         "signatureProvider",
