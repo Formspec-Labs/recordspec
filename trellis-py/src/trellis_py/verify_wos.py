@@ -329,7 +329,7 @@ def _validate_export(
         )
     findings.extend(_validate_open_clock_export(archive, manifest_map, generated_at))
     findings.extend(_validate_signed_acts_projection(archive, events, payload_blobs, manifest_map))
-    findings.extend(_validate_policy_closure(archive, manifest_map))
+    findings.extend(_validate_policy_closure(archive, events, manifest_map))
     return findings
 
 
@@ -442,6 +442,7 @@ def _parse_policy_closure_export_extension(manifest_map: dict) -> Optional[dict[
 
 def _validate_policy_closure(
     archive: dict[str, bytes],
+    events: list[core.ParsedSign1],
     manifest_map: dict,
 ) -> list[WosFinding]:
     has_member = POLICY_CLOSURE_MEMBER in archive
@@ -456,7 +457,7 @@ def _validate_policy_closure(
             )
         ]
     if extension is None and not has_member:
-        return []
+        return _missing_policy_closure_for_signed_scope(archive, events)
     if extension is None:
         return [
             _failure(
@@ -509,6 +510,8 @@ def _validate_policy_closure_member(
     closure_bytes: bytes, expected_version: str
 ) -> None:
     closure = cbor2.loads(closure_bytes)
+    if cbor2.dumps(closure, canonical=True) != closure_bytes:
+        raise core.VerifyError("policy closure member is not canonical CBOR")
     if not isinstance(closure, dict):
         raise core.VerifyError("policy closure is not a map")
     schema_version = core._map_lookup_u64(closure, "closure_schema_version")
@@ -557,6 +560,31 @@ def _validate_policy_closure_artifact(artifact: dict, index: int) -> str:
     if valid_to is not None and not isinstance(valid_to, str):
         raise core.VerifyError(f"artifacts[{index}].valid_to must be text or null")
     return core._map_lookup_str(artifact, "kind")
+
+
+def _missing_policy_closure_for_signed_scope(
+    archive: dict[str, bytes], events: list[core.ParsedSign1]
+) -> list[WosFinding]:
+    if "000-manifest.cbor" in archive and _contains_signature_affirmation(events):
+        return [
+            _advisory(
+                "policy_closure_missing_for_signed_scope",
+                None,
+                "export contains signature affirmation events but no policy closure evidence",
+            )
+        ]
+    return []
+
+
+def _contains_signature_affirmation(events: list[core.ParsedSign1]) -> bool:
+    for event in events:
+        details = _event_details(event)
+        if (
+            details is not None
+            and details.event_type == WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE
+        ):
+            return True
+    return False
 
 
 def _require_bool(m: dict, key: str, expected: bool) -> None:

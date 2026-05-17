@@ -364,6 +364,41 @@ def test_policy_closure_digest_mismatch_blocks_domain_verdict() -> None:
     assert report.integrity_verified is False
 
 
+def test_policy_closure_missing_for_signed_scope_is_advisory_in_python(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        verify_wos,
+        "_event_details",
+        lambda event: _event_details(b"\x44" * 32),
+    )
+
+    findings = verify_wos._validate_policy_closure(  # noqa: SLF001
+        archive={"000-manifest.cbor": b""},
+        events=[object()],
+        manifest_map={},
+    )
+
+    assert len(findings) == 1
+    assert findings[0].kind == "policy_closure_missing_for_signed_scope"
+    assert findings[0].severity == "advisory"
+
+
+def test_policy_closure_member_rejects_noncanonical_cbor_order() -> None:
+    member = _policy_closure_member(canonical=False)
+    findings = verify_wos._validate_policy_closure(  # noqa: SLF001
+        archive={verify_wos.POLICY_CLOSURE_MEMBER: member},
+        events=[],
+        manifest_map=_policy_manifest(member),
+    )
+
+    assert any(
+        finding.kind == "policy_closure_invalid"
+        and "not canonical CBOR" in finding.detail
+        for finding in findings
+    )
+
+
 def test_wos_resolver_reads_response_digest_without_full_signed_act_shape() -> None:
     payload = cbor2.dumps(
         {
@@ -518,3 +553,51 @@ def test_validate_clock_segments_skips_clock_shaped_payload_on_non_clock_event_t
     assert parse_calls == [], (
         "non-clock event_type must short-circuit before _parse_clock_record"
     )
+
+
+def _policy_manifest(member: bytes) -> dict[str, object]:
+    return {
+        "extensions": {
+            verify_wos.POLICY_CLOSURE_EXPORT_EXTENSION: {
+                "closure_ref": verify_wos.POLICY_CLOSURE_MEMBER,
+                "closure_digest": core._sha256(member),  # noqa: SLF001
+                "closure_version": "policy-closure-test-v1",
+            }
+        }
+    }
+
+
+def _policy_closure_member(*, canonical: bool) -> bytes:
+    return cbor2.dumps(
+        {
+            "closure_schema_version": 1,
+            "closure_version": "policy-closure-test-v1",
+            "verifier_boundary": {
+                "bundle_admission_policy_evidence": True,
+                "bundle_trust_roots_authoritative": False,
+                "verifier_supplied_trust_roots_required": True,
+                "verifier_supplied_adapter_allowlists_required": True,
+                "server_operational_config_included": False,
+            },
+            "artifacts": [
+                _policy_closure_artifact(index, kind)
+                for index, kind in enumerate(
+                    sorted(verify_wos.REQUIRED_POLICY_CLOSURE_ARTIFACT_KINDS)
+                )
+            ],
+        },
+        canonical=canonical,
+    )
+
+
+def _policy_closure_artifact(index: int, kind: str) -> dict[str, object]:
+    return {
+        "owner": "formspec" if kind.startswith("formspec.") else "wos",
+        "kind": kind,
+        "version": "2026-05-16",
+        "ref": f"urn:test:policy:{kind}",
+        "digest_algorithm": "sha-256",
+        "digest": bytes([index]) * 32,
+        "valid_from": "2026-05-16T00:00:00Z",
+        "valid_to": None,
+    }

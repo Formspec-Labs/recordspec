@@ -227,6 +227,9 @@ fn require_bool(map: &[(Value, Value)], key: &str, expected: bool) -> Result<(),
 fn decode_value(bytes: &[u8]) -> Result<Value, String> {
     let value = decode_cbor_value(bytes).map_err(|error| error.to_string())?;
     let canonical_bytes = encode_canonical_cbor_value(&value).map_err(|error| error.to_string())?;
+    if canonical_bytes != bytes {
+        return Err("policy closure material is not canonical CBOR".to_string());
+    }
     decode_cbor_value(&canonical_bytes).map_err(|error| error.to_string())
 }
 
@@ -427,6 +430,61 @@ mod tests {
             findings.iter().any(|finding| {
                 finding.kind == "policy_closure_invalid"
                     && finding.message.contains("duplicate canonical CBOR map key")
+            }),
+            "{findings:#?}"
+        );
+    }
+
+    #[test]
+    fn policy_closure_rejects_non_canonical_root_map_order() {
+        let member = raw_encode_value(&Value::Map(vec![
+            (Value::Text("closure_schema_version".to_string()), uint(1)),
+            (
+                Value::Text("closure_version".to_string()),
+                Value::Text("policy-closure-test-v1".to_string()),
+            ),
+            (
+                Value::Text("verifier_boundary".to_string()),
+                text_map(vec![
+                    ("bundle_admission_policy_evidence", Value::Bool(true)),
+                    ("bundle_trust_roots_authoritative", Value::Bool(false)),
+                    ("verifier_supplied_trust_roots_required", Value::Bool(true)),
+                    (
+                        "verifier_supplied_adapter_allowlists_required",
+                        Value::Bool(true),
+                    ),
+                    ("server_operational_config_included", Value::Bool(false)),
+                ])
+                .expect("boundary"),
+            ),
+            (
+                Value::Text("artifacts".to_string()),
+                Value::Array(
+                    REQUIRED_ARTIFACT_KINDS
+                        .iter()
+                        .enumerate()
+                        .map(|(index, kind)| artifact(index, kind))
+                        .collect(),
+                ),
+            ),
+        ]))
+        .expect("raw encode");
+        let extension = extension_for(&member, "policy-closure-test-v1");
+        let mut members = BTreeMap::new();
+        members.insert(POLICY_CLOSURE_MEMBER.to_string(), member);
+        let mut manifest_extensions = BTreeMap::new();
+        manifest_extensions.insert(POLICY_CLOSURE_EXPORT_EXTENSION.to_string(), extension);
+
+        let findings = WosRecordValidator.validate_export(DomainExport {
+            events: &[],
+            members: &members,
+            manifest_extensions: &manifest_extensions,
+        });
+
+        assert!(
+            findings.iter().any(|finding| {
+                finding.kind == "policy_closure_invalid"
+                    && finding.message.contains("not canonical CBOR")
             }),
             "{findings:#?}"
         );
