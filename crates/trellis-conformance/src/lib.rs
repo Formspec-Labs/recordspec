@@ -209,6 +209,14 @@ mod tests {
             &root.join(path_field(root, expected, "zip")),
             "read expected export zip",
         );
+        if let Some(expected_zip_sha256) = pathless_string(expected, "zip_sha256") {
+            assert_eq!(
+                hex_lower(&sha256_bytes(&expected_zip)),
+                expected_zip_sha256,
+                "{}: expected export ZIP sha256 mismatch",
+                fixture_label(root)
+            );
+        }
         assert_eq!(
             actual,
             expected_zip,
@@ -911,6 +919,10 @@ mod tests {
             .get(key)
             .and_then(toml::Value::as_str)
             .map(ToOwned::to_owned)
+    }
+
+    fn hex_lower(bytes: &[u8]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
     }
 
     fn table_paths(fixture: &Path, table: &toml::value::Table, key: &str) -> Vec<String> {

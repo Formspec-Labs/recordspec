@@ -145,6 +145,8 @@ def _assert_export(root: Path, manifest: dict[str, Any]) -> None:
     ]
     actual = export_to_zip_bytes(entries)
     expected_zip = (root / expected["zip"]).read_bytes()
+    if "zip_sha256" in expected:
+        assert hashlib.sha256(expected_zip).hexdigest() == expected["zip_sha256"]
     assert actual == expected_zip
 
 
