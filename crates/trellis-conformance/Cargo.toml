@@ -10,6 +10,7 @@ trellis-store-memory = { path = "../trellis-store-memory" }
 
 [dev-dependencies]
 integrity-bundle-fixtures = { path = "../../../integrity-stack/crates/integrity-bundle-fixtures" }
+integrity-cose = { path = "../../../integrity-stack/crates/integrity-cose" }
 ciborium = "0.2"
 proptest = "1.6"
 sha2 = "0.10"

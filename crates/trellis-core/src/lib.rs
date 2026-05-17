@@ -173,3 +173,30 @@ pub fn append_event<S: LedgerStore>(
         append_head,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use proptest::prelude::*;
+    use trellis_types::ArtifactType;
+
+    fn unknown_artifact_type() -> impl Strategy<Value = String> {
+        "[A-Za-z0-9:@._/-]{0,64}".prop_filter(
+            "not one of the Trellis substrate artifact_type values",
+            |value| !matches!(value.as_str(), "event" | "checkpoint" | "manifest"),
+        )
+    }
+
+    proptest! {
+        #[test]
+        fn unknown_artifact_type_values_reject_with_named_error(value in unknown_artifact_type()) {
+            let error = ArtifactType::from_cose_value(&value)
+                .expect_err("unknown artifact_type must reject");
+
+            prop_assert_eq!(error.value(), value.as_str());
+            prop_assert!(
+                error.to_string().contains("unknown artifact_type"),
+                "unexpected error: {error}"
+            );
+        }
+    }
+}

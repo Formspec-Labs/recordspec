@@ -8,3 +8,6 @@ license.workspace = true
 trellis-cddl = { path = "../trellis-cddl" }
 integrity-cose = { path = "../../../integrity-stack/crates/integrity-cose" }
 trellis-types = { path = "../trellis-types" }
+
+[dev-dependencies]
+proptest = "1.6"

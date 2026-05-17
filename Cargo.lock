@@ -3489,6 +3489,7 @@ dependencies = [
  "ciborium",
  "integrity-bundle",
  "integrity-bundle-fixtures",
+ "integrity-cose",
  "integrity-verify",
  "proptest",
  "serde",
@@ -3517,6 +3518,7 @@ name = "trellis-core"
 version = "0.1.0"
 dependencies = [
  "integrity-cose",
+ "proptest",
  "trellis-cddl",
  "trellis-types",
 ]
