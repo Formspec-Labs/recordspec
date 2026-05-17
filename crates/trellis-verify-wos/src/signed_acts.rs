@@ -616,6 +616,51 @@ mod tests {
         );
     }
 
+    #[test]
+    fn signed_acts_duplicate_nested_payload_keys_fail_validator_domain_path() {
+        let event = signature_event_with_raw_consent_payload(Value::Map(vec![
+            (
+                Value::Text("a".to_string()),
+                Value::Text("first".to_string()),
+            ),
+            (
+                Value::Text("a".to_string()),
+                Value::Text("second".to_string()),
+            ),
+        ]));
+        let catalog = encode_value(
+            &text_map(vec![
+                ("projection_schema_version", uint(1)),
+                (
+                    "derivation_rule_id",
+                    Value::Text(SIGNED_ACTS_DERIVATION_RULE.to_string()),
+                ),
+                ("acts", Value::Array(Vec::new())),
+            ])
+            .expect("catalog"),
+        )
+        .expect("encode");
+        let extension = extension_for(&catalog);
+        let mut members = BTreeMap::new();
+        members.insert(SIGNED_ACTS_MEMBER.to_string(), catalog);
+        let mut manifest_extensions = BTreeMap::new();
+        manifest_extensions.insert(SIGNED_ACTS_EXPORT_EXTENSION.to_string(), extension);
+
+        let findings = WosRecordValidator.validate_export(DomainExport {
+            events: &[event],
+            members: &members,
+            manifest_extensions: &manifest_extensions,
+        });
+
+        assert!(
+            findings.iter().any(|finding| {
+                finding.kind == "signed_acts_catalog_invalid"
+                    && finding.message.contains("duplicate canonical CBOR map key")
+            }),
+            "{findings:#?}"
+        );
+    }
+
     fn extension_for(catalog: &[u8]) -> Vec<u8> {
         encode_value(
             &text_map(vec![
