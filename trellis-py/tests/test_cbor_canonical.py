@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import struct
 from collections import OrderedDict
+from typing import Any
 
 import pytest
 
@@ -232,3 +233,125 @@ def test_domain_separated_sha256_distinct_for_different_tags() -> None:
     a = domain_separated_sha256("tag-one", b"x")
     b = domain_separated_sha256("tag-two", b"x")
     assert a != b
+
+
+# ---------------------------------------------------------------------------
+# §4.2.2 vectors V15–V23 (per reference-texts Section 2).
+#
+# V15–V17 cover R6 (float compaction). Per `_cbor_canonical.py` module
+# docstring and the inline TODO at `_emit_float`, R6 is currently INERT in
+# Python because the Rust oracle (ciborium) emits f64 unconditionally;
+# cross-runtime byte parity is the load-bearing contract so Python matches.
+# The V16/V17 width-compaction vectors are therefore marked skipped with
+# the reason pinned to the profile §2 R6 note and the Rust oracle's current
+# behaviour. V15 (-0.0 rejection) is already exercised by
+# `test_v13_negative_zero_rejected` but is restated here under its V15
+# label so the §4.2.2 vector table is traceable end-to-end.
+#
+# V18 (R7, tag rejection) — `cbor2.CBORTag` raises `CanonicalCborError`
+# per the module docstring (Phase-1 posture, landed in Wave 5 2ccc6b2).
+#
+# V19 deep-nested-mixed-length-keys verifies outer-map sort is independent
+# of nested-map sort.
+#
+# V20–V23 sanity vectors verified byte-for-byte against the Rust oracle
+# at `integrity-stack/crates/integrity-cbor/src/lib.rs::encode_canonical_cbor_value`
+# (per Trellis ADR 0004 byte authority).
+# ---------------------------------------------------------------------------
+
+
+def test_v15_negative_zero_rejected_canonical() -> None:
+    """V15 — `-0.0` MUST be rejected (or normalized to `+0.0`). Python
+    chooses reject per profile §2 R5 and Rust oracle convention. Restates
+    `test_v13_negative_zero_rejected` under the V15 vector label."""
+    with pytest.raises(CanonicalCborError, match=r"\+0"):
+        encode_canonical_cbor_value(-0.0)
+
+
+@pytest.mark.skip(
+    reason="V16 — R6 float width compaction is INERT in Python (matches Rust "
+    "oracle which emits f64 unconditionally via ciborium). Reopen when "
+    "Rust adopts compaction; see profile §2 R6 + `_emit_float` TODO."
+)
+def test_v16_float_compaction_f64_to_f32() -> None:
+    # When R6 is implemented: 1.5 fits exactly in f32 → expected `fa 3f c0 00 00`.
+    assert encode_canonical_cbor_value(1.5) == _h("fa 3f c0 00 00")
+
+
+@pytest.mark.skip(
+    reason="V17 — R6 float width compaction is INERT in Python (matches Rust "
+    "oracle which emits f64 unconditionally via ciborium). Reopen when "
+    "Rust adopts compaction; see profile §2 R6 + `_emit_float` TODO."
+)
+def test_v17_float_compaction_f64_to_f16() -> None:
+    # When R6 is implemented: 1.0 fits exactly in f16 → expected `f9 3c 00`.
+    assert encode_canonical_cbor_value(1.0) == _h("f9 3c 00")
+
+
+def test_v18_generic_tag_rejected() -> None:
+    """V18 — R7. Generic CBOR tags (major type 6) MUST be rejected per
+    profile §2 R7 (Phase-1 Python posture: `_cbor_canonical.py` docstring).
+    The current contract surfaces as `CanonicalCborError("unsupported
+    Python type: CBORTag")`. The reopen criterion is "first Trellis preimage
+    that registers a tag in the §4.2.2 profile" — until then, rejection
+    is the contract."""
+    import cbor2
+
+    with pytest.raises(CanonicalCborError, match="CBORTag"):
+        encode_canonical_cbor_value(cbor2.CBORTag(99, "hello"))
+
+
+def test_v19_nested_sort_outer_independent_of_nested() -> None:
+    """V19 — R3 sort recursion. A deeply-nested map with mixed-length keys
+    at each level: the outer-map sort MUST be by canonical-encoded outer
+    key bytes, INDEPENDENT of how the nested values themselves sort.
+
+    Layout:
+      outer keys: "a" (61 61), "z" (61 7a) → outer order: "a" then "z"
+      "a"'s nested map keys: "long_inner_key" (6e ...), "x" (61 78)
+                            → bytewise: "x" (61 78) first, then "long_inner_key"
+      "z"'s nested map keys: "aa" (62 61 61), "b" (61 62)
+                            → bytewise: "b" (61 62) first, then "aa"
+
+    Confirms outer sort uses outer key bytes only — not influenced by
+    nested-value content, not by nested-map key count, not by nested-map
+    encoded length. Matches Rust oracle byte-for-byte.
+    """
+    src = OrderedDict(
+        [
+            ("z", OrderedDict([("aa", 1), ("b", 2)])),  # reverse-canonical insertion
+            ("a", OrderedDict([("long_inner_key", 3), ("x", 4)])),
+        ]
+    )
+    expected = _h(
+        "a2"  # outer map, 2 entries
+        "61 61"  # outer key "a"
+        "a2"  # nested map, 2 entries
+        "61 78 04"  # "x":4
+        "6e 6c 6f 6e 67 5f 69 6e 6e 65 72 5f 6b 65 79 03"  # "long_inner_key":3
+        "61 7a"  # outer key "z"
+        "a2"  # nested map, 2 entries
+        "61 62 02"  # "b":2
+        "62 61 61 01"  # "aa":1
+    )
+    assert encode_canonical_cbor_value(src) == expected
+
+
+# V20–V23 sanity vectors. V20 (empty map) and V21 (empty array) are also
+# covered by `test_v7_empty_map` / `test_v8_empty_array`; the duplication
+# here is intentional so the §4.2.2 vector table maps 1:1 to test names.
+
+
+@pytest.mark.parametrize(
+    ("value", "expected_hex", "label"),
+    [
+        ({}, "a0", "V20 empty map"),
+        ([], "80", "V21 empty array"),
+        (b"", "40", "V22 empty byte string"),
+        ("", "60", "V23 empty text string"),
+    ],
+)
+def test_v20_v23_empty_container_sanity(
+    value: Any, expected_hex: str, label: str
+) -> None:
+    assert encode_canonical_cbor_value(value) == _h(expected_hex), label
