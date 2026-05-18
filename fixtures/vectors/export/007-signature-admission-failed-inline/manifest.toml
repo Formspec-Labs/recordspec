@@ -23,7 +23,7 @@ ledger_state = "input-ledger-state.cbor"
 
 [expected]
 zip        = "expected-export.zip"
-zip_sha256 = "0eb4564611a1ea5cbc9df89ae9295b6a35a5cd4db478c5889e84234f588d91dc"
+zip_sha256 = "744f4baa12f8f08859c774e2bc69ebfcaf697d4184e4e99cfd26676d6d2dae3f"
 
 [derivation]
 document = "derivation.md"

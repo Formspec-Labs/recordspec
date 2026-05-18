@@ -74,10 +74,17 @@ def test_intake_export_extension_parse_error_becomes_wos_finding() -> None:
     assert "intake export extension is invalid" in findings[0].detail
 
 
-def test_signed_acts_projection_mismatch_blocks_relying_party_verdict() -> None:
+def test_signed_acts_render_drift_is_advisory_and_verdict_stays_valid() -> None:
+    """Mirror of Rust `given_signed_acts_render_drift_when_layered_report_then_verdict_remains_valid_with_advisory`.
+
+    The 066 catalog drifts from its deterministic derivation, but the
+    substrate-anchored 068 manifest is still byte-identical, so the verifier
+    emits advisory `signed_acts_render_drift` and the relying-party verdict
+    stays valid (Tasks A7 + A8).
+    """
     export_zip = (
         TRELLIS_ROOT
-        / "fixtures/vectors/verify/019-export-006-signed-acts-projection-mismatch/input-export.zip"
+        / "fixtures/vectors/verify/019-export-006-signed-acts-render-drift/input-export.zip"
     ).read_bytes()
 
     report = verify_wos.verify_export_zip(export_zip)
@@ -85,11 +92,18 @@ def test_signed_acts_projection_mismatch_blocks_relying_party_verdict() -> None:
     assert report.substrate.structure_verified is True
     assert report.substrate.integrity_verified is True
     assert report.verdict.cryptographic_integrity == "pass"
-    assert report.verdict.projection_integrity == "fail"
+    assert report.verdict.projection_integrity == "pass"
     assert report.verdict.domain_admissibility == "pass"
-    assert report.verdict.relying_party_result == "invalid"
-    assert report.verdict.blocking_reasons == ["projection_mismatch"]
-    assert report.integrity_verified is False
+    assert report.verdict.relying_party_result == "valid"
+    assert report.verdict.blocking_reasons == []
+    assert report.integrity_verified is True
+    drift = [
+        finding
+        for finding in report.wos_findings
+        if finding.kind == "signed_acts_render_drift"
+    ]
+    assert len(drift) == 1, f"expected single render-drift advisory: {report.wos_findings}"
+    assert drift[0].severity == "advisory"
 
 
 def test_signed_acts_nested_map_oracle_matches_rust_canonical_bytes() -> None:
@@ -168,7 +182,7 @@ def test_signed_acts_unknown_derivation_rule_is_failure_without_v1_fallback() ->
         for finding in findings
     )
     assert all(
-        finding.kind != "signed_acts_projection_mismatch" for finding in findings
+        finding.kind != "signed_acts_render_drift" for finding in findings
     )
 
 
@@ -202,7 +216,7 @@ def test_signed_acts_catalog_rule_mismatch_is_invalid_catalog() -> None:
         for finding in findings
     )
     assert all(
-        finding.kind != "signed_acts_projection_mismatch" for finding in findings
+        finding.kind != "signed_acts_render_drift" for finding in findings
     )
 
 

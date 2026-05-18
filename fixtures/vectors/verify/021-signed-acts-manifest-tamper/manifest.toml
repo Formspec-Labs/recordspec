@@ -1,0 +1,20 @@
+id          = "verify/021-signed-acts-manifest-tamper"
+op          = "verify"
+status      = "active"
+description = """Negative verify vector for the substrate-anchored 068 signed-acts manifest. Starts from `export/006-signature-affirmations-inline` and mutates one byte of `068-signed-acts-manifest.cbor` after manifest signing so the SHA-256 digest no longer matches the `trellis.export.signed-acts.manifest.v1.manifest_digest` binding while the signed export manifest stays unchanged."""
+
+[coverage]
+tr_core = ["TR-CORE-067"]
+tr_op = ["TR-OP-122"]
+
+[inputs]
+export_zip = "input-export.zip"
+
+[expected.report]
+structure_verified   = true
+integrity_verified   = false
+readability_verified = true
+first_failure_kind   = "signed_acts_manifest_extension_digest_mismatch"
+
+[derivation]
+document = "derivation.md"

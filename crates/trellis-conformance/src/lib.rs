@@ -534,8 +534,6 @@ mod tests {
                 | "signed_acts_catalog_digest_mismatch"
                 | "signed_acts_catalog_invalid"
                 | "signed_acts_catalog_unbound"
-                // Retained pending A8 fixture rename to `signed_acts_render_drift`.
-                | "signed_acts_projection_mismatch"
                 | "signed_acts_render_drift"
                 | "signed_acts_manifest_mismatch"
                 | "signed_acts_manifest_extension_digest_mismatch"

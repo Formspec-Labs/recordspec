@@ -1,0 +1,19 @@
+id          = "verify/022-066-render-drift-tampered-only"
+op          = "verify"
+status      = "active"
+description = """Advisory verify vector pinning the "render drift alone never blocks verdict" invariant. Starts from `export/006-signature-affirmations-inline`, mutates a `bound` field in `066-signed-acts.cbor`, recomputes its `trellis.export.signed-acts.v1` digest, and re-signs the export manifest. The substrate-anchored `068-signed-acts-manifest.cbor` is untouched and still equals its deterministic derivation, so the verifier emits advisory `signed_acts_render_drift` and the relying-party verdict stays valid."""
+
+[coverage]
+tr_core = ["TR-CORE-067"]
+tr_op = ["TR-OP-122"]
+
+[inputs]
+export_zip = "input-export.zip"
+
+[expected.report]
+structure_verified   = true
+integrity_verified   = true
+readability_verified = true
+
+[derivation]
+document = "derivation.md"

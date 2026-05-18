@@ -25,9 +25,12 @@ GENERATED_DIRS = [
     ("export", "006-signature-affirmations-inline"),
     ("export", "007-signature-admission-failed-inline"),
     ("export", "008-signed-acts-fallback-act-id"),
+    ("export", "009-signed-acts-manifest-only"),
     ("verify", "014-export-006-signature-row-mismatch"),
-    ("verify", "019-export-006-signed-acts-projection-mismatch"),
+    ("verify", "019-export-006-signed-acts-render-drift"),
     ("verify", "020-export-006-signed-acts-unsupported-rule"),
+    ("verify", "021-signed-acts-manifest-tamper"),
+    ("verify", "022-066-render-drift-tampered-only"),
     ("tamper", "014-signature-catalog-digest-mismatch"),
     ("tamper", "055-signed-acts-catalog-digest-mismatch"),
     ("tamper", "056-policy-closure-digest-mismatch"),
@@ -60,9 +63,12 @@ def run_generator(tmp: Path) -> None:
     module.OUT_EXPORT_006 = tmp / "export" / "006-signature-affirmations-inline"
     module.OUT_EXPORT_007 = tmp / "export" / "007-signature-admission-failed-inline"
     module.OUT_EXPORT_008 = tmp / "export" / "008-signed-acts-fallback-act-id"
+    module.OUT_EXPORT_009 = tmp / "export" / "009-signed-acts-manifest-only"
     module.OUT_VERIFY_014 = tmp / "verify" / "014-export-006-signature-row-mismatch"
-    module.OUT_VERIFY_019 = tmp / "verify" / "019-export-006-signed-acts-projection-mismatch"
+    module.OUT_VERIFY_019 = tmp / "verify" / "019-export-006-signed-acts-render-drift"
     module.OUT_VERIFY_020 = tmp / "verify" / "020-export-006-signed-acts-unsupported-rule"
+    module.OUT_VERIFY_021 = tmp / "verify" / "021-signed-acts-manifest-tamper"
+    module.OUT_VERIFY_022 = tmp / "verify" / "022-066-render-drift-tampered-only"
     module.OUT_TAMPER_014 = tmp / "tamper" / "014-signature-catalog-digest-mismatch"
     module.OUT_TAMPER_055 = tmp / "tamper" / "055-signed-acts-catalog-digest-mismatch"
     module.OUT_TAMPER_056 = tmp / "tamper" / "056-policy-closure-digest-mismatch"
@@ -173,12 +179,19 @@ def check_python_verifier_vectors() -> None:
         verify_wos,
         VECTORS / "export/008-signed-acts-fallback-act-id/expected-export.zip"
     )
-    assert_wos_failure(
+    assert_no_wos_failures(
         verify_wos,
-        VECTORS / "verify/019-export-006-signed-acts-projection-mismatch/input-export.zip",
-        {"signed_acts_projection_mismatch"},
-        projection_integrity="fail",
-        blocking_reasons=["projection_mismatch"],
+        VECTORS / "export/009-signed-acts-manifest-only/expected-export.zip"
+    )
+    # verify/019 + verify/022: 066 render-drift advisories — verdict stays
+    # valid (the substrate-anchored 068 manifest is the load-bearing proof).
+    assert_no_wos_failures(
+        verify_wos,
+        VECTORS / "verify/019-export-006-signed-acts-render-drift/input-export.zip"
+    )
+    assert_no_wos_failures(
+        verify_wos,
+        VECTORS / "verify/022-066-render-drift-tampered-only/input-export.zip"
     )
     assert_wos_failure(
         verify_wos,
@@ -187,15 +200,15 @@ def check_python_verifier_vectors() -> None:
         projection_integrity="fail",
         blocking_reasons=["projection_integrity"],
     )
+    # verify/021 (068 manifest tamper) requires Python-side 068 validation —
+    # mirror lands in Task A9 (cross-runtime parity gate). The Rust verifier
+    # already covers this fixture via `cargo nextest run -p trellis-conformance`.
     assert_wos_failure(
         verify_wos,
         VECTORS / "tamper/055-signed-acts-catalog-digest-mismatch/input-export.zip",
-        {
-            "signed_acts_catalog_digest_mismatch",
-            "signed_acts_projection_mismatch",
-        },
+        {"signed_acts_catalog_digest_mismatch"},
         projection_integrity="fail",
-        blocking_reasons=["projection_mismatch"],
+        blocking_reasons=["projection_integrity"],
     )
 
 

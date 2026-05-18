@@ -270,12 +270,12 @@ fn given_tampered_signature_catalog_export_when_verify_export_zip_then_stranger_
 /// the verifier emits `signed_acts_render_drift` as an advisory and the
 /// relying-party verdict still resolves to Valid.
 ///
-/// (Fixture rename to `019-export-006-signed-acts-render-drift` lands in Task
-/// A8 alongside the WOS-TV-017 matrix update.)
+/// Pinned via the renamed fixture `019-export-006-signed-acts-render-drift`
+/// (Task A8 — WOS-TV-017 matrix update + fixture rename train).
 #[test]
 fn given_signed_acts_render_drift_when_layered_report_then_verdict_remains_valid_with_advisory() {
     let zip_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
-        "../../fixtures/vectors/verify/019-export-006-signed-acts-projection-mismatch/input-export.zip",
+        "../../fixtures/vectors/verify/019-export-006-signed-acts-render-drift/input-export.zip",
     );
     let bytes = std::fs::read(&zip_path).unwrap_or_else(|error| {
         panic!(

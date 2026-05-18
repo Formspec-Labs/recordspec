@@ -1,0 +1,19 @@
+id          = "verify/019-export-006-signed-acts-render-drift"
+op          = "verify"
+status      = "active"
+description = """Advisory verify vector for the verifier-facing SignedAct projection. Starts from `export/006-signature-affirmations-inline`, mutates `066-signed-acts.cbor` (a render-time projection), recomputes its `trellis.export.signed-acts.v1` digest, and re-signs the export manifest. The substrate-anchored `068-signed-acts-manifest.cbor` is untouched and still byte-matches its derivation, so the verifier emits advisory `signed_acts_render_drift` and the relying-party verdict stays valid."""
+
+[coverage]
+tr_core = ["TR-CORE-067"]
+tr_op = ["TR-OP-122"]
+
+[inputs]
+export_zip = "input-export.zip"
+
+[expected.report]
+structure_verified   = true
+integrity_verified   = true
+readability_verified = true
+
+[derivation]
+document = "derivation.md"

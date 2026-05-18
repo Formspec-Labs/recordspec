@@ -44,9 +44,12 @@ KEY_ISSUER_001 = ROOT / "_keys" / "issuer-001.cose_key"
 OUT_EXPORT_006 = ROOT / "export" / "006-signature-affirmations-inline"
 OUT_EXPORT_007 = ROOT / "export" / "007-signature-admission-failed-inline"
 OUT_EXPORT_008 = ROOT / "export" / "008-signed-acts-fallback-act-id"
+OUT_EXPORT_009 = ROOT / "export" / "009-signed-acts-manifest-only"
 OUT_VERIFY_014 = ROOT / "verify" / "014-export-006-signature-row-mismatch"
-OUT_VERIFY_019 = ROOT / "verify" / "019-export-006-signed-acts-projection-mismatch"
+OUT_VERIFY_019 = ROOT / "verify" / "019-export-006-signed-acts-render-drift"
 OUT_VERIFY_020 = ROOT / "verify" / "020-export-006-signed-acts-unsupported-rule"
+OUT_VERIFY_021 = ROOT / "verify" / "021-signed-acts-manifest-tamper"
+OUT_VERIFY_022 = ROOT / "verify" / "022-066-render-drift-tampered-only"
 OUT_TAMPER_014 = ROOT / "tamper" / "014-signature-catalog-digest-mismatch"
 OUT_TAMPER_055 = ROOT / "tamper" / "055-signed-acts-catalog-digest-mismatch"
 OUT_TAMPER_056 = ROOT / "tamper" / "056-policy-closure-digest-mismatch"
@@ -66,6 +69,13 @@ SIGNED_ACTS_DERIVATION_RULE_V2 = "signed-act-projection-wos-formspec-v2"
 SIGNED_ACTS_DERIVATION_RULE = SIGNED_ACTS_DERIVATION_RULE_V1
 FALLBACK_ACT_ID_DERIVATION_RULE = "signed-act-projection-act-id-v1"
 UNSUPPORTED_SIGNED_ACTS_DERIVATION_RULE = "signed-act-projection-wos-formspec-unsupported"
+# 068 signed-acts-manifest member (substrate-anchored proof of which
+# signature_affirmation / signature_admission_failed events landed). Mirrors
+# Rust `crates/trellis-export-writer/src/lib.rs::SIGNED_ACTS_MANIFEST_MEMBER`
+# and the §6.7 extension key registered for Task A1.
+SIGNED_ACTS_MANIFEST_EXTENSION_KEY = "trellis.export.signed-acts.manifest.v1"
+SIGNED_ACTS_MANIFEST_MEMBER = "068-signed-acts-manifest.cbor"
+SIGNED_ACTS_MANIFEST_DERIVATION_RULE_V1 = "signed-acts-manifest-v1"
 POLICY_CLOSURE_EXTENSION_KEY = "trellis.export.policy-closure.v1"
 POLICY_CLOSURE_MEMBER = "067-policy-closure.cbor"
 POLICY_CLOSURE_VERSION = "wos-formspec-signature-policy-closure-2026-05-16"
@@ -420,6 +430,32 @@ def signed_acts_catalog(
     )
 
 
+def derive_signed_acts_manifest_v1_bytes(events_canonical: list[tuple[bytes, str]]) -> bytes:
+    """Encode the v1 signed-acts manifest member bytes.
+
+    Mirror of Rust `derive_signed_acts_manifest_v1` + `encode_signed_acts_manifest_v1`
+    in `crates/trellis-verify-wos/src/signed_acts.rs` and Python
+    `trellis_py.verify_wos.derive_signed_acts_manifest_v1` /
+    `encode_signed_acts_manifest_v1` (Tasks A4 + A5).
+
+    Layout: a CBOR array of 2-element `[bstr(hash), tstr(event_type)]` pairs,
+    sorted by `(hash bytes ASC, event_type ASC)`. For homogeneous bstr/tstr
+    2-tuples in a top-level array, `dcbor` (cbor2 §4.2.1) wire bytes coincide
+    with §4.2.2 — preimage shape pinned by the byte-identity test landed in A5.
+    """
+    entries = sorted(events_canonical)
+    return dcbor([[event_hash, event_type] for event_hash, event_type in entries])
+
+
+def signed_acts_manifest_extension(member_bytes: bytes) -> dict:
+    """Build the `trellis.export.signed-acts.manifest.v1` manifest extension."""
+    return {
+        "catalog_ref": SIGNED_ACTS_MANIFEST_MEMBER,
+        "manifest_digest": sha256(member_bytes),
+        "derivation_rule": SIGNED_ACTS_MANIFEST_DERIVATION_RULE_V1,
+    }
+
+
 def owner_for_policy_artifact(kind: str) -> str:
     return "formspec" if kind.startswith("formspec.") else "wos"
 
@@ -622,6 +658,10 @@ def build_export_006() -> None:
     members_data["062-signature-affirmations.cbor"] = signature_catalog
     signed_acts = signed_acts_catalog(canonical_event_hash, wos_record)
     members_data[SIGNED_ACTS_MEMBER] = signed_acts
+    signed_acts_manifest_bytes = derive_signed_acts_manifest_v1_bytes(
+        [(canonical_event_hash, WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE)]
+    )
+    members_data[SIGNED_ACTS_MANIFEST_MEMBER] = signed_acts_manifest_bytes
     policy_closure_bytes = policy_closure(domain_registry_digest)
     members_data[POLICY_CLOSURE_MEMBER] = policy_closure_bytes
 
@@ -631,6 +671,10 @@ def build_export_006() -> None:
         "WOS-T4 signature export fixture. `062-signature-affirmations.cbor` is a "
         "chain-derived catalog over a readable WOS `SignatureAffirmation` payload "
         "and `066-signed-acts.cbor` is the verifier-facing signing projection. "
+        "`068-signed-acts-manifest.cbor` is the substrate-anchored sealed list of "
+        "`(canonical_event_hash, event_type)` pairs for every signed-act source "
+        "event in scope; the 066 projection bytes can drift across renderers, "
+        "while the 068 manifest is the load-bearing proof. "
         "`067-policy-closure.cbor` carries the effective admission-policy evidence "
         "used at export time, while verifier trust roots and adapter allowlists "
         "remain verifier-supplied configuration.\n"
@@ -679,6 +723,9 @@ def build_export_006() -> None:
                 "catalog_ref": SIGNED_ACTS_MEMBER,
                 "derivation_rule": SIGNED_ACTS_DERIVATION_RULE,
             },
+            SIGNED_ACTS_MANIFEST_EXTENSION_KEY: signed_acts_manifest_extension(
+                signed_acts_manifest_bytes
+            ),
             POLICY_CLOSURE_EXTENSION_KEY: {
                 "closure_digest": sha256(policy_closure_bytes),
                 "closure_ref": POLICY_CLOSURE_MEMBER,
@@ -837,6 +884,10 @@ def build_export_007() -> None:
 
     signed_acts = signed_acts_catalog(canonical_event_hash, wos_record)
     members_data[SIGNED_ACTS_MEMBER] = signed_acts
+    signed_acts_manifest_bytes = derive_signed_acts_manifest_v1_bytes(
+        [(canonical_event_hash, WOS_SIGNATURE_ADMISSION_FAILED_EVENT_TYPE)]
+    )
+    members_data[SIGNED_ACTS_MANIFEST_MEMBER] = signed_acts_manifest_bytes
     policy_closure_bytes = policy_closure(domain_registry_digest)
     members_data[POLICY_CLOSURE_MEMBER] = policy_closure_bytes
 
@@ -846,7 +897,9 @@ def build_export_007() -> None:
         "WOS-T4 signature export fixture with a readable WOS "
         "`SignatureAdmissionFailed` payload. `066-signed-acts.cbor` is the "
         "verifier-facing signing projection and must include the rejected act; "
-        "`067-policy-closure.cbor` carries admission-policy evidence.\n"
+        "`068-signed-acts-manifest.cbor` carries the substrate-anchored sealed "
+        "`(canonical_event_hash, event_type)` list for the admission-failed "
+        "event; `067-policy-closure.cbor` carries admission-policy evidence.\n"
     ).encode("utf-8")
 
     manifest_payload = {
@@ -889,6 +942,9 @@ def build_export_007() -> None:
                 "catalog_ref": SIGNED_ACTS_MEMBER,
                 "derivation_rule": SIGNED_ACTS_DERIVATION_RULE,
             },
+            SIGNED_ACTS_MANIFEST_EXTENSION_KEY: signed_acts_manifest_extension(
+                signed_acts_manifest_bytes
+            ),
             POLICY_CLOSURE_EXTENSION_KEY: {
                 "closure_digest": sha256(policy_closure_bytes),
                 "closure_ref": POLICY_CLOSURE_MEMBER,
@@ -1044,6 +1100,10 @@ def build_export_008() -> None:
         derivation_rule=SIGNED_ACTS_DERIVATION_RULE_V2,
     )
     members_data[SIGNED_ACTS_MEMBER] = signed_acts
+    signed_acts_manifest_bytes = derive_signed_acts_manifest_v1_bytes(
+        [(canonical_event_hash, WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE)]
+    )
+    members_data[SIGNED_ACTS_MANIFEST_MEMBER] = signed_acts_manifest_bytes
     policy_closure_bytes = policy_closure(domain_registry_digest)
     members_data[POLICY_CLOSURE_MEMBER] = policy_closure_bytes
 
@@ -1053,7 +1113,10 @@ def build_export_008() -> None:
         "WOS-T4 signature export fixture whose readable `SignatureAffirmation` "
         "payload has no shared signing act id. `066-signed-acts.cbor` uses "
         "`signed-act-projection-wos-formspec-v2` and derives `act_id` from "
-        "sorted source references under `signed-act-projection-act-id-v1`.\n"
+        "sorted source references under `signed-act-projection-act-id-v1`. "
+        "`068-signed-acts-manifest.cbor` is the substrate-anchored sealed list "
+        "of `(canonical_event_hash, event_type)` pairs and remains identical "
+        "across catalog-rule variants.\n"
     ).encode("utf-8")
 
     manifest_payload = {
@@ -1096,6 +1159,9 @@ def build_export_008() -> None:
                 "catalog_ref": SIGNED_ACTS_MEMBER,
                 "derivation_rule": SIGNED_ACTS_DERIVATION_RULE_V2,
             },
+            SIGNED_ACTS_MANIFEST_EXTENSION_KEY: signed_acts_manifest_extension(
+                signed_acts_manifest_bytes
+            ),
             POLICY_CLOSURE_EXTENSION_KEY: {
                 "closure_digest": sha256(policy_closure_bytes),
                 "closure_ref": POLICY_CLOSURE_MEMBER,
@@ -1269,10 +1335,10 @@ def write_signed_acts_verify_vector() -> None:
     )
     write_text(
         OUT_VERIFY_019 / "manifest.toml",
-        '''id          = "verify/019-export-006-signed-acts-projection-mismatch"
+        '''id          = "verify/019-export-006-signed-acts-render-drift"
 op          = "verify"
 status      = "active"
-description = """Negative verify vector for the verifier-facing SignedAct projection. Starts from `export/006-signature-affirmations-inline`, mutates `066-signed-acts.cbor`, recomputes its manifest extension digest, and re-signs the export manifest so archive structure stays valid while the projection no longer matches signed WOS source records."""
+description = """Advisory verify vector for the verifier-facing SignedAct projection. Starts from `export/006-signature-affirmations-inline`, mutates `066-signed-acts.cbor` (a render-time projection), recomputes its `trellis.export.signed-acts.v1` digest, and re-signs the export manifest. The substrate-anchored `068-signed-acts-manifest.cbor` is untouched and still byte-matches its derivation, so the verifier emits advisory `signed_acts_render_drift` and the relying-party verdict stays valid."""
 
 [coverage]
 tr_core = ["TR-CORE-067"]
@@ -1283,9 +1349,8 @@ export_zip = "input-export.zip"
 
 [expected.report]
 structure_verified   = true
-integrity_verified   = false
+integrity_verified   = true
 readability_verified = true
-first_failure_kind   = "signed_acts_projection_mismatch"
 
 [derivation]
 document = "derivation.md"
@@ -1293,14 +1358,21 @@ document = "derivation.md"
     )
     write_text(
         OUT_VERIFY_019 / "derivation.md",
-        """# Derivation — `verify/019-export-006-signed-acts-projection-mismatch`
+        """# Derivation — `verify/019-export-006-signed-acts-render-drift`
 
 This fixture starts from `export/006-signature-affirmations-inline`, mutates
 `066-signed-acts.cbor`, recomputes the `catalog_digest` under
 `trellis.export.signed-acts.v1`, and re-signs `000-manifest.cbor`. The ZIP
-remains structurally valid and all manifest digests match archive contents, but
-the SignedAct projection no longer matches the signed WOS
-`SignatureAffirmation` payload.
+remains structurally valid, every manifest digest matches archive contents,
+and the substrate-anchored `068-signed-acts-manifest.cbor` member is untouched
+and still equals the deterministic `signed-acts-manifest-v1` derivation over
+the sealed events.
+
+The 066 catalog is a downstream render-time projection whose bytes can
+legitimately drift across renderers; its byte mismatch with the canonical
+derivation is reported as advisory `signed_acts_render_drift`. The 068 manifest
+is the substrate-anchored proof of which signed-act source events landed, so
+render drift alone never blocks the relying-party verdict.
 """,
     )
 
@@ -1516,13 +1588,380 @@ digest bound by `trellis.export.policy-closure.v1.closure_digest`.
     )
 
 
+def build_export_009() -> None:
+    """Positive export fixture exercising the 068 signed-acts-manifest extension on its own.
+
+    The export carries the canonical `wos.kernel.signature_affirmation` event from
+    `append/019-wos-signature-affirmation` but binds only
+    `trellis.export.signed-acts.manifest.v1` (substrate-anchored sealed
+    `(canonical_event_hash, event_type)` list). The render-time
+    `066-signed-acts.cbor` and its `trellis.export.signed-acts.v1` extension are
+    absent — exercising the "manifest is the load-bearing proof; the 066
+    projection is optional reporting" invariant.
+    """
+    OUT_EXPORT_009.mkdir(parents=True, exist_ok=True)
+
+    seed, pubkey = load_seed_and_pubkey(KEY_ISSUER_001)
+    kid = derive_kid(SUITE_ID_PHASE_1, pubkey)
+    scope = b"wos-case:sba-poc_case_signed_acts_manifest_only"
+    wos_record = cbor2.loads((APPEND_019 / "input-wos-record.dcbor").read_bytes())
+    event_bytes, canonical_event_hash = build_event_from_wos_record(
+        seed=seed,
+        kid=kid,
+        scope=scope,
+        sequence=0,
+        prev_hash=None,
+        wos_record=wos_record,
+        idempotency_key=sha256(b"export-009-signed-acts-manifest-only"),
+        authored_at=ts(1776877863),
+    )
+    leaf_hash = merkle_leaf_hash(canonical_event_hash)
+
+    members_data: dict[str, bytes] = {}
+    events_cbor = dcbor([cbor2.loads(event_bytes)])
+    members_data["010-events.cbor"] = events_cbor
+    inclusion_proofs = dcbor(
+        {
+            0: {
+                "leaf_index": 0,
+                "tree_size": 1,
+                "leaf_hash": leaf_hash,
+                "audit_path": [],
+            }
+        }
+    )
+    members_data["020-inclusion-proofs.cbor"] = inclusion_proofs
+    consistency_proofs = dcbor([])
+    members_data["025-consistency-proofs.cbor"] = consistency_proofs
+
+    signing_key_registry = build_signing_key_registry(kid, pubkey)
+    members_data["030-signing-key-registry.cbor"] = signing_key_registry
+
+    checkpoint_payload = {
+        "version": 1,
+        "scope": scope,
+        "tree_size": 1,
+        "tree_head_hash": leaf_hash,
+        "timestamp": ts(1776877863),
+        "anchor_ref": None,
+        "prev_checkpoint_hash": None,
+        "extensions": None,
+    }
+    head_checkpoint_digest = checkpoint_digest(scope, checkpoint_payload)
+    members_data["040-checkpoints.cbor"] = dcbor(
+        [
+            cbor2.loads(
+                cose_sign1(seed, kid, dcbor(checkpoint_payload), ARTIFACT_TYPE_CHECKPOINT)
+            )
+        ]
+    )
+
+    domain_registry = build_domain_registry()
+    domain_registry_digest = sha256(domain_registry)
+    domain_registry_member = f"050-registries/{domain_registry_digest.hex()}.cbor"
+    members_data[domain_registry_member] = domain_registry
+
+    signed_acts_manifest_bytes = derive_signed_acts_manifest_v1_bytes(
+        [(canonical_event_hash, WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE)]
+    )
+    members_data[SIGNED_ACTS_MANIFEST_MEMBER] = signed_acts_manifest_bytes
+
+    members_data["090-verify.sh"] = trellis_cli_verify_script()
+    members_data["098-README.md"] = (
+        "# Trellis Export (Fixture) — export/009-signed-acts-manifest-only\n\n"
+        "WOS-T4 signature export fixture that binds only the substrate-anchored "
+        "`068-signed-acts-manifest.cbor` member through "
+        "`trellis.export.signed-acts.manifest.v1`. The render-time "
+        "`066-signed-acts.cbor` catalog and its `trellis.export.signed-acts.v1` "
+        "extension are intentionally absent: the 068 manifest is the "
+        "load-bearing proof of which signed-act source events landed, while the "
+        "066 projection is an optional reporting surface that may legitimately "
+        "be omitted.\n"
+    ).encode("utf-8")
+
+    manifest_payload = {
+        "format": "trellis-export/1",
+        "version": 1,
+        "generator": "x-trellis-test/export-generator-009-signed-acts-manifest-only",
+        "generated_at": ts(1776877863),
+        "scope": scope,
+        "tree_size": 1,
+        "head_checkpoint_digest": head_checkpoint_digest,
+        "registry_bindings": [
+            {
+                "registry_digest": domain_registry_digest,
+                "registry_format": 1,
+                "registry_version": "x-trellis-test/registry-signature-v1",
+                "bound_at_sequence": 0,
+            }
+        ],
+        "signing_key_registry_digest": sha256(signing_key_registry),
+        "events_digest": sha256(events_cbor),
+        "checkpoints_digest": sha256(members_data["040-checkpoints.cbor"]),
+        "inclusion_proofs_digest": sha256(inclusion_proofs),
+        "consistency_proofs_digest": sha256(consistency_proofs),
+        "payloads_inlined": False,
+        "external_anchors": [],
+        "posture_declaration": {
+            "provider_readable": True,
+            "reader_held": False,
+            "delegated_compute": False,
+            "external_anchor_required": False,
+            "external_anchor_name": None,
+            "recovery_without_user": True,
+            "metadata_leakage_summary": "WOS-T4 signed-acts-manifest-only export fixture with readable WOS payload bytes.",
+        },
+        "head_format_version": 1,
+        "omitted_payload_checks": [],
+        "extensions": {
+            SIGNED_ACTS_MANIFEST_EXTENSION_KEY: signed_acts_manifest_extension(
+                signed_acts_manifest_bytes
+            ),
+        },
+    }
+    members_data["000-manifest.cbor"] = cose_sign1(
+        seed, kid, dcbor(manifest_payload), ARTIFACT_TYPE_MANIFEST
+    )
+
+    for member, member_bytes in members_data.items():
+        write_bytes(OUT_EXPORT_009 / member, member_bytes)
+
+    members = sorted(members_data)
+    root_dir = f"trellis-export-{scope.decode('utf-8')}-1-{leaf_hash.hex()[:8]}"
+    zip_bytes = write_zip(
+        OUT_EXPORT_009 / "expected-export.zip",
+        root_dir=root_dir,
+        members=members,
+        data=members_data,
+    )
+    ledger_state = {
+        "version": 1,
+        "scope": scope,
+        "tree_size": 1,
+        "root_dir": root_dir,
+        "members": members,
+        "notes": "Fixture ledger_state for export/009-signed-acts-manifest-only; pack listed members into deterministic ZIP.",
+    }
+    write_bytes(OUT_EXPORT_009 / "input-ledger-state.cbor", dcbor(ledger_state))
+    write_text(
+        OUT_EXPORT_009 / "manifest.toml",
+        f'''id          = "export/009-signed-acts-manifest-only"
+op          = "export"
+status      = "active"
+description = """Single-event WOS-T4 export that carries a WOS `SignatureAffirmation` event and binds only the substrate-anchored `068-signed-acts-manifest.cbor` member through `trellis.export.signed-acts.manifest.v1`. The render-time `066-signed-acts.cbor` projection and its `trellis.export.signed-acts.v1` extension are absent — exercising the invariant that the 068 manifest is the load-bearing signed-acts proof and the 066 projection is optional reporting."""
+
+[coverage]
+tr_core = [
+    "TR-CORE-006",
+    "TR-CORE-062",
+    "TR-CORE-064",
+    "TR-CORE-065",
+    "TR-CORE-067",
+    "TR-CORE-110",
+    "TR-CORE-134",
+]
+tr_op = [
+    "TR-OP-072",
+    "TR-OP-122",
+]
+
+[inputs]
+ledger_state = "input-ledger-state.cbor"
+
+[expected]
+zip        = "expected-export.zip"
+zip_sha256 = "{hashlib.sha256(zip_bytes).hexdigest()}"
+
+[derivation]
+document = "derivation.md"
+''',
+    )
+    write_text(
+        OUT_EXPORT_009 / "derivation.md",
+        """# Derivation — `export/009-signed-acts-manifest-only`
+
+This fixture realizes the substrate-only branch of the WOS/Formspec signed-acts
+contract: the export carries the canonical WOS `SignatureAffirmation` event but
+binds only the `068-signed-acts-manifest.cbor` member through
+`trellis.export.signed-acts.manifest.v1`. The render-time
+`066-signed-acts.cbor` projection and its `trellis.export.signed-acts.v1`
+extension are intentionally absent.
+
+The 068 manifest member is a canonical-CBOR array of
+`[bstr(canonical_event_hash), tstr(event_type)]` pairs, sorted ascending by
+`(hash, event_type)`, derived deterministically from the sealed
+`wos.kernel.signature_affirmation` and `wos.kernel.signature_admission_failed`
+events in scope (Task A1 / `signed-acts-manifest-v1`). The export-manifest
+extension binds `manifest_digest = SHA-256(068 member bytes)` so any drift in
+the manifest member is detectable without re-deriving from sealed events.
+
+This shape is permitted: the 066 projection is an optional reporting surface
+and exporters MAY omit it. The signed source event chain plus the 068 manifest
+remain authoritative.
+""",
+    )
+
+
+def write_signed_acts_manifest_tamper_verify_vector() -> None:
+    """Tamper the 068 manifest member after manifest signing.
+
+    The 068 member byte is mutated so the SHA-256 digest no longer matches the
+    `trellis.export.signed-acts.manifest.v1.manifest_digest` extension binding.
+    The verifier MUST emit blocking `signed_acts_manifest_extension_digest_mismatch`
+    (Task A1 §6.7 — substrate-shape failure).
+    """
+    root_dir, members, data, _manifest_payload = export_members_from_dir(OUT_EXPORT_006)
+    original = data[SIGNED_ACTS_MANIFEST_MEMBER]
+    if len(original) == 0:
+        raise ValueError("068 manifest member is empty; cannot tamper")
+    # Flip a single byte deep enough in the sealed-tuple list to never coincide
+    # with structural CBOR framing — guarantees the SHA-256 changes while the
+    # CBOR remains structurally parseable.
+    mutated = bytearray(original)
+    mutated[-1] ^= 0x01
+    tampered_bytes = bytes(mutated)
+    data_tampered = dict(data)
+    data_tampered[SIGNED_ACTS_MANIFEST_MEMBER] = tampered_bytes
+
+    OUT_VERIFY_021.mkdir(parents=True, exist_ok=True)
+    write_zip(
+        OUT_VERIFY_021 / "input-export.zip",
+        root_dir=root_dir,
+        members=members,
+        data=data_tampered,
+    )
+    write_text(
+        OUT_VERIFY_021 / "manifest.toml",
+        '''id          = "verify/021-signed-acts-manifest-tamper"
+op          = "verify"
+status      = "active"
+description = """Negative verify vector for the substrate-anchored 068 signed-acts manifest. Starts from `export/006-signature-affirmations-inline` and mutates one byte of `068-signed-acts-manifest.cbor` after manifest signing so the SHA-256 digest no longer matches the `trellis.export.signed-acts.manifest.v1.manifest_digest` binding while the signed export manifest stays unchanged."""
+
+[coverage]
+tr_core = ["TR-CORE-067"]
+tr_op = ["TR-OP-122"]
+
+[inputs]
+export_zip = "input-export.zip"
+
+[expected.report]
+structure_verified   = true
+integrity_verified   = false
+readability_verified = true
+first_failure_kind   = "signed_acts_manifest_extension_digest_mismatch"
+
+[derivation]
+document = "derivation.md"
+''',
+    )
+    write_text(
+        OUT_VERIFY_021 / "derivation.md",
+        """# Derivation — `verify/021-signed-acts-manifest-tamper`
+
+This fixture starts from `export/006-signature-affirmations-inline`, mutates
+the final byte of `068-signed-acts-manifest.cbor`, and leaves the signed
+`000-manifest.cbor` unchanged. The substrate-anchored signed-acts manifest is
+the load-bearing proof of which signed-act source events landed, bound to the
+manifest extension `trellis.export.signed-acts.manifest.v1.manifest_digest`.
+
+The WOS validator must localize the failure to
+`signed_acts_manifest_extension_digest_mismatch` (substrate-shape failure;
+blocking) and the relying-party verdict MUST become invalid. Render drift on
+the 066 projection alone never blocks; substrate drift on the 068 manifest
+always does.
+""",
+    )
+
+
+def write_066_render_drift_only_verify_vector() -> None:
+    """066 mutated + manifest re-signed; 068 untouched; verifier issues advisory only.
+
+    Distinct fixture surface from verify/019 (which mutates a signer field):
+    here a `bound` field is mutated to demonstrate the same invariant — render
+    drift on any 066 projection field is advisory because the load-bearing
+    substrate-anchored 068 manifest still byte-matches its derivation. This
+    regression-tests "render drift alone never blocks verdict."
+    """
+    root_dir, members, data, manifest_payload = export_members_from_dir(OUT_EXPORT_006)
+    catalog = cbor2.loads(data[SIGNED_ACTS_MEMBER])
+    tampered_catalog = copy.deepcopy(catalog)
+    tampered_catalog["acts"][0]["bound"]["document_id"] = "doc-drifted"
+    catalog_bytes = dcbor(tampered_catalog)
+    data_verify = dict(data)
+    data_verify[SIGNED_ACTS_MEMBER] = catalog_bytes
+
+    seed, pubkey = load_seed_and_pubkey(KEY_ISSUER_001)
+    kid = derive_kid(SUITE_ID_PHASE_1, pubkey)
+    manifest_payload_verify = copy.deepcopy(manifest_payload)
+    manifest_payload_verify["extensions"][SIGNED_ACTS_EXTENSION_KEY][
+        "catalog_digest"
+    ] = sha256(catalog_bytes)
+    data_verify["000-manifest.cbor"] = cose_sign1(
+        seed, kid, dcbor(manifest_payload_verify), ARTIFACT_TYPE_MANIFEST
+    )
+
+    OUT_VERIFY_022.mkdir(parents=True, exist_ok=True)
+    write_zip(
+        OUT_VERIFY_022 / "input-export.zip",
+        root_dir=root_dir,
+        members=members,
+        data=data_verify,
+    )
+    write_text(
+        OUT_VERIFY_022 / "manifest.toml",
+        '''id          = "verify/022-066-render-drift-tampered-only"
+op          = "verify"
+status      = "active"
+description = """Advisory verify vector pinning the "render drift alone never blocks verdict" invariant. Starts from `export/006-signature-affirmations-inline`, mutates a `bound` field in `066-signed-acts.cbor`, recomputes its `trellis.export.signed-acts.v1` digest, and re-signs the export manifest. The substrate-anchored `068-signed-acts-manifest.cbor` is untouched and still equals its deterministic derivation, so the verifier emits advisory `signed_acts_render_drift` and the relying-party verdict stays valid."""
+
+[coverage]
+tr_core = ["TR-CORE-067"]
+tr_op = ["TR-OP-122"]
+
+[inputs]
+export_zip = "input-export.zip"
+
+[expected.report]
+structure_verified   = true
+integrity_verified   = true
+readability_verified = true
+
+[derivation]
+document = "derivation.md"
+''',
+    )
+    write_text(
+        OUT_VERIFY_022 / "derivation.md",
+        """# Derivation — `verify/022-066-render-drift-tampered-only`
+
+This fixture starts from `export/006-signature-affirmations-inline`, mutates
+`acts[0].bound.document_id` in `066-signed-acts.cbor`, recomputes the
+`catalog_digest` under `trellis.export.signed-acts.v1`, and re-signs
+`000-manifest.cbor`. The ZIP remains structurally valid, every manifest digest
+matches archive contents, and `068-signed-acts-manifest.cbor` is left
+untouched — so it still byte-equals the deterministic
+`signed-acts-manifest-v1` derivation over the sealed events.
+
+The verifier reports advisory `signed_acts_render_drift` (066 projection bytes
+disagree with the canonical derivation) but the relying-party verdict stays
+valid because the load-bearing substrate-anchored 068 manifest is intact.
+Distinct from `verify/019-export-006-signed-acts-render-drift`, which mutates a
+signer field; this fixture mutates a bound-subject field. Together they pin the
+"render drift on any 066 surface is advisory only" invariant.
+""",
+    )
+
+
 def main() -> None:
     build_export_006()
     build_export_007()
     build_export_008()
+    build_export_009()
     write_verify_vector()
     write_signed_acts_verify_vector()
     write_signed_acts_unsupported_rule_verify_vector()
+    write_signed_acts_manifest_tamper_verify_vector()
+    write_066_render_drift_only_verify_vector()
     write_tamper_vector()
     write_signed_acts_tamper_vector()
     write_policy_closure_tamper_vector()

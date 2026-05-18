@@ -154,7 +154,7 @@ def _verdict_from_parts(
         reason = (
             "projection_mismatch"
             if any(
-                finding.kind == "signed_acts_projection_mismatch"
+                finding.kind == "signed_acts_manifest_mismatch"
                 for finding in findings
             )
             else "projection_integrity"
@@ -188,7 +188,14 @@ def _is_projection_finding(finding: WosFinding) -> bool:
         "signed_acts_catalog_digest_mismatch",
         "signed_acts_catalog_invalid",
         "signed_acts_catalog_unbound",
-        "signed_acts_projection_mismatch",
+        # 068 signed-acts-manifest extension findings (substrate-anchored proof
+        # of which events landed). Mirrors Rust `is_projection_finding` semantics
+        # at `crates/trellis-verify-wos/src/signed_acts.rs` (Task A7).
+        "signed_acts_manifest_mismatch",
+        "signed_acts_manifest_extension_digest_mismatch",
+        "signed_acts_manifest_extension_invalid",
+        "signed_acts_manifest_missing_member",
+        "signed_acts_manifest_member_unbound",
     }
 
 
@@ -764,9 +771,15 @@ def _validate_signed_acts_projection(
         findings.append(_failure("signed_acts_catalog_invalid", None, str(exc)))
         return findings
     if derived != catalog_bytes:
+        # Render drift is advisory: the 068 manifest member is the substrate-anchored
+        # proof of which events landed; the 066 catalog is a downstream projection
+        # whose bytes can legitimately drift across renderers. Substrate-shape
+        # failures (catalog missing, digest mismatched, catalog unbound, CBOR
+        # invalid) remain `failure` above. Mirrors Rust `validate_bound_signed_acts_projection`
+        # at `crates/trellis-verify-wos/src/signed_acts.rs` (Task A7).
         findings.append(
-            _failure(
-                "signed_acts_projection_mismatch",
+            _advisory(
+                "signed_acts_render_drift",
                 None,
                 "signed acts catalog does not match deterministic WOS/Formspec derivation",
             )

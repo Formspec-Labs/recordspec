@@ -1,0 +1,29 @@
+id          = "export/009-signed-acts-manifest-only"
+op          = "export"
+status      = "active"
+description = """Single-event WOS-T4 export that carries a WOS `SignatureAffirmation` event and binds only the substrate-anchored `068-signed-acts-manifest.cbor` member through `trellis.export.signed-acts.manifest.v1`. The render-time `066-signed-acts.cbor` projection and its `trellis.export.signed-acts.v1` extension are absent — exercising the invariant that the 068 manifest is the load-bearing signed-acts proof and the 066 projection is optional reporting."""
+
+[coverage]
+tr_core = [
+    "TR-CORE-006",
+    "TR-CORE-062",
+    "TR-CORE-064",
+    "TR-CORE-065",
+    "TR-CORE-067",
+    "TR-CORE-110",
+    "TR-CORE-134",
+]
+tr_op = [
+    "TR-OP-072",
+    "TR-OP-122",
+]
+
+[inputs]
+ledger_state = "input-ledger-state.cbor"
+
+[expected]
+zip        = "expected-export.zip"
+zip_sha256 = "8991720b5295670c9e1c75e8dd45ab0efc1ea0e8eec15e5181ef2a98968a007c"
+
+[derivation]
+document = "derivation.md"

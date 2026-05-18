@@ -90,7 +90,14 @@ TAMPER_KIND_ENUM = frozenset({
     "signed_acts_catalog_digest_mismatch",  # WOS-TV-016.
     "signed_acts_catalog_invalid",  # WOS-TV-015 / WOS-TV-018.
     "signed_acts_catalog_unbound",  # WOS-TV-014.
-    "signed_acts_projection_mismatch",  # WOS-TV-017.
+    "signed_acts_render_drift",  # WOS-TV-017 (advisory under 068 manifest authority).
+    # 068 signed-acts-manifest extension findings (substrate-anchored proof;
+    # Task A1 spec rows WOS-TV-014a/015a/018a land separately).
+    "signed_acts_manifest_mismatch",
+    "signed_acts_manifest_extension_digest_mismatch",
+    "signed_acts_manifest_extension_invalid",
+    "signed_acts_manifest_missing_member",
+    "signed_acts_manifest_member_unbound",
     "key_class_mismatch",                # Core §8.7.3 step 4 (ADR 0006).
     "key_entry_attributes_shape_mismatch",   # Core §8.7.2 (ADR 0006).
     # Append idempotency (Core §6.1 / §17 / §19.1; invariant #13). Verifier
