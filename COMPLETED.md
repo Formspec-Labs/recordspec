@@ -18,6 +18,46 @@ cross-commit wave context that a raw log cannot reconstruct.
 
 ## Wave-by-wave dispatch history
 
+### Wave 51 (2026-05-18) — Substrate Externalization Preflight — v1.1.0 retag
+
+Next coherent-snapshot tag (`v1.1.0`) gated on **public conformance / DX
+evidence** for the §4.2.2 profile. Plan: `formspec-stack/thoughts/plans/2026-05-18-substrate-externalization-preflight.md`. Followups: `formspec-stack/thoughts/plans/2026-05-18-substrate-externalization-preflight.FOLLOWUPS.md`.
+
+The retag does NOT change Phase-1 wire shape. It ships the conformance
+evidence + byte-protocol hygiene that lets a third-party verifier author
+implement against the externalized profile without reading Rust source.
+
+Stream A — retag-gated:
+
+- **A0 Runtime-port decision** (`formspec-stack/thoughts/specs/2026-05-18-canonical-cbor-runtime-port.md`). Captures the §4.2.2 runtime-adapter contract, candidate classification (adopt/wrap/oracle/test-only/own/reject), and variation-axis decisions. Builds on ADR 0014 (externalization). Canonical CBOR profile §7 carries the "How to join the runtime matrix" pointer.
+- **A1 Machine-readable canonical-CBOR corpus** at `fixtures/vectors/canonical-cbor/` — 24 cases over R1–R7 plus the load-bearing §4.2.2-vs-§4.2.1 distinguishing case (`R3-mixed-key-disagreement`). Rust adapter at `crates/trellis-conformance/examples/canonical_cbor_emit.rs` implements the runtime-port contract; Python orchestrator at `fixtures/vectors/_generator/gen_canonical_cbor_profile.py` shells the Rust adapter and diffs against committed expectations. Forward-compatibility cases (R6 float compaction, R7 generic-tag allowlist, R2 parse-side indefinite-length rejection) are present with `forward_compatibility: true`; the gate accepts `result=unimplemented` from the Rust oracle for those.
+- **A2 Cross-runtime parity gate** at `scripts/check_cross_runtime_parity.py` (renamed from `check_signed_acts_projection_parity.py` via `git mv`). Three named gates run in sequence: `generic-cbor-profile`, `signed-acts-projection`, `seal-fence`. Failure output is structured (gate, case_id, rule, runtime, expected/actual, reproducer). Permanent CI invariant reachable from root `make test`.
+- **A3 TR-CORE-179 promotion** from `spec-cross-ref` to `test-vector`. Evidence cell points at the corpus + the parity gate.
+- **A5 (scope-reduced) fixture batch** `verify/024-026-signed-acts-manifest-extension-…` — 3 reachable subcases of the 5 named in the plan (parse failure, wrong catalog_ref, wrong derivation_rule). Subcases d/e sit behind currently-infallible helpers (`derive_signed_acts_manifest_v1` / `encode_signed_acts_manifest_v1`) and are captured in FOLLOWUPS as deferred. TR-CORE-180 evidence-pending note narrows accordingly.
+- **A6 Signed-acts manifest SoT** swap. `trellis-server::signed_acts_manifest()` now delegates final canonical-CBOR encode to `trellis_verify_wos::encode_signed_acts_manifest_v1`. The verifier-side authority is the single source for the manifest's byte shape; byte-identity preserved across all signed-acts fixtures.
+- **A7 §18.3e seal-fence absence short-circuit pin** by predicate (`let Some(extension) = extension else { return Ok(()) };`) plus the `rg -F` command. Future v2 work has a one-grep deletion target that survives line shifts and refactors.
+
+Stream A — intentionally NOT in this retag (captured in FOLLOWUPS):
+
+- **A4 `bundle_unbound_member` fixture (TR-CORE-181)** — DEFERRED. The verifier has no §19 step 3.i sweep emitting `bundle_unbound_member`; landing the fixture without that surface would be dishonest evidence. A4 reopens as a follow-on plan covering the verifier sweep + Core §19 prose + Python mirror + conformance routing + the fixture.
+- **A5 subcases d/e** — DEFERRED. Sit behind currently-infallible helpers; no reachable code path until those gain malformed-input rejection paths.
+
+Stream B and Stream C (independent cadence, not retag-gated) landed alongside but do not gate this tag:
+
+- B0 ScopedAdvisoryLease prior-art decision (keep raw SQL under our port; sqlx's hash isn't byte-stable cross-runtime). B1 WOS-1409/WOS-1423 split for lock-busy. B2 dead-code `with_case_source_lock` deletion. B3 pool-starvation regression test fix (Barrier-synchronized). B4 root `lint-stack-common` fan-out.
+- C0 webcrypto README retire ratchet language. C1 public validation tooling decision (defer CDDL crates; coset as dev-dep oracle). C2 ADR 0015 AnchorAdapter formally deferred. C3 published trust-posture outline.
+
+Verification (all exit 0):
+- `(cd trellis && python3 scripts/check_cross_runtime_parity.py)` — three gates pass.
+- `make -C trellis test-scripts` — reaches the parity script.
+- `cargo nextest run -p trellis-verify-wos -p trellis-conformance -p integrity-verify` — 85/85 + 45/45 pass.
+- Python verifier tests pass.
+- `python3 trellis/scripts/check-specs.py` — Trellis spec checks passed.
+
+What changed for the end user:
+- **External verifier author** gets a public corpus, exact regenerator command, structured failure output, package guidance, and a documented path to join the runtime matrix.
+- **Trellis maintainer** retags a byte-protocol snapshot based on expanded evidence, not prose confidence.
+
 ### Wave 50 (2026-05-08) — identity-attestation event-type admission
 
 - Registered `wos.assurance.identity_attestation` as the canonical WOS
