@@ -191,9 +191,9 @@ Trellis-bound Formspec processors MUST implement at least Formspec Core conforma
 
 ### 5.1 Pinned encoding: dCBOR
 
-All Trellis byte-level structures — events, checkpoints, signing-key registry entries, export manifests, inclusion proofs, consistency proofs — are serialized as **deterministic CBOR (dCBOR)**, pinned to the Core Deterministic Encoding profile of [RFC 8949] §4.2.2 as implemented by `integrity-cbor`.
+Canonical encoding for every substrate byte follows the **[`specs/canonical-cbor-profile.md`](canonical-cbor-profile.md)** normative document, which publishes the RFC 8949 §4.2.2 Core Deterministic Encoding rules as a standalone runtime-neutral contract (rules R1–R7: integer smallest-form, definite-length-only, bytewise key sort on encoded key bytes, duplicate-key rejection, finite-float-only, smallest-width float emission, and tag restrictions). The Rust authority remains `integrity-stack/crates/integrity-cbor/src/lib.rs::encode_canonical_cbor_value` per ADR 0004; the profile document names the rules a third-party runtime implements to conform and identifies where each rule is enforced in the Rust source.
 
-Implementations MUST compose the substrate dCBOR encoder and decoder rather than locally redefining integer width, map-ordering, definite-length, floating-point, duplicate-key, or CBOR lookup behavior. Trellis structures use byte strings (`bstr`) for binary material and text strings (`tstr`) only for human-readable identifiers.
+All Trellis byte-level structures — events, checkpoints, signing-key registry entries, export manifests, inclusion proofs, consistency proofs — are serialized as **deterministic CBOR (dCBOR)** under that profile. Implementations MUST compose the substrate dCBOR encoder and decoder rather than locally redefining any rule named in the profile. Trellis structures use byte strings (`bstr`) for binary material and text strings (`tstr`) only for human-readable identifiers.
 
 Implementations MUST NOT emit non-deterministic CBOR. A record that does not round-trip byte-for-byte through the substrate dCBOR encoder is not a canonical record.
 
