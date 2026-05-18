@@ -222,3 +222,75 @@ def test_manifest_verifier_skipped_unrelated_events_do_not_break_derivation() ->
         },
     )
     assert findings == []
+
+
+# --- Task 2.e — field-evaluation-order parity with Rust --------------------
+
+
+def test_manifest_extension_parse_field_order_matches_rust_under_double_malformation() -> None:
+    """Task 2.e — first-fire-field parity with Rust
+    `parse_signed_acts_manifest_extension` at
+    `trellis/crates/trellis-verify-wos/src/signed_acts.rs`. Field-evaluation
+    order is `catalog_ref → manifest_digest → derivation_rule`; the Python
+    mirror was previously `catalog_ref → derivation_rule → manifest_digest`,
+    so a doubly-malformed input fired on different fields across runtimes.
+
+    Load-bearing decision: detail-text drift past verdict-kind agreement
+    counts as a parity regression because CLI/diagnostic surfaces consume
+    the first-fire field name as part of the verifier output shape.
+
+    Construct an extension dict that is malformed in BOTH `manifest_digest`
+    (wrong byte length — 16 bytes instead of 32) AND `derivation_rule`
+    (non-text — integer). Under Rust order the first failure fires on
+    `manifest_digest`; under the wrong order it would fire on
+    `derivation_rule`.
+    """
+    doubly_malformed = {
+        "catalog_ref": verify_wos.SIGNED_ACTS_MANIFEST_MEMBER,
+        "manifest_digest": b"\x00" * 16,  # WRONG length — 16 vs required 32
+        "derivation_rule": 42,             # WRONG type — int vs required text
+    }
+
+    try:
+        verify_wos._parse_signed_acts_manifest_export_extension(  # noqa: SLF001
+            {"extensions": {verify_wos.SIGNED_ACTS_MANIFEST_EXPORT_EXTENSION: doubly_malformed}}
+        )
+    except core.VerifyError as exc:
+        detail = str(exc)
+    else:
+        raise AssertionError("doubly-malformed input must raise VerifyError")
+
+    # Rust `map_lookup_fixed_bytes` failure message: "`manifest_digest` must be 32 bytes".
+    assert detail == "`manifest_digest` must be 32 bytes", (
+        f"first-fire field/detail must be `manifest_digest` per Rust order, "
+        f"got: {detail!r}"
+    )
+
+
+def test_manifest_extension_parse_propagates_derivation_rule_error_when_digest_ok() -> None:
+    """Companion to the parity test above: once `manifest_digest` is
+    well-formed, the next-fire field is `derivation_rule` (under the new
+    Rust-matching order). This pins the second-position field so a future
+    accidental reorder regresses loudly.
+    """
+    only_rule_malformed = {
+        "catalog_ref": verify_wos.SIGNED_ACTS_MANIFEST_MEMBER,
+        "manifest_digest": b"\x00" * 32,  # well-formed
+        "derivation_rule": 42,             # WRONG type
+    }
+
+    try:
+        verify_wos._parse_signed_acts_manifest_export_extension(  # noqa: SLF001
+            {"extensions": {verify_wos.SIGNED_ACTS_MANIFEST_EXPORT_EXTENSION: only_rule_malformed}}
+        )
+    except core.VerifyError as exc:
+        detail = str(exc)
+    else:
+        raise AssertionError("malformed derivation_rule must raise VerifyError")
+
+    # `_map_lookup_str` returns the raw value (no type check) — the explicit
+    # `not isinstance(derivation_rule, str)` branch in
+    # `_parse_signed_acts_manifest_export_extension` fires.
+    assert detail == "signed acts manifest derivation_rule is not text", (
+        f"second-fire field must be `derivation_rule`, got: {detail!r}"
+    )

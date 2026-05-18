@@ -473,10 +473,17 @@ def _parse_signed_acts_manifest_export_extension(
     """Parse the `trellis.export.signed-acts.manifest.v1` manifest extension.
 
     Mirror of Rust `parse_signed_acts_manifest_extension` at
-    `trellis/crates/trellis-verify-wos/src/signed_acts.rs:194` — extension
+    `trellis/crates/trellis-verify-wos/src/signed_acts.rs` — extension
     shape is `{catalog_ref: tstr, manifest_digest: bstr(32), derivation_rule: tstr}`.
     Returns `None` when the extension is absent. Raises `core.VerifyError`
     when the extension is present but malformed.
+
+    Field-evaluation order matches Rust:
+    ``catalog_ref → manifest_digest → derivation_rule``. Task 2.e
+    load-bearing decision — detail-text drift past verdict-kind
+    agreement counts as a parity regression because callers (CLI,
+    diagnostic surfaces) consume the first-fire field name as part of
+    the verifier output shape.
     """
     exts = core._map_lookup_optional_extensions(manifest_map)
     if exts is None:
@@ -487,14 +494,15 @@ def _parse_signed_acts_manifest_export_extension(
     if not isinstance(ext, dict):
         raise core.VerifyError("signed acts manifest extension is not a map")
     catalog_ref = core._map_lookup_str(ext, "catalog_ref")
-    derivation_rule = core._map_lookup_str(ext, "derivation_rule")
     if not isinstance(catalog_ref, str):
         raise core.VerifyError("signed acts manifest catalog_ref is not text")
+    manifest_digest = core._map_lookup_fixed_bytes(ext, "manifest_digest", 32)
+    derivation_rule = core._map_lookup_str(ext, "derivation_rule")
     if not isinstance(derivation_rule, str):
         raise core.VerifyError("signed acts manifest derivation_rule is not text")
     return {
         "catalog_ref": catalog_ref,
-        "manifest_digest": core._map_lookup_fixed_bytes(ext, "manifest_digest", 32),
+        "manifest_digest": manifest_digest,
         "derivation_rule": derivation_rule,
     }
 
