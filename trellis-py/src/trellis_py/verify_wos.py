@@ -918,15 +918,31 @@ def _validate_signed_acts_manifest_extension(
             WOS_SIGNATURE_ADMISSION_FAILED_EVENT_TYPE,
         ):
             decoded_events.append(details)
+    # F2: split try/except so derive failures and encode failures carry
+    # distinct prefixes, byte-identical to Rust (`signed_acts.rs:167-188`).
+    # Encode-branch is structurally inert per Wave 4 (Task 2.d docstring
+    # honesty) — `encode_signed_acts_manifest_v1` cannot fail for the
+    # current manifest input shape — but the split closes a dormant
+    # divergence the published-shape contract covers exhaustively.
     try:
         manifest = derive_signed_acts_manifest_v1(decoded_events)
-        derived = encode_signed_acts_manifest_v1(manifest)
-    except (core.VerifyError, CanonicalCborError) as exc:
+    except core.VerifyError as exc:
         findings.append(
             _failure(
                 "signed_acts_manifest_extension_invalid",
                 None,
                 f"signed acts manifest derivation failed: {exc}",
+            )
+        )
+        return findings
+    try:
+        derived = encode_signed_acts_manifest_v1(manifest)
+    except CanonicalCborError as exc:
+        findings.append(
+            _failure(
+                "signed_acts_manifest_extension_invalid",
+                None,
+                f"signed acts manifest encoding failed: {exc}",
             )
         )
         return findings

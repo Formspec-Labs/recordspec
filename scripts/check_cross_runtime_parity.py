@@ -279,9 +279,14 @@ def check_python_verifier_vectors() -> None:
     # `domain_admissibility` (not `projection_integrity`) per Rust
     # `is_projection_finding` at
     # `integrity-stack/crates/integrity-verify/src/trellis/validator.rs:288-297`.
-    # Subcases (d) derivation precondition failure and (e) canonical-CBOR
-    # re-encoding failure are evidence-pending behind currently-infallible
-    # helpers — see plan FOLLOWUPS "A4+A5 BLOCKED — verifier surface gaps".
+    # Subcase (d) derivation precondition failure is evidenced by
+    # verify/027 below (Wave 5 fixture); the parity claim there is
+    # strengthened to byte-identical detail-text per ADR 0112 D-6
+    # (Wave 6 amendment) — `signed_acts_manifest_extension_invalid`
+    # detail is part of the verifier's published shape. Subcase (e)
+    # canonical-CBOR re-encoding failure is structurally inert per
+    # Wave 4 Task 2.d (`encode_signed_acts_manifest_v1` docstring honesty
+    # — no reachable failure mode for the current manifest input shape).
     for subcase in (
         "024-signed-acts-manifest-extension-parse-failure",
         "025-signed-acts-manifest-extension-wrong-catalog-ref",
