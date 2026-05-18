@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Cross-runtime parity gate. Permanent CI invariant.
 
-Runs three named gates in sequence and reports a structured failure block
-on disagreement. The gates cover the substrate's three byte-identity surfaces:
+Runs four named gates in sequence and reports a structured failure block
+on disagreement. The gates cover the substrate's byte-identity surfaces:
 
 1. `generic-cbor-profile` — every R1–R7 case in
    `fixtures/vectors/canonical-cbor/manifest.json` agrees with the Rust oracle
@@ -21,6 +21,14 @@ on disagreement. The gates cover the substrate's three byte-identity surfaces:
    across every committed export fixture, against synthetic seal-fence
    extensions built from each fixture's archive members, including every
    Rust `SealFenceTamper` variant (`export.rs:1153`).
+4. `substrate-export-verifier` — Python `trellis_py.verify.verify_export_zip`
+   produces the same per-fixture verdict shape as Rust
+   `integrity_verify::trellis::verify_export_zip` on substrate-only
+   verify vectors (NOT WOS-routed). First registered case is
+   `verify/023-bundle-unbound-member` for Core §19 step 3.i
+   (TR-CORE-181). Rust agreement is enforced by
+   `cargo nextest run -p trellis-conformance`; this gate is the
+   Python-side parity counterpart.
 
 Failure output names: gate, case id / vector id, rule (R1–R7 when
 applicable), runtime + library, expected hex / reject code, actual,
@@ -477,7 +485,12 @@ def check_cross_runtime_seal_fence_parity() -> None:
 # Gate runner — structured failure output
 # --------------------------------------------------------------------------
 
-GATES_ORDER = ("generic-cbor-profile", "signed-acts-projection", "seal-fence")
+GATES_ORDER = (
+    "generic-cbor-profile",
+    "signed-acts-projection",
+    "seal-fence",
+    "substrate-export-verifier",
+)
 
 
 def _print_gate_header(gate: str) -> None:
@@ -733,6 +746,132 @@ def run_seal_fence_gate() -> bool:
 
 
 # --------------------------------------------------------------------------
+# Gate 4: substrate-export-verifier
+# --------------------------------------------------------------------------
+
+# Substrate-only verify fixtures that exercise the Core §19 sweep / Bundle
+# / extension-binding paths emitted by `integrity-verify`'s Core lane
+# (NOT routed through `trellis-verify-wos`). Each entry pins the
+# expected substrate verdict shape. The Rust side is exercised by
+# `cargo nextest run -p trellis-conformance`
+# (`committed_vectors_match_the_rust_runtime`); this gate is the
+# Python-side counterpart so any drift between
+# `trellis_py.verify.verify_export_zip` and
+# `integrity_verify::trellis::verify_export_zip` on these substrate
+# fixtures surfaces here as a structured failure block.
+SUBSTRATE_EXPORT_VERIFIER_VECTORS = [
+    {
+        "case_id": "verify/023-bundle-unbound-member",
+        "vector": "verify/023-bundle-unbound-member/input-export.zip",
+        # TR-CORE-181 — Core §19 step 3.i generic bundle_unbound_member
+        # sweep. A stray archive member not bound by the manifest,
+        # registry, event content_hash, interop_sidecars, or any
+        # registered manifest extension MUST surface
+        # `bundle_unbound_member` and MUST drive `integrity_verified`
+        # to false.
+        "expected_kind": "bundle_unbound_member",
+        "expected_location": "999-stray.bin",
+        "structure_verified": True,
+        "integrity_verified": False,
+        "readability_verified": True,
+    },
+]
+
+
+def check_substrate_export_verifier_vectors() -> None:
+    """Assert Python `trellis_py.verify.verify_export_zip` produces the
+    expected substrate verdict shape on each Core-lane verify fixture.
+
+    Rust agreement on the same fixtures is enforced by
+    `cargo nextest run -p trellis-conformance` (the
+    `committed_vectors_match_the_rust_runtime` test). If a fixture is
+    added here, the matching `manifest.toml` `[expected.report]` block
+    drives the Rust side.
+    """
+    from trellis_py.verify import verify_export_zip
+
+    for case in SUBSTRATE_EXPORT_VERIFIER_VECTORS:
+        path = VECTORS / case["vector"]
+        if not path.is_file():
+            raise AssertionError(
+                f"{case['case_id']}: substrate vector missing at {path}"
+            )
+        report = verify_export_zip(path.read_bytes())
+        if report.structure_verified != case["structure_verified"]:
+            raise AssertionError(
+                f"{case['case_id']}: structure_verified="
+                f"{report.structure_verified}, expected "
+                f"{case['structure_verified']}"
+            )
+        if report.integrity_verified != case["integrity_verified"]:
+            raise AssertionError(
+                f"{case['case_id']}: integrity_verified="
+                f"{report.integrity_verified}, expected "
+                f"{case['integrity_verified']}"
+            )
+        if report.readability_verified != case["readability_verified"]:
+            raise AssertionError(
+                f"{case['case_id']}: readability_verified="
+                f"{report.readability_verified}, expected "
+                f"{case['readability_verified']}"
+            )
+        matching = [
+            f
+            for f in report.event_failures
+            if f.kind == case["expected_kind"]
+            and f.location == case["expected_location"]
+        ]
+        if not matching:
+            raise AssertionError(
+                f"{case['case_id']}: expected substrate finding "
+                f"kind={case['expected_kind']!r} "
+                f"location={case['expected_location']!r}; got "
+                f"{[(f.kind, f.location) for f in report.event_failures]!r}"
+            )
+
+
+def run_substrate_export_verifier_gate() -> bool:
+    """Parity gate for substrate-only export-verifier fixtures (NOT
+    WOS-routed). Fixture 023 (`bundle_unbound_member`, TR-CORE-181)
+    is the first registered case; further substrate-only verify
+    fixtures land here as they're added.
+    """
+    _print_gate_header("substrate-export-verifier")
+    runtime = (
+        "Python trellis_py.verify.verify_export_zip vs "
+        "Rust integrity-verify::trellis::verify_export_zip"
+    )
+
+    try:
+        check_substrate_export_verifier_vectors()
+    except AssertionError as exc:
+        _print_failure_block(
+            gate="substrate-export-verifier",
+            case_id="<substrate-export-verifier vector>",
+            rule="Core §19 substrate sweep parity",
+            runtime=runtime,
+            expected="Python verifier verdict matches expected per-vector shape",
+            actual=str(exc),
+            command=(
+                f"(cd {ROOT} && "
+                f"python3 scripts/check_cross_runtime_parity.py)"
+            ),
+            note=(
+                "Rust agreement on the same fixtures is enforced by "
+                "`cargo nextest run -p trellis-conformance`."
+            ),
+        )
+        return False
+
+    _print_gate_pass(
+        "substrate-export-verifier",
+        "Python substrate verifier verdicts match expected per-vector shape "
+        f"({len(SUBSTRATE_EXPORT_VERIFIER_VECTORS)} fixture(s))",
+    )
+    return True
+
+
+# --------------------------------------------------------------------------
 # Orchestrator
 # --------------------------------------------------------------------------
 
@@ -752,6 +891,7 @@ def main() -> int:
         ("generic-cbor-profile", run_generic_cbor_profile_gate),
         ("signed-acts-projection", run_signed_acts_projection_gate),
         ("seal-fence", run_seal_fence_gate),
+        ("substrate-export-verifier", run_substrate_export_verifier_gate),
     ]
 
     failures: list[str] = []
@@ -769,8 +909,9 @@ def main() -> int:
         return 1
 
     print(
-        "cross-runtime parity: all three gates pass "
-        "(generic-cbor-profile, signed-acts-projection, seal-fence)"
+        "cross-runtime parity: all four gates pass "
+        "(generic-cbor-profile, signed-acts-projection, seal-fence, "
+        "substrate-export-verifier)"
     )
     return 0
 

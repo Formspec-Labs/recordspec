@@ -1,0 +1,20 @@
+id          = "verify/023-bundle-unbound-member"
+op          = "verify"
+status      = "active"
+description = """Negative verify vector for Core §19 step 3.i `bundle_unbound_member` (TR-CORE-181). Starts from `export/001-two-event-chain/expected-export.zip` and injects one extra archive member (`999-stray.bin`) under the export-root directory. The stray member is not in the §18.2 admitted set, not bound by any manifest top-level digest, registry binding, event content_hash, `interop_sidecars[].path`, or registered manifest extension. Verifier emits `bundle_unbound_member` (blocking) and `integrity_verified = false`; substrate `structure_verified` and `readability_verified` still pass."""
+
+[coverage]
+tr_core = ["TR-CORE-181"]
+
+[inputs]
+export_zip = "input-export.zip"
+
+[expected.report]
+structure_verified   = true
+integrity_verified   = false
+readability_verified = true
+first_failure_kind   = "bundle_unbound_member"
+failing_event_id     = "999-stray.bin"
+
+[derivation]
+document = "derivation.md"
