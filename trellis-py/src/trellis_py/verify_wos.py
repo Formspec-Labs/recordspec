@@ -694,28 +694,78 @@ def _require_bool(m: dict, key: str, expected: bool) -> None:
 def derive_signed_acts_manifest_v1(
     events: Iterable[core.EventDetails],
 ) -> list[tuple[bytes, str]]:
-    """Walk `events`, select WOS signature_affirmation and signature_admission_failed
-    events, and return a sorted list of `(canonical_event_hash, event_type)` tuples.
+    """Walk `events` and return a sorted list of
+    `(canonical_event_hash, event_type)` tuples — one per input event.
 
     Mirror of Rust `derive_signed_acts_manifest_v1` at
-    `trellis/crates/trellis-verify-wos/src/signed_acts.rs:245`. Sorted by
-    `(hash bytes ASC, event_type ASC)` — Python tuple ordering on `(bytes, str)`
-    matches `entries.sort()` in Rust byte-for-byte.
+    `trellis/crates/trellis-verify-wos/src/signed_acts.rs`. Sorted by
+    `(hash bytes ASC, event_type ASC)` — Python tuple ordering on
+    `(bytes, str)` matches `entries.sort()` in Rust byte-for-byte.
 
-    Output is the input to :func:`encode_signed_acts_manifest_v1`, which produces
-    the byte form of `068-signed-acts-manifest.cbor` (Task A1).
+    Callers are responsible for pre-selecting candidate events (e.g.
+    filtering by event_type against the WOS signed-acts allowlist).
+    The in-tree caller `_validate_signed_acts_manifest_extension`
+    pre-filters before invoking this deriver.
+
+    Output is the input to :func:`encode_signed_acts_manifest_v1`,
+    which produces the byte form of `068-signed-acts-manifest.cbor`
+    (Task A1).
+
+    Raises (Task 2.c — closed rejection set; error STRINGS are
+    byte-identical to Rust so the verifier output shape stays
+    cross-runtime-aligned):
+
+    - ``core.VerifyError`` with detail
+      ``signed-acts manifest entry has empty canonical_event_hash
+      for event_type {event_type}`` — when an input event has an
+      empty ``canonical_event_hash``. Python-specific because
+      ``EventDetails.canonical_event_hash`` is ``bytes`` (the empty
+      byte string is representable); Rust's
+      ``DomainEvent.canonical_event_hash`` is ``[u8; 32]`` so the
+      type system enforces non-emptiness ahead of runtime.
+    - ``core.VerifyError`` with detail
+      ``signed-acts manifest entry event_type {event_type} is not
+      in the closed WOS allowlist ({affirmation}, {admission_failed})``
+      — when an input event's ``event_type`` is not in the closed
+      WOS signed-acts allowlist. Per Core §6.7 + the
+      ``signed-acts.manifest.v1`` extension contract, the manifest
+      may only project events from this allowlist; anything else
+      is a derivation-input bug at the caller.
+    - ``core.VerifyError`` with detail
+      ``signed-acts manifest has duplicate (canonical_event_hash,
+      event_type) tuple for event_type {event_type}`` — when two
+      input events produce identical ``(hash, event_type)`` tuples.
+      Surfaces earlier than the canonical-CBOR encoder's post-sort
+      duplicate-key check so callers see the precise input that
+      triggered it.
     """
 
-    entries: list[tuple[bytes, str]] = [
-        (details.canonical_event_hash, details.event_type)
-        for details in events
-        if details.event_type
-        in (
+    entries: list[tuple[bytes, str]] = []
+    for details in events:
+        if not details.canonical_event_hash:
+            raise core.VerifyError(
+                f"signed-acts manifest entry has empty canonical_event_hash "
+                f"for event_type {details.event_type}"
+            )
+        if details.event_type not in (
             WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE,
             WOS_SIGNATURE_ADMISSION_FAILED_EVENT_TYPE,
-        )
-    ]
+        ):
+            raise core.VerifyError(
+                f"signed-acts manifest entry event_type {details.event_type} "
+                f"is not in the closed WOS allowlist "
+                f"({WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE}, "
+                f"{WOS_SIGNATURE_ADMISSION_FAILED_EVENT_TYPE})"
+            )
+        entries.append((details.canonical_event_hash, details.event_type))
     entries.sort()
+    # Single linear pass on the sorted entries — duplicates land adjacent.
+    for idx in range(1, len(entries)):
+        if entries[idx] == entries[idx - 1]:
+            raise core.VerifyError(
+                f"signed-acts manifest has duplicate (canonical_event_hash, "
+                f"event_type) tuple for event_type {entries[idx][1]}"
+            )
     return entries
 
 
@@ -836,10 +886,16 @@ def _validate_signed_acts_manifest_extension(
     # Re-derive the manifest from sealed source events. `derive_signed_acts_manifest_v1`
     # consumes `EventDetails`; decode each ParsedSign1 once, skipping any whose
     # envelope cannot be parsed (those surface via core substrate findings).
+    # Task 2.c — the deriver is now strict on event_type; pre-filter so the
+    # substrate's mixed-event-type input stays the call site's responsibility,
+    # mirroring the Rust call site at `validate_bound_signed_acts_manifest_extension`.
     decoded_events: list[core.EventDetails] = []
     for event in events:
         details = _event_details(event)
-        if details is not None:
+        if details is not None and details.event_type in (
+            WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE,
+            WOS_SIGNATURE_ADMISSION_FAILED_EVENT_TYPE,
+        ):
             decoded_events.append(details)
     try:
         manifest = derive_signed_acts_manifest_v1(decoded_events)

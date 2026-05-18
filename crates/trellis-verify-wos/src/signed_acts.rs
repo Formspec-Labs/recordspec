@@ -151,7 +151,20 @@ fn validate_bound_signed_acts_manifest_extension(
         ));
         return findings;
     }
-    let manifest = match derive_signed_acts_manifest_v1(export.events) {
+    // Task 2.c — derive_signed_acts_manifest_v1 is now strict: it rejects
+    // any input event_type outside the closed WOS signed-acts allowlist.
+    // Pre-filter export.events so the substrate's mixed-event-type input
+    // remains the call-site's responsibility, not the deriver's.
+    let candidate_events: Vec<DomainEvent> = export
+        .events
+        .iter()
+        .filter(|event| {
+            event.event_type == wos_signature_affirmation_event_type()
+                || event.event_type == wos_signature_admission_failed_event_type()
+        })
+        .cloned()
+        .collect();
+    let manifest = match derive_signed_acts_manifest_v1(&candidate_events) {
         Ok(manifest) => manifest,
         Err(error) => {
             findings.push(finding(
@@ -390,29 +403,73 @@ fn parse_signed_acts_export_extension(bytes: &[u8]) -> Result<SignedActsExportEx
 
 /// Builds the v1 signed-acts manifest tuples from `events`.
 ///
-/// Walks `events`, selects each `signature_affirmation` and `signature_admission_failed`
-/// event, and emits a `(canonical_event_hash, event_type)` pair per match. The result is
-/// sorted byte-deterministically by `(hash bytes ASC, event_type ASC)` so Rust and Python
-/// derivations produce identical output (parity gate landed in Task A9).
+/// Walks `events` and emits a `(canonical_event_hash, event_type)` pair per
+/// input event. The result is sorted byte-deterministically by
+/// `(hash bytes ASC, event_type ASC)` so Rust and Python derivations produce
+/// identical output (parity gate landed in Task A9).
 ///
-/// Tuple shape matches the future `068-signed-acts-manifest.cbor` export member registered
-/// by Task A1's §6.7 extension. The encoder is [`encode_signed_acts_manifest_v1`].
+/// Tuple shape matches the `068-signed-acts-manifest.cbor` export member
+/// registered by Task A1's §6.7 extension. The encoder is
+/// [`encode_signed_acts_manifest_v1`].
+///
+/// Callers are responsible for pre-selecting candidate events (e.g. filtering
+/// by `event_type` against the WOS signed-acts allowlist); this function
+/// enforces the allowlist explicitly and surfaces a typed rejection for any
+/// non-allowlisted event_type. See the in-tree caller
+/// [`validate_bound_signed_acts_manifest_extension`] for the pre-filter
+/// pattern.
 ///
 /// # Errors
-/// Currently infallible (the `Result` keeps the signature consistent with the
-/// `SignedActsDeriver` family for future validation rules that may reject malformed input).
+/// Returns `Err(message)` for any of the following input-validation failures
+/// (Task 2.c). The closed rejection set surfaces earlier than the encoder's
+/// post-sort dup-key check and gives the verifier explicit, attributable
+/// failure modes:
+///
+/// - `event_type` outside the closed WOS allowlist
+///   (`wos.kernel.signature_affirmation`,
+///   `wos.kernel.signature_admission_failed`). Per Core §6.7 + the
+///   `signed-acts.manifest.v1` extension contract, the manifest may only
+///   project events from this allowlist; anything else is a derivation-input
+///   bug at the caller.
+/// - Duplicate `(canonical_event_hash, event_type)` tuples. Two distinct
+///   events cannot share both the same canonical event hash and the same
+///   event_type — that would mean the same sealed event was projected twice.
+///   This rejection fires earlier than the canonical-CBOR encoder's post-sort
+///   duplicate-key check so callers see the precise input that triggered it.
+///
+/// (The Python mirror at `trellis-py/src/trellis_py/verify_wos.py` additionally
+/// rejects empty `canonical_event_hash` because Python's
+/// `EventDetails.canonical_event_hash` is `bytes`, which can be the empty
+/// byte string at the type level; Rust's `DomainEvent.canonical_event_hash`
+/// is `[u8; 32]`, structurally non-empty — the type system enforces the
+/// invariant ahead of runtime.)
 pub fn derive_signed_acts_manifest_v1(
     events: &[DomainEvent],
 ) -> Result<Vec<(Vec<u8>, String)>, String> {
-    let mut entries: Vec<(Vec<u8>, String)> = events
-        .iter()
-        .filter(|event| {
-            event.event_type == wos_signature_affirmation_event_type()
-                || event.event_type == wos_signature_admission_failed_event_type()
-        })
-        .map(|event| (event.canonical_event_hash.to_vec(), event.event_type.clone()))
-        .collect();
+    let mut entries: Vec<(Vec<u8>, String)> = Vec::with_capacity(events.len());
+    for event in events {
+        if event.event_type != wos_signature_affirmation_event_type()
+            && event.event_type != wos_signature_admission_failed_event_type()
+        {
+            return Err(format!(
+                "signed-acts manifest entry event_type {} is not in the closed WOS allowlist \
+                 ({}, {})",
+                event.event_type,
+                wos_signature_affirmation_event_type(),
+                wos_signature_admission_failed_event_type(),
+            ));
+        }
+        entries.push((event.canonical_event_hash.to_vec(), event.event_type.clone()));
+    }
     entries.sort();
+    // Single linear pass on the sorted entries — duplicates land adjacent.
+    if let Some(window) = entries.windows(2).find(|pair| pair[0] == pair[1]) {
+        return Err(format!(
+            "signed-acts manifest has duplicate (canonical_event_hash, event_type) \
+             tuple for event_type {}",
+            window[0].1,
+        ));
+    }
     Ok(entries)
 }
 
@@ -1819,12 +1876,43 @@ mod tests {
     }
 
     #[test]
-    fn signed_acts_manifest_excludes_unrelated_event_types() {
-        let manifest =
-            derive_signed_acts_manifest_v1(&[unrelated_event(0x55)]).expect("derive");
+    fn signed_acts_manifest_rejects_unrelated_event_types() {
+        // Task 2.c — strictness change. Previously
+        // `signed_acts_manifest_excludes_unrelated_event_types` asserted
+        // silent-drop of non-allowlist event_types. The deriver is now
+        // strict: callers MUST pre-filter; an unrelated event_type fed
+        // into the deriver surfaces a typed rejection. The production
+        // call site at `validate_bound_signed_acts_manifest_extension`
+        // pre-filters `export.events` so the substrate's mixed-type
+        // input stays at the call site, not the deriver.
+        let error = derive_signed_acts_manifest_v1(&[unrelated_event(0x55)])
+            .expect_err("non-allowlist event_type must reject");
         assert!(
-            manifest.is_empty(),
-            "non-signed-acts event_types must be excluded: {manifest:?}"
+            error.contains("wos.kernel.case_created"),
+            "rejection message must name the offending event_type: {error}"
+        );
+        assert!(
+            error.contains("not in the closed WOS allowlist"),
+            "rejection message must name the closed-set discipline: {error}"
+        );
+    }
+
+    #[test]
+    fn signed_acts_manifest_rejects_duplicate_tuples() {
+        // Task 2.c — duplicate `(canonical_event_hash, event_type)` tuples
+        // mean the same sealed event was projected twice; the deriver
+        // surfaces this earlier than the encoder's post-sort dup-key
+        // check so callers see the precise input that triggered it.
+        let event = signature_event_with_signer_and_hash("signer-1", 0x22);
+        let error = derive_signed_acts_manifest_v1(&[event.clone(), event])
+            .expect_err("duplicate tuple must reject");
+        assert!(
+            error.contains("duplicate"),
+            "rejection message must name duplicate condition: {error}"
+        );
+        assert!(
+            error.contains(wos_signature_affirmation_event_type()),
+            "rejection message must name the offending event_type: {error}"
         );
     }
 

@@ -124,10 +124,54 @@ def test_signed_acts_manifest_same_hash_sorts_by_event_type() -> None:
     assert manifest[1][1] == verify_wos.WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE
 
 
-def test_signed_acts_manifest_excludes_unrelated_event_types() -> None:
+def test_signed_acts_manifest_rejects_unrelated_event_types() -> None:
+    # Task 2.c — strictness change. Previously this test asserted
+    # silent-drop of non-allowlist event_types. The deriver is now
+    # strict: callers MUST pre-filter; an unrelated event_type fed
+    # into the deriver surfaces a typed rejection. The production
+    # call site at `_validate_signed_acts_manifest_extension`
+    # pre-filters so the substrate's mixed-event-type input stays
+    # the call site's responsibility. Error-string parity with Rust
+    # is part of the published verifier output shape.
     unrelated = _event("wos.kernel.case_created", b"\x55" * 32)
-    manifest = verify_wos.derive_signed_acts_manifest_v1([unrelated])
-    assert manifest == []
+    import pytest
+
+    with pytest.raises(core.VerifyError) as exc_info:
+        verify_wos.derive_signed_acts_manifest_v1([unrelated])
+    error = str(exc_info.value)
+    assert "wos.kernel.case_created" in error
+    assert "not in the closed WOS allowlist" in error
+
+
+def test_signed_acts_manifest_rejects_empty_canonical_event_hash() -> None:
+    # Task 2.c — empty canonical_event_hash is rejected. Python-specific
+    # because `EventDetails.canonical_event_hash` is `bytes` (empty bytes
+    # is representable); Rust's `[u8; 32]` enforces non-emptiness at the
+    # type level.
+    event = _affirmation(b"")
+    import pytest
+
+    with pytest.raises(core.VerifyError) as exc_info:
+        verify_wos.derive_signed_acts_manifest_v1([event])
+    error = str(exc_info.value)
+    assert "empty canonical_event_hash" in error
+    assert verify_wos.WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE in error
+
+
+def test_signed_acts_manifest_rejects_duplicate_tuples() -> None:
+    # Task 2.c — duplicate `(canonical_event_hash, event_type)` tuples
+    # mean the same sealed event was projected twice; the deriver
+    # surfaces this earlier than the encoder's post-sort dup-key check.
+    # Error-string parity with Rust is part of the published verifier
+    # output shape.
+    event = _affirmation(b"\x22" * 32)
+    import pytest
+
+    with pytest.raises(core.VerifyError) as exc_info:
+        verify_wos.derive_signed_acts_manifest_v1([event, event])
+    error = str(exc_info.value)
+    assert "duplicate" in error
+    assert verify_wos.WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE in error
 
 
 def test_signed_acts_manifest_encoding_is_input_order_invariant() -> None:
