@@ -14,6 +14,14 @@ from typing import Any, Callable, Optional
 import cbor2
 
 from trellis_py import verify as core
+from trellis_py._cbor_canonical import (
+    CanonicalCborError,
+    encode_canonical_cbor_value,
+)
+from trellis_py._cbor_strict import (
+    CborStrictError,
+    reject_duplicate_canonical_map_keys,
+)
 
 
 SIGNATURE_EXPORT_EXTENSION = "trellis.export.signature-affirmations.v1"
@@ -509,8 +517,25 @@ def _validate_policy_closure(
 def _validate_policy_closure_member(
     closure_bytes: bytes, expected_version: str
 ) -> None:
+    # Layer 1: parse-side dup-key rejection at every nesting depth, BEFORE
+    # cbor2.loads (which would silently coalesce duplicate map keys).
+    try:
+        reject_duplicate_canonical_map_keys(closure_bytes)
+    except CborStrictError as exc:
+        raise core.VerifyError(str(exc)) from exc
+
+    # Layer 2: decode then canonical re-encode under §4.2.2. We rebuild via
+    # our own encoder rather than `cbor2.dumps(..., canonical=True)` because
+    # cbor2 implements §4.2.1 (length-first), not §4.2.2 (bytewise on
+    # encoded-key bytes) — see trellis/specs/canonical-cbor-profile.md.
     closure = cbor2.loads(closure_bytes)
-    if cbor2.dumps(closure, canonical=True) != closure_bytes:
+    try:
+        reencoded = encode_canonical_cbor_value(closure)
+    except CanonicalCborError as exc:
+        raise core.VerifyError(
+            f"policy closure member is not canonical CBOR: {exc}"
+        ) from exc
+    if reencoded != closure_bytes:
         raise core.VerifyError("policy closure member is not canonical CBOR")
     if not isinstance(closure, dict):
         raise core.VerifyError("policy closure is not a map")
