@@ -2200,8 +2200,7 @@ mod tests {
             .expect("extensions map"),
         );
         input.signed_acts_manifest = None;
-        let error =
-            write_export(input).expect_err("extension without 068 manifest must reject");
+        let error = write_export(input).expect_err("extension without 068 manifest must reject");
         assert!(
             error
                 .to_string()

@@ -459,7 +459,10 @@ pub fn derive_signed_acts_manifest_v1(
                 wos_signature_admission_failed_event_type(),
             ));
         }
-        entries.push((event.canonical_event_hash.to_vec(), event.event_type.clone()));
+        entries.push((
+            event.canonical_event_hash.to_vec(),
+            event.event_type.clone(),
+        ));
     }
     entries.sort();
     // Single linear pass on the sorted entries — duplicates land adjacent.
@@ -488,9 +491,7 @@ pub fn derive_signed_acts_manifest_v1(
 /// generic tag (R7). The `Err` arm is unreachable today; no fixture targets it; no spec
 /// contract assumes it. If a future Trellis preimage introduces such a shape, this
 /// docstring updates in the same commit that introduces it.
-pub fn encode_signed_acts_manifest_v1(
-    manifest: &[(Vec<u8>, String)],
-) -> Result<Vec<u8>, String> {
+pub fn encode_signed_acts_manifest_v1(manifest: &[(Vec<u8>, String)]) -> Result<Vec<u8>, String> {
     let array = Value::Array(
         manifest
             .iter()
@@ -1772,7 +1773,8 @@ mod tests {
     #[test]
     fn signed_acts_manifest_single_signature_affirmation_is_included() {
         let event = signature_event_with_signer_and_hash("signer-1", 0x22);
-        let manifest = derive_signed_acts_manifest_v1(std::slice::from_ref(&event)).expect("derive");
+        let manifest =
+            derive_signed_acts_manifest_v1(std::slice::from_ref(&event)).expect("derive");
 
         assert_eq!(manifest.len(), 1);
         assert_eq!(manifest[0].0, vec![0x22u8; 32]);
@@ -1782,7 +1784,8 @@ mod tests {
     #[test]
     fn signed_acts_manifest_single_signature_admission_failed_is_included() {
         let event = signature_admission_failed_event(0x33);
-        let manifest = derive_signed_acts_manifest_v1(std::slice::from_ref(&event)).expect("derive");
+        let manifest =
+            derive_signed_acts_manifest_v1(std::slice::from_ref(&event)).expect("derive");
 
         assert_eq!(manifest.len(), 1);
         assert_eq!(manifest[0].0, vec![0x33u8; 32]);
@@ -1820,8 +1823,8 @@ mod tests {
         let affirmation = signature_event_with_signer_and_hash("signer-1", 0x44);
         let admission_failed = signature_admission_failed_event(0x44);
 
-        let manifest = derive_signed_acts_manifest_v1(&[affirmation, admission_failed])
-            .expect("derive");
+        let manifest =
+            derive_signed_acts_manifest_v1(&[affirmation, admission_failed]).expect("derive");
 
         assert_eq!(manifest.len(), 2);
         assert_eq!(manifest[0].1, wos_signature_admission_failed_event_type());
@@ -1957,9 +1960,9 @@ mod tests {
         });
 
         assert!(
-            findings.iter().all(|finding| !finding
-                .kind
-                .starts_with("signed_acts_manifest_")),
+            findings
+                .iter()
+                .all(|finding| !finding.kind.starts_with("signed_acts_manifest_")),
             "{findings:#?}"
         );
     }
@@ -1974,8 +1977,7 @@ mod tests {
         let mut members = BTreeMap::new();
         members.insert(SIGNED_ACTS_MANIFEST_MEMBER.to_string(), encoded);
         let mut manifest_extensions = BTreeMap::new();
-        manifest_extensions
-            .insert(SIGNED_ACTS_MANIFEST_EXPORT_EXTENSION.to_string(), extension);
+        manifest_extensions.insert(SIGNED_ACTS_MANIFEST_EXPORT_EXTENSION.to_string(), extension);
 
         let findings = WosRecordValidator.validate_export(DomainExport {
             events: &[event],
@@ -1984,9 +1986,9 @@ mod tests {
         });
 
         assert!(
-            findings.iter().all(|finding| !finding
-                .kind
-                .starts_with("signed_acts_manifest_")),
+            findings
+                .iter()
+                .all(|finding| !finding.kind.starts_with("signed_acts_manifest_")),
             "expected no manifest findings: {findings:#?}"
         );
     }
@@ -2008,8 +2010,7 @@ mod tests {
         let mut members = BTreeMap::new();
         members.insert(SIGNED_ACTS_MANIFEST_MEMBER.to_string(), encoded);
         let mut manifest_extensions = BTreeMap::new();
-        manifest_extensions
-            .insert(SIGNED_ACTS_MANIFEST_EXPORT_EXTENSION.to_string(), extension);
+        manifest_extensions.insert(SIGNED_ACTS_MANIFEST_EXPORT_EXTENSION.to_string(), extension);
 
         let findings = WosRecordValidator.validate_export(DomainExport {
             events: &[event],
@@ -2083,8 +2084,7 @@ mod tests {
         let extension = manifest_extension_for(&encoded);
         let members = BTreeMap::new(); // 068 member absent.
         let mut manifest_extensions = BTreeMap::new();
-        manifest_extensions
-            .insert(SIGNED_ACTS_MANIFEST_EXPORT_EXTENSION.to_string(), extension);
+        manifest_extensions.insert(SIGNED_ACTS_MANIFEST_EXPORT_EXTENSION.to_string(), extension);
 
         let findings = WosRecordValidator.validate_export(DomainExport {
             events: &[event],

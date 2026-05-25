@@ -42,9 +42,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use ciborium::Value;
-use integrity_cbor::{
-    CborHelperError, decode_cbor_value, encode_canonical_cbor_value,
-};
+use integrity_cbor::{CborHelperError, decode_cbor_value, encode_canonical_cbor_value};
 use serde_json::{Map, Value as JsonValue, json};
 
 const RUNTIME_NAME: &str = "rust-integrity-cbor";
