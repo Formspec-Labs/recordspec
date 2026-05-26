@@ -27,10 +27,10 @@
 //!   the canonical event literal carried in `event_type`.
 //! - **Formspec substrate** — construct via [`SubstrateAppendRequest::new_json`]
 //!   with Formspec's aggregate envelope (`aggregateType`, `aggregateId`,
-//!   `payload`). Trellis routes Formspec admission only when `event_type`
-//!   equals `substrate.append.response_submitted`. Additional Formspec literals
-//!   require extending `trellis-admission-formspec` and the Trellis
-//!   composition router alongside admission updates.
+//!   `payload`). Trellis routes Formspec admission for the response-submitted
+//!   proof literal and the Response Actions session operation-batch literal.
+//!   Additional Formspec literals require extending `trellis-admission-formspec`
+//!   and the Trellis composition router alongside admission updates.
 //!
 //! ## Trust boundaries
 //!
@@ -82,6 +82,13 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 /// schema `$defs.EventType` enum must include the same literal (see `check-http-api-schema.py`).
 pub const FORMSPEC_APPEND_EVENT_TYPE_LITERAL: &str = "substrate.append.response_submitted";
 
+/// Formspec Response Actions session operation-batch append `eventType` literal.
+///
+/// `trellis-server` re-exports this value as `FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH`.
+/// The Trellis HTTP JSON schema `$defs.EventType` enum must include the same literal.
+pub const FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH_EVENT_TYPE_LITERAL: &str =
+    "substrate.append.response_action_session_op_batch";
+
 #[must_use]
 fn trellis_admitted_event_type_openapi_schema() -> RefOr<Schema> {
     let mut values: Vec<String> = wos_ext::WOS_CANONICAL_EVENT_LITERALS
@@ -90,12 +97,13 @@ fn trellis_admitted_event_type_openapi_schema() -> RefOr<Schema> {
         .map(str::to_string)
         .collect();
     values.push(FORMSPEC_APPEND_EVENT_TYPE_LITERAL.to_string());
+    values.push(FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH_EVENT_TYPE_LITERAL.to_string());
     values.sort();
     ObjectBuilder::new()
         .schema_type(SchemaType::new(Type::String))
         .enum_values(Some(values))
         .description(Some(
-            "Admitted Trellis append literals: `wos-events` substrate registry plus Formspec append.",
+            "Admitted Trellis append literals: `wos-events` substrate registry plus Formspec appends.",
         ))
         .into()
 }
@@ -358,6 +366,8 @@ pub struct SubstrateAppendResult {
     #[serde(alias = "substrateEventId")]
     pub event_id: String,
     pub sequence: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prior_event_hash: Option<String>,
     pub canonical_event_hash: String,
     #[serde(alias = "checkpointReference")]
     pub checkpoint_ref: String,
@@ -378,6 +388,9 @@ impl SubstrateAppendResult {
         event_type: &str,
     ) -> Result<(), StackError> {
         validate_required("event_id", &self.event_id)?;
+        if let Some(prior_event_hash) = &self.prior_event_hash {
+            validate_required("prior_event_hash", prior_event_hash)?;
+        }
         validate_required("canonical_event_hash", &self.canonical_event_hash)?;
         validate_required("checkpoint_ref", &self.checkpoint_ref)?;
         validate_required("bundle_ref", &self.bundle_ref)?;
@@ -842,6 +855,7 @@ mod tests {
         let result = SubstrateAppendResult {
             event_id: "evt_1".to_string(),
             sequence: 1,
+            prior_event_hash: None,
             canonical_event_hash: "sha256:abc".to_string(),
             checkpoint_ref: "trellis://case_123/checkpoints/cp_1".to_string(),
             bundle_ref: "s3://bucket/bundle.zip".to_string(),
@@ -864,6 +878,7 @@ mod tests {
         let result = SubstrateAppendResult {
             event_id: "evt_1".to_string(),
             sequence: 1,
+            prior_event_hash: None,
             canonical_event_hash: "sha256:abc".to_string(),
             checkpoint_ref: "trellis://case_123/checkpoints/cp_1".to_string(),
             bundle_ref: "s3://bucket/bundle.zip".to_string(),

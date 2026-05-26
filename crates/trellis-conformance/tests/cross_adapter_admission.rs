@@ -8,7 +8,10 @@
 //! be accepted by the other.
 
 use stack_common_error::StackError;
-use trellis_admission_formspec::{FORMSPEC_RESPONSE_SUBMITTED, FormspecAppendAdmissionPolicy};
+use trellis_admission_formspec::{
+    FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH, FORMSPEC_RESPONSE_SUBMITTED,
+    FormspecAppendAdmissionPolicy,
+};
 use trellis_admission_wos::WosEventAdmissionPolicy;
 use trellis_server_ports::{
     AdmissionEvent, AdmittedEvent, DirectSubmitPolicy, EventAdmissionPolicy,
@@ -29,6 +32,24 @@ fn formspec_payload() -> Vec<u8> {
         "payload": { "status": "submitted" }
     }))
     .expect("serialize formspec payload")
+}
+
+fn formspec_response_action_payload() -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "aggregateType": "formspec.response_action_session_op_batch",
+        "aggregateId": "urn:formspec:session:cross-adapter",
+        "payload": {
+            "ledgerScope": "urn:formspec:session:cross-adapter",
+            "branchId": "branch-main",
+            "opBatch": {
+                "semanticOps": []
+            },
+            "opBatchHash": "sha256:e7a089ec840bca120002285859beed5ed98b0aaae8ea512e357bf87b926485b3",
+            "ledgerPortIdempotencyKey": "sha256:58cc442095d1ce7282add097393a6cd240ba7e5c82a3b38c9a66908005985f95",
+            "mode": "require-anchored"
+        }
+    }))
+    .expect("serialize formspec Response Actions payload")
 }
 
 async fn admit_wos(event_type: &str, payload: &[u8]) -> Result<AdmittedEvent, StackError> {
@@ -76,6 +97,30 @@ async fn given_known_formspec_literal_when_formspec_admits_then_returns_event_ar
         .expect("formspec literal admits");
     assert_eq!(admitted.event_type, FORMSPEC_RESPONSE_SUBMITTED);
     assert_eq!(admitted.event_family.as_str(), "formspec.response");
+    assert_eq!(admitted.artifact_type, ArtifactType::Event);
+    assert_eq!(admitted.direct_submit, DirectSubmitPolicy::ServiceOnly);
+    assert!(
+        admitted
+            .schema_ref
+            .as_str()
+            .starts_with("formspec-events://"),
+        "Formspec schema ref must use formspec-events scheme; got {}",
+        admitted.schema_ref
+    );
+}
+
+#[tokio::test]
+async fn given_known_formspec_response_action_literal_when_formspec_admits_then_returns_event_artifact()
+ {
+    let payload = formspec_response_action_payload();
+    let admitted = admit_formspec(FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH, &payload)
+        .await
+        .expect("formspec Response Actions literal admits");
+    assert_eq!(
+        admitted.event_type,
+        FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH
+    );
+    assert_eq!(admitted.event_family.as_str(), "formspec.response_action");
     assert_eq!(admitted.artifact_type, ArtifactType::Event);
     assert_eq!(admitted.direct_submit, DirectSubmitPolicy::ServiceOnly);
     assert!(

@@ -9,6 +9,7 @@ license.workspace = true
 async-trait = "0.1"
 serde_json = "1"
 stack-common-error = { path = "../../../stack-common/crates/stack-common-error" }
+stack-common-hash = { path = "../../../stack-common/crates/stack-common-hash" }
 trellis-server-ports = { path = "../trellis-server-ports" }
 trellis-types = { path = "../trellis-types" }
 

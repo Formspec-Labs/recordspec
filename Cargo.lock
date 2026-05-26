@@ -3452,6 +3452,7 @@ dependencies = [
  "async-trait",
  "serde_json",
  "stack-common-error",
+ "stack-common-hash",
  "tokio",
  "trellis-server-ports",
  "trellis-types",

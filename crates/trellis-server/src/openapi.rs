@@ -121,7 +121,7 @@ mod tests {
     use utoipa::OpenApi as _;
     use wos_events::WOS_CANONICAL_EVENT_LITERALS;
 
-    use crate::FORMSPEC_RESPONSE_SUBMITTED;
+    use crate::{FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH, FORMSPEC_RESPONSE_SUBMITTED};
 
     use super::*;
 
@@ -167,7 +167,8 @@ mod tests {
             let literal = event_type.as_str().expect("event type literal");
             assert!(
                 WOS_CANONICAL_EVENT_LITERALS.contains(&literal)
-                    || literal == FORMSPEC_RESPONSE_SUBMITTED,
+                    || literal == FORMSPEC_RESPONSE_SUBMITTED
+                    || literal == FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH,
                 "schema EventType enum must only list admitted server literals"
             );
         }
@@ -201,6 +202,7 @@ mod tests {
         for property in [
             "eventId",
             "sequence",
+            "priorEventHash",
             "canonicalEventHash",
             "checkpointRef",
             "bundleRef",

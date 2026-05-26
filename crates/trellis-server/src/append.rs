@@ -149,6 +149,8 @@ impl<'a> AppendCoordinator<'a> {
                 .filter(|event| event.sequence() <= existing.sequence())
                 .cloned()
                 .collect::<Vec<_>>();
+            let prior_event_hash =
+                prior_event_hash_for(command.scope.as_str(), &replay_events, existing)?;
             let bundle = publish_bundle(
                 self.state,
                 command.scope.as_bytes(),
@@ -160,6 +162,7 @@ impl<'a> AppendCoordinator<'a> {
             let result = append_result_for_event(
                 &command.scope,
                 existing,
+                prior_event_hash,
                 admitted.artifact_type,
                 &admitted.event_type,
                 &bundle,
@@ -212,12 +215,14 @@ impl<'a> AppendCoordinator<'a> {
         let compute = unit.compute_context().clone();
         let stored = unit.event().clone();
         self.state.repository.append_event(stored.clone()).await?;
+        let prior_event_hash = prior_event_hash_for(scope, events, &stored)?;
         events.push(stored.clone());
         let bundle =
             publish_bundle(self.state, scope.as_bytes(), events, update_head, &compute).await?;
         let result = append_result_for_event(
             scope,
             &stored,
+            prior_event_hash,
             admitted.artifact_type,
             &admitted.event_type,
             &bundle,
@@ -225,6 +230,21 @@ impl<'a> AppendCoordinator<'a> {
         )?;
         Ok(AppendOutcome { result, stored })
     }
+}
+
+fn prior_event_hash_for(
+    scope: &str,
+    events: &[StoredEvent],
+    event: &StoredEvent,
+) -> Result<Option<[u8; 32]>, StackError> {
+    let Some(prior_sequence) = event.sequence().checked_sub(1) else {
+        return Ok(None);
+    };
+    let prior = events
+        .iter()
+        .find(|candidate| candidate.sequence() == prior_sequence)
+        .ok_or_else(|| StackError::internal("Trellis append predecessor event missing"))?;
+    event_hash(scope.as_bytes(), prior).map(Some)
 }
 
 /// Public-metadata posture used when republishing bundles outside an append receipt.

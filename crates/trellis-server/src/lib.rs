@@ -85,8 +85,8 @@ use trellis_types::{ArtifactType, EVENT_DOMAIN, StoredEvent};
 
 use crate::openapi::EventTypeRegistryView;
 
-/// Formspec intake proof append event literal admitted at the service edge.
-pub use composition::FORMSPEC_RESPONSE_SUBMITTED;
+/// Formspec append event literals admitted at the service edge.
+pub use composition::{FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH, FORMSPEC_RESPONSE_SUBMITTED};
 // Catalog version label is producer-neutral after DI-001/DI-002: the catalog
 // projects both WOS and Formspec admitted literals through `composition`. The
 // old `wos-events:` namespace was misleading once Formspec joined the catalog.
@@ -320,6 +320,7 @@ fn export_attempt_id(
 pub(crate) fn append_result_for_event(
     scope: &str,
     event: &StoredEvent,
+    prior_event_hash: Option<[u8; 32]>,
     artifact_type: ArtifactType,
     event_type: &str,
     bundle: &BundleRecord,
@@ -330,6 +331,7 @@ pub(crate) fn append_result_for_event(
     Ok(SubstrateAppendResult {
         event_id: format!("evt_{}", &hash_hex[..16]),
         sequence: event.sequence(),
+        prior_event_hash: prior_event_hash.map(|hash| format!("sha256:{}", hex::encode(hash))),
         canonical_event_hash: format!("sha256:{hash_hex}"),
         checkpoint_ref: format!("trellis://{scope}/checkpoints/{}", bundle.checkpoint_digest),
         bundle_ref: bundle.artifact_ref.uri.clone(),
@@ -786,6 +788,64 @@ mod tests {
             second.result.canonical_event_hash,
             first.result.canonical_event_hash
         );
+        assert_eq!(
+            second.result.prior_event_hash,
+            first.result.prior_event_hash
+        );
+    }
+
+    /// Given a second append in a scope, when the coordinator returns the receipt,
+    /// then `priorEventHash` points at the immediate predecessor.
+    #[tokio::test]
+    async fn given_second_append_when_coordinator_returns_then_prior_event_hash_points_to_previous()
+    {
+        let state = test_state();
+        let first_body: SubstrateAppendBody =
+            serde_json::from_slice(&append_body("idem-prior-first")).unwrap();
+        let first_command = append::AppendCommand {
+            scope: "case_prior_hash".to_string(),
+            event_type: first_body.event_type.clone(),
+            idempotency_key: first_body.idempotency_key.clone(),
+            payload: first_body.payload.clone(),
+            compute_context: append::port_compute_context(&first_body),
+            client_attestation: first_body.client_attestation.clone(),
+        };
+        let first = state
+            .append_coordinator()
+            .append(first_command)
+            .await
+            .expect("first append");
+
+        let second_body: SubstrateAppendBody =
+            serde_json::from_slice(&append_body("idem-prior-second")).unwrap();
+        let second_command = append::AppendCommand {
+            scope: "case_prior_hash".to_string(),
+            event_type: second_body.event_type.clone(),
+            idempotency_key: second_body.idempotency_key.clone(),
+            payload: second_body.payload.clone(),
+            compute_context: append::port_compute_context(&second_body),
+            client_attestation: second_body.client_attestation.clone(),
+        };
+        let second = state
+            .append_coordinator()
+            .append(second_command.clone())
+            .await
+            .expect("second append");
+        assert_eq!(second.result.sequence, 1);
+        assert_eq!(
+            second.result.prior_event_hash.as_deref(),
+            Some(first.result.canonical_event_hash.as_str())
+        );
+
+        let replay = state
+            .append_coordinator()
+            .append(second_command)
+            .await
+            .expect("second append replay");
+        assert_eq!(
+            replay.result.prior_event_hash,
+            second.result.prior_event_hash
+        );
     }
 
     /// Given a WOS provenance append, when the handler completes, then the receipt
@@ -833,6 +893,50 @@ mod tests {
             result.verification_receipt.artifact_type,
             ArtifactType::Event,
             "Formspec append receipts must project artifactType=event"
+        );
+    }
+
+    /// Given a Formspec Response Actions session-batch append, when admission runs,
+    /// then the event is accepted under its own literal.
+    #[tokio::test]
+    async fn given_formspec_response_action_session_batch_when_appended_then_event_type_is_preserved()
+     {
+        let app = router(test_state()).expect("router");
+        let response = app
+            .oneshot(formspec_post_request(
+                "/v1/scopes/formspec.managed-single-cell/events",
+                formspec_append_body_with_event_type(
+                    "idem-fspec-action-profile",
+                    FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH,
+                    serde_json::json!({
+                        "aggregateType": "formspec.response_action_session_op_batch",
+                        "aggregateId": "urn:formspec:session:session-action-1",
+                        "payload": {
+                            "ledgerScope": "urn:formspec:session:session-action-1",
+                            "branchId": "branch-main",
+                            "opBatch": {
+                                "semanticOps": []
+                            },
+                            "opBatchHash": "sha256:e7a089ec840bca120002285859beed5ed98b0aaae8ea512e357bf87b926485b3",
+                            "ledgerPortIdempotencyKey": "sha256:a409097f6e5def98de1a7abd9e359a0741011e732cc0ff68a745a7b8dd73b8b7",
+                            "mode": "require-anchored"
+                        }
+                    }),
+                ),
+            ))
+            .await
+            .expect("append response");
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let result: SubstrateAppendResult = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            result.verification_receipt.event_type,
+            FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH
+        );
+        assert_eq!(
+            result.verification_receipt.artifact_type,
+            ArtifactType::Event,
+            "Formspec Response Actions appends must project artifactType=event"
         );
     }
 
@@ -2392,15 +2496,27 @@ mod tests {
     }
 
     fn formspec_append_body(idempotency_key: &str) -> Vec<u8> {
-        let body = SubstrateAppendBody {
-            event_type: FORMSPEC_RESPONSE_SUBMITTED.to_string(),
-            idempotency_key: idempotency_key.to_string(),
-            actor: trellis_service_client::AppendActor::service("formspec-server"),
-            payload: serde_json::json!({
+        formspec_append_body_with_event_type(
+            idempotency_key,
+            FORMSPEC_RESPONSE_SUBMITTED,
+            serde_json::json!({
                 "aggregateType": "formspec.response",
                 "aggregateId": format!("resp-{idempotency_key}"),
                 "payload": { "status": "submitted" }
             }),
+        )
+    }
+
+    fn formspec_append_body_with_event_type(
+        idempotency_key: &str,
+        event_type: &str,
+        payload: serde_json::Value,
+    ) -> Vec<u8> {
+        let body = SubstrateAppendBody {
+            event_type: event_type.to_string(),
+            idempotency_key: idempotency_key.to_string(),
+            actor: trellis_service_client::AppendActor::service("formspec-server"),
+            payload,
             compute_context: trellis_service_client::ComputeContext::no_delegated_compute(
                 "formspec-server",
             ),

@@ -28,7 +28,9 @@ use crate::export_profile::PolicyClosureArtifact;
 /// Re-exported through the composition module so generic Trellis service
 /// modules pull the literal through this single seam instead of depending on
 /// `trellis-admission-formspec` directly (Boundary Gate).
-pub use trellis_admission_formspec::FORMSPEC_RESPONSE_SUBMITTED;
+pub use trellis_admission_formspec::{
+    FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH, FORMSPEC_RESPONSE_SUBMITTED,
+};
 
 const POLICY_VALID_FROM: &str = "2026-05-16T00:00:00Z";
 const POLICY_VERSION: &str = "2026-05-16";
@@ -214,10 +216,14 @@ pub fn default_admission_policy() -> Arc<dyn EventAdmissionPolicy<Error = StackE
         Arc::new(WosEventAdmissionPolicy::new());
     let formspec: Arc<dyn EventAdmissionPolicy<Error = StackError>> =
         Arc::new(FormspecAppendAdmissionPolicy::new());
+    let formspec_literals = formspec_event_type_specs()
+        .into_iter()
+        .map(|spec| spec.event_type)
+        .collect::<Vec<_>>();
     Arc::new(
         AdmissionRouter::new()
             .register_for_literals(wos, WOS_CANONICAL_EVENT_LITERALS.iter().copied())
-            .register_for_literals(formspec, [FORMSPEC_RESPONSE_SUBMITTED]),
+            .register_for_literals(formspec, formspec_literals),
     )
 }
 
@@ -333,6 +339,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn given_default_policy_when_response_action_batch_admits_then_formspec_action_metadata()
+    {
+        let policy = default_admission_policy();
+        let payload = br#"{"aggregateType":"formspec.response_action_session_op_batch","aggregateId":"urn:formspec:session:session-1","payload":{"ledgerScope":"urn:formspec:session:session-1","branchId":"branch-main","opBatch":{"semanticOps":[]},"opBatchHash":"sha256:e7a089ec840bca120002285859beed5ed98b0aaae8ea512e357bf87b926485b3","ledgerPortIdempotencyKey":"sha256:5ce46ef23b95a440dad50a1fb18dca127c399e12bbaeab3cf0cd272704b6e34b","mode":"require-anchored"}}"#;
+        let event = AdmissionEvent {
+            scope: b"formspec",
+            event_type: FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH,
+            payload,
+        };
+        let admitted = policy
+            .admit(&event)
+            .await
+            .expect("response-action branch admits");
+        assert_eq!(
+            admitted.event_type,
+            FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH
+        );
+        assert_eq!(admitted.event_family.as_str(), "formspec.response_action");
+        assert_eq!(admitted.artifact_type, trellis_types::ArtifactType::Event);
+    }
+
+    #[tokio::test]
     async fn given_unregistered_literal_when_default_policy_admits_then_rejects() {
         // Unknown literals (e.g., a hypothetical future overlay not yet
         // registered at composition) must reject at admission, never reach
@@ -412,6 +440,11 @@ mod tests {
                 .iter()
                 .any(|spec| spec.event_type == FORMSPEC_RESPONSE_SUBMITTED)
         );
+        assert!(
+            specs
+                .iter()
+                .any(|spec| spec.event_type == FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH)
+        );
     }
 
     #[test]
@@ -440,5 +473,18 @@ mod tests {
             .expect("Formspec spec");
         assert_eq!(formspec.event_family.as_str(), "formspec.response");
         assert_eq!(formspec.artifact_type, trellis_types::ArtifactType::Event);
+
+        let response_action = specs
+            .iter()
+            .find(|spec| spec.event_type == FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH)
+            .expect("Formspec Response Actions spec");
+        assert_eq!(
+            response_action.event_family.as_str(),
+            "formspec.response_action"
+        );
+        assert_eq!(
+            response_action.artifact_type,
+            trellis_types::ArtifactType::Event
+        );
     }
 }

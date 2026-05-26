@@ -285,7 +285,8 @@
         "wos.governance.authorization_rejected",
         "wos.kernel.instance_migrated",
         "wos.kernel.migration_pin_changed",
-        "substrate.append.response_submitted"
+        "substrate.append.response_submitted",
+        "substrate.append.response_action_session_op_batch"
       ]
     },
     "EventTypeRegistry": {
@@ -459,6 +460,10 @@
         "sequence": {
           "type": "integer",
           "minimum": 0
+        },
+        "priorEventHash": {
+          "$ref": "#/$defs/DigestSha256",
+          "description": "Canonical hash of the immediate predecessor event in this scope; absent for sequence 0."
         },
         "canonicalEventHash": {
           "$ref": "#/$defs/DigestSha256"
