@@ -75,24 +75,36 @@ def parse_const_u64(source: str, name: str) -> int:
     return int(match.group(1))
 
 
-def parse_formspec_append_event_literal(client_source: str) -> str:
-    """Read FORMSPEC_APPEND_EVENT_TYPE_LITERAL from trellis-service-client (single string SOT)."""
-    patterns = (
-        r'pub const FORMSPEC_APPEND_EVENT_TYPE_LITERAL: &str = "([^"]+)";',
-        r"pub const FORMSPEC_APPEND_EVENT_TYPE_LITERAL: &'static str = \"([^\"]+)\";",
+def parse_formspec_admitted_event_literals(client_source: str) -> list[str]:
+    """Read Formspec append literals from trellis-service-client (string SOT for HTTP admission)."""
+    const_names = (
+        "FORMSPEC_APPEND_EVENT_TYPE_LITERAL",
+        "FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH_EVENT_TYPE_LITERAL",
     )
-    for pat in patterns:
-        match = re.search(pat, client_source)
-        if match:
-            return match.group(1)
-    raise ValueError(
-        "could not find pub const FORMSPEC_APPEND_EVENT_TYPE_LITERAL in trellis-service-client"
-    )
+    literals: list[str] = []
+    for const_name in const_names:
+        patterns = (
+            rf'pub const {const_name}: &str = "([^"]+)";',
+            rf"pub const {const_name}: &'static str = \"([^\"]+)\";",
+            rf'pub const {const_name}: &str =\s*\n\s*"([^"]+)";',
+        )
+        for pat in patterns:
+            match = re.search(pat, client_source)
+            if match:
+                literals.append(match.group(1))
+                break
+        else:
+            raise ValueError(
+                f"could not find pub const {const_name} in trellis-service-client"
+            )
+    return literals
 
 
 def expected_admitted_event_types(server_source: str, client_source: str) -> list[str]:
     """Sorted comparison uses these lists; order here follows server macro + Formspec suffix."""
-    return parse_wos_event_types(server_source) + [parse_formspec_append_event_literal(client_source)]
+    return parse_wos_event_types(server_source) + parse_formspec_admitted_event_literals(
+        client_source
+    )
 
 
 def parse_substrate_event_literals_from_kind_rs(kind_source: str) -> list[str]:
@@ -354,7 +366,7 @@ def check_openapi_event_type_enum(
     if sorted(openapi_vals) != sorted(expected):
         errors.append(
             "OpenAPI SubstrateAppendBody.eventType enum drifted from admitted literals "
-            "(wos-events substrate registry + FORMSPEC_APPEND_EVENT_TYPE_LITERAL): "
+            "(wos-events substrate registry + Formspec append literals from trellis-service-client): "
             f"expected {sorted(expected)}, got {sorted(openapi_vals)}"
         )
     if len(openapi_vals) != len(set(openapi_vals)):
