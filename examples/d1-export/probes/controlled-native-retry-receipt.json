@@ -1,0 +1,36 @@
+{
+  "startingLockSha256": "34de175327773ca900c0fb4552ef0adfc0105f3fb336fd9e54d53adda7c00b1b",
+  "argv": [
+    "/Users/mikewolfd/.cargo/bin/cargo",
+    "generate-lockfile",
+    "--offline"
+  ],
+  "startedAtUnix": 1791498795.6430662,
+  "lockGenerationExitCode": 0,
+  "probeArgv": [
+    "/Users/mikewolfd/.cargo/bin/cargo",
+    "run",
+    "--offline",
+    "--locked",
+    "-j1",
+    "-p",
+    "trellis-export-writer",
+    "--features",
+    "fixture-inputs",
+    "--example",
+    "full-member-qualification",
+    "--",
+    "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/probes/controlled-native-output"
+  ],
+  "cwd": "/Users/mikewolfd/Work/formspec-stack/trellis",
+  "sourceInventorySha256": "f951b60310ba30a351765d95d0b3f4538bf86f736f3ca8525b0cf844014cd9d3",
+  "generatedLockSha256": "d8e6bd3dfb558d300ea85bd20d59047cf9d3b65916655f32d3951d10d8d803a7",
+  "ownedProcessGroup": 41113,
+  "timeout": true,
+  "exitCode": -15,
+  "ownedGroupAbsent": true,
+  "startingLockRestored": true,
+  "finishedAtUnix": 1791499038.666274,
+  "outputSha256": {},
+  "logSha256": "5580ed0d25223123de326e90b5a237c739c9cac231aa1dc86f8ef19c28179a41"
+}

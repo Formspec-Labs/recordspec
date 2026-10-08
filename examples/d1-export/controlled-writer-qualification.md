@@ -1,0 +1,21 @@
+# Controlled full-member writer qualification
+
+This qualifies native writer input carriage, separately from live case custody. The desired export remains the frozen Integrity 39-Need candidate at `../thoughts/plans/benefits-scenarios/execution/reports/integrity-stack/full-d1-export/complete-export-verifier-candidate.json`, SHA-256 `565b98c822104a3e0d826ea5a8385cf2e7be26539e45451c478c282bb503d413`. Its exact ordered Need revisions/Done statements and source snapshots remain the single desired graph. `BundleCreateRequest` stays the maintained metadata request; this adds no request JSON or writer.
+
+The full desired member families are `060-payloads/`, `061-attachments.cbor`, `062-signature-affirmations.cbor`, `063-intake-handoffs.cbor`, `065-certificates-of-completion.cbor`, `066-signed-acts.cbor`, `067-policy-closure.cbor`, `068-signed-acts-manifest.cbor` and `open-clocks.json` when applicable, alongside mandatory 000–050. Every member needs valid source evidence and current reader permission. A controlled fixture certificate proves synthetic certificate carriage only; it is never a D1 completion event.
+
+The smallest available valid native chain that requires unsupported byte carriage is committed `export/010-certificate-of-completion-inline`: attachment binding, signature affirmation and fixture completion certificate, exact signed records, issuer-001 fixture key, native registries and bound attachment/certificate extension digests. Its original ZIP has already verified in Rust and Python. It requires one 060 payload plus 061 and 065; failure of this necessary subset stops full-set construction before unrelated D1 checks, notices, clocks and late/reopen records can be invented or combined across different ledgers.
+
+`crates/trellis-export-writer/examples/full-member-qualification.rs` loads that exact native chain into `ExportWriterInput`, keeps the native registered extension digests and calls the maintained `write_export`. It preserves signed event bytes under a re-encoding equality gate. The writer generates one checkpoint per event using each signed `header.authored_at`, matching server publication policy; fixture 010 stores only its final checkpoint, so this output is a new controlled checkpoint sequence rather than a byte-exact reproduction of the fixture ZIP. The final timestamp must match the committed head. It does not generate business records, sign synthetic replacements for committed events, assemble ZIP bytes or mutate services. It retains the resulting ZIP, requested/missing member names and independent verifier verdict. A first missing member returns nonzero. This is an intentional RED diagnostic, not an ordinary passing test.
+
+Planned invocation in the serialized native build window:
+
+```sh
+cargo run --offline --locked -j1 -p trellis-export-writer --features fixture-inputs --example full-member-qualification -- /absolute/controlled/output/directory
+```
+
+Owned output directory and command/source/toolchain digests belong in the retained receipt. Builds wait for Source006 → WOS PostgreSQL ownership RED → this writer probe → Core corrections/retests. No native Cargo runs concurrently, even with an isolated target.
+
+No generic fix is implemented by this probe. If actual output loses the registered fixture members, the smallest owning seam is `ExportWriterInput`/`write_export`: the current input exposes only 031/066/067/068 additional members, while its free-form `extensions` can advertise other registered member digests without carrying bytes. Consumer catalog derivation and full-history meaning stay outside the writer. A prospective generic fix should add only closed registered-member byte carriage and derived digest binding, validate paired extension/member presence, and reuse `integrity_bundle` ZIP assembly. It must reject duplicate/reserved paths and mismatched payload/member digests, preserve existing wire shapes, and make `payloads_inlined` match actual payload entries. Both independent BEFORE reviews must bind the observed RED and exact design before implementation.
+
+Pre-execution status retained for the probe review: no current-source result was available then. Actual execution now reached a member assertion RED; see `controlled-writer-result.md` and exact receipts. Earlier installed-binary fixture passes and live head404 remain separate evidence.

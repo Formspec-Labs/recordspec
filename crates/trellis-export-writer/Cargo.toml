@@ -23,3 +23,7 @@ trellis-witness-registry = { path = "../trellis-witness-registry" }
 
 [dev-dependencies]
 trellis-verify-wos = { path = "../trellis-verify-wos" }
+
+[[example]]
+name = "full-member-qualification"
+required-features = ["fixture-inputs"]

@@ -1,0 +1,35 @@
+{
+  "argv": [
+    "/Users/mikewolfd/.cargo/bin/cargo",
+    "run",
+    "--offline",
+    "--locked",
+    "-j1",
+    "-p",
+    "trellis-export-writer",
+    "--features",
+    "fixture-inputs",
+    "--example",
+    "full-member-qualification",
+    "--",
+    "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/probes/controlled-native-output"
+  ],
+  "cwd": "/Users/mikewolfd/Work/formspec-stack/trellis",
+  "startingLockSha256": "34de175327773ca900c0fb4552ef0adfc0105f3fb336fd9e54d53adda7c00b1b",
+  "generatedLockSha256": "d8e6bd3dfb558d300ea85bd20d59047cf9d3b65916655f32d3951d10d8d803a7",
+  "startedAtUnix": 1791499080.2167401,
+  "ownedProcessGroup": 48404,
+  "exitCode": 1,
+  "ownedGroupAbsent": true,
+  "startingLockRestored": true,
+  "finishedAtUnix": 1791499206.5992188,
+  "logSha256": "6d1b407ee1b76b9fb20344da46ee33b85e07d16ec7641bd10096e989bbd3ef80",
+  "outputSha256": {
+    "examples/d1-export/probes/controlled-native-output/controlled-writer-output.json": "2cf7a4c82af57d49f44025ea2c5d9102a7faa8caf9bd778b12ca078acec8ca38",
+    "examples/d1-export/probes/controlled-native-output/controlled-writer-output.zip": "969a421696cfbb44baccb87598281a58625ab57dceac1d8acf2eee64667bbf72"
+  },
+  "consumedInputDrift": {},
+  "classification": "Actual native member assertion RED after successful current-source compilation and valid original fixture verification",
+  "rustc": "rustc 1.89.0 (29483883e 2025-08-04)",
+  "consumedInputGuardSha256": "e59765c4b1490b3e8dd7286c91af0130cbc7d74e8e16e53172e9f399c3ca9bd8"
+}

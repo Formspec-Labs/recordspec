@@ -1,0 +1,6 @@
+     Locking 411 packages to latest compatible versions
+      Adding object_store v0.11.2 (available: v0.13.2)
+      Adding reqwest v0.12.28 (available: v0.13.5)
+      Adding sha2 v0.10.9 (available: v0.11.0)
+      Adding thiserror v1.0.69 (available: v2.0.21)
+      Adding toml v0.8.23 (available: v0.9.12+spec-1.1.0)

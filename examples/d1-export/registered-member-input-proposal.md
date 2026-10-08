@@ -1,0 +1,36 @@
+# BEFORE proposal: registered export evidence byte inputs
+
+Status: proposal only; no production writer change. The retained current-source controlled writer RED is `probes/controlled-native-cached-run-receipt.json`, SHA-256 `ef2763626a0a39a0e36d50be51089858f63125b0d7d834d0e9ae55741a9cb601`: successful compilation, exit 1, original fixture structure/integrity true, writer structure true/integrity false, missing 060/061/065. No consumed-source or fixture drift occurred. Live head404, custody, WOS creator, current output permission and external trust remain separate gates.
+
+## Problem and smallest owning change
+
+The frozen complete 39-Need candidate requests current history plus readable signed/document evidence, attachment/intake catalogs, certificate links and clocks when applicable. `ExportWriterInput` currently offers bytes for 031/066/067/068 only. Its `extensions` map can advertise existing registered 061/062/063/065/open-clock member bindings, but has no typed input for those bytes or 060 payloads. The proposed scope is byte carriage and manifest binding in the maintained writer. Consumer adapters continue deriving catalogs from genuine signed records and deciding history completeness/disclosure. No new business records, request format, ZIP writer, catalog semantics or public HTTP creator.
+
+Add one `evidence_members: Vec<ExportEvidenceMember>` field to `ExportWriterInput`. Keep existing witness/signed-act/policy inputs and their callers unchanged apart from the new field's empty initialization. The closed enum contains only missing native member families:
+
+| Variant | Bytes emitted | Derived binding |
+| --- | --- | --- |
+| `Payload { content_hash, bytes }` | `060-payloads/<32-byte-hash-hex>.bin` | Existing signed event content hash; derive top-level `payloads_inlined` from actual payload entries |
+| `Attachments { bytes, inline_attachments }` | `061-attachments.cbor` | `trellis.export.attachments.v1.attachment_manifest_digest` and supplied native inline flag |
+| `SignatureAffirmations { bytes }` | `062-signature-affirmations.cbor` | `trellis.export.signature-affirmations.v1.signature_catalog_digest` |
+| `IntakeHandoffs { bytes }` | `063-intake-handoffs.cbor` | `trellis.export.intake-handoffs.v1.intake_catalog_digest` |
+| `CertificatesOfCompletion { bytes }` | `065-certificates-of-completion.cbor` | `trellis.export.certificates-of-completion.v1.catalog_digest`, fixed `catalog_ref`, generic array `entry_count` |
+| `OpenClocks { bytes }` | `open-clocks.json` | `trellis.export.open-clocks.v1.open_clocks_digest` and format-derived `open_clock_count` |
+
+Member names and extension/digest keys come from Core §6.7/18/19, not caller strings. No 064/predecessor/interop capability is added: the frozen D1 target does not require those. No extra member can collide with 000–050, 066–068 or orientation files. Duplicate enum catalog variants and duplicate payload hashes reject. Caller provides already admitted opaque bytes. Payload names use the existing `trellis-content-v1` domain-separated hash over exact ciphertext bytes (Core §9.3/19), while catalog digests use bare SHA-256. The certificate presentation-artifact hash belongs to a separate domain and never supplies a payload filename. Reuse shared `integrity_cbor` hash primitives. The existing composed validator must check that `inline_attachments` truthfully represents referenced payload completeness before publication; the flag itself grants no visibility or completeness.
+
+Use one small preparation helper to validate the closed member set, produce existing `BundleEntry` values and derive registered manifest extension maps before signing. Reuse `integrity_bundle` deterministic ZIP assembly, existing CBOR encode/decode/hash helpers and current extension merge policy. New member bytes determine their digest fields, as existing witness/signed-act inputs do; a supplied stale digest cannot become the signed binding. An advertised new registered extension without its member rejects before emission. Other existing extension behavior remains unchanged.
+
+Catalog byte validation is format-level: decode plus maintained `encode_canonical_cbor_value` equality and expected array shape for registered CBOR catalogs. Its recursive canonicalization rejects duplicate canonical map keys; tests must cover duplicate keys and unsorted nested maps. Reject noncanonical bytes rather than normalize accepted input. Open-clock bytes are carried exactly and digest-bound. Derive `open_clock_count` from the parsed native `open_clocks` array using existing `serde_json` format parsing, with no clock interpretation; overwrite stale supplied extension counts using that observed length. Test native canonical open-clock emission and stale-count replacement; independently reject a tampered signed count that differs from the native array length. The maintained Core open-clock verifier qualifies their existing canonical-JSON rules. It does not inspect WOS actor, consent, role, Formspec fields, event lists or decision meaning. Existing independent Core/profile validators still decide those relationships before server publication. No new JSON serializer or clock derivation helper belongs in this byte-carriage change.
+
+## Verification and simplicity gates
+
+1. Preserve the original valid controlled010 source and first actual RED artifact. Add supported inputs from exactly its existing 060/061/065 files; regenerate using the same maintained writer; all required member bytes must equal the originals, generated extension digests must match, and independent verification must pass. This is synthetic fixture carriage, never a full D1 completed case.
+2. Use committed006 and007 native fixture catalogs to check 062/063 binding with supported existing 066/067/068 input paths where their sealed sources apply; do not concatenate unrelated ledger records.
+3. Check duplicate/reserved-path refusal, incorrect payload content hash, malformed/noncanonical catalog bytes, registered extension without member, and accurate `payloads_inlined`. Check derived digest replacement consistently with existing writer behavior.
+4. Existing001 byte-exact export remains unchanged when new inputs are empty. Run relevant existing writer/profile tests plus formatting/Clippy under the agreed serialized native queue. No service changes.
+5. Full D1 capability still requires consumer-generated valid notices/clock/check/correction/decision/signing records, authorized byte selections, custody and creator wiring. Whole-archive disclosure admission remains WOS-owned; generic carriage conveys no read permission.
+
+Concrete improvement target: one closed byte-input field and one shared emission/binding path enable all missing frozen D1 evidence member families without adding a backend or copy of the writer. Count implementation and repeated binding logic in the AFTER review; make no unmeasured speed claim. Public input initialization changes are local co-engineered API changes, not a wire-format revision. Spec/matrix/vector work should qualify the existing registered wire obligations, not introduce new ones.
+
+Two non-author full-skill BEFORE certificates must bind the observed RED, proposal and exact input/source digests before implementation. The generic change remains unimplemented until those gates complete.

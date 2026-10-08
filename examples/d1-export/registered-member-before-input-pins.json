@@ -1,0 +1,26 @@
+{
+  "phase": "observed writer RED and corrected BEFORE proposal; certificates excluded to avoid self-reference",
+  "files": {
+    "crates/trellis-export-writer/Cargo.toml": "ec77fecf06f7295a12931af15bf500abb16893c973747702848135d3f96578e3",
+    "crates/trellis-export-writer/examples/full-member-qualification.rs": "0317ae9bc322d901b404d90672d6c7e2ba7163c41824f355d3313782ae51fe9b",
+    "examples/d1-export/controlled-writer-qualification.md": "0282e22e9bdbdf2f33612059e8d2db9b909b04def4ba3da6728567227176f95c",
+    "examples/d1-export/controlled-writer-result.md": "ae9a0893c903b95d2dfdfe5c161f501f5edd2c376f294c5f9fe77bb87791d0c8",
+    "examples/d1-export/probes/controlled-consumed-input-guard.json": "e59765c4b1490b3e8dd7286c91af0130cbc7d74e8e16e53172e9f399c3ca9bd8",
+    "examples/d1-export/probes/controlled-local-dependency-paths.json": "6c83e726c99b51f0aa7c7fbc3467f184ea74bb09f0bc78f3d0f632a28c005ec4",
+    "examples/d1-export/probes/controlled-lock-generated.cargo-lock": "d8e6bd3dfb558d300ea85bd20d59047cf9d3b65916655f32d3951d10d8d803a7",
+    "examples/d1-export/probes/controlled-lock-generation.log": "f26a7a652490774dc1bea7418bba553b0538c456cc8645c8027a8a8cac8840a2",
+    "examples/d1-export/probes/controlled-lock-start.cargo-lock": "34de175327773ca900c0fb4552ef0adfc0105f3fb336fd9e54d53adda7c00b1b",
+    "examples/d1-export/probes/controlled-native-cached-run-receipt.json": "ef2763626a0a39a0e36d50be51089858f63125b0d7d834d0e9ae55741a9cb601",
+    "examples/d1-export/probes/controlled-native-cached-run.log": "6d1b407ee1b76b9fb20344da46ee33b85e07d16ec7641bd10096e989bbd3ef80",
+    "examples/d1-export/probes/controlled-native-output/controlled-writer-output.json": "2cf7a4c82af57d49f44025ea2c5d9102a7faa8caf9bd778b12ca078acec8ca38",
+    "examples/d1-export/probes/controlled-native-output/controlled-writer-output.zip": "969a421696cfbb44baccb87598281a58625ab57dceac1d8acf2eee64667bbf72",
+    "examples/d1-export/probes/controlled-native-retry-receipt.json": "675a0dfe840b97c28ae380f0db5b67e050fbc789140547a2ffa0311a8774f483",
+    "examples/d1-export/probes/controlled-native-retry.log": "5580ed0d25223123de326e90b5a237c739c9cac231aa1dc86f8ef19c28179a41",
+    "examples/d1-export/probes/controlled-native-run-receipt.json": "e519edc98e2ed37db5ec457b9389a5a650126ae2da1842f39ffb698ad5bfac06",
+    "examples/d1-export/probes/controlled-native-run.log": "548129d0294304f7a33eaae4feacb79da514471ac0552f02b5c4f903d197ee83",
+    "examples/d1-export/probes/controlled-python-crosscheck.json": "2cfb3b84d3bd3d28fbb916d4ce57ae49dd1a37c26694a5519145a0eef7a17758",
+    "examples/d1-export/probes/controlled-source-inventory.json": "f951b60310ba30a351765d95d0b3f4538bf86f736f3ca8525b0cf844014cd9d3",
+    "examples/d1-export/probes/native-fixture-results.json": "15614c6cf78dfaa151221b6f8a58db2ec219083c9365af5db10d31368c9c6973",
+    "examples/d1-export/registered-member-input-proposal.md": "9e0e86a03016ffa839d561cc9fdabb34e14e81efa42e8485998b95df2be05c25"
+  }
+}

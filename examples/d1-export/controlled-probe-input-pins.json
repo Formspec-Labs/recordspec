@@ -1,0 +1,5 @@
+{
+  "crates/trellis-export-writer/examples/full-member-qualification.rs": "0317ae9bc322d901b404d90672d6c7e2ba7163c41824f355d3313782ae51fe9b",
+  "crates/trellis-export-writer/Cargo.toml": "ec77fecf06f7295a12931af15bf500abb16893c973747702848135d3f96578e3",
+  "examples/d1-export/controlled-writer-qualification.md": "0eaeca86f9ac5f44b5e4e46e80e94c2e067b16e7a9840862d95c4480a5623451"
+}

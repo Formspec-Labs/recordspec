@@ -1,0 +1,16 @@
+[
+  "integrity-stack/crates/integrity-bundle",
+  "integrity-stack/crates/integrity-canonical",
+  "integrity-stack/crates/integrity-cbor",
+  "integrity-stack/crates/integrity-cose",
+  "integrity-stack/crates/integrity-hpke",
+  "integrity-stack/crates/integrity-seam",
+  "integrity-stack/crates/integrity-verify",
+  "stack-common/crates/stack-common-error",
+  "stack-common/crates/stack-common-typeid",
+  "trellis/crates/trellis-export-writer",
+  "trellis/crates/trellis-types",
+  "trellis/crates/trellis-verify-wos",
+  "trellis/crates/trellis-witness-registry",
+  "work-spec/crates/wos-events"
+]

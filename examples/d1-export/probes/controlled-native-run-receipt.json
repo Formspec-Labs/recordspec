@@ -1,0 +1,28 @@
+{
+  "argv": [
+    "/Users/mikewolfd/.cargo/bin/cargo",
+    "run",
+    "--offline",
+    "--locked",
+    "-j1",
+    "-p",
+    "trellis-export-writer",
+    "--features",
+    "fixture-inputs",
+    "--example",
+    "full-member-qualification",
+    "--",
+    "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/probes/controlled-native-output"
+  ],
+  "cwd": "/Users/mikewolfd/Work/formspec-stack/trellis",
+  "rustc": "rustc 1.89.0 (29483883e 2025-08-04)",
+  "cargo": "cargo 1.89.0 (c24e10642 2025-06-23)",
+  "sourceInventorySha256": "f951b60310ba30a351765d95d0b3f4538bf86f736f3ca8525b0cf844014cd9d3",
+  "startedAtUnix": 1791498749.111029,
+  "ownedProcessGroup": 39701,
+  "exitCode": 101,
+  "finishedAtUnix": 1791498750.068989,
+  "logSha256": "548129d0294304f7a33eaae4feacb79da514471ac0552f02b5c4f903d197ee83",
+  "outputSha256": {},
+  "ownedGroupAbsent": true
+}
