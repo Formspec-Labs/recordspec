@@ -1,0 +1,34 @@
+# Native Trellis requests. Candidate only; root owns live execution.
+# Runtime baseline case 420804727 is pending review, not full D1 completion.
+# Root supplies granted context and service credential privately. Do not save them here.
+# GET can publish a missing bundle; keep retrieval under root runtime authority.
+# Trellis HTTP schema: specs/trellis-http-api.schema.json, getHeadBundle /
+# getBundleByCheckpointDigest / getSigningKeyRegistry.
+
+### Current head; record archive SHA-256 and decoded checkpoint digest privately
+GET {{trellisBaseUrl}}/v1/scopes/urn:wos:default_case_01m4ec9nt2fygbtz7gqaq0rhab/bundles/head
+Authorization: Bearer {{trellisServiceToken}}
+x-wos-tenant-id: {{tenantId}}
+x-wos-workspace-id: {{workspaceId}}
+x-wos-environment-id: {{environmentId}}
+x-wos-cell-id: {{cellId}}
+Accept: application/zip
+
+### Exact checkpoint; checkpointDigest is sha256:<64 lowercase hex>
+# Root fills it from the returned native manifest, never from an invented value.
+GET {{trellisBaseUrl}}/v1/scopes/urn:wos:default_case_01m4ec9nt2fygbtz7gqaq0rhab/bundles/{{checkpointDigest}}
+Authorization: Bearer {{trellisServiceToken}}
+x-wos-tenant-id: {{tenantId}}
+x-wos-workspace-id: {{workspaceId}}
+x-wos-environment-id: {{environmentId}}
+x-wos-cell-id: {{cellId}}
+Accept: application/zip
+
+### Current public registry; not itself an independent trusted-key pin
+GET {{trellisBaseUrl}}/v1/scopes/urn:wos:default_case_01m4ec9nt2fygbtz7gqaq0rhab/registries/signing-keys
+Authorization: Bearer {{trellisServiceToken}}
+x-wos-tenant-id: {{tenantId}}
+x-wos-workspace-id: {{workspaceId}}
+x-wos-environment-id: {{environmentId}}
+x-wos-cell-id: {{cellId}}
+Accept: application/cbor

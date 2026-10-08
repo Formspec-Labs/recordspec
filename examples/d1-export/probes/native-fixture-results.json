@@ -1,0 +1,210 @@
+{
+  "qualification": "Committed synthetic fixture checks only; existing Rust binary not a current-source build; no actual D1 records or external trust-pin check.",
+  "trellisHead": "3d1380ba00749b8c6b6ac0d3672216fc24bcd19f",
+  "rustBinary": "/Users/mikewolfd/Work/formspec-stack/.cargo-target/debug/integrity-verify",
+  "rustBinarySha256": "72c0ff37365061b6e8669a67e08e23e1090080e804fcdac9492c556f0c73e46d",
+  "rust": [
+    {
+      "fixture": "fixtures/vectors/export/001-two-event-chain/expected-export.zip",
+      "sha256": "e0d6ef2bdc0756a5284e3cb66beb3d79c582b1f5e0231debbe44e41a162ba1fa",
+      "exitCode": 0,
+      "stdout": "{\n  \"integrity_verified\": true,\n  \"readability_verified\": true,\n  \"structure_verified\": true,\n  \"trellis_failures\": 0,\n  \"verified\": true,\n  \"wos_failures\": 0,\n  \"wos_findings\": []\n}\n",
+      "stderr": "",
+      "members": [
+        "trellis-export-test-response-ledger-2-280d3354/000-manifest.cbor",
+        "trellis-export-test-response-ledger-2-280d3354/010-events.cbor",
+        "trellis-export-test-response-ledger-2-280d3354/020-inclusion-proofs.cbor",
+        "trellis-export-test-response-ledger-2-280d3354/025-consistency-proofs.cbor",
+        "trellis-export-test-response-ledger-2-280d3354/030-signing-key-registry.cbor",
+        "trellis-export-test-response-ledger-2-280d3354/040-checkpoints.cbor",
+        "trellis-export-test-response-ledger-2-280d3354/050-registries/651b13673bfa5c30f422512a2e8282479df6c903ff2d6b1cd56f0dca74d4a78a.cbor",
+        "trellis-export-test-response-ledger-2-280d3354/090-verify.sh",
+        "trellis-export-test-response-ledger-2-280d3354/098-README.md"
+      ],
+      "argv": [
+        "/Users/mikewolfd/Work/formspec-stack/.cargo-target/debug/integrity-verify",
+        "verify-export",
+        "fixtures/vectors/export/001-two-event-chain/expected-export.zip",
+        "--format",
+        "json"
+      ],
+      "workingDirectory": "/Users/mikewolfd/Work/formspec-stack/trellis"
+    },
+    {
+      "fixture": "fixtures/vectors/export/005-attachments-inline/expected-export.zip",
+      "sha256": "532fdfe7f2cfc136d57fab78c7f0aa8e2c6fbf79e24fe9b7646c9bffcfac2b20",
+      "exitCode": 0,
+      "stdout": "{\n  \"integrity_verified\": true,\n  \"readability_verified\": true,\n  \"structure_verified\": true,\n  \"trellis_failures\": 0,\n  \"verified\": true,\n  \"wos_failures\": 0,\n  \"wos_findings\": []\n}\n",
+      "stderr": "",
+      "members": [
+        "trellis-export-respondent-ledger:resp-8d0b1e85-1-afdfe0d2/000-manifest.cbor",
+        "trellis-export-respondent-ledger:resp-8d0b1e85-1-afdfe0d2/010-events.cbor",
+        "trellis-export-respondent-ledger:resp-8d0b1e85-1-afdfe0d2/020-inclusion-proofs.cbor",
+        "trellis-export-respondent-ledger:resp-8d0b1e85-1-afdfe0d2/025-consistency-proofs.cbor",
+        "trellis-export-respondent-ledger:resp-8d0b1e85-1-afdfe0d2/030-signing-key-registry.cbor",
+        "trellis-export-respondent-ledger:resp-8d0b1e85-1-afdfe0d2/040-checkpoints.cbor",
+        "trellis-export-respondent-ledger:resp-8d0b1e85-1-afdfe0d2/050-registries/5d9f132e8c45f63fda5d9064175c4e8de55a431396260ea63f5521e9a91a8e01.cbor",
+        "trellis-export-respondent-ledger:resp-8d0b1e85-1-afdfe0d2/060-payloads/e796c89473ca5db95c63050683cb05b971b8815380e847ef560d32f805459fe6.bin",
+        "trellis-export-respondent-ledger:resp-8d0b1e85-1-afdfe0d2/061-attachments.cbor",
+        "trellis-export-respondent-ledger:resp-8d0b1e85-1-afdfe0d2/090-verify.sh",
+        "trellis-export-respondent-ledger:resp-8d0b1e85-1-afdfe0d2/098-README.md"
+      ],
+      "argv": [
+        "/Users/mikewolfd/Work/formspec-stack/.cargo-target/debug/integrity-verify",
+        "verify-export",
+        "fixtures/vectors/export/005-attachments-inline/expected-export.zip",
+        "--format",
+        "json"
+      ],
+      "workingDirectory": "/Users/mikewolfd/Work/formspec-stack/trellis"
+    },
+    {
+      "fixture": "fixtures/vectors/export/006-signature-affirmations-inline/expected-export.zip",
+      "sha256": "5a559b1e3608b1d82b915a353731dd36181f7a7f62afe298726bb4dab935c304",
+      "exitCode": 0,
+      "stdout": "{\n  \"integrity_verified\": true,\n  \"readability_verified\": true,\n  \"structure_verified\": true,\n  \"trellis_failures\": 0,\n  \"verified\": true,\n  \"wos_failures\": 0,\n  \"wos_findings\": []\n}\n",
+      "stderr": "",
+      "members": [
+        "trellis-export-wos-case:sba-poc_case_01jqrpd32jf8xtx9qxkkv3rqsc-1-9ef477e7/000-manifest.cbor",
+        "trellis-export-wos-case:sba-poc_case_01jqrpd32jf8xtx9qxkkv3rqsc-1-9ef477e7/010-events.cbor",
+        "trellis-export-wos-case:sba-poc_case_01jqrpd32jf8xtx9qxkkv3rqsc-1-9ef477e7/020-inclusion-proofs.cbor",
+        "trellis-export-wos-case:sba-poc_case_01jqrpd32jf8xtx9qxkkv3rqsc-1-9ef477e7/025-consistency-proofs.cbor",
+        "trellis-export-wos-case:sba-poc_case_01jqrpd32jf8xtx9qxkkv3rqsc-1-9ef477e7/030-signing-key-registry.cbor",
+        "trellis-export-wos-case:sba-poc_case_01jqrpd32jf8xtx9qxkkv3rqsc-1-9ef477e7/040-checkpoints.cbor",
+        "trellis-export-wos-case:sba-poc_case_01jqrpd32jf8xtx9qxkkv3rqsc-1-9ef477e7/050-registries/f4dd682b76d36ae0f342b0c3774fc83063bd7c2ff4739018284b5bbd38d7599c.cbor",
+        "trellis-export-wos-case:sba-poc_case_01jqrpd32jf8xtx9qxkkv3rqsc-1-9ef477e7/062-signature-affirmations.cbor",
+        "trellis-export-wos-case:sba-poc_case_01jqrpd32jf8xtx9qxkkv3rqsc-1-9ef477e7/066-signed-acts.cbor",
+        "trellis-export-wos-case:sba-poc_case_01jqrpd32jf8xtx9qxkkv3rqsc-1-9ef477e7/067-policy-closure.cbor",
+        "trellis-export-wos-case:sba-poc_case_01jqrpd32jf8xtx9qxkkv3rqsc-1-9ef477e7/068-signed-acts-manifest.cbor",
+        "trellis-export-wos-case:sba-poc_case_01jqrpd32jf8xtx9qxkkv3rqsc-1-9ef477e7/090-verify.sh",
+        "trellis-export-wos-case:sba-poc_case_01jqrpd32jf8xtx9qxkkv3rqsc-1-9ef477e7/098-README.md"
+      ],
+      "argv": [
+        "/Users/mikewolfd/Work/formspec-stack/.cargo-target/debug/integrity-verify",
+        "verify-export",
+        "fixtures/vectors/export/006-signature-affirmations-inline/expected-export.zip",
+        "--format",
+        "json"
+      ],
+      "workingDirectory": "/Users/mikewolfd/Work/formspec-stack/trellis"
+    },
+    {
+      "fixture": "fixtures/vectors/export/007-intake-handoffs-public-create/expected-export.zip",
+      "sha256": "85a6b0cff094cadae7777f378283f57ec5c4b0023abbed78dce11463f4aac68a",
+      "exitCode": 0,
+      "stdout": "{\n  \"integrity_verified\": true,\n  \"readability_verified\": true,\n  \"structure_verified\": true,\n  \"trellis_failures\": 0,\n  \"verified\": true,\n  \"wos_failures\": 0,\n  \"wos_findings\": []\n}\n",
+      "stderr": "",
+      "members": [
+        "trellis-export-wos-case:sba-poc_case_01jy0publiccreate000000001-2-cec42e36/000-manifest.cbor",
+        "trellis-export-wos-case:sba-poc_case_01jy0publiccreate000000001-2-cec42e36/010-events.cbor",
+        "trellis-export-wos-case:sba-poc_case_01jy0publiccreate000000001-2-cec42e36/020-inclusion-proofs.cbor",
+        "trellis-export-wos-case:sba-poc_case_01jy0publiccreate000000001-2-cec42e36/025-consistency-proofs.cbor",
+        "trellis-export-wos-case:sba-poc_case_01jy0publiccreate000000001-2-cec42e36/030-signing-key-registry.cbor",
+        "trellis-export-wos-case:sba-poc_case_01jy0publiccreate000000001-2-cec42e36/040-checkpoints.cbor",
+        "trellis-export-wos-case:sba-poc_case_01jy0publiccreate000000001-2-cec42e36/050-registries/8a207e195abe8e88e05d360eb76557bb33f715fbed1ed1334a3544c79413462d.cbor",
+        "trellis-export-wos-case:sba-poc_case_01jy0publiccreate000000001-2-cec42e36/063-intake-handoffs.cbor",
+        "trellis-export-wos-case:sba-poc_case_01jy0publiccreate000000001-2-cec42e36/090-verify.sh",
+        "trellis-export-wos-case:sba-poc_case_01jy0publiccreate000000001-2-cec42e36/098-README.md"
+      ],
+      "argv": [
+        "/Users/mikewolfd/Work/formspec-stack/.cargo-target/debug/integrity-verify",
+        "verify-export",
+        "fixtures/vectors/export/007-intake-handoffs-public-create/expected-export.zip",
+        "--format",
+        "json"
+      ],
+      "workingDirectory": "/Users/mikewolfd/Work/formspec-stack/trellis"
+    },
+    {
+      "fixture": "fixtures/vectors/export/010-certificate-of-completion-inline/expected-export.zip",
+      "sha256": "f4c9e31ec0c3581857ab44cd46e64faef4e9c05d4ab12689a3ceadd2e849745c",
+      "exitCode": 0,
+      "stdout": "{\n  \"integrity_verified\": true,\n  \"readability_verified\": true,\n  \"structure_verified\": true,\n  \"trellis_failures\": 0,\n  \"verified\": true,\n  \"wos_failures\": 0,\n  \"wos_findings\": [\n    {\n      \"kind\": \"policy_closure_missing_for_signed_scope\",\n      \"message\": \"export contains signature affirmation events but no policy closure evidence\",\n      \"severity\": \"Advisory\"\n    }\n  ]\n}\n",
+      "stderr": "",
+      "members": [
+        "trellis-export-trellis-cert:export-010-3-c3253ed0/000-manifest.cbor",
+        "trellis-export-trellis-cert:export-010-3-c3253ed0/010-events.cbor",
+        "trellis-export-trellis-cert:export-010-3-c3253ed0/020-inclusion-proofs.cbor",
+        "trellis-export-trellis-cert:export-010-3-c3253ed0/025-consistency-proofs.cbor",
+        "trellis-export-trellis-cert:export-010-3-c3253ed0/030-signing-key-registry.cbor",
+        "trellis-export-trellis-cert:export-010-3-c3253ed0/040-checkpoints.cbor",
+        "trellis-export-trellis-cert:export-010-3-c3253ed0/050-registries/a0c9f644dffed45242002257c27e050c8f012cede3509a1b4b2d5f2f27408878.cbor",
+        "trellis-export-trellis-cert:export-010-3-c3253ed0/060-payloads/16b629b8298aca9e010970761f492a0bcd7a478d2d3284e0b4e3f0d40880e14f.bin",
+        "trellis-export-trellis-cert:export-010-3-c3253ed0/061-attachments.cbor",
+        "trellis-export-trellis-cert:export-010-3-c3253ed0/065-certificates-of-completion.cbor",
+        "trellis-export-trellis-cert:export-010-3-c3253ed0/090-verify.sh",
+        "trellis-export-trellis-cert:export-010-3-c3253ed0/098-README.md"
+      ],
+      "argv": [
+        "/Users/mikewolfd/Work/formspec-stack/.cargo-target/debug/integrity-verify",
+        "verify-export",
+        "fixtures/vectors/export/010-certificate-of-completion-inline/expected-export.zip",
+        "--format",
+        "json"
+      ],
+      "workingDirectory": "/Users/mikewolfd/Work/formspec-stack/trellis"
+    }
+  ],
+  "pythonAttempts": [
+    {
+      "executable": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14",
+      "exitCode": 1,
+      "stdout": "",
+      "stderr": "Traceback (most recent call last):\n  File \"<string>\", line 2, in <module>\n    from trellis_py.verify_wos import verify_export_zip\nModuleNotFoundError: No module named 'trellis_py'\n",
+      "fixture": "fixtures/vectors/export/010-certificate-of-completion-inline/expected-export.zip",
+      "fixtureSha256": "f4c9e31ec0c3581857ab44cd46e64faef4e9c05d4ab12689a3ceadd2e849745c",
+      "argv": [
+        "/Users/mikewolfd/Work/formspec-stack/trellis/trellis-py/.venv/bin/python",
+        "-c",
+        "import json,sys,dataclasses\nfrom trellis_py.verify_wos import verify_export_zip\nr=verify_export_zip(open(sys.argv[1],\"rb\").read())\nprint(json.dumps(dataclasses.asdict(r), default=str, sort_keys=True))\nprint(json.dumps(dataclasses.asdict(r.verdict), default=str, sort_keys=True))\n",
+        "fixtures/vectors/export/010-certificate-of-completion-inline/expected-export.zip"
+      ],
+      "workingDirectory": "/Users/mikewolfd/Work/formspec-stack/trellis",
+      "sourceHead": "3d1380ba00749b8c6b6ac0d3672216fc24bcd19f",
+      "verifierSourceSha256": {
+        "trellis-py/src/trellis_py/__init__.py": "68130c9106010880081a535e50d30a7d7052c7db8e529730c7c29f1a07668f8e",
+        "trellis-py/src/trellis_py/_cbor_canonical.py": "398350c2b9eeea2d7198c6af99926c8b4d3c6d596320df6a390349712f69c1e5",
+        "trellis-py/src/trellis_py/_cbor_strict.py": "99192b32bd83746342db8989c056ca408a8949eede5a4af1daa79b406abd4efe",
+        "trellis-py/src/trellis_py/append.py": "d99e08359f3a3e5db4752943b4a7fc4924bdec81c3db7b94e3487f000e44def7",
+        "trellis-py/src/trellis_py/codec.py": "20dee49ab7579917ff87ebf7a35d856d7a99de3d802926dceb30d64798d4c6b7",
+        "trellis-py/src/trellis_py/conformance.py": "3f6bcc0376e097ecaab5a7f0dd7b346a049281f43040e4dae6c6ee66a6f369ea",
+        "trellis-py/src/trellis_py/constants.py": "6ffc33f539082b937dcce9d210b6ec87ba7c8fe064c9041b1924a374e50cbfd2",
+        "trellis-py/src/trellis_py/export_zip.py": "6b5e0fe24926221fd145ebdbbdd16d7b76aaf5cede60f12cedb28d90caadcd0f",
+        "trellis-py/src/trellis_py/parity_oracle.py": "cfd34e5375096d470abd2823367d43d1149494a5e13c6ace5ffacc1a42e2a1d4",
+        "trellis-py/src/trellis_py/verify.py": "e84a1dbefdfb517a61d9a16dc790f7f4c2a02bb748912c0f8bb41389ed4b4a9a",
+        "trellis-py/src/trellis_py/verify_export.py": "226322d25efd35090296ee02a234bf1b8da583a27cb97fce2557792d9a8c0d8c",
+        "trellis-py/src/trellis_py/verify_wos.py": "33672a08f2454a81f1535ee9afb2609bfe2f0d76cb1f4872e94062b6c7c38490"
+      }
+    },
+    {
+      "pythonPath": "/Users/mikewolfd/Work/formspec-stack/trellis/trellis-py/src",
+      "exitCode": 0,
+      "stdout": "{\"report\": {\"trellis\": {\"certificates_of_completion\": [{\"all_signing_events_resolved\": true, \"attachment_resolved\": true, \"certificate_id\": \"urn:trellis:certificate:export-010\", \"chain_summary_consistent\": true, \"completed_at\": \"TrellisTimestamp(seconds=1776900425, nanos=0)\", \"event_index\": 2, \"failures\": [], \"signer_count\": 1}], \"checkpoint_failures\": [], \"erasure_evidence\": [], \"event_failures\": [], \"integrity_verified\": true, \"interop_sidecars\": [], \"posture_transitions\": [], \"proof_failures\": [], \"readability_verified\": true, \"structure_verified\": true, \"user_content_attestations\": [], \"warnings\": []}, \"wos_findings\": [{\"detail\": \"export contains signature affirmation events but no policy closure evidence\", \"event_hash\": null, \"kind\": \"policy_closure_missing_for_signed_scope\", \"severity\": \"advisory\"}]}, \"verdict\": {\"blocking_reasons\": [], \"cryptographic_integrity\": \"pass\", \"domain_admissibility\": \"pass\", \"projection_integrity\": \"pass\", \"relying_party_result\": \"valid\"}}\n",
+      "stderr": "",
+      "fixture": "fixtures/vectors/export/010-certificate-of-completion-inline/expected-export.zip",
+      "fixtureSha256": "f4c9e31ec0c3581857ab44cd46e64faef4e9c05d4ab12689a3ceadd2e849745c",
+      "argv": [
+        "/Users/mikewolfd/Work/formspec-stack/trellis/trellis-py/.venv/bin/python",
+        "-c",
+        "import json,sys,dataclasses\nfrom trellis_py.verify_wos import verify_export_zip\nr=verify_export_zip(open(sys.argv[1],\"rb\").read())\nprint(json.dumps({\"report\":dataclasses.asdict(r),\"verdict\":dataclasses.asdict(r.verdict)}, default=str, sort_keys=True))\n",
+        "fixtures/vectors/export/010-certificate-of-completion-inline/expected-export.zip"
+      ],
+      "workingDirectory": "/Users/mikewolfd/Work/formspec-stack/trellis",
+      "sourceHead": "3d1380ba00749b8c6b6ac0d3672216fc24bcd19f",
+      "verifierSourceSha256": {
+        "trellis-py/src/trellis_py/__init__.py": "68130c9106010880081a535e50d30a7d7052c7db8e529730c7c29f1a07668f8e",
+        "trellis-py/src/trellis_py/_cbor_canonical.py": "398350c2b9eeea2d7198c6af99926c8b4d3c6d596320df6a390349712f69c1e5",
+        "trellis-py/src/trellis_py/_cbor_strict.py": "99192b32bd83746342db8989c056ca408a8949eede5a4af1daa79b406abd4efe",
+        "trellis-py/src/trellis_py/append.py": "d99e08359f3a3e5db4752943b4a7fc4924bdec81c3db7b94e3487f000e44def7",
+        "trellis-py/src/trellis_py/codec.py": "20dee49ab7579917ff87ebf7a35d856d7a99de3d802926dceb30d64798d4c6b7",
+        "trellis-py/src/trellis_py/conformance.py": "3f6bcc0376e097ecaab5a7f0dd7b346a049281f43040e4dae6c6ee66a6f369ea",
+        "trellis-py/src/trellis_py/constants.py": "6ffc33f539082b937dcce9d210b6ec87ba7c8fe064c9041b1924a374e50cbfd2",
+        "trellis-py/src/trellis_py/export_zip.py": "6b5e0fe24926221fd145ebdbbdd16d7b76aaf5cede60f12cedb28d90caadcd0f",
+        "trellis-py/src/trellis_py/parity_oracle.py": "cfd34e5375096d470abd2823367d43d1149494a5e13c6ace5ffacc1a42e2a1d4",
+        "trellis-py/src/trellis_py/verify.py": "e84a1dbefdfb517a61d9a16dc790f7f4c2a02bb748912c0f8bb41389ed4b4a9a",
+        "trellis-py/src/trellis_py/verify_export.py": "226322d25efd35090296ee02a234bf1b8da583a27cb97fce2557792d9a8c0d8c",
+        "trellis-py/src/trellis_py/verify_wos.py": "33672a08f2454a81f1535ee9afb2609bfe2f0d76cb1f4872e94062b6c7c38490"
+      }
+    }
+  ]
+}
