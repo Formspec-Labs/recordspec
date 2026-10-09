@@ -8,6 +8,8 @@ license.workspace = true
 [dependencies]
 async-trait = "0.1"
 object_store = { version = "0.11", default-features = false, features = ["aws"] }
+stack-common-auth = { path = "../../../stack-common/crates/stack-common-auth" }
+stack-common-http = { path = "../../../stack-common/crates/stack-common-http" }
 stack-common-error = { path = "../../../stack-common/crates/stack-common-error", default-features = false }
 stack-common-object-store = { path = "../../../stack-common/crates/stack-common-object-store" }
 stack-common-postgres = { path = "../../../stack-common/crates/stack-common-postgres", default-features = false, features = ["pool"] }

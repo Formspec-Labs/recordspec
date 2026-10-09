@@ -1,18 +1,17 @@
 // Rust guideline compliant 2026-02-21
 //! Axum router and HTTP handlers (TWREF-086 `http` split).
 
-use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{Router, get, post};
-use stack_common_auth::Claims;
+use axum::{Extension, Json};
 use stack_common_error::{ProblemJson, StackError};
 use stack_common_http::idempotency::{IDEMPOTENCY_KEY_HEADER, idempotency_middleware};
 use stack_common_http::tenant::TenantScope;
 use stack_common_ops::HealthRouter;
-use trellis_server_ports::{ScopeAction, ScopeAuthorization};
+use trellis_server_ports::ScopeAction;
 use trellis_service_client::{ComputeSensitivity, SubstrateAppendBody, SubstrateAppendResult};
 
 use crate::append;
@@ -33,10 +32,15 @@ pub fn router(state: TrellisServerState) -> Result<Router, StackError> {
         .build()
         .map_err(|error| StackError::internal(format!("http middleware: {error}")))?;
 
-    let append = post(append_event).route_layer(middleware::from_fn_with_state(
-        state.clone(),
-        idempotency_middleware::<TrellisServerState>,
-    ));
+    let append = post(append_event)
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            idempotency_middleware::<TrellisServerState>,
+        ))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::auth::authorize_append,
+        ));
 
     Ok(Router::new()
         .route("/openapi.json", get(crate::openapi::openapi_json))
@@ -85,31 +89,8 @@ pub fn router(state: TrellisServerState) -> Result<Router, StackError> {
 pub(crate) async fn append_event(
     State(state): State<TrellisServerState>,
     Path(scope): Path<String>,
-    _tenant_scope: TenantScope,
-    headers: HeaderMap,
-    Json(body): Json<SubstrateAppendBody>,
+    Extension(crate::auth::AuthorizedAppend(body)): Extension<crate::auth::AuthorizedAppend>,
 ) -> Result<(StatusCode, Json<SubstrateAppendResult>), StackError> {
-    validate_scope(&scope)?;
-    body.validate()?;
-    validate_client_attestation_shape(&body)?;
-    validate_idempotency_header(&headers, &body.idempotency_key)?;
-    validate_compute_context(&body)?;
-    let claims = state.authenticate(&headers)?;
-    let actor_subject = claims
-        .as_ref()
-        .map(|claims| claims.base().sub.as_str())
-        .unwrap_or(body.actor.subject.as_str());
-    let jwt_scopes = claims.as_ref().map(|c| c.scopes.as_slice());
-    state
-        .authorizer
-        .authorize(&ScopeAuthorization {
-            actor: actor_subject,
-            scope: scope.as_bytes(),
-            action: ScopeAction::Append,
-            jwt_scopes,
-        })
-        .await?;
-
     let command = append::AppendCommand {
         scope: scope.clone(),
         event_type: body.event_type.clone(),
@@ -141,7 +122,8 @@ pub(crate) async fn head_bundle(
     tenant_scope: TenantScope,
     headers: HeaderMap,
 ) -> Result<Response, StackError> {
-    read_authorized(&state, &scope, &tenant_scope, &headers).await?;
+    let (identity, read_permit) = read_authorized(&state, &scope, &tenant_scope, &headers).await?;
+    crate::auth::authorize_publication(&state, &identity, &read_permit).await?;
     let bundle = {
         let _scope_guard = state.scope_locks.lock(scope.as_bytes()).await;
         let events = state.repository.list_scope(scope.as_bytes()).await?;
@@ -180,7 +162,7 @@ pub(crate) async fn pinned_bundle(
     tenant_scope: TenantScope,
     headers: HeaderMap,
 ) -> Result<Response, StackError> {
-    read_authorized(&state, &scope, &tenant_scope, &headers).await?;
+    let (identity, read_permit) = read_authorized(&state, &scope, &tenant_scope, &headers).await?;
     let digest = normalize_checkpoint_digest(&checkpoint_digest)?;
     let record = {
         let _scope_guard = state.scope_locks.lock(scope.as_bytes()).await;
@@ -191,6 +173,7 @@ pub(crate) async fn pinned_bundle(
         if let Some(record) = record {
             record
         } else {
+            crate::auth::authorize_publication(&state, &identity, &read_permit).await?;
             let events = state.repository.list_scope(scope.as_bytes()).await?;
             let head = publish_bundle(
                 &state,
@@ -258,25 +241,27 @@ pub(crate) async fn event_type_registry(
 async fn read_authorized(
     state: &TrellisServerState,
     scope: &str,
-    _tenant_scope: &TenantScope,
+    tenant_scope: &TenantScope,
     headers: &HeaderMap,
-) -> Result<(), StackError> {
+) -> Result<
+    (
+        crate::state::AuthenticatedRequest,
+        trellis_server_ports::AuthorizedScope,
+    ),
+    StackError,
+> {
     validate_scope(scope)?;
-    let claims = state.authenticate(headers)?;
-    let actor = claims
-        .as_ref()
-        .map(|claims| claims.base().sub.as_str())
-        .unwrap_or("anonymous");
-    let jwt_scopes = claims.as_ref().map(|c| c.scopes.as_slice());
-    state
-        .authorizer
-        .authorize(&ScopeAuthorization {
-            actor,
-            scope: scope.as_bytes(),
-            action: ScopeAction::Read,
-            jwt_scopes,
-        })
-        .await
+    let identity = state.authenticate(headers).await?;
+    let permit = crate::auth::authorize_action(
+        state,
+        &identity,
+        tenant_scope,
+        scope,
+        ScopeAction::Read,
+        None,
+    )
+    .await?;
+    Ok((identity, permit))
 }
 
 async fn bundle_response(
@@ -300,7 +285,10 @@ fn bytes_response(content_type: &'static str, bytes: Vec<u8>) -> Response {
     response
 }
 
-fn validate_idempotency_header(headers: &HeaderMap, body_key: &str) -> Result<(), StackError> {
+pub(crate) fn validate_idempotency_header(
+    headers: &HeaderMap,
+    body_key: &str,
+) -> Result<(), StackError> {
     let header_key = headers
         .get(IDEMPOTENCY_KEY_HEADER)
         .and_then(|value| value.to_str().ok())
@@ -313,7 +301,7 @@ fn validate_idempotency_header(headers: &HeaderMap, body_key: &str) -> Result<()
     Ok(())
 }
 
-fn validate_compute_context(body: &SubstrateAppendBody) -> Result<(), StackError> {
+pub(crate) fn validate_compute_context(body: &SubstrateAppendBody) -> Result<(), StackError> {
     if body.compute_context.sensitivity != ComputeSensitivity::PublicMetadata {
         return Err(StackError::bad_request(
             "this Trellis server path only admits publicMetadata payloads",
@@ -329,7 +317,9 @@ fn validate_compute_context(body: &SubstrateAppendBody) -> Result<(), StackError
 /// admission classifies the event family. This handler-side check only
 /// catches malformed shapes that admission would never see (empty `kid`,
 /// empty `cose_sign1`).
-fn validate_client_attestation_shape(body: &SubstrateAppendBody) -> Result<(), StackError> {
+pub(crate) fn validate_client_attestation_shape(
+    body: &SubstrateAppendBody,
+) -> Result<(), StackError> {
     if let Some(attestation) = &body.client_attestation {
         if attestation.kid.trim().is_empty() {
             return Err(StackError::bad_request(
@@ -345,7 +335,7 @@ fn validate_client_attestation_shape(body: &SubstrateAppendBody) -> Result<(), S
     Ok(())
 }
 
-fn validate_scope(scope: &str) -> Result<(), StackError> {
+pub(crate) fn validate_scope(scope: &str) -> Result<(), StackError> {
     if scope.trim().is_empty() {
         return Err(StackError::bad_request("scope is required"));
     }

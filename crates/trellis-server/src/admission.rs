@@ -12,7 +12,7 @@
 use async_trait::async_trait;
 use axum::http::StatusCode;
 use stack_common_error::{ErrorCode, StackError};
-use trellis_server_ports::{ScopeAuthorization, ScopeAuthorizer};
+use trellis_server_ports::{AuthorizedScope, ScopeAuthorization, ScopeAuthorizer};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AllowAllScopeAuthorizer;
@@ -21,8 +21,11 @@ pub(crate) struct AllowAllScopeAuthorizer;
 impl ScopeAuthorizer for AllowAllScopeAuthorizer {
     type Error = StackError;
 
-    async fn authorize(&self, _request: &ScopeAuthorization<'_>) -> Result<(), Self::Error> {
-        Ok(())
+    async fn authorize(
+        &self,
+        request: &ScopeAuthorization<'_>,
+    ) -> Result<AuthorizedScope, Self::Error> {
+        Ok(legacy_permit(request))
     }
 }
 
@@ -34,7 +37,10 @@ pub(crate) struct ScopedAllowlistScopeAuthorizer;
 impl ScopeAuthorizer for ScopedAllowlistScopeAuthorizer {
     type Error = StackError;
 
-    async fn authorize(&self, request: &ScopeAuthorization<'_>) -> Result<(), Self::Error> {
+    async fn authorize(
+        &self,
+        request: &ScopeAuthorization<'_>,
+    ) -> Result<AuthorizedScope, Self::Error> {
         let Some(scopes) = request.jwt_scopes else {
             return Err(StackError::new(
                 ErrorCode::new("INFRA-4010").expect("static error code is valid"),
@@ -48,7 +54,7 @@ impl ScopeAuthorizer for ScopedAllowlistScopeAuthorizer {
         let scope_str = std::str::from_utf8(request.scope)
             .map_err(|_| StackError::bad_request("scope is not valid UTF-8"))?;
         if scopes.iter().any(|allowed| allowed.as_str() == scope_str) {
-            Ok(())
+            Ok(legacy_permit(request))
         } else {
             Err(StackError::new(
                 ErrorCode::new("INFRA-4030").expect("static error code is valid"),
@@ -62,10 +68,30 @@ impl ScopeAuthorizer for ScopedAllowlistScopeAuthorizer {
     }
 }
 
+// Legacy/dev modes preserve their declared scope posture, not external identity grants.
+fn legacy_permit(request: &ScopeAuthorization<'_>) -> AuthorizedScope {
+    AuthorizedScope {
+        principal: request.actor.to_string(),
+        tenant_scope: request.tenant_scope.clone(),
+        scope: request.scope.to_vec(),
+        action: request.action,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use stack_common_http::tenant::TenantScope;
     use trellis_server_ports::ScopeAction;
+
+    fn tenant() -> TenantScope {
+        TenantScope {
+            tenant: "test".into(),
+            workspace: "test".into(),
+            environment: "test".into(),
+            cell: "test".into(),
+        }
+    }
 
     /// Given a scope listed in JWT scopes, when scoped authorizer runs, then authorization succeeds.
     #[tokio::test]
@@ -74,6 +100,9 @@ mod tests {
         let scopes = vec!["case_123".to_string()];
         auth.authorize(&ScopeAuthorization {
             actor: "sub",
+            tenant_scope: &tenant(),
+            identity: None,
+            append_body: None,
             scope: b"case_123",
             action: ScopeAction::Append,
             jwt_scopes: Some(scopes.as_slice()),
@@ -90,6 +119,9 @@ mod tests {
         let err = auth
             .authorize(&ScopeAuthorization {
                 actor: "sub",
+                tenant_scope: &tenant(),
+                identity: None,
+                append_body: None,
                 scope: b"case_123",
                 action: ScopeAction::Append,
                 jwt_scopes: Some(scopes.as_slice()),
@@ -106,6 +138,9 @@ mod tests {
         let err = auth
             .authorize(&ScopeAuthorization {
                 actor: "sub",
+                tenant_scope: &tenant(),
+                identity: None,
+                append_body: None,
                 scope: b"case_123",
                 action: ScopeAction::Append,
                 jwt_scopes: None,

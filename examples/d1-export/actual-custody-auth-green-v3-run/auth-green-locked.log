@@ -1,0 +1,49 @@
+   Compiling trellis-server-ports v0.1.0 (/Users/mikewolfd/Work/formspec-stack/.trellis-actual-custody-auth-green-v3/crates/trellis-server-ports)
+   Compiling trellis-admission-wos v0.1.0 (/Users/mikewolfd/Work/formspec-stack/.trellis-actual-custody-auth-green-v3/crates/trellis-admission-wos)
+   Compiling trellis-admission-formspec v0.1.0 (/Users/mikewolfd/Work/formspec-stack/.trellis-actual-custody-auth-green-v3/crates/trellis-admission-formspec)
+   Compiling trellis-server v0.1.0 (/Users/mikewolfd/Work/formspec-stack/.trellis-actual-custody-auth-green-v3/crates/trellis-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.39s
+     Running unittests src/lib.rs (/Users/mikewolfd/Work/formspec-stack/.cargo-target/debug/deps/trellis_server-a50792e27340cf28)
+
+running 14 tests
+test tests::auth_boundary_tests::authorized_append_replay_preserves_json_rejections_without_append ... ok
+test tests::auth_boundary_tests::authorized_append_replay_external_mode_requires_injected_host_grants ... ok
+test tests::auth_boundary_tests::authorized_append_replay_external_mode_has_no_local_jwt_fallback ... ok
+test tests::auth_boundary_tests::authorized_append_replay_refuses_mismatched_authorizer_result ... ok
+test tests::auth_boundary_tests::authorized_append_replay_refuses_ungranted_payload_human ... ok
+test tests::authorized_append_replay_with_other_scope_is_forbidden ... ok
+test tests::authorized_append_replay_without_bearer_is_unauthorized ... ok
+test tests::auth_boundary_tests::authorized_append_replay_hashes_original_body_bytes ... ok
+test tests::auth_boundary_tests::authorized_append_replay_rechecks_delegation_for_unchanged_body ... ok
+test tests::auth_boundary_tests::authorized_append_replay_publication_refuses_changed_principal_and_pinned_miss ... ok
+test tests::auth_boundary_tests::authorized_append_replay_rechecks_current_identity_and_grants ... ok
+test tests::auth_boundary_tests::authorized_append_replay_refuses_each_foreign_tenant_and_actor ... ok
+test tests::auth_boundary_tests::authorized_append_replay_head_publication_requires_administer ... ok
+test tests::auth_boundary_tests::authorized_append_replay_separates_two_admitted_principals ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 89 filtered out; finished in 0.05s
+
+     Running unittests src/bin/emit_openapi.rs (/Users/mikewolfd/Work/formspec-stack/.cargo-target/debug/deps/emit_openapi-c39e5371d39ac71a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (/Users/mikewolfd/Work/formspec-stack/.cargo-target/debug/deps/trellis_server-f0273f9a5f6e661a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/dependency_baseline.rs (/Users/mikewolfd/Work/formspec-stack/.cargo-target/debug/deps/dependency_baseline-c7bcdcb83ba55383)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+     Running tests/openapi_public_module.rs (/Users/mikewolfd/Work/formspec-stack/.cargo-target/debug/deps/openapi_public_module-386520444db42b12)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+

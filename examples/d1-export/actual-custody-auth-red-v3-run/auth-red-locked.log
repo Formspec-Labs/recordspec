@@ -1,0 +1,323 @@
+   Compiling proc-macro2 v1.0.106
+   Compiling quote v1.0.45
+   Compiling unicode-ident v1.0.24
+   Compiling syn v2.0.117
+   Compiling libc v0.2.186
+   Compiling cfg-if v1.0.4
+   Compiling serde v1.0.228
+   Compiling serde_derive v1.0.228
+   Compiling version_check v0.9.5
+   Compiling zeroize_derive v1.4.3
+   Compiling zeroize v1.8.2
+   Compiling serde_core v1.0.228
+   Compiling getrandom v0.2.17
+   Compiling rand_core v0.6.4
+   Compiling generic-array v0.14.7
+   Compiling typenum v1.20.0
+   Compiling subtle v2.6.1
+   Compiling crypto-common v0.1.7
+   Compiling zmij v1.0.21
+   Compiling memchr v2.8.0
+   Compiling itoa v1.0.18
+   Compiling synstructure v0.13.2
+   Compiling zerofrom-derive v0.1.7
+   Compiling yoke-derive v0.8.2
+   Compiling block-buffer v0.10.4
+   Compiling zerovec-derive v0.11.3
+   Compiling parking_lot_core v0.9.12
+   Compiling digest v0.10.7
+   Compiling displaydoc v0.2.5
+   Compiling smallvec v1.15.1
+   Compiling pin-project-lite v0.2.17
+   Compiling serde_json v1.0.149
+   Compiling futures-core v0.3.32
+   Compiling cpufeatures v0.2.17
+   Compiling zerocopy v0.8.48
+   Compiling base64 v0.22.1
+   Compiling zerocopy-derive v0.8.48
+   Compiling tracing-attributes v0.1.31
+   Compiling once_cell v1.21.4
+   Compiling shlex v1.3.0
+   Compiling bytes v1.11.1
+   Compiling find-msvc-tools v0.1.9
+   Compiling cc v1.2.61
+   Compiling scopeguard v1.2.0
+   Compiling lock_api v0.4.14
+   Compiling thiserror v2.0.18
+   Compiling parking_lot v0.12.5
+   Compiling tracing-core v0.1.36
+   Compiling errno v0.3.14
+   Compiling thiserror-impl v2.0.18
+   Compiling futures-sink v0.3.32
+   Compiling signal-hook-registry v1.4.8
+   Compiling sha2 v0.10.9
+   Compiling mio v1.2.0
+   Compiling socket2 v0.6.3
+   Compiling tokio-macros v2.7.0
+   Compiling icu_normalizer_data v2.2.0
+   Compiling icu_properties_data v2.2.0
+   Compiling log v0.4.29
+   Compiling equivalent v1.0.2
+   Compiling tokio v1.52.1
+   Compiling semver v1.0.28
+   Compiling slab v0.4.12
+   Compiling tracing v0.1.44
+   Compiling futures-channel v0.3.32
+   Compiling zerofrom v0.1.8
+   Compiling stable_deref_trait v1.2.1
+   Compiling yoke v0.8.2
+   Compiling futures-macro v0.3.32
+   Compiling futures-task v0.3.32
+   Compiling autocfg v1.5.0
+   Compiling futures-io v0.3.32
+   Compiling allocator-api2 v0.2.21
+   Compiling futures-util v0.3.32
+   Compiling percent-encoding v2.3.2
+   Compiling hashbrown v0.17.0
+   Compiling indexmap v2.14.0
+   Compiling zerovec v0.11.6
+   Compiling half v2.7.1
+   Compiling ciborium-io v0.2.2
+   Compiling ciborium-ll v0.2.2
+   Compiling http v1.4.0
+   Compiling heck v0.5.0
+   Compiling ciborium v0.2.2
+   Compiling form_urlencoded v1.2.2
+   Compiling rustls v0.23.40
+   Compiling http-body v1.0.1
+   Compiling tinystr v0.8.3
+   Compiling ring v0.17.14
+   Compiling writeable v0.6.3
+   Compiling thiserror v1.0.69
+   Compiling hex v0.4.3
+   Compiling crossbeam-utils v0.8.21
+   Compiling litemap v0.8.2
+   Compiling icu_locale_core v2.2.0
+   Compiling integrity-cbor v0.1.0 (/Users/mikewolfd/Work/formspec-stack/integrity-stack/crates/integrity-cbor)
+   Compiling potential_utf v0.1.5
+   Compiling zerotrie v0.2.4
+   Compiling thiserror-impl v1.0.69
+   Compiling utf8_iter v1.0.4
+   Compiling httparse v1.10.1
+   Compiling tower-service v0.3.3
+   Compiling getrandom v0.4.2
+   Compiling ryu-js v1.0.2
+   Compiling serde_json_canonicalizer v0.3.2
+   Compiling icu_collections v2.2.0
+   Compiling icu_provider v2.2.0
+   Compiling tokio-util v0.7.18
+   Compiling rustls-pki-types v1.14.1
+   Compiling try-lock v0.2.5
+   Compiling atomic-waker v1.1.2
+   Compiling fnv v1.0.7
+   Compiling untrusted v0.9.0
+   Compiling h2 v0.4.14
+   Compiling want v0.3.1
+   Compiling num-traits v0.2.19
+   Compiling sync_wrapper v1.0.2
+   Compiling async-trait v0.1.89
+   Compiling serde_derive_internals v0.29.1
+   Compiling httpdate v1.0.3
+   Compiling schemars v0.8.22
+   Compiling foldhash v0.2.0
+   Compiling tower-layer v0.3.3
+   Compiling hashbrown v0.16.1
+   Compiling hyper v1.9.0
+   Compiling schemars_derive v0.8.22
+   Compiling icu_properties v2.2.0
+   Compiling icu_normalizer v2.2.0
+   Compiling uuid v1.23.1
+   Compiling integrity-canonical v0.1.0 (/Users/mikewolfd/Work/formspec-stack/integrity-stack/crates/integrity-canonical)
+   Compiling ipnet v2.12.0
+   Compiling dyn-clone v1.0.20
+   Compiling hyper-util v0.1.20
+   Compiling idna_adapter v1.2.2
+   Compiling regress v0.11.1
+   Compiling tower v0.5.3
+   Compiling http-body-util v0.1.3
+   Compiling aho-corasick v1.1.4
+   Compiling bitflags v2.11.1
+   Compiling regex-syntax v0.8.10
+   Compiling ryu v1.0.23
+   Compiling serde_urlencoded v0.7.1
+   Compiling regex-automata v0.4.14
+   Compiling typify-impl v0.6.2
+   Compiling idna v1.1.0
+   Compiling rustls-webpki v0.103.13
+   Compiling rustc_version v0.4.1
+   Compiling serde_tokenstream v0.2.3
+   Compiling prettyplease v0.2.37
+   Compiling typify-macro v0.6.2
+   Compiling curve25519-dalek v4.1.3
+   Compiling url v2.5.8
+   Compiling webpki-roots v1.0.7
+   Compiling hmac v0.12.1
+   Compiling mime v0.3.17
+   Compiling core-foundation-sys v0.8.7
+   Compiling axum-core v0.5.6
+   Compiling hkdf v0.12.4
+   Compiling typify v0.6.2
+   Compiling serde_path_to_error v0.1.20
+   Compiling utoipa-gen v5.5.0
+   Compiling matchit v0.8.4
+   Compiling axum v0.8.9
+   Compiling utoipa v5.5.0
+   Compiling stack-common-error v0.1.0 (/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-error)
+   Compiling foldhash v0.1.5
+   Compiling tinyvec_macros v0.1.1
+   Compiling tinyvec v1.11.0
+   Compiling hashbrown v0.15.5
+   Compiling ppv-lite86 v0.2.21
+   Compiling concurrent-queue v2.5.0
+   Compiling regex v1.12.3
+   Compiling either v1.15.0
+   Compiling crc-catalog v2.5.0
+   Compiling parking v2.2.1
+   Compiling event-listener v5.4.1
+   Compiling crc v3.4.0
+   Compiling rand_chacha v0.3.1
+   Compiling webpki-roots v0.26.11
+   Compiling futures-intrusive v0.5.0
+   Compiling tokio-stream v0.1.18
+   Compiling hashlink v0.10.0
+   Compiling unicode-normalization v0.1.25
+   Compiling crossbeam-queue v0.3.12
+   Compiling core-foundation v0.10.1
+   Compiling security-framework-sys v2.17.0
+   Compiling integrity-seam v0.1.0 (/Users/mikewolfd/Work/formspec-stack/integrity-stack/crates/integrity-seam)
+   Compiling trellis-types v0.1.0 (/Users/mikewolfd/Work/formspec-stack/.trellis-actual-custody-auth-red-v3/crates/trellis-types)
+   Compiling unicode-properties v0.1.4
+   Compiling unicode-bidi v0.3.18
+   Compiling signature v2.2.0
+   Compiling sqlx-core v0.8.6
+   Compiling ed25519 v2.2.3
+   Compiling stringprep v0.1.5
+   Compiling security-framework v3.7.0
+   Compiling atoi v2.0.0
+   Compiling rand v0.8.6
+   Compiling md-5 v0.10.6
+   Compiling inout v0.1.4
+   Compiling dotenvy v0.15.7
+   Compiling home v0.5.12
+   Compiling byteorder v1.5.0
+   Compiling whoami v1.6.1
+   Compiling sqlx-postgres v0.8.6
+   Compiling cipher v0.4.4
+   Compiling rustls-native-certs v0.8.3
+   Compiling ed25519-dalek v2.2.0
+   Compiling tower-http v0.6.10
+   Compiling tokio-rustls v0.26.4
+   Compiling stack-common-hash v0.1.0 (/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-hash)
+   Compiling universal-hash v0.5.1
+   Compiling const-oid v0.9.6
+   Compiling opaque-debug v0.3.1
+   Compiling der v0.7.10
+   Compiling hyper-rustls v0.27.9
+   Compiling integrity-cose v0.1.0 (/Users/mikewolfd/Work/formspec-stack/integrity-stack/crates/integrity-cose)
+   Compiling sqlx-macros-core v0.8.6
+   Compiling ff v0.13.1
+   Compiling base16ct v0.2.0
+   Compiling sec1 v0.7.3
+   Compiling group v0.13.0
+   Compiling sqlx-macros v0.8.6
+   Compiling reqwest v0.12.28
+   Compiling stack-common-idempotency v0.1.0 (/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-idempotency)
+   Compiling iana-time-zone v0.1.65
+   Compiling stack-common-typeid v0.1.0 (/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-typeid)
+   Compiling snafu-derive v0.8.9
+   Compiling futures-executor v0.3.32
+   Compiling crypto-bigint v0.5.5
+   Compiling static_assertions v1.1.0
+   Compiling crc32fast v1.5.0
+   Compiling same-file v1.0.6
+   Compiling walkdir v2.5.0
+   Compiling twox-hash v1.6.3
+   Compiling elliptic-curve v0.13.8
+   Compiling futures v0.3.32
+   Compiling snafu v0.8.9
+   Compiling wos-events v0.1.0 (/Users/mikewolfd/Work/formspec-stack/work-spec/crates/wos-events)
+   Compiling chrono v0.4.44
+   Compiling sqlx v0.8.6
+   Compiling polyval v0.6.2
+   Compiling itertools v0.13.0
+   Compiling quick-xml v0.37.5
+   Compiling aead v0.5.2
+   Compiling humantime v2.3.0
+   Compiling num-conv v0.2.1
+   Compiling time-core v0.1.8
+   Compiling powerfmt v0.2.0
+   Compiling deranged v0.5.8
+   Compiling time-macros v0.2.27
+   Compiling object_store v0.11.2
+   Compiling ghash v0.5.1
+   Compiling stack-common-postgres v0.1.0 (/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-postgres)
+   Compiling primeorder v0.13.6
+   Compiling stack-common-http v0.1.0 (/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-http)
+   Compiling poly1305 v0.8.0
+   Compiling ctr v0.9.2
+   Compiling chacha20 v0.9.1
+   Compiling aes v0.8.4
+   Compiling trellis-cddl v0.1.0 (/Users/mikewolfd/Work/formspec-stack/.trellis-actual-custody-auth-red-v3/crates/trellis-cddl)
+   Compiling num-integer v0.1.46
+   Compiling time v0.3.47
+   Compiling num-bigint v0.4.6
+   Compiling trellis-core v0.1.0 (/Users/mikewolfd/Work/formspec-stack/.trellis-actual-custody-auth-red-v3/crates/trellis-core)
+   Compiling aes-gcm v0.10.3
+   Compiling chacha20poly1305 v0.10.1
+   Compiling trellis-service-client v0.1.0 (/Users/mikewolfd/Work/formspec-stack/.trellis-actual-custody-auth-red-v3/crates/trellis-service-client)
+   Compiling integrity-bundle v0.1.0 (/Users/mikewolfd/Work/formspec-stack/integrity-stack/crates/integrity-bundle)
+   Compiling p256 v0.13.2
+   Compiling stack-common-object-store v0.1.0 (/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-object-store)
+   Compiling x25519-dalek v2.0.1
+   Compiling lazy_static v1.5.0
+   Compiling rand_core v0.9.5
+   Compiling hpke v0.13.0
+   Compiling sharded-slab v0.1.7
+   Compiling trellis-server-ports v0.1.0 (/Users/mikewolfd/Work/formspec-stack/.trellis-actual-custody-auth-red-v3/crates/trellis-server-ports)
+   Compiling simple_asn1 v0.6.4
+   Compiling matchers v0.2.0
+   Compiling tracing-log v0.2.0
+   Compiling tracing-serde v0.2.0
+   Compiling pem v3.0.6
+   Compiling thread_local v1.1.9
+   Compiling nu-ansi-term v0.50.3
+   Compiling tracing-subscriber v0.3.23
+   Compiling jsonwebtoken v9.3.1
+   Compiling integrity-hpke v0.1.0 (/Users/mikewolfd/Work/formspec-stack/integrity-stack/crates/integrity-hpke)
+   Compiling integrity-verify v0.1.0 (/Users/mikewolfd/Work/formspec-stack/.trellis-actual-custody-auth-red-v3/.private-deps/integrity-verify)
+   Compiling trellis-witness-registry v0.1.0 (/Users/mikewolfd/Work/formspec-stack/.trellis-actual-custody-auth-red-v3/crates/trellis-witness-registry)
+   Compiling trellis-export-writer v0.1.0 (/Users/mikewolfd/Work/formspec-stack/.trellis-actual-custody-auth-red-v3/crates/trellis-export-writer)
+   Compiling trellis-verify-wos v0.1.0 (/Users/mikewolfd/Work/formspec-stack/.trellis-actual-custody-auth-red-v3/crates/trellis-verify-wos)
+   Compiling stack-common-auth v0.1.0 (/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-auth)
+   Compiling stack-common-ops v0.1.0 (/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-ops)
+   Compiling trellis-admission-formspec v0.1.0 (/Users/mikewolfd/Work/formspec-stack/.trellis-actual-custody-auth-red-v3/crates/trellis-admission-formspec)
+   Compiling trellis-admission-wos v0.1.0 (/Users/mikewolfd/Work/formspec-stack/.trellis-actual-custody-auth-red-v3/crates/trellis-admission-wos)
+   Compiling trellis-store-postgres-async v0.1.0 (/Users/mikewolfd/Work/formspec-stack/.trellis-actual-custody-auth-red-v3/crates/trellis-store-postgres-async)
+   Compiling trellis-server v0.1.0 (/Users/mikewolfd/Work/formspec-stack/.trellis-actual-custody-auth-red-v3/crates/trellis-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 04s
+     Running unittests src/lib.rs (/Users/mikewolfd/Work/formspec-stack/.cargo-target/debug/deps/trellis_server-759b069b45480425)
+
+running 2 tests
+
+thread 'tests::authorized_append_replay_with_other_scope_is_forbidden' panicked at crates/trellis-server/src/lib.rs:1218:9:
+assertion `left == right` failed
+  left: 201
+ right: 403
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'tests::authorized_append_replay_without_bearer_is_unauthorized' panicked at crates/trellis-server/src/lib.rs:1186:9:
+assertion `left == right` failed
+  left: 201
+ right: 401
+test tests::authorized_append_replay_with_other_scope_is_forbidden ... FAILED
+test tests::authorized_append_replay_without_bearer_is_unauthorized ... FAILED
+
+failures:
+
+failures:
+    tests::authorized_append_replay_with_other_scope_is_forbidden
+    tests::authorized_append_replay_without_bearer_is_unauthorized
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 89 filtered out; finished in 0.03s
+
+error: test failed, to rerun pass `-p trellis-server --lib`

@@ -1,0 +1,7 @@
+{
+  "exitCode": 0,
+  "command": "cargo metadata --offline --locked --format-version 1",
+  "startingLockRestored": true,
+  "behavioralTestsRun": false,
+  "lockAmendmentSha256": "2b329736e2602574e00236a0e354b9180ba95a39f765c61de3a49b62a3ecc294"
+}

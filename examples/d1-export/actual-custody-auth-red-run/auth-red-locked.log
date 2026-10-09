@@ -1,0 +1,1 @@
+error: package collision in the lockfile: packages trellis-types v0.1.0 (/Users/mikewolfd/Work/formspec-stack/.trellis-actual-custody-auth-v1/crates/trellis-types) and trellis-types v0.1.0 (/Users/mikewolfd/Work/formspec-stack/trellis/crates/trellis-types) are different, but only one can be written to lockfile unambiguously

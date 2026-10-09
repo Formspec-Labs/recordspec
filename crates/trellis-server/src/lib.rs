@@ -39,6 +39,7 @@ mod artifacts;
 mod composition;
 mod event_repository;
 mod export_profile;
+mod auth;
 mod http;
 pub mod openapi;
 mod scope_startup;
@@ -1163,6 +1164,69 @@ mod tests {
             .header("x-wos-cell-id", "cell-a")
             .body(Body::from(body))
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn authorized_append_replay_without_bearer_is_unauthorized() {
+        let token = test_trellis_token(vec!["case_123".to_string()]);
+        let state = test_state_scoped_production_like();
+        let app = router(state.clone()).expect("router");
+        let path = "/v1/scopes/case_123/events";
+        let body = append_body("replay-current-auth-missing");
+        let first = app
+            .clone()
+            .oneshot(post_request_bearer(path, body.clone(), &token))
+            .await
+            .expect("authorized append");
+        assert_eq!(first.status(), StatusCode::CREATED);
+
+        let replay = app
+            .oneshot(post_request(path, body))
+            .await
+            .expect("unauthenticated replay");
+        assert_eq!(replay.status(), StatusCode::UNAUTHORIZED);
+        assert!(replay.headers().get(IDEMPOTENCY_REPLAY_HEADER).is_none());
+        assert_eq!(
+            state
+                .repository
+                .list_scope(b"case_123")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn authorized_append_replay_with_other_scope_is_forbidden() {
+        let token = test_trellis_token(vec!["case_123".to_string()]);
+        let other = test_trellis_token(vec!["other_scope".to_string()]);
+        let state = test_state_scoped_production_like();
+        let app = router(state.clone()).expect("router");
+        let path = "/v1/scopes/case_123/events";
+        let body = append_body("replay-current-auth-other-scope");
+        let first = app
+            .clone()
+            .oneshot(post_request_bearer(path, body.clone(), &token))
+            .await
+            .expect("authorized append");
+        assert_eq!(first.status(), StatusCode::CREATED);
+
+        let replay = app
+            .oneshot(post_request_bearer(path, body, &other))
+            .await
+            .expect("ungranted replay");
+        assert_eq!(replay.status(), StatusCode::FORBIDDEN);
+        assert!(replay.headers().get(IDEMPOTENCY_REPLAY_HEADER).is_none());
+        assert_eq!(
+            state
+                .repository
+                .list_scope(b"case_123")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -2742,4 +2806,8 @@ mod tests {
             self.inner.admit(event).await
         }
     }
+    mod auth_boundary_tests {
+        include!("auth_boundary_tests.rs");
+    }
+
 }

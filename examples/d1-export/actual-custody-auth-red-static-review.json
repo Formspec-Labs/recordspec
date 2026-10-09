@@ -1,0 +1,12 @@
+{
+  "status": "BEFORE auth design approved; private RED tests statically approved; native UNEXECUTED; no production fix yet.",
+  "reviewer": "/root/oidc_code_review",
+  "proposalSha256": "2646f87ff389e8b8f3ad98e3aff4d5a4f965b0f3d6d415c30107674866d5fd69",
+  "testSourceSha256": "87297d6eaf427cf20c5c4739e2c9a2c0a2fd49898423d0d9f9e622868ef8e79f",
+  "testPatchSha256": "b5546b4c1620ef4c5c9a749cfc4a9e1cc60664d4a02833e86d070d50943d6e45",
+  "testPlanSha256": "93892c013016f31da306aa75b30bb05016e58da2d7d07dc5664f30ce3545cf92",
+  "staticVerdict": "APPROVE readiness; current middleware trace predicts cached201 before auth instead of401/403. First actual router/Core append required201.",
+  "scope": "Legacy HS256 cached replay ordering only; not OIDC revocation, delegation, exact tenant/action, provider, or real D1 qualification.",
+  "codeBeforeCertificateSha256": "c2371309fc7234a55b376b089e5f96824227dd8e0c9c2aa80f80fa18b04a0e47",
+  "architectureBeforeCertificateSha256": "fb6d7cc114a433b53bda4eba98ffbacabf9daa35d988548e0f6ff05b5f2fd8b3"
+}

@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use axum::http::header::AUTHORIZATION;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use stack_common_auth::{JwtConfig, JwtVerifier};
+use stack_common_auth::{AccessTokenVerifier, JwtConfig, JwtVerifier, VerifiedAccessIdentity};
 use stack_common_error::{ErrorCode, StackError};
 use stack_common_http::idempotency::{
     HttpIdempotencyState, IdempotencyCall, IdempotencyDecision, IdempotencyDriverError,
@@ -41,6 +41,44 @@ use crate::{ServerSigningKey, TenantHeaderMode, TrellisClaims};
 
 pub(crate) type ProfileExportVerifier = dyn Fn(&[u8]) -> bool + Send + Sync;
 
+/// Explicit verifier selection; verification never falls back between modes.
+#[derive(Clone)]
+enum Authentication {
+    Unconfigured,
+    LocalJwt(Arc<JwtVerifier<TrellisClaims>>),
+    External(Arc<dyn AccessTokenVerifier>),
+}
+
+pub(crate) enum AuthenticatedRequest {
+    Anonymous,
+    LocalJwt(TrellisClaims),
+    External(VerifiedAccessIdentity),
+}
+
+impl AuthenticatedRequest {
+    pub(crate) fn actor<'a>(&'a self, fallback: &'a str) -> &'a str {
+        match self {
+            Self::Anonymous => fallback,
+            Self::LocalJwt(claims) => &claims.base.sub,
+            Self::External(identity) => &identity.subject,
+        }
+    }
+
+    pub(crate) fn external_identity(&self) -> Option<&VerifiedAccessIdentity> {
+        match self {
+            Self::External(identity) => Some(identity),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn legacy_scopes(&self) -> Option<&[String]> {
+        match self {
+            Self::LocalJwt(claims) => Some(&claims.scopes),
+            _ => None,
+        }
+    }
+}
+
 /// Cloneable Axum state for the Trellis service.
 #[derive(Clone)]
 pub struct TrellisServerState {
@@ -53,7 +91,7 @@ pub struct TrellisServerState {
     replay_store: Arc<InMemoryHttpReplayStore>,
     pub(crate) bundles: Arc<dyn BundleIndexPort>,
     pub(crate) scope_locks: Arc<ScopeLocks>,
-    jwt_verifier: Option<Arc<JwtVerifier<TrellisClaims>>>,
+    authentication: Authentication,
     /// True when [`state_from_env`] used durable storage without `TRELLIS_PERMISSIVE_SCOPE_AUTH=1`.
     production_like_scope_posture: bool,
     /// True while the built-in [`AllowAllScopeAuthorizer`] from [`Self::new`] is still installed.
@@ -92,7 +130,7 @@ impl TrellisServerState {
             replay_store: Arc::new(InMemoryHttpReplayStore::new()),
             bundles: Arc::new(BundleIndex::default()),
             scope_locks: Arc::new(ScopeLocks::default()),
-            jwt_verifier: None,
+            authentication: Authentication::Unconfigured,
             production_like_scope_posture: false,
             scope_authorizer_allow_all: true,
             append_runner: Arc::new(DefaultAppendRunner),
@@ -145,7 +183,18 @@ impl TrellisServerState {
 
     #[must_use]
     pub fn with_jwt_verifier(mut self, verifier: JwtVerifier<TrellisClaims>) -> Self {
-        self.jwt_verifier = Some(Arc::new(verifier));
+        self.authentication = Authentication::LocalJwt(Arc::new(verifier));
+        self
+    }
+
+    /// Selects injected external access-token verification without local-token fallback.
+    ///
+    /// Supply the maintained current-authority verifier when revocation is required.
+    /// The host must also inject an authorizer that maps identities and grants exact
+    /// tenant, scope, action and actor delegation; router construction rejects allow-all.
+    #[must_use]
+    pub fn with_access_token_verifier(mut self, verifier: Arc<dyn AccessTokenVerifier>) -> Self {
+        self.authentication = Authentication::External(verifier);
         self
     }
 
@@ -173,6 +222,13 @@ impl TrellisServerState {
     /// # Errors
     /// When the state would advertise production scope posture while still using dev-only authorization.
     pub fn ensure_serving_posture_twref022(&self) -> Result<(), StackError> {
+        if matches!(&self.authentication, Authentication::External(_))
+            && self.scope_authorizer_allow_all
+        {
+            return Err(StackError::bad_request(
+                "external access-token mode requires a host scope authorizer with explicit grants",
+            ));
+        }
         if !self.production_like_scope_posture {
             return Ok(());
         }
@@ -183,10 +239,10 @@ impl TrellisServerState {
                  TRELLIS_PERMISSIVE_SCOPE_AUTH=1 for explicit dev bypass (TWREF-022).",
             ));
         }
-        if self.jwt_verifier.is_none() {
+        if matches!(&self.authentication, Authentication::Unconfigured) {
             return Err(StackError::bad_request(
                 "trellis-server refuses to build router: production_like_scope_posture requires \
-                 TRELLIS_JWT_HS256_SECRET / jwt_verifier (TWREF-022).",
+                 TRELLIS_JWT_HS256_SECRET / jwt_verifier or injected access_token_verifier (TWREF-022).",
             ));
         }
         Ok(())
@@ -197,17 +253,18 @@ impl TrellisServerState {
         crate::append::AppendCoordinator::new(self)
     }
 
-    pub(crate) fn authenticate(
+    pub(crate) async fn authenticate(
         &self,
         headers: &HeaderMap,
-    ) -> Result<Option<TrellisClaims>, StackError> {
-        let Some(verifier) = &self.jwt_verifier else {
-            return Ok(None);
-        };
+    ) -> Result<AuthenticatedRequest, StackError> {
+        if matches!(&self.authentication, Authentication::Unconfigured) {
+            return Ok(AuthenticatedRequest::Anonymous);
+        }
         let token = headers
             .get(AUTHORIZATION)
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.strip_prefix("Bearer "))
+            .filter(|value| !value.is_empty())
             .ok_or_else(|| {
                 StackError::new(
                     ErrorCode::new("INFRA-4010").expect("static error code is valid"),
@@ -215,7 +272,27 @@ impl TrellisServerState {
                     "missing bearer token",
                 )
             })?;
-        verifier.verify(token).map(Some)
+        match &self.authentication {
+            Authentication::Unconfigured => unreachable!("unconfigured mode returned above"),
+            Authentication::LocalJwt(verifier) => {
+                verifier.verify(token).map(AuthenticatedRequest::LocalJwt)
+            }
+            Authentication::External(verifier) => verifier
+                .verify(token)
+                .await
+                .map(AuthenticatedRequest::External)
+                .map_err(|error| {
+                    if error.is_unavailable() {
+                        StackError::unavailable("access-token current authority unavailable")
+                    } else {
+                        StackError::new(
+                            ErrorCode::new("INFRA-4010").expect("static error code is valid"),
+                            StatusCode::UNAUTHORIZED,
+                            "access token rejected",
+                        )
+                    }
+                }),
+        }
     }
 }
 
@@ -303,6 +380,10 @@ impl HttpIdempotencyState for TrellisServerState {
 }
 
 fn tenant_replay_scope(call: &IdempotencyCall) -> String {
+    if let Some(partition) = &call.replay_partition {
+        // Length-prefix the trusted partition so arbitrary principal/route text cannot collide.
+        return format!("{}:{}{}", partition.len(), partition, call.request.scope);
+    }
     let tenant = header_value(&call.headers, "x-wos-tenant-id")
         .or_else(|| header_value(&call.headers, "x-formspec-tenant-id"))
         .unwrap_or("unknown-tenant");

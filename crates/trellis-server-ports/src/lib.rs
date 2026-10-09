@@ -511,22 +511,52 @@ pub enum ScopeAction {
     Administer,
 }
 
-/// Scope authorization request.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Scope authorization request with verified identity and requested resource context.
+#[derive(Clone, Debug)]
 pub struct ScopeAuthorization<'a> {
     pub actor: &'a str,
     pub scope: &'a [u8],
     pub action: ScopeAction,
-    /// Claim names from the verified bearer JWT (`TrellisClaims.scopes`), when a token was presented.
+    /// Requested context only; the host must independently grant this exact tuple.
+    pub tenant_scope: &'a stack_common_http::tenant::TenantScope,
+    /// External identity facts; the host resolves its own internal principal.
+    pub identity: Option<&'a stack_common_auth::VerifiedAccessIdentity>,
+    /// Exact validated append body for current actor/delegation authorization.
+    pub append_body: Option<&'a trellis_service_client::SubstrateAppendBody>,
+    /// Explicit legacy local-token scope labels, absent in external-token mode.
     pub jwt_scopes: Option<&'a [String]>,
 }
 
-/// Scope authorization port.
+/// Host-authorized principal and exact resource/action tuple.
+///
+/// This is request-local authority, never a serializable bearer capability.
+/// The HTTP boundary checks that the admitted tuple equals the request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuthorizedScope {
+    pub principal: String,
+    pub tenant_scope: stack_common_http::tenant::TenantScope,
+    pub scope: Vec<u8>,
+    pub action: ScopeAction,
+}
+
+/// Scope authorization port, including host principal mapping and current delegation.
 #[async_trait]
 pub trait ScopeAuthorizer: Send + Sync {
     type Error: std::error::Error + Send + Sync + 'static;
 
-    async fn authorize(&self, request: &ScopeAuthorization<'_>) -> Result<(), Self::Error>;
+    /// Resolves the principal and authorizes the exact requested resource and action.
+    ///
+    /// For external identity, implementations must map issuer, subject and client
+    /// through host-selected authority; OAuth scopes and tenant headers are not grants.
+    /// Append implementations also authorize the asserted actor and any application
+    /// delegation from the exact body. Every request, including replay, calls this port.
+    ///
+    /// # Errors
+    /// Returns an error when mapping, current grants or actor delegation refuse.
+    async fn authorize(
+        &self,
+        request: &ScopeAuthorization<'_>,
+    ) -> Result<AuthorizedScope, Self::Error>;
 }
 
 /// Clock port for deterministic tests and production time.

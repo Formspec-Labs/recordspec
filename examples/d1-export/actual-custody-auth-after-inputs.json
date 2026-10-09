@@ -1,0 +1,31 @@
+{
+  "status": "Native RED2 expectedfail \u2192 GREEN14pass; finalpairedAFTERpending. Noadoption/livechange.",
+  "baselineCommit": "ea8f547367e4d41d09395001230ccf14705af8c9",
+  "candidate": "/Users/mikewolfd/Work/formspec-stack/.trellis-actual-custody-auth-green-v3",
+  "sourcePacket": "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/actual-custody-auth-green-v3-preflight-pins.json",
+  "sourcePacketSha256": "39d722dda0a8e7cfd4ecf3987e9c5beb20db8d643d989b1af148382e73cfd47c",
+  "productionPatchSha256": "80b7345d571730c0d23b5a7bae0b294eb0656887a762fb9def3b28cba3bac1bf",
+  "qualificationSha256": "a54736528ad928e471b1a7d36e6539e9809bea7d7b918f04bd35c6241279a8d4",
+  "nativeReceipts": {
+    "red": {
+      "path": "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/actual-custody-auth-red-v3-run/auth-red-locked-receipt.json",
+      "sha256": "d9044143c7d137d045134463f449cba769a6cbdb5ef29b6cc5ecea0579e774e1",
+      "logSha256": "90bfcaa8a751c764e66a3530e5349b7f040cd0b3e6c29e10a5ec4ff1f8727708",
+      "exitCode": 101,
+      "ownedProcessGroup": 35152,
+      "ownedGroupAbsent": true,
+      "startingLockRestored": true,
+      "inputDrift": {}
+    },
+    "green": {
+      "path": "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/actual-custody-auth-green-v3-run/auth-green-locked-receipt.json",
+      "sha256": "3da38c3d69983681d4e8b591afd33f392ff8611ecb14b11cf2d2a6c63379b903",
+      "logSha256": "a67cb11cf4ba2bfd9405538a9476ca30587e02a137386fa5fa899aecd7208999",
+      "exitCode": 0,
+      "ownedProcessGroup": 45299,
+      "ownedGroupAbsent": true,
+      "startingLockRestored": true,
+      "inputDrift": {}
+    }
+  }
+}

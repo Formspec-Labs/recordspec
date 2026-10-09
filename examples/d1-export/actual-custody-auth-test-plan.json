@@ -1,0 +1,27 @@
+{
+  "status": "Prepared only; native tests UNEXECUTED. No production fix written before observed RED.",
+  "baselineCommit": "ea8f547367e4d41d09395001230ccf14705af8c9",
+  "privateCandidate": "/Users/mikewolfd/Work/formspec-stack/.trellis-actual-custody-auth-v1",
+  "proposalSha256": "2646f87ff389e8b8f3ad98e3aff4d5a4f965b0f3d6d415c30107674866d5fd69",
+  "testSourceSha256": "87297d6eaf427cf20c5c4739e2c9a2c0a2fd49898423d0d9f9e622868ef8e79f",
+  "testPatchSha256": "b5546b4c1620ef4c5c9a749cfc4a9e1cc60664d4a02833e86d070d50943d6e45",
+  "nativeCommand": [
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-j1",
+    "-p",
+    "trellis-server",
+    "authorized_append_replay_",
+    "--",
+    "--nocapture"
+  ],
+  "meaningfulRed": "Both tests must first create a real isolated-router/Core append, then reject identical-key/body replay with absent or wrong-scope bearer. Baseline static trace predicts201 cached replay instead of401/403.",
+  "limits": [
+    "Isolated maintained native test record and public fixture issuer; no genuine D1 or deployment grant claim.",
+    "No builds while Core native slot reserved.",
+    "Private root uses same sibling path dependencies; source inputs require frozen guards for execution.",
+    "Any required lock repair must preserve versions and be retained; no generate-lockfile/broad updates."
+  ]
+}

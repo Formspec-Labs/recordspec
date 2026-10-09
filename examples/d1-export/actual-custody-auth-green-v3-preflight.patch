@@ -1,0 +1,1264 @@
+--- a/crates/trellis-server-ports/Cargo.toml
++++ b/crates/trellis-server-ports/Cargo.toml
+@@ -8,6 +8,8 @@
+ [dependencies]
+ async-trait = "0.1"
+ object_store = { version = "0.11", default-features = false, features = ["aws"] }
++stack-common-auth = { path = "../../../stack-common/crates/stack-common-auth" }
++stack-common-http = { path = "../../../stack-common/crates/stack-common-http" }
+ stack-common-error = { path = "../../../stack-common/crates/stack-common-error", default-features = false }
+ stack-common-object-store = { path = "../../../stack-common/crates/stack-common-object-store" }
+ stack-common-postgres = { path = "../../../stack-common/crates/stack-common-postgres", default-features = false, features = ["pool"] }
+--- a/crates/trellis-server-ports/src/lib.rs
++++ b/crates/trellis-server-ports/src/lib.rs
+@@ -511,22 +511,52 @@
+     Administer,
+ }
+ 
+-/// Scope authorization request.
+-#[derive(Clone, Debug, PartialEq, Eq)]
++/// Scope authorization request with verified identity and requested resource context.
++#[derive(Clone, Debug)]
+ pub struct ScopeAuthorization<'a> {
+     pub actor: &'a str,
+     pub scope: &'a [u8],
+     pub action: ScopeAction,
+-    /// Claim names from the verified bearer JWT (`TrellisClaims.scopes`), when a token was presented.
++    /// Requested context only; the host must independently grant this exact tuple.
++    pub tenant_scope: &'a stack_common_http::tenant::TenantScope,
++    /// External identity facts; the host resolves its own internal principal.
++    pub identity: Option<&'a stack_common_auth::VerifiedAccessIdentity>,
++    /// Exact validated append body for current actor/delegation authorization.
++    pub append_body: Option<&'a trellis_service_client::SubstrateAppendBody>,
++    /// Explicit legacy local-token scope labels, absent in external-token mode.
+     pub jwt_scopes: Option<&'a [String]>,
+ }
+ 
+-/// Scope authorization port.
++/// Host-authorized principal and exact resource/action tuple.
++///
++/// This is request-local authority, never a serializable bearer capability.
++/// The HTTP boundary checks that the admitted tuple equals the request.
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub struct AuthorizedScope {
++    pub principal: String,
++    pub tenant_scope: stack_common_http::tenant::TenantScope,
++    pub scope: Vec<u8>,
++    pub action: ScopeAction,
++}
++
++/// Scope authorization port, including host principal mapping and current delegation.
+ #[async_trait]
+ pub trait ScopeAuthorizer: Send + Sync {
+     type Error: std::error::Error + Send + Sync + 'static;
+ 
+-    async fn authorize(&self, request: &ScopeAuthorization<'_>) -> Result<(), Self::Error>;
++    /// Resolves the principal and authorizes the exact requested resource and action.
++    ///
++    /// For external identity, implementations must map issuer, subject and client
++    /// through host-selected authority; OAuth scopes and tenant headers are not grants.
++    /// Append implementations also authorize the asserted actor and any application
++    /// delegation from the exact body. Every request, including replay, calls this port.
++    ///
++    /// # Errors
++    /// Returns an error when mapping, current grants or actor delegation refuse.
++    async fn authorize(
++        &self,
++        request: &ScopeAuthorization<'_>,
++    ) -> Result<AuthorizedScope, Self::Error>;
+ }
+ 
+ /// Clock port for deterministic tests and production time.
+--- a/crates/trellis-server/src/lib.rs
++++ b/crates/trellis-server/src/lib.rs
+@@ -39,6 +39,7 @@
+ mod composition;
+ mod event_repository;
+ mod export_profile;
++mod auth;
+ mod http;
+ pub mod openapi;
+ mod scope_startup;
+@@ -2805,4 +2806,8 @@
+             self.inner.admit(event).await
+         }
+     }
++    mod auth_boundary_tests {
++        include!("auth_boundary_tests.rs");
++    }
++
+ }
+--- a/crates/trellis-server/src/state.rs
++++ b/crates/trellis-server/src/state.rs
+@@ -9,7 +9,7 @@
+ use axum::http::header::AUTHORIZATION;
+ use axum::http::{HeaderMap, StatusCode};
+ use axum::response::Response;
+-use stack_common_auth::{JwtConfig, JwtVerifier};
++use stack_common_auth::{AccessTokenVerifier, JwtConfig, JwtVerifier, VerifiedAccessIdentity};
+ use stack_common_error::{ErrorCode, StackError};
+ use stack_common_http::idempotency::{
+     HttpIdempotencyState, IdempotencyCall, IdempotencyDecision, IdempotencyDriverError,
+@@ -41,6 +41,44 @@
+ 
+ pub(crate) type ProfileExportVerifier = dyn Fn(&[u8]) -> bool + Send + Sync;
+ 
++/// Explicit verifier selection; verification never falls back between modes.
++#[derive(Clone)]
++enum Authentication {
++    Unconfigured,
++    LocalJwt(Arc<JwtVerifier<TrellisClaims>>),
++    External(Arc<dyn AccessTokenVerifier>),
++}
++
++pub(crate) enum AuthenticatedRequest {
++    Anonymous,
++    LocalJwt(TrellisClaims),
++    External(VerifiedAccessIdentity),
++}
++
++impl AuthenticatedRequest {
++    pub(crate) fn actor<'a>(&'a self, fallback: &'a str) -> &'a str {
++        match self {
++            Self::Anonymous => fallback,
++            Self::LocalJwt(claims) => &claims.base.sub,
++            Self::External(identity) => &identity.subject,
++        }
++    }
++
++    pub(crate) fn external_identity(&self) -> Option<&VerifiedAccessIdentity> {
++        match self {
++            Self::External(identity) => Some(identity),
++            _ => None,
++        }
++    }
++
++    pub(crate) fn legacy_scopes(&self) -> Option<&[String]> {
++        match self {
++            Self::LocalJwt(claims) => Some(&claims.scopes),
++            _ => None,
++        }
++    }
++}
++
+ /// Cloneable Axum state for the Trellis service.
+ #[derive(Clone)]
+ pub struct TrellisServerState {
+@@ -53,7 +91,7 @@
+     replay_store: Arc<InMemoryHttpReplayStore>,
+     pub(crate) bundles: Arc<dyn BundleIndexPort>,
+     pub(crate) scope_locks: Arc<ScopeLocks>,
+-    jwt_verifier: Option<Arc<JwtVerifier<TrellisClaims>>>,
++    authentication: Authentication,
+     /// True when [`state_from_env`] used durable storage without `TRELLIS_PERMISSIVE_SCOPE_AUTH=1`.
+     production_like_scope_posture: bool,
+     /// True while the built-in [`AllowAllScopeAuthorizer`] from [`Self::new`] is still installed.
+@@ -92,7 +130,7 @@
+             replay_store: Arc::new(InMemoryHttpReplayStore::new()),
+             bundles: Arc::new(BundleIndex::default()),
+             scope_locks: Arc::new(ScopeLocks::default()),
+-            jwt_verifier: None,
++            authentication: Authentication::Unconfigured,
+             production_like_scope_posture: false,
+             scope_authorizer_allow_all: true,
+             append_runner: Arc::new(DefaultAppendRunner),
+@@ -145,11 +183,22 @@
+ 
+     #[must_use]
+     pub fn with_jwt_verifier(mut self, verifier: JwtVerifier<TrellisClaims>) -> Self {
+-        self.jwt_verifier = Some(Arc::new(verifier));
++        self.authentication = Authentication::LocalJwt(Arc::new(verifier));
+         self
+     }
+ 
++    /// Selects injected external access-token verification without local-token fallback.
++    ///
++    /// Supply the maintained current-authority verifier when revocation is required.
++    /// The host must also inject an authorizer that maps identities and grants exact
++    /// tenant, scope, action and actor delegation; router construction rejects allow-all.
+     #[must_use]
++    pub fn with_access_token_verifier(mut self, verifier: Arc<dyn AccessTokenVerifier>) -> Self {
++        self.authentication = Authentication::External(verifier);
++        self
++    }
++
++    #[must_use]
+     pub fn with_admission_policy(
+         mut self,
+         admission_policy: Arc<dyn EventAdmissionPolicy<Error = StackError>>,
+@@ -173,6 +222,13 @@
+     /// # Errors
+     /// When the state would advertise production scope posture while still using dev-only authorization.
+     pub fn ensure_serving_posture_twref022(&self) -> Result<(), StackError> {
++        if matches!(&self.authentication, Authentication::External(_))
++            && self.scope_authorizer_allow_all
++        {
++            return Err(StackError::bad_request(
++                "external access-token mode requires a host scope authorizer with explicit grants",
++            ));
++        }
+         if !self.production_like_scope_posture {
+             return Ok(());
+         }
+@@ -183,10 +239,10 @@
+                  TRELLIS_PERMISSIVE_SCOPE_AUTH=1 for explicit dev bypass (TWREF-022).",
+             ));
+         }
+-        if self.jwt_verifier.is_none() {
++        if matches!(&self.authentication, Authentication::Unconfigured) {
+             return Err(StackError::bad_request(
+                 "trellis-server refuses to build router: production_like_scope_posture requires \
+-                 TRELLIS_JWT_HS256_SECRET / jwt_verifier (TWREF-022).",
++                 TRELLIS_JWT_HS256_SECRET / jwt_verifier or injected access_token_verifier (TWREF-022).",
+             ));
+         }
+         Ok(())
+@@ -197,17 +253,18 @@
+         crate::append::AppendCoordinator::new(self)
+     }
+ 
+-    pub(crate) fn authenticate(
++    pub(crate) async fn authenticate(
+         &self,
+         headers: &HeaderMap,
+-    ) -> Result<Option<TrellisClaims>, StackError> {
+-        let Some(verifier) = &self.jwt_verifier else {
+-            return Ok(None);
+-        };
++    ) -> Result<AuthenticatedRequest, StackError> {
++        if matches!(&self.authentication, Authentication::Unconfigured) {
++            return Ok(AuthenticatedRequest::Anonymous);
++        }
+         let token = headers
+             .get(AUTHORIZATION)
+             .and_then(|value| value.to_str().ok())
+             .and_then(|value| value.strip_prefix("Bearer "))
++            .filter(|value| !value.is_empty())
+             .ok_or_else(|| {
+                 StackError::new(
+                     ErrorCode::new("INFRA-4010").expect("static error code is valid"),
+@@ -215,7 +272,27 @@
+                     "missing bearer token",
+                 )
+             })?;
+-        verifier.verify(token).map(Some)
++        match &self.authentication {
++            Authentication::Unconfigured => unreachable!("unconfigured mode returned above"),
++            Authentication::LocalJwt(verifier) => {
++                verifier.verify(token).map(AuthenticatedRequest::LocalJwt)
++            }
++            Authentication::External(verifier) => verifier
++                .verify(token)
++                .await
++                .map(AuthenticatedRequest::External)
++                .map_err(|error| {
++                    if error.is_unavailable() {
++                        StackError::unavailable("access-token current authority unavailable")
++                    } else {
++                        StackError::new(
++                            ErrorCode::new("INFRA-4010").expect("static error code is valid"),
++                            StatusCode::UNAUTHORIZED,
++                            "access token rejected",
++                        )
++                    }
++                }),
++        }
+     }
+ }
+ 
+@@ -303,6 +380,10 @@
+ }
+ 
+ fn tenant_replay_scope(call: &IdempotencyCall) -> String {
++    if let Some(partition) = &call.replay_partition {
++        // Length-prefix the trusted partition so arbitrary principal/route text cannot collide.
++        return format!("{}:{}{}", partition.len(), partition, call.request.scope);
++    }
+     let tenant = header_value(&call.headers, "x-wos-tenant-id")
+         .or_else(|| header_value(&call.headers, "x-formspec-tenant-id"))
+         .unwrap_or("unknown-tenant");
+--- a/crates/trellis-server/src/admission.rs
++++ b/crates/trellis-server/src/admission.rs
+@@ -12,7 +12,7 @@
+ use async_trait::async_trait;
+ use axum::http::StatusCode;
+ use stack_common_error::{ErrorCode, StackError};
+-use trellis_server_ports::{ScopeAuthorization, ScopeAuthorizer};
++use trellis_server_ports::{AuthorizedScope, ScopeAuthorization, ScopeAuthorizer};
+ 
+ #[derive(Debug, Clone, Copy)]
+ pub(crate) struct AllowAllScopeAuthorizer;
+@@ -21,8 +21,11 @@
+ impl ScopeAuthorizer for AllowAllScopeAuthorizer {
+     type Error = StackError;
+ 
+-    async fn authorize(&self, _request: &ScopeAuthorization<'_>) -> Result<(), Self::Error> {
+-        Ok(())
++    async fn authorize(
++        &self,
++        request: &ScopeAuthorization<'_>,
++    ) -> Result<AuthorizedScope, Self::Error> {
++        Ok(legacy_permit(request))
+     }
+ }
+ 
+@@ -34,7 +37,10 @@
+ impl ScopeAuthorizer for ScopedAllowlistScopeAuthorizer {
+     type Error = StackError;
+ 
+-    async fn authorize(&self, request: &ScopeAuthorization<'_>) -> Result<(), Self::Error> {
++    async fn authorize(
++        &self,
++        request: &ScopeAuthorization<'_>,
++    ) -> Result<AuthorizedScope, Self::Error> {
+         let Some(scopes) = request.jwt_scopes else {
+             return Err(StackError::new(
+                 ErrorCode::new("INFRA-4010").expect("static error code is valid"),
+@@ -48,7 +54,7 @@
+         let scope_str = std::str::from_utf8(request.scope)
+             .map_err(|_| StackError::bad_request("scope is not valid UTF-8"))?;
+         if scopes.iter().any(|allowed| allowed.as_str() == scope_str) {
+-            Ok(())
++            Ok(legacy_permit(request))
+         } else {
+             Err(StackError::new(
+                 ErrorCode::new("INFRA-4030").expect("static error code is valid"),
+@@ -62,11 +68,31 @@
+     }
+ }
+ 
++// Legacy/dev modes preserve their declared scope posture, not external identity grants.
++fn legacy_permit(request: &ScopeAuthorization<'_>) -> AuthorizedScope {
++    AuthorizedScope {
++        principal: request.actor.to_string(),
++        tenant_scope: request.tenant_scope.clone(),
++        scope: request.scope.to_vec(),
++        action: request.action,
++    }
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    use stack_common_http::tenant::TenantScope;
+     use trellis_server_ports::ScopeAction;
+ 
++    fn tenant() -> TenantScope {
++        TenantScope {
++            tenant: "test".into(),
++            workspace: "test".into(),
++            environment: "test".into(),
++            cell: "test".into(),
++        }
++    }
++
+     /// Given a scope listed in JWT scopes, when scoped authorizer runs, then authorization succeeds.
+     #[tokio::test]
+     async fn given_scope_in_jwt_scopes_when_scoped_authorizer_runs_then_ok() {
+@@ -74,6 +100,9 @@
+         let scopes = vec!["case_123".to_string()];
+         auth.authorize(&ScopeAuthorization {
+             actor: "sub",
++            tenant_scope: &tenant(),
++            identity: None,
++            append_body: None,
+             scope: b"case_123",
+             action: ScopeAction::Append,
+             jwt_scopes: Some(scopes.as_slice()),
+@@ -90,6 +119,9 @@
+         let err = auth
+             .authorize(&ScopeAuthorization {
+                 actor: "sub",
++                tenant_scope: &tenant(),
++                identity: None,
++                append_body: None,
+                 scope: b"case_123",
+                 action: ScopeAction::Append,
+                 jwt_scopes: Some(scopes.as_slice()),
+@@ -106,6 +138,9 @@
+         let err = auth
+             .authorize(&ScopeAuthorization {
+                 actor: "sub",
++                tenant_scope: &tenant(),
++                identity: None,
++                append_body: None,
+                 scope: b"case_123",
+                 action: ScopeAction::Append,
+                 jwt_scopes: None,
+--- a/crates/trellis-server/src/http.rs
++++ b/crates/trellis-server/src/http.rs
+@@ -1,18 +1,17 @@
+ // Rust guideline compliant 2026-02-21
+ //! Axum router and HTTP handlers (TWREF-086 `http` split).
+ 
+-use axum::Json;
+ use axum::extract::{Path, State};
+ use axum::http::{HeaderMap, StatusCode, header};
+ use axum::middleware;
+ use axum::response::{IntoResponse, Response};
+ use axum::routing::{Router, get, post};
+-use stack_common_auth::Claims;
++use axum::{Extension, Json};
+ use stack_common_error::{ProblemJson, StackError};
+ use stack_common_http::idempotency::{IDEMPOTENCY_KEY_HEADER, idempotency_middleware};
+ use stack_common_http::tenant::TenantScope;
+ use stack_common_ops::HealthRouter;
+-use trellis_server_ports::{ScopeAction, ScopeAuthorization};
++use trellis_server_ports::ScopeAction;
+ use trellis_service_client::{ComputeSensitivity, SubstrateAppendBody, SubstrateAppendResult};
+ 
+ use crate::append;
+@@ -33,10 +32,15 @@
+         .build()
+         .map_err(|error| StackError::internal(format!("http middleware: {error}")))?;
+ 
+-    let append = post(append_event).route_layer(middleware::from_fn_with_state(
+-        state.clone(),
+-        idempotency_middleware::<TrellisServerState>,
+-    ));
++    let append = post(append_event)
++        .route_layer(middleware::from_fn_with_state(
++            state.clone(),
++            idempotency_middleware::<TrellisServerState>,
++        ))
++        .route_layer(middleware::from_fn_with_state(
++            state.clone(),
++            crate::auth::authorize_append,
++        ));
+ 
+     Ok(Router::new()
+         .route("/openapi.json", get(crate::openapi::openapi_json))
+@@ -85,31 +89,8 @@
+ pub(crate) async fn append_event(
+     State(state): State<TrellisServerState>,
+     Path(scope): Path<String>,
+-    _tenant_scope: TenantScope,
+-    headers: HeaderMap,
+-    Json(body): Json<SubstrateAppendBody>,
++    Extension(crate::auth::AuthorizedAppend(body)): Extension<crate::auth::AuthorizedAppend>,
+ ) -> Result<(StatusCode, Json<SubstrateAppendResult>), StackError> {
+-    validate_scope(&scope)?;
+-    body.validate()?;
+-    validate_client_attestation_shape(&body)?;
+-    validate_idempotency_header(&headers, &body.idempotency_key)?;
+-    validate_compute_context(&body)?;
+-    let claims = state.authenticate(&headers)?;
+-    let actor_subject = claims
+-        .as_ref()
+-        .map(|claims| claims.base().sub.as_str())
+-        .unwrap_or(body.actor.subject.as_str());
+-    let jwt_scopes = claims.as_ref().map(|c| c.scopes.as_slice());
+-    state
+-        .authorizer
+-        .authorize(&ScopeAuthorization {
+-            actor: actor_subject,
+-            scope: scope.as_bytes(),
+-            action: ScopeAction::Append,
+-            jwt_scopes,
+-        })
+-        .await?;
+-
+     let command = append::AppendCommand {
+         scope: scope.clone(),
+         event_type: body.event_type.clone(),
+@@ -141,7 +122,8 @@
+     tenant_scope: TenantScope,
+     headers: HeaderMap,
+ ) -> Result<Response, StackError> {
+-    read_authorized(&state, &scope, &tenant_scope, &headers).await?;
++    let (identity, read_permit) = read_authorized(&state, &scope, &tenant_scope, &headers).await?;
++    crate::auth::authorize_publication(&state, &identity, &read_permit).await?;
+     let bundle = {
+         let _scope_guard = state.scope_locks.lock(scope.as_bytes()).await;
+         let events = state.repository.list_scope(scope.as_bytes()).await?;
+@@ -180,7 +162,7 @@
+     tenant_scope: TenantScope,
+     headers: HeaderMap,
+ ) -> Result<Response, StackError> {
+-    read_authorized(&state, &scope, &tenant_scope, &headers).await?;
++    let (identity, read_permit) = read_authorized(&state, &scope, &tenant_scope, &headers).await?;
+     let digest = normalize_checkpoint_digest(&checkpoint_digest)?;
+     let record = {
+         let _scope_guard = state.scope_locks.lock(scope.as_bytes()).await;
+@@ -191,6 +173,7 @@
+         if let Some(record) = record {
+             record
+         } else {
++            crate::auth::authorize_publication(&state, &identity, &read_permit).await?;
+             let events = state.repository.list_scope(scope.as_bytes()).await?;
+             let head = publish_bundle(
+                 &state,
+@@ -258,25 +241,27 @@
+ async fn read_authorized(
+     state: &TrellisServerState,
+     scope: &str,
+-    _tenant_scope: &TenantScope,
++    tenant_scope: &TenantScope,
+     headers: &HeaderMap,
+-) -> Result<(), StackError> {
++) -> Result<
++    (
++        crate::state::AuthenticatedRequest,
++        trellis_server_ports::AuthorizedScope,
++    ),
++    StackError,
++> {
+     validate_scope(scope)?;
+-    let claims = state.authenticate(headers)?;
+-    let actor = claims
+-        .as_ref()
+-        .map(|claims| claims.base().sub.as_str())
+-        .unwrap_or("anonymous");
+-    let jwt_scopes = claims.as_ref().map(|c| c.scopes.as_slice());
+-    state
+-        .authorizer
+-        .authorize(&ScopeAuthorization {
+-            actor,
+-            scope: scope.as_bytes(),
+-            action: ScopeAction::Read,
+-            jwt_scopes,
+-        })
+-        .await
++    let identity = state.authenticate(headers).await?;
++    let permit = crate::auth::authorize_action(
++        state,
++        &identity,
++        tenant_scope,
++        scope,
++        ScopeAction::Read,
++        None,
++    )
++    .await?;
++    Ok((identity, permit))
+ }
+ 
+ async fn bundle_response(
+@@ -300,7 +285,10 @@
+     response
+ }
+ 
+-fn validate_idempotency_header(headers: &HeaderMap, body_key: &str) -> Result<(), StackError> {
++pub(crate) fn validate_idempotency_header(
++    headers: &HeaderMap,
++    body_key: &str,
++) -> Result<(), StackError> {
+     let header_key = headers
+         .get(IDEMPOTENCY_KEY_HEADER)
+         .and_then(|value| value.to_str().ok())
+@@ -313,7 +301,7 @@
+     Ok(())
+ }
+ 
+-fn validate_compute_context(body: &SubstrateAppendBody) -> Result<(), StackError> {
++pub(crate) fn validate_compute_context(body: &SubstrateAppendBody) -> Result<(), StackError> {
+     if body.compute_context.sensitivity != ComputeSensitivity::PublicMetadata {
+         return Err(StackError::bad_request(
+             "this Trellis server path only admits publicMetadata payloads",
+@@ -329,7 +317,9 @@
+ /// admission classifies the event family. This handler-side check only
+ /// catches malformed shapes that admission would never see (empty `kid`,
+ /// empty `cose_sign1`).
+-fn validate_client_attestation_shape(body: &SubstrateAppendBody) -> Result<(), StackError> {
++pub(crate) fn validate_client_attestation_shape(
++    body: &SubstrateAppendBody,
++) -> Result<(), StackError> {
+     if let Some(attestation) = &body.client_attestation {
+         if attestation.kid.trim().is_empty() {
+             return Err(StackError::bad_request(
+@@ -345,7 +335,7 @@
+     Ok(())
+ }
+ 
+-fn validate_scope(scope: &str) -> Result<(), StackError> {
++pub(crate) fn validate_scope(scope: &str) -> Result<(), StackError> {
+     if scope.trim().is_empty() {
+         return Err(StackError::bad_request("scope is required"));
+     }
+--- a/crates/trellis-server/src/auth.rs
++++ b/crates/trellis-server/src/auth.rs
+@@ -0,0 +1,147 @@
++//! Current identity and exact permissions before HTTP replay lookup.
++
++use axum::{
++    Json,
++    body::{Body, to_bytes},
++    extract::{FromRequest, Path, Request, State},
++    middleware::Next,
++    response::{IntoResponse, Response},
++};
++use stack_common_error::{ErrorCode, StackError};
++use stack_common_http::{idempotency::TrustedReplayPartition, tenant::TenantScope};
++use trellis_server_ports::{AuthorizedScope, ScopeAction, ScopeAuthorization};
++use trellis_service_client::SubstrateAppendBody;
++
++use crate::state::{AuthenticatedRequest, TrellisServerState};
++
++/// Parsed append admitted by the current authorization boundary.
++#[derive(Clone)]
++pub(crate) struct AuthorizedAppend(pub(crate) SubstrateAppendBody);
++
++pub(crate) async fn authorize_append(
++    State(state): State<TrellisServerState>,
++    Path(scope): Path<String>,
++    tenant_scope: TenantScope,
++    mut request: Request,
++    next: Next,
++) -> Response {
++    match admit_append(&state, &scope, &tenant_scope, &mut request).await {
++        Ok(()) => next.run(request).await,
++        Err(response) => response,
++    }
++}
++
++async fn admit_append(
++    state: &TrellisServerState,
++    scope: &str,
++    tenant_scope: &TenantScope,
++    request: &mut Request,
++) -> Result<(), Response> {
++    let identity = state
++        .authenticate(request.headers())
++        .await
++        .map_err(IntoResponse::into_response)?;
++    crate::http::validate_scope(scope).map_err(IntoResponse::into_response)?;
++    // Match Axum's existing default JSON limit; replay still hashes original bytes.
++    let raw_body = std::mem::replace(request.body_mut(), Body::empty());
++    let bytes = to_bytes(raw_body, 2 * 1024 * 1024).await.map_err(|_| {
++        (
++            axum::http::StatusCode::PAYLOAD_TOO_LARGE,
++            "append body exceeds JSON limit",
++        )
++            .into_response()
++    })?;
++    let mut parse_request = Request::new(Body::from(bytes.clone()));
++    *parse_request.headers_mut() = request.headers().clone();
++    let Json(body) = Json::<SubstrateAppendBody>::from_request(parse_request, state)
++        .await
++        .map_err(IntoResponse::into_response)?;
++    body.validate().map_err(IntoResponse::into_response)?;
++    crate::http::validate_client_attestation_shape(&body).map_err(IntoResponse::into_response)?;
++    crate::http::validate_idempotency_header(request.headers(), &body.idempotency_key)
++        .map_err(IntoResponse::into_response)?;
++    crate::http::validate_compute_context(&body).map_err(IntoResponse::into_response)?;
++    let permit = authorize_action(
++        state,
++        &identity,
++        tenant_scope,
++        scope,
++        ScopeAction::Append,
++        Some(&body),
++    )
++    .await
++    .map_err(IntoResponse::into_response)?;
++    // JSON encodes the tuple without delimiter ambiguity. No bearer token is retained.
++    let partition =
++        serde_json::to_string(&(permit.principal, &permit.tenant_scope, scope, "append")).map_err(
++            |_| StackError::internal("replay partition encoding failed").into_response(),
++        )?;
++    request
++        .extensions_mut()
++        .insert(TrustedReplayPartition::new(partition));
++    request.extensions_mut().insert(AuthorizedAppend(body));
++    *request.body_mut() = Body::from(bytes);
++    Ok(())
++}
++
++pub(crate) async fn authorize_action(
++    state: &TrellisServerState,
++    identity: &AuthenticatedRequest,
++    tenant_scope: &TenantScope,
++    scope: &str,
++    action: ScopeAction,
++    append_body: Option<&SubstrateAppendBody>,
++) -> Result<AuthorizedScope, StackError> {
++    let fallback = append_body.map_or("anonymous", |body| body.actor.subject.as_str());
++    let permit = state
++        .authorizer
++        .authorize(&ScopeAuthorization {
++            actor: identity.actor(fallback),
++            scope: scope.as_bytes(),
++            action,
++            tenant_scope,
++            identity: identity.external_identity(),
++            append_body,
++            jwt_scopes: identity.legacy_scopes(),
++        })
++        .await?;
++    if permit.principal.trim().is_empty()
++        || permit.tenant_scope != *tenant_scope
++        || permit.scope != scope.as_bytes()
++        || permit.action != action
++    {
++        return Err(StackError::new(
++            ErrorCode::new("INFRA-4030").expect("static error code is valid"),
++            axum::http::StatusCode::FORBIDDEN,
++            "authorizer did not admit the exact requested operation",
++        ));
++    }
++    Ok(permit)
++}
++
++/// Requires publication authority for the same admitted reader and resource.
++pub(crate) async fn authorize_publication(
++    state: &TrellisServerState,
++    identity: &AuthenticatedRequest,
++    read_permit: &AuthorizedScope,
++) -> Result<(), StackError> {
++    let scope = std::str::from_utf8(&read_permit.scope)
++        .map_err(|_| StackError::internal("admitted read scope is not UTF-8"))?;
++    let administer = authorize_action(
++        state,
++        identity,
++        &read_permit.tenant_scope,
++        scope,
++        ScopeAction::Administer,
++        None,
++    )
++    .await?;
++    if administer.principal != read_permit.principal {
++        return Err(StackError::new(
++            ErrorCode::new("INFRA-4030").expect("static error code is valid"),
++            axum::http::StatusCode::FORBIDDEN,
++            "publication requires the same authorized internal principal",
++        ));
++    }
++    Ok(())
++}
+--- a/crates/trellis-server/src/auth_boundary_tests.rs
++++ b/crates/trellis-server/src/auth_boundary_tests.rs
+@@ -0,0 +1,535 @@
++// Controlled identity/permission tests, not live identity-provider qualification.
++use super::*;
++use stack_common_auth::{AccessTokenError, AccessTokenVerifier, VerifiedAccessIdentity};
++use stack_common_http::tenant::TenantScope;
++use std::sync::atomic::{AtomicBool, AtomicU8};
++use trellis_server_ports::{AuthorizedScope, ScopeAction, ScopeAuthorization, ScopeAuthorizer};
++
++struct CurrentVerifier {
++    status: Arc<AtomicU8>,
++    calls: Arc<AtomicUsize>,
++}
++
++#[async_trait]
++impl AccessTokenVerifier for CurrentVerifier {
++    async fn verify(&self, token: &str) -> Result<VerifiedAccessIdentity, AccessTokenError> {
++        self.calls.fetch_add(1, Ordering::SeqCst);
++        match self.status.load(Ordering::SeqCst) {
++            1 => return Err(AccessTokenError::rejected()),
++            2 => return Err(AccessTokenError::unavailable()),
++            _ => {}
++        }
++        if token != "controlled-current-token" {
++            return Err(AccessTokenError::rejected());
++        }
++        Ok(VerifiedAccessIdentity {
++            issuer: "https://controlled-issuer.example".into(),
++            subject: "producer-subject".into(),
++            client_id: Some("producer-client".into()),
++            scopes: Default::default(),
++            expires_at: i64::MAX,
++            token_id: None,
++        })
++    }
++}
++
++struct ExactGrants {
++    allowed: Arc<AtomicBool>,
++    administer: Arc<AtomicBool>,
++    invalid_permit: Arc<AtomicU8>,
++    calls: Arc<AtomicUsize>,
++    principal: Arc<AtomicU8>,
++    delegation: Arc<AtomicBool>,
++}
++
++fn denied() -> StackError {
++    StackError::new(
++        stack_common_error::ErrorCode::new("INFRA-4030").unwrap(),
++        StatusCode::FORBIDDEN,
++        "controlled grant denied",
++    )
++}
++
++#[async_trait]
++impl ScopeAuthorizer for ExactGrants {
++    type Error = StackError;
++    async fn authorize(
++        &self,
++        request: &ScopeAuthorization<'_>,
++    ) -> Result<AuthorizedScope, StackError> {
++        self.calls.fetch_add(1, Ordering::SeqCst);
++        let identity = request.identity.ok_or_else(denied)?;
++        if !self.allowed.load(Ordering::SeqCst)
++            || identity.issuer != "https://controlled-issuer.example"
++            || identity.subject != "producer-subject"
++            || identity.client_id.as_deref() != Some("producer-client")
++            || request.tenant_scope != &expected_tenant()
++            || request.scope != b"case_123"
++            || (request.action == ScopeAction::Administer
++                && !self.administer.load(Ordering::SeqCst))
++            || (request.action == ScopeAction::Append
++                && request.append_body.is_none_or(|body| {
++                    !self.delegation.load(Ordering::SeqCst)
++                        || body.actor.subject != "wos-server"
++                        || body
++                            .payload
++                            .get("actorId")
++                            .is_some_and(|actor| actor.as_str() != Some("delegated-human"))
++                }))
++        {
++            return Err(denied());
++        }
++        let mut permit = AuthorizedScope {
++            principal: format!(
++                "internal-producer-{}",
++                self.principal.load(Ordering::SeqCst)
++            ),
++            tenant_scope: request.tenant_scope.clone(),
++            scope: request.scope.to_vec(),
++            action: request.action,
++        };
++        match self.invalid_permit.load(Ordering::SeqCst) {
++            1 => permit.principal.clear(),
++            2 => permit.tenant_scope.workspace = "foreign-workspace".into(),
++            3 => permit.scope = b"foreign-scope".to_vec(),
++            4 => permit.action = ScopeAction::Read,
++            5 if request.action == ScopeAction::Administer => {
++                permit.principal = "changed-principal".into()
++            }
++            _ => {}
++        }
++        Ok(permit)
++    }
++}
++
++fn expected_tenant() -> TenantScope {
++    TenantScope {
++        tenant: "tenant-a".into(),
++        workspace: "workspace-a".into(),
++        environment: "prod".into(),
++        cell: "cell-a".into(),
++    }
++}
++
++struct Controls {
++    verifier: Arc<AtomicU8>,
++    verification_calls: Arc<AtomicUsize>,
++    grants: Arc<AtomicBool>,
++    administer: Arc<AtomicBool>,
++    invalid_permit: Arc<AtomicU8>,
++    grant_calls: Arc<AtomicUsize>,
++    principal: Arc<AtomicU8>,
++    delegation: Arc<AtomicBool>,
++}
++
++fn external_state() -> (TrellisServerState, Controls) {
++    let controls = Controls {
++        verifier: Arc::new(AtomicU8::new(0)),
++        verification_calls: Arc::new(AtomicUsize::new(0)),
++        grants: Arc::new(AtomicBool::new(true)),
++        administer: Arc::new(AtomicBool::new(false)),
++        invalid_permit: Arc::new(AtomicU8::new(0)),
++        grant_calls: Arc::new(AtomicUsize::new(0)),
++        principal: Arc::new(AtomicU8::new(17)),
++        delegation: Arc::new(AtomicBool::new(true)),
++    };
++    let state = TrellisServerState::new(
++        Arc::new(InMemoryEventRepository::new()),
++        test_signing_key(),
++        TenantHeaderMode::MultiProducer,
++    )
++    .with_access_token_verifier(Arc::new(CurrentVerifier {
++        status: controls.verifier.clone(),
++        calls: controls.verification_calls.clone(),
++    }))
++    .with_scope_authorizer(Arc::new(ExactGrants {
++        allowed: controls.grants.clone(),
++        administer: controls.administer.clone(),
++        invalid_permit: controls.invalid_permit.clone(),
++        calls: controls.grant_calls.clone(),
++        principal: controls.principal.clone(),
++        delegation: controls.delegation.clone(),
++    }))
++    .with_production_like_scope_posture(true);
++    (state, controls)
++}
++
++fn request(body: Vec<u8>) -> Request<Body> {
++    post_request_bearer(
++        "/v1/scopes/case_123/events",
++        body,
++        "controlled-current-token",
++    )
++}
++
++#[tokio::test]
++async fn authorized_append_replay_rechecks_current_identity_and_grants() {
++    let (state, controls) = external_state();
++    let repository = state.repository.clone();
++    let app = router(state).unwrap();
++    let body = append_body("current-authority-retry");
++    let first = app.clone().oneshot(request(body.clone())).await.unwrap();
++    assert_eq!(first.status(), StatusCode::CREATED);
++    let original = to_bytes(first.into_body(), 64 * 1024).await.unwrap();
++    let replay = app.clone().oneshot(request(body.clone())).await.unwrap();
++    assert_eq!(replay.status(), StatusCode::CREATED);
++    assert_eq!(replay.headers().get("x-replay").unwrap(), "true");
++    assert_eq!(
++        to_bytes(replay.into_body(), 64 * 1024).await.unwrap(),
++        original
++    );
++    controls.verifier.store(1, Ordering::SeqCst);
++    let rejected = app.clone().oneshot(request(body.clone())).await.unwrap();
++    assert_eq!(rejected.status(), StatusCode::UNAUTHORIZED);
++    assert!(!rejected.headers().contains_key("x-replay"));
++    controls.verifier.store(2, Ordering::SeqCst);
++    assert_eq!(
++        app.clone()
++            .oneshot(request(body.clone()))
++            .await
++            .unwrap()
++            .status(),
++        StatusCode::SERVICE_UNAVAILABLE
++    );
++    controls.verifier.store(0, Ordering::SeqCst);
++    controls.grants.store(false, Ordering::SeqCst);
++    let forbidden = app.oneshot(request(body)).await.unwrap();
++    assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
++    assert!(!forbidden.headers().contains_key("x-replay"));
++    assert_eq!(controls.verification_calls.load(Ordering::SeqCst), 5);
++    assert_eq!(controls.grant_calls.load(Ordering::SeqCst), 3);
++    assert_eq!(repository.list_scope(b"case_123").await.unwrap().len(), 1);
++}
++
++#[tokio::test]
++async fn authorized_append_replay_refuses_each_foreign_tenant_and_actor() {
++    let (state, _) = external_state();
++    let repository = state.repository.clone();
++    let app = router(state).unwrap();
++    let body = append_body("exact-grants");
++    assert_eq!(
++        app.clone()
++            .oneshot(request(body.clone()))
++            .await
++            .unwrap()
++            .status(),
++        StatusCode::CREATED
++    );
++    for header in [
++        "x-wos-tenant-id",
++        "x-wos-workspace-id",
++        "x-wos-environment-id",
++        "x-wos-cell-id",
++    ] {
++        let mut foreign = request(body.clone());
++        foreign
++            .headers_mut()
++            .insert(header, "foreign".parse().unwrap());
++        assert_eq!(
++            app.clone().oneshot(foreign).await.unwrap().status(),
++            StatusCode::FORBIDDEN
++        );
++    }
++    let mut actor: SubstrateAppendBody = serde_json::from_slice(&body).unwrap();
++    actor.actor.subject = "ungranted-producer".into();
++    assert_eq!(
++        app.oneshot(request(serde_json::to_vec(&actor).unwrap()))
++            .await
++            .unwrap()
++            .status(),
++        StatusCode::FORBIDDEN
++    );
++    assert_eq!(repository.list_scope(b"case_123").await.unwrap().len(), 1);
++}
++
++#[tokio::test]
++async fn authorized_append_replay_refuses_mismatched_authorizer_result() {
++    let (state, controls) = external_state();
++    let repository = state.repository.clone();
++    let app = router(state).unwrap();
++    for invalid in 1..=4 {
++        controls.invalid_permit.store(invalid, Ordering::SeqCst);
++        assert_eq!(
++            app.clone()
++                .oneshot(request(append_body("foreign-permit")))
++                .await
++                .unwrap()
++                .status(),
++            StatusCode::FORBIDDEN
++        );
++    }
++    assert!(repository.list_scope(b"case_123").await.unwrap().is_empty());
++}
++
++#[tokio::test]
++async fn authorized_append_replay_head_publication_requires_administer() {
++    let (state, controls) = external_state();
++    let app = router(state).unwrap();
++    let appended = app
++        .clone()
++        .oneshot(request(append_body("head-admin")))
++        .await
++        .unwrap();
++    assert_eq!(appended.status(), StatusCode::CREATED);
++    let receipt: SubstrateAppendResult =
++        serde_json::from_slice(&to_bytes(appended.into_body(), 64 * 1024).await.unwrap()).unwrap();
++    let mut head = get_request("/v1/scopes/case_123/bundles/head");
++    head.headers_mut().insert(
++        "authorization",
++        "Bearer controlled-current-token".parse().unwrap(),
++    );
++    assert_eq!(
++        app.clone().oneshot(head).await.unwrap().status(),
++        StatusCode::FORBIDDEN
++    );
++    let mut pinned = get_request(&format!(
++        "/v1/scopes/case_123/bundles/{}",
++        receipt.checkpoint_ref.rsplit('/').next().unwrap()
++    ));
++    pinned.headers_mut().insert(
++        "authorization",
++        "Bearer controlled-current-token".parse().unwrap(),
++    );
++    assert_eq!(
++        app.clone().oneshot(pinned).await.unwrap().status(),
++        StatusCode::OK
++    );
++    controls.administer.store(true, Ordering::SeqCst);
++    let mut head = get_request("/v1/scopes/case_123/bundles/head");
++    head.headers_mut().insert(
++        "authorization",
++        "Bearer controlled-current-token".parse().unwrap(),
++    );
++    assert_eq!(app.oneshot(head).await.unwrap().status(), StatusCode::OK);
++}
++
++#[tokio::test]
++async fn authorized_append_replay_refuses_ungranted_payload_human() {
++    let (state, _) = external_state();
++    let repository = state.repository.clone();
++    let app = router(state).unwrap();
++    let mut body: SubstrateAppendBody =
++        serde_json::from_slice(&append_body("human-delegation")).unwrap();
++    body.payload["actorId"] = serde_json::json!("delegated-human");
++    assert_eq!(
++        app.clone()
++            .oneshot(request(serde_json::to_vec(&body).unwrap()))
++            .await
++            .unwrap()
++            .status(),
++        StatusCode::CREATED
++    );
++    body.payload["actorId"] = serde_json::json!("ungranted-human");
++    assert_eq!(
++        app.oneshot(request(serde_json::to_vec(&body).unwrap()))
++            .await
++            .unwrap()
++            .status(),
++        StatusCode::FORBIDDEN
++    );
++    assert_eq!(repository.list_scope(b"case_123").await.unwrap().len(), 1);
++}
++
++#[test]
++fn authorized_append_replay_external_mode_requires_injected_host_grants() {
++    let state = TrellisServerState::new(
++        Arc::new(InMemoryEventRepository::new()),
++        test_signing_key(),
++        TenantHeaderMode::MultiProducer,
++    )
++    .with_access_token_verifier(Arc::new(CurrentVerifier {
++        status: Arc::new(AtomicU8::new(0)),
++        calls: Arc::new(AtomicUsize::new(0)),
++    }));
++    assert!(router(state).is_err());
++}
++
++#[tokio::test]
++async fn authorized_append_replay_external_mode_has_no_local_jwt_fallback() {
++    let (state, _) = external_state();
++    let repository = state.repository.clone();
++    let app = router(state).unwrap();
++    let local = test_trellis_token(vec!["case_123".into()]);
++    assert_eq!(
++        app.oneshot(post_request_bearer(
++            "/v1/scopes/case_123/events",
++            append_body("no-local-fallback"),
++            &local
++        ))
++        .await
++        .unwrap()
++        .status(),
++        StatusCode::UNAUTHORIZED
++    );
++    assert!(repository.list_scope(b"case_123").await.unwrap().is_empty());
++}
++
++#[tokio::test]
++async fn authorized_append_replay_separates_two_admitted_principals() {
++    let (state, controls) = external_state();
++    let repository = state.repository.clone();
++    let app = router(state).unwrap();
++    let body = append_body("partition-principals");
++    assert_eq!(
++        app.clone()
++            .oneshot(request(body.clone()))
++            .await
++            .unwrap()
++            .status(),
++        StatusCode::CREATED
++    );
++    controls.principal.store(18, Ordering::SeqCst);
++    let second = app.clone().oneshot(request(body.clone())).await.unwrap();
++    assert_eq!(second.status(), StatusCode::CREATED);
++    assert!(!second.headers().contains_key("x-replay"));
++    let second_replay = app.clone().oneshot(request(body.clone())).await.unwrap();
++    assert_eq!(second_replay.headers().get("x-replay").unwrap(), "true");
++    controls.principal.store(17, Ordering::SeqCst);
++    let first_replay = app.oneshot(request(body)).await.unwrap();
++    assert_eq!(first_replay.headers().get("x-replay").unwrap(), "true");
++    assert_eq!(repository.list_scope(b"case_123").await.unwrap().len(), 1);
++}
++
++#[tokio::test]
++async fn authorized_append_replay_rechecks_delegation_for_unchanged_body() {
++    let (state, controls) = external_state();
++    let app = router(state).unwrap();
++    let body = append_body("revoked-delegation");
++    assert_eq!(
++        app.clone()
++            .oneshot(request(body.clone()))
++            .await
++            .unwrap()
++            .status(),
++        StatusCode::CREATED
++    );
++    controls.delegation.store(false, Ordering::SeqCst);
++    let refused = app.oneshot(request(body)).await.unwrap();
++    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
++    assert!(!refused.headers().contains_key("x-replay"));
++}
++
++#[tokio::test]
++async fn authorized_append_replay_publication_refuses_changed_principal_and_pinned_miss() {
++    let (state, controls) = external_state();
++    let publication_calls = Arc::new(AtomicUsize::new(0));
++    struct CountingPublicationStore {
++        inner: crate::artifacts::InMemoryArtifactStore,
++        calls: Arc<AtomicUsize>,
++    }
++    #[async_trait]
++    impl ArtifactStore for CountingPublicationStore {
++        type Error = StackError;
++        async fn put(&self, key: &str, bytes: &[u8]) -> Result<ArtifactRef, StackError> {
++            self.calls.fetch_add(1, Ordering::SeqCst);
++            self.inner.put(key, bytes).await
++        }
++        async fn put_immutable(&self, key: &str, bytes: &[u8]) -> Result<ArtifactRef, StackError> {
++            self.calls.fetch_add(1, Ordering::SeqCst);
++            self.inner.put_immutable(key, bytes).await
++        }
++        async fn get(&self, reference: &ArtifactRef) -> Result<Option<Vec<u8>>, StackError> {
++            self.inner.get(reference).await
++        }
++    }
++    let state = state.with_artifact_store(Arc::new(CountingPublicationStore {
++        inner: crate::artifacts::InMemoryArtifactStore::default(),
++        calls: publication_calls.clone(),
++    }));
++    let app = router(state).unwrap();
++    assert_eq!(
++        app.clone()
++            .oneshot(request(append_body("publication-grants")))
++            .await
++            .unwrap()
++            .status(),
++        StatusCode::CREATED
++    );
++    let baseline = publication_calls.load(Ordering::SeqCst);
++    assert!(baseline > 0);
++    let missing = format!("/v1/scopes/case_123/bundles/{}", "a".repeat(64));
++    for path in ["/v1/scopes/case_123/bundles/head", &missing] {
++        let mut read_only = get_request(path);
++        read_only.headers_mut().insert(
++            "authorization",
++            "Bearer controlled-current-token".parse().unwrap(),
++        );
++        assert_eq!(
++            app.clone().oneshot(read_only).await.unwrap().status(),
++            StatusCode::FORBIDDEN
++        );
++    }
++    controls.administer.store(true, Ordering::SeqCst);
++    controls.invalid_permit.store(5, Ordering::SeqCst);
++    for path in ["/v1/scopes/case_123/bundles/head", &missing] {
++        let mut changed = get_request(path);
++        changed.headers_mut().insert(
++            "authorization",
++            "Bearer controlled-current-token".parse().unwrap(),
++        );
++        assert_eq!(
++            app.clone().oneshot(changed).await.unwrap().status(),
++            StatusCode::FORBIDDEN
++        );
++    }
++    assert_eq!(publication_calls.load(Ordering::SeqCst), baseline);
++}
++
++#[tokio::test]
++async fn authorized_append_replay_hashes_original_body_bytes() {
++    let (state, _) = external_state();
++    let app = router(state).unwrap();
++    let body = append_body("raw-body-hash");
++    assert_eq!(
++        app.clone()
++            .oneshot(request(body.clone()))
++            .await
++            .unwrap()
++            .status(),
++        StatusCode::CREATED
++    );
++    let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
++    let pretty = serde_json::to_vec_pretty(&value).unwrap();
++    assert_ne!(pretty, body);
++    assert_eq!(
++        app.oneshot(request(pretty)).await.unwrap().status(),
++        StatusCode::CONFLICT
++    );
++}
++
++#[tokio::test]
++async fn authorized_append_replay_preserves_json_rejections_without_append() {
++    let (state, _) = external_state();
++    let repository = state.repository.clone();
++    let app = router(state).unwrap();
++    let valid = append_body("parse-rejections");
++    for (content_type, bytes, expected) in [
++        (
++            "text/plain",
++            valid.clone(),
++            StatusCode::UNSUPPORTED_MEDIA_TYPE,
++        ),
++        ("application/json", b"{".to_vec(), StatusCode::BAD_REQUEST),
++        (
++            "application/json",
++            b"{}".to_vec(),
++            StatusCode::UNPROCESSABLE_ENTITY,
++        ),
++        (
++            "application/json",
++            vec![b' '; 2 * 1024 * 1024 + 1],
++            StatusCode::PAYLOAD_TOO_LARGE,
++        ),
++    ] {
++        let mut malformed = request(valid.clone());
++        malformed
++            .headers_mut()
++            .insert("content-type", content_type.parse().unwrap());
++        *malformed.body_mut() = Body::from(bytes);
++        assert_eq!(
++            app.clone().oneshot(malformed).await.unwrap().status(),
++            expected
++        );
++    }
++    assert!(repository.list_scope(b"case_123").await.unwrap().is_empty());
++}

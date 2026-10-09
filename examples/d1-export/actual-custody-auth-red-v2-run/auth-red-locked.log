@@ -1,0 +1,3 @@
+error: multiple workspace roots found in the same workspace:
+  /Users/mikewolfd/Work/formspec-stack/.trellis-actual-custody-auth-red-v2/.private-deps/integrity-verify
+  /Users/mikewolfd/Work/formspec-stack/.trellis-actual-custody-auth-red-v2

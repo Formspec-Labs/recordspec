@@ -1,0 +1,20 @@
+{
+  "status": "Adopted exact eight tested files; both AFTER approvals; local commit pending.",
+  "files": {
+    "crates/trellis-server-ports/Cargo.toml": "4e34203242c94fe6d1bb4571d802707cc057bf6badde4be6661df0eaf2603995",
+    "crates/trellis-server-ports/src/lib.rs": "9044bbb611e496df7a1b46d00779d9d339e289253b15e9412ee1bea2f1bc8a21",
+    "crates/trellis-server/src/lib.rs": "a7fd089cc1b5254cd656bc7400336f0933387cfe103dd945ca8b8dfbee9ca896",
+    "crates/trellis-server/src/state.rs": "eecc34672601abc415a48ca7afedb00405f6d759ada028bf264ba4b307e84d58",
+    "crates/trellis-server/src/admission.rs": "4878dd194aba4a4c292409d2e12d1d62c2961b537234273ade34926049d90503",
+    "crates/trellis-server/src/http.rs": "7aa3688c7bb62977f2c8ffd9cf57fae3b33376fddc436857adf0a665d4ad1d44",
+    "crates/trellis-server/src/auth.rs": "90a84b5690b6cedc43456fa041fd6b3f45b272d02dfaf3b1944598fc450d24c2",
+    "crates/trellis-server/src/auth_boundary_tests.rs": "0efe45d6d67d7de21b216a7f8d4eb1ea828dcabb446b52d69dcd299a630aaba2"
+  },
+  "productionPatchSha256": "80b7345d571730c0d23b5a7bae0b294eb0656887a762fb9def3b28cba3bac1bf",
+  "workingLockSha256": "2b329736e2602574e00236a0e354b9180ba95a39f765c61de3a49b62a3ecc294",
+  "ownedLockPatchSha256": "48d18faf20c38603d4580b2a6460201205c0e6fc5c698fe0fdb1fe610ac1ace0",
+  "foreignLockChange": "Preserved rand_core 0.6.4 edge for stack-common-typeid, excluded from index.",
+  "noAdditionalNativeRun": true,
+  "codeReviewSha256": "0e01272c4e562d11204f7a1ec126b0790d46910fd2d2986daf051d06fa1793e9",
+  "architectureReviewSha256": "56b3c155ff1d4c8dd80e9cf32b445723379474da99a6793805abd1d07cc93bf4"
+}

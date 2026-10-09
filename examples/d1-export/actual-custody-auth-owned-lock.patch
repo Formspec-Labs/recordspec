@@ -1,0 +1,20 @@
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -2940,6 +2940,7 @@
+ name = "stack-common-auth"
+ version = "0.1.0"
+ dependencies = [
++ "async-trait",
+  "hex",
+  "http",
+  "integrity-seam",
+@@ -3613,7 +3614,9 @@
+ dependencies = [
+  "async-trait",
+  "object_store",
++ "stack-common-auth",
+  "stack-common-error",
++ "stack-common-http",
+  "stack-common-object-store",
+  "stack-common-postgres",
+  "tokio",
