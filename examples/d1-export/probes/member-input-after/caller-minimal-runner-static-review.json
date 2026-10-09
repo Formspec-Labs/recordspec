@@ -1,0 +1,16 @@
+{
+  "scope": "Static independent runner review only; actual caller and final implementation approval pending.",
+  "reviewer": "/root/oidc_code_review",
+  "runner": "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/probes/run-caller-minimal-repair.py",
+  "runnerSha256": "1570b3610787bf2eddccbd6e9b42e93b59765a169e362c5ad8ff89e7bba80d0d",
+  "decision": "No remaining blocker for authorized bounded attempt after explicit native release.",
+  "resolvedFindings": [
+    "Guard stack-common/schemas/error.schema.json consumed by build.rs.",
+    "Guard literal include_str/include_bytes external files.",
+    "Retain final resolved lock snapshot/hash/version difference even if unchanged."
+  ],
+  "limits": [
+    "No Cargo executed by reviewer.",
+    "Implementation final CODE and ARCH approval awaits caller results and final input pins."
+  ]
+}

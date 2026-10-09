@@ -1,0 +1,18 @@
+{
+  "classification": "Writer seam qualified by native and independent Python evidence; server caller check stopped at dependency compile timeout",
+  "receipts": {
+    "examples/d1-export/probes/member-input-after/probe-006-receipt.json": "cc52e82c98e181d5980e8a1c35d1393d77531209d490ec23c6a4b2b019ce9e8b",
+    "examples/d1-export/probes/member-input-after/probe-007-receipt.json": "334fe09a12ca6cac7a7e3ea02feeb122cc7cb9ca923e0f500f5414cff40421c1",
+    "examples/d1-export/probes/member-input-after/probe-010-missing-inline-receipt.json": "4dc7d2327c9c262fd1e415bd4b59e9149ede45859254d6bd3bb9fa242c8e3731",
+    "examples/d1-export/probes/member-input-after/probe-010-receipt.json": "f8d105e2124eb7b8e95f11c530845737753a73273f5b7c4a87ce2f95de571fe9",
+    "examples/d1-export/probes/member-input-after/server-check-receipt.json": "bd46eeda18b50329c2a06ea16cb13ca4d972ab0ab157c20c12948b3d87385ff4",
+    "examples/d1-export/probes/member-input-after/writer-clippy-receipt.json": "3deeef9015616c14c9cadc78b68435cb5ffb2c1216861613ce082f4fc8a4c6c1",
+    "examples/d1-export/probes/member-input-after/writer-tests-receipt.json": "61b9e4f8c3c2b21ef544df6f2abd29c3e86529de55bdb80627534de0d4f69420"
+  },
+  "pythonVerification": {
+    "examples/d1-export/probes/member-input-after/original-python-baselines.json": "1abf3d51ce771648582147d304aff29b1bce6594a9f16ffe617c687cc4db7086",
+    "examples/d1-export/probes/member-input-after/generated-python-verification.json": "66556b3c5ce7df4d360def289608007b9321061fe8070a13ae66ebdf3bc0b00e"
+  },
+  "cleanupConfirmed": true,
+  "nextNativeOwner": "WOS explicit release; cached server caller continuation requested"
+}

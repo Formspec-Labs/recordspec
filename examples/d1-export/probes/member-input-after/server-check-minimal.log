@@ -1,0 +1,45 @@
+    Checking tokio v1.52.1
+    Checking tokio-util v0.7.18
+    Checking h2 v0.4.14
+    Checking hyper v1.9.0
+    Checking hyper-util v0.1.20
+    Checking tower v0.5.3
+    Checking regex-automata v0.4.14
+    Checking axum v0.8.9
+    Checking regex v1.12.3
+    Checking stack-common-error v0.1.0 (/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-error)
+    Checking tower-http v0.6.10
+    Checking tokio-rustls v0.26.4
+    Checking tokio-stream v0.1.18
+    Checking sqlx-core v0.8.6
+    Checking hyper-rustls v0.27.9
+    Checking sqlx-postgres v0.8.6
+    Checking reqwest v0.12.28
+    Checking stack-common-idempotency v0.1.0 (/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-idempotency)
+    Checking stack-common-typeid v0.1.0 (/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-typeid)
+    Checking wos-events v0.1.0 (/Users/mikewolfd/Work/formspec-stack/work-spec/crates/wos-events)
+    Checking chrono v0.4.44
+    Checking sqlx v0.8.6
+    Checking object_store v0.11.2
+    Checking stack-common-postgres v0.1.0 (/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-postgres)
+    Checking stack-common-http v0.1.0 (/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-http)
+    Checking num-integer v0.1.46
+    Checking num-bigint v0.4.6
+    Checking trellis-service-client v0.1.0 (/Users/mikewolfd/Work/formspec-stack/trellis/crates/trellis-service-client)
+    Checking stack-common-object-store v0.1.0 (/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-object-store)
+    Checking hpke v0.13.0
+    Checking trellis-server-ports v0.1.0 (/Users/mikewolfd/Work/formspec-stack/trellis/crates/trellis-server-ports)
+    Checking simple_asn1 v0.6.4
+    Checking matchers v0.2.0
+    Checking tracing-subscriber v0.3.23
+    Checking jsonwebtoken v9.3.1
+    Checking integrity-hpke v0.1.0 (/Users/mikewolfd/Work/formspec-stack/integrity-stack/crates/integrity-hpke)
+    Checking trellis-export-writer v0.1.0 (/Users/mikewolfd/Work/formspec-stack/trellis/crates/trellis-export-writer)
+    Checking trellis-verify-wos v0.1.0 (/Users/mikewolfd/Work/formspec-stack/trellis/crates/trellis-verify-wos)
+    Checking stack-common-auth v0.1.0 (/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-auth)
+    Checking stack-common-ops v0.1.0 (/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-ops)
+    Checking trellis-admission-wos v0.1.0 (/Users/mikewolfd/Work/formspec-stack/trellis/crates/trellis-admission-wos)
+    Checking trellis-admission-formspec v0.1.0 (/Users/mikewolfd/Work/formspec-stack/trellis/crates/trellis-admission-formspec)
+    Checking trellis-store-postgres-async v0.1.0 (/Users/mikewolfd/Work/formspec-stack/trellis/crates/trellis-store-postgres-async)
+    Checking trellis-server v0.1.0 (/Users/mikewolfd/Work/formspec-stack/trellis/crates/trellis-server)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 31s

@@ -14,12 +14,12 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use integrity_bundle::{Bundle, BundleEntry};
 use integrity_cbor::{
-    Value, decode_cbor_value, domain_separated_sha256, encode_bstr, encode_tstr, encode_uint,
-    map_lookup_bytes, map_lookup_u64, sha256_bytes,
+    Value, decode_cbor_value, domain_separated_sha256, encode_bstr, encode_canonical_cbor_value,
+    encode_tstr, encode_uint, map_lookup_bytes, map_lookup_u64, sha256_bytes,
 };
 use integrity_cose::{
     derive_kid, sig_structure_bytes, sign_ed25519, sign1_bytes, substrate_protected_header,
@@ -166,6 +166,32 @@ pub struct PolicyClosureMember {
     pub closure_version: String,
 }
 
+/// Admitted bytes for fixed, registered export evidence members.
+///
+/// The writer checks byte format and derives manifest bindings. Consumer
+/// verifiers retain responsibility for record relationships and disclosure.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExportEvidenceMember {
+    /// Ciphertext addressed by the Core `trellis-content-v1` hash.
+    Payload {
+        content_hash: [u8; 32],
+        bytes: Vec<u8>,
+    },
+    /// Native attachment catalog; composed verification checks inlining truth.
+    Attachments {
+        bytes: Vec<u8>,
+        inline_attachments: bool,
+    },
+    /// Native signature-affirmation catalog.
+    SignatureAffirmations { bytes: Vec<u8> },
+    /// Native intake-handoff catalog.
+    IntakeHandoffs { bytes: Vec<u8> },
+    /// Native completion-certificate catalog.
+    CertificatesOfCompletion { bytes: Vec<u8> },
+    /// Native open-clock JSON; composed verification checks canonical form.
+    OpenClocks { bytes: Vec<u8> },
+}
+
 /// Export posture declaration carried in the manifest and rendered into the
 /// README inspection view.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -287,6 +313,11 @@ pub struct ExportWriterInput {
     /// enforce that the member is case-policy evidence, not verifier trust-root
     /// or adapter allowlist configuration.
     pub policy_closure: Option<PolicyClosureMember>,
+    /// Fixed native members whose exact bytes determine their manifest bindings.
+    ///
+    /// Duplicate members, invalid content hashes, noncanonical CBOR catalogs,
+    /// and advertised registered bindings without corresponding bytes reject.
+    pub evidence_members: Vec<ExportEvidenceMember>,
 }
 
 /// Export identity and source high-water fence.
@@ -383,6 +414,7 @@ pub fn write_export(input: ExportWriterInput) -> Result<ExportPackage, StackErro
         .clone()
         .unwrap_or_else(|| root_dir(&input.scope, events.len(), tree_head_hash));
 
+    let evidence = prepare_evidence_members(&input, &root_dir)?;
     let verify_sh = default_verify_script();
     let readme = readme_bytes(
         &input,
@@ -398,7 +430,7 @@ pub fn write_export(input: ExportWriterInput) -> Result<ExportPackage, StackErro
             StackError::bad_request(format!("witness_key_registry is invalid: {error}"))
         })?),
     };
-    let manifest_extensions = manifest_extensions_value(
+    let existing_extensions = manifest_extensions_value(
         &input,
         input.witness_key_registry.as_ref(),
         witness_registry_cbor.as_deref(),
@@ -406,6 +438,7 @@ pub fn write_export(input: ExportWriterInput) -> Result<ExportPackage, StackErro
         &events_cbor,
     )?;
 
+    let manifest_extensions = merge_evidence_bindings(existing_extensions, evidence.bindings)?;
     let manifest_payload = manifest_payload_cbor(ManifestPayloadInput {
         input: &input,
         tree_size: events.len(),
@@ -420,6 +453,7 @@ pub fn write_export(input: ExportWriterInput) -> Result<ExportPackage, StackErro
         inclusion_proofs_cbor: &inclusion_proofs_cbor,
         consistency_proofs_cbor: &consistency_proofs_cbor,
         manifest_extensions,
+        payloads_inlined: evidence.payloads_inlined,
     })?;
     let signed_manifest = sign_cose(
         &input.signing_key,
@@ -473,6 +507,9 @@ pub fn write_export(input: ExportWriterInput) -> Result<ExportPackage, StackErro
             closure.bytes.clone(),
         ));
     }
+    for entry in evidence.entries {
+        bundle.add_entry(entry);
+    }
     bundle.add_entry(BundleEntry::new(
         format!("{root_dir}/{CHECKPOINTS_MEMBER}"),
         checkpoints_cbor,
@@ -504,6 +541,183 @@ pub fn write_export(input: ExportWriterInput) -> Result<ExportPackage, StackErro
         head_checkpoint_digest,
         tree_head_hash,
     })
+}
+
+const EVIDENCE_BINDINGS: [(&str, &str, &str); 5] = [
+    (
+        "061-attachments.cbor",
+        "trellis.export.attachments.v1",
+        "attachment_manifest_digest",
+    ),
+    (
+        "062-signature-affirmations.cbor",
+        "trellis.export.signature-affirmations.v1",
+        "signature_catalog_digest",
+    ),
+    (
+        "063-intake-handoffs.cbor",
+        "trellis.export.intake-handoffs.v1",
+        "intake_catalog_digest",
+    ),
+    (
+        "065-certificates-of-completion.cbor",
+        "trellis.export.certificates-of-completion.v1",
+        "catalog_digest",
+    ),
+    (
+        "open-clocks.json",
+        "trellis.export.open-clocks.v1",
+        "open_clocks_digest",
+    ),
+];
+
+struct PreparedEvidence {
+    entries: Vec<BundleEntry>,
+    bindings: Vec<(Value, Value)>,
+    payloads_inlined: bool,
+}
+
+fn prepare_evidence_members(
+    input: &ExportWriterInput,
+    root: &str,
+) -> Result<PreparedEvidence, StackError> {
+    let mut prepared = PreparedEvidence {
+        entries: Vec::new(),
+        bindings: Vec::new(),
+        payloads_inlined: false,
+    };
+    let mut paths = BTreeSet::new();
+    let mut provided = BTreeSet::new();
+    for member in &input.evidence_members {
+        let (index, bytes) = match member {
+            ExportEvidenceMember::Payload {
+                content_hash,
+                bytes,
+            } => {
+                if domain_separated_sha256("trellis-content-v1", bytes) != *content_hash {
+                    return Err(StackError::bad_request(
+                        "payload content hash does not match ciphertext",
+                    ));
+                }
+                let path = format!("060-payloads/{}.bin", hex_lower(content_hash));
+                if !paths.insert(path.clone()) {
+                    return Err(StackError::bad_request(format!(
+                        "duplicate evidence member: {path}"
+                    )));
+                }
+                prepared
+                    .entries
+                    .push(BundleEntry::new(format!("{root}/{path}"), bytes.clone()));
+                prepared.payloads_inlined = true;
+                continue;
+            }
+            ExportEvidenceMember::Attachments { bytes, .. } => (0, bytes),
+            ExportEvidenceMember::SignatureAffirmations { bytes } => (1, bytes),
+            ExportEvidenceMember::IntakeHandoffs { bytes } => (2, bytes),
+            ExportEvidenceMember::CertificatesOfCompletion { bytes } => (3, bytes),
+            ExportEvidenceMember::OpenClocks { bytes } => (4, bytes),
+        };
+        let (path, extension, digest_key) = EVIDENCE_BINDINGS[index];
+        if !paths.insert(path.to_string()) {
+            return Err(StackError::bad_request(format!(
+                "duplicate evidence member: {path}"
+            )));
+        }
+        let count = if index == 4 {
+            let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|error| {
+                StackError::bad_request(format!("{path} is invalid JSON: {error}"))
+            })?;
+            value
+                .get("open_clocks")
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(|| {
+                    StackError::bad_request("open-clocks.json requires an open_clocks array")
+                })?
+                .len()
+        } else {
+            let value = decode_cbor_value(bytes).map_err(|error| {
+                StackError::bad_request(format!("{path} is invalid CBOR: {error}"))
+            })?;
+            let canonical = encode_canonical_cbor_value(&value).map_err(|error| {
+                StackError::bad_request(format!("{path} is invalid canonical CBOR: {error}"))
+            })?;
+            if canonical != *bytes {
+                return Err(StackError::bad_request(format!(
+                    "{path} must be canonical CBOR"
+                )));
+            }
+            value
+                .as_array()
+                .ok_or_else(|| StackError::bad_request(format!("{path} must be a CBOR array")))?
+                .len()
+        };
+        let mut fields = vec![(digest_key, Value::Bytes(sha256_bytes(bytes).to_vec()))];
+        match member {
+            ExportEvidenceMember::Attachments {
+                inline_attachments, ..
+            } => fields.push(("inline_attachments", Value::Bool(*inline_attachments))),
+            ExportEvidenceMember::CertificatesOfCompletion { .. } => {
+                fields.push(("catalog_ref", Value::Text(path.to_string())));
+                fields.push((
+                    "entry_count",
+                    uint(
+                        u64::try_from(count)
+                            .map_err(|_| StackError::bad_request("catalog count exceeds u64"))?,
+                    ),
+                ));
+            }
+            ExportEvidenceMember::OpenClocks { .. } => fields.push((
+                "open_clock_count",
+                uint(
+                    u64::try_from(count)
+                        .map_err(|_| StackError::bad_request("clock count exceeds u64"))?,
+                ),
+            )),
+            _ => {}
+        }
+        provided.insert(extension);
+        prepared
+            .bindings
+            .push((Value::Text(extension.to_string()), text_map(fields)?));
+        prepared
+            .entries
+            .push(BundleEntry::new(format!("{root}/{path}"), bytes.clone()));
+    }
+    if let Some(Value::Map(entries)) = &input.extensions {
+        for (_, extension, _) in EVIDENCE_BINDINGS {
+            if entries
+                .iter()
+                .any(|(key, _)| key.as_text() == Some(extension))
+                && !provided.contains(extension)
+            {
+                return Err(StackError::bad_request(format!(
+                    "manifest extension {extension} requires its evidence member"
+                )));
+            }
+        }
+    }
+    Ok(prepared)
+}
+
+fn merge_evidence_bindings(
+    base: Value,
+    bindings: Vec<(Value, Value)>,
+) -> Result<Value, StackError> {
+    if bindings.is_empty() {
+        return Ok(base);
+    }
+    let mut pairs = match base {
+        Value::Null => Vec::new(),
+        Value::Map(pairs) => pairs,
+        _ => {
+            return Err(StackError::bad_request(
+                "manifest extensions must be a map or null",
+            ));
+        }
+    };
+    pairs.retain(|(key, _)| !bindings.iter().any(|(owned, _)| key == owned));
+    pairs.extend(bindings);
+    canonical_map(pairs)
 }
 
 /// Core §18.3d manifest.extensions key binding `031-witness-key-registry.cbor`.
@@ -1248,6 +1462,7 @@ struct ManifestPayloadInput<'a> {
     inclusion_proofs_cbor: &'a [u8],
     consistency_proofs_cbor: &'a [u8],
     manifest_extensions: Value,
+    payloads_inlined: bool,
 }
 
 fn manifest_payload_cbor(args: ManifestPayloadInput<'_>) -> Result<Vec<u8>, StackError> {
@@ -1285,7 +1500,7 @@ fn manifest_payload_cbor(args: ManifestPayloadInput<'_>) -> Result<Vec<u8>, Stac
             "consistency_proofs_digest",
             Value::Bytes(sha256_bytes(args.consistency_proofs_cbor).to_vec()),
         ),
-        ("payloads_inlined", Value::Bool(false)),
+        ("payloads_inlined", Value::Bool(args.payloads_inlined)),
         (
             "external_anchors",
             Value::Array(args.input.external_anchors.clone()),
@@ -1665,6 +1880,313 @@ mod tests {
 
     use super::*;
 
+    fn native_input() -> ExportWriterInput {
+        crate::export_001_writer_input(&fixtures_root())
+    }
+
+    #[test]
+    fn evidence_catalogs_bind_exact_native_bytes_and_fixed_paths() {
+        let root = fixtures_root();
+        let specs = [
+            (
+                "export/010-certificate-of-completion-inline/061-attachments.cbor",
+                0,
+            ),
+            (
+                "export/006-signature-affirmations-inline/062-signature-affirmations.cbor",
+                1,
+            ),
+            (
+                "export/007-intake-handoffs-public-create/063-intake-handoffs.cbor",
+                2,
+            ),
+            (
+                "export/010-certificate-of-completion-inline/065-certificates-of-completion.cbor",
+                3,
+            ),
+        ];
+        // These are isolated byte/binding checks, not joined ledger histories.
+        for (source, index) in specs {
+            let bytes = read(&root, source);
+            let member = match index {
+                0 => ExportEvidenceMember::Attachments {
+                    bytes: bytes.clone(),
+                    inline_attachments: true,
+                },
+                1 => ExportEvidenceMember::SignatureAffirmations {
+                    bytes: bytes.clone(),
+                },
+                2 => ExportEvidenceMember::IntakeHandoffs {
+                    bytes: bytes.clone(),
+                },
+                _ => ExportEvidenceMember::CertificatesOfCompletion {
+                    bytes: bytes.clone(),
+                },
+            };
+            let mut input = native_input();
+            input.evidence_members = vec![member];
+            let prepared =
+                prepare_evidence_members(&input, "test-root").expect("native catalog accepted");
+            assert_eq!(prepared.entries.len(), 1);
+            assert_eq!(
+                prepared.entries[0].path(),
+                format!("test-root/{}", EVIDENCE_BINDINGS[index].0)
+            );
+            assert_eq!(prepared.entries[0].bytes(), bytes);
+            let bound = prepared.bindings[0].1.as_map().expect("binding map");
+            assert_eq!(
+                map_lookup_bytes(bound, EVIDENCE_BINDINGS[index].2).expect("digest"),
+                sha256_bytes(&bytes)
+            );
+            if index == 0 {
+                assert!(
+                    bound
+                        .iter()
+                        .any(|(k, v)| k.as_text() == Some("inline_attachments")
+                            && *v == Value::Bool(true))
+                );
+            }
+            if index == 3 {
+                assert!(bound.iter().any(|(k, v)| k.as_text() == Some("catalog_ref")
+                    && v.as_text() == Some(EVIDENCE_BINDINGS[index].0)));
+                assert_eq!(map_lookup_u64(bound, "entry_count").expect("count"), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn evidence_rejects_duplicates_bad_hashes_and_noncanonical_catalogs() {
+        let bytes = b"exact ciphertext".to_vec();
+        let payload = ExportEvidenceMember::Payload {
+            content_hash: domain_separated_sha256("trellis-content-v1", &bytes),
+            bytes,
+        };
+        let mut input = native_input();
+        input.evidence_members = vec![payload.clone(), payload];
+        assert!(
+            write_export(input)
+                .expect_err("duplicate payload")
+                .to_string()
+                .contains("duplicate evidence")
+        );
+        let mut input = native_input();
+        input.evidence_members = vec![ExportEvidenceMember::Payload {
+            content_hash: [0; 32],
+            bytes: vec![1],
+        }];
+        assert!(
+            write_export(input)
+                .expect_err("wrong hash")
+                .to_string()
+                .contains("content hash")
+        );
+        for index in 0..5 {
+            let member = match index {
+                0 => ExportEvidenceMember::Attachments {
+                    bytes: vec![0x80],
+                    inline_attachments: false,
+                },
+                1 => ExportEvidenceMember::SignatureAffirmations { bytes: vec![0x80] },
+                2 => ExportEvidenceMember::IntakeHandoffs { bytes: vec![0x80] },
+                3 => ExportEvidenceMember::CertificatesOfCompletion { bytes: vec![0x80] },
+                _ => ExportEvidenceMember::OpenClocks {
+                    bytes: b"{\"open_clocks\":[]}".to_vec(),
+                },
+            };
+            let mut input = native_input();
+            input.evidence_members = vec![member.clone(), member];
+            assert!(
+                write_export(input)
+                    .expect_err("duplicate family")
+                    .to_string()
+                    .contains("duplicate evidence")
+            );
+        }
+        for bytes in [
+            vec![0x81, 0xa2, 0x61, b'b', 1, 0x61, b'a', 2], // unsorted nested map
+            vec![0x81, 0xa2, 0x61, b'a', 1, 0x61, b'a', 2], // duplicate nested key
+            vec![0xa0],                                     // wrong catalog shape
+            vec![0x81],                                     // truncated
+        ] {
+            let mut input = native_input();
+            input.evidence_members = vec![ExportEvidenceMember::IntakeHandoffs { bytes }];
+            assert!(write_export(input).is_err(), "invalid catalog accepted");
+        }
+    }
+
+    #[test]
+    fn registered_evidence_extension_requires_member_and_preserves_unknown_extensions() {
+        for (_, extension, _) in EVIDENCE_BINDINGS {
+            let mut input = native_input();
+            input.extensions = Some(Value::Map(vec![(
+                Value::Text(extension.to_string()),
+                Value::Null,
+            )]));
+            assert!(
+                write_export(input)
+                    .expect_err("missing member")
+                    .to_string()
+                    .contains("requires its evidence member")
+            );
+        }
+        let mut input = native_input();
+        input.extensions = Some(Value::Map(vec![(
+            Value::Text("x-private-test".to_string()),
+            uint(7),
+        )]));
+        input.evidence_members = vec![ExportEvidenceMember::IntakeHandoffs { bytes: vec![0x80] }];
+        let package = write_export(input).expect("extension retained");
+        let value = decode_cbor_value(&package.manifest_payload).expect("manifest");
+        let extensions =
+            map_lookup_map(value.as_map().expect("map"), "extensions").expect("extensions");
+        assert_eq!(
+            map_lookup_u64(extensions, "x-private-test").expect("unknown extension"),
+            7
+        );
+    }
+
+    #[test]
+    fn payload_presence_and_catalog_digest_replace_stale_bindings() {
+        let bytes = b"exact ciphertext".to_vec();
+        let hash = domain_separated_sha256("trellis-content-v1", &bytes);
+        let mut input = native_input();
+        input.evidence_members = vec![
+            ExportEvidenceMember::Payload {
+                content_hash: hash,
+                bytes: bytes.clone(),
+            },
+            ExportEvidenceMember::IntakeHandoffs { bytes: vec![0x80] },
+        ];
+        input.extensions = Some(Value::Map(vec![(
+            Value::Text(EVIDENCE_BINDINGS[2].1.to_string()),
+            Value::Null,
+        )]));
+        let package = write_export(input).expect("derived bindings");
+        assert_eq!(
+            package.member_bytes(&format!("060-payloads/{}.bin", hex_lower(&hash))),
+            Some(bytes.as_slice())
+        );
+        let value = decode_cbor_value(&package.manifest_payload).expect("manifest");
+        let map = value.as_map().expect("map");
+        assert!(
+            map.iter()
+                .any(|(k, v)| k.as_text() == Some("payloads_inlined") && *v == Value::Bool(true))
+        );
+        let ext = map_lookup_map(map, "extensions").expect("extensions");
+        let binding = map_lookup_map(ext, EVIDENCE_BINDINGS[2].1).expect("binding");
+        assert_eq!(
+            map_lookup_bytes(binding, "intake_catalog_digest").expect("digest"),
+            sha256_bytes(&[0x80])
+        );
+    }
+
+    fn open_clock_input() -> ExportWriterInput {
+        let mut input = native_input();
+        input.generated_at = TrellisTimestamp::new(1777001200, 0).expect("timestamp");
+        input.evidence_members = vec![ExportEvidenceMember::OpenClocks {
+            bytes: read(
+                &fixtures_root(),
+                "verify/018-export-043-open-clocks/open-clocks.json",
+            ),
+        }];
+        input
+    }
+
+    #[test]
+    fn native_open_clock_count_is_derived_and_signed_count_tampering_fails() {
+        let mut input = open_clock_input();
+        input.extensions = Some(Value::Map(vec![(
+            Value::Text(EVIDENCE_BINDINGS[4].1.to_string()),
+            text_map(vec![("open_clock_count", uint(99))]).expect("stale count"),
+        )]));
+        let key = input.signing_key.clone();
+        let package = write_export(input).expect("clock export");
+        let verified = trellis_verify_wos::verify_export_zip(&package.zip_bytes);
+        assert!(verified.trellis.integrity_verified, "{verified:#?}");
+        let mut manifest = decode_cbor_value(&package.manifest_payload).expect("manifest");
+        let Value::Map(map) = &mut manifest else {
+            panic!("manifest map");
+        };
+        let (_, Value::Map(extensions)) = map
+            .iter_mut()
+            .find(|(k, _)| k.as_text() == Some("extensions"))
+            .expect("extensions")
+        else {
+            panic!("extensions map");
+        };
+        let (_, Value::Map(binding)) = extensions
+            .iter_mut()
+            .find(|(k, _)| k.as_text() == Some(EVIDENCE_BINDINGS[4].1))
+            .expect("clock binding")
+        else {
+            panic!("binding map");
+        };
+        assert_eq!(
+            map_lookup_u64(binding, "open_clock_count").expect("count"),
+            1
+        );
+        assert_eq!(
+            map_lookup_bytes(binding, "open_clocks_digest").expect("digest"),
+            sha256_bytes(
+                package
+                    .member_bytes("open-clocks.json")
+                    .expect("clock bytes")
+            )
+        );
+        binding
+            .iter_mut()
+            .find(|(k, _)| k.as_text() == Some("open_clock_count"))
+            .expect("count")
+            .1 = uint(2);
+        let signed = sign_cose(
+            &key,
+            ArtifactType::Manifest,
+            &encode_value(&manifest).expect("tampered payload"),
+        );
+        let mut bundle = Bundle::new();
+        for entry in package.entries {
+            if entry.path().ends_with("/000-manifest.cbor") {
+                bundle.add_entry(BundleEntry::new(entry.path(), signed.clone()));
+            } else {
+                bundle.add_entry(entry);
+            }
+        }
+        let report =
+            trellis_verify_wos::verify_export_zip(&bundle.to_zip_bytes().expect("test archive"));
+        assert!(
+            !report.trellis.integrity_verified,
+            "signed wrong count accepted"
+        );
+        assert!(
+            format!("{report:?}").contains("open-clocks.json"),
+            "{report:#?}"
+        );
+    }
+
+    #[test]
+    fn open_clocks_malformed_input_and_noncanonical_output_refuse() {
+        for bytes in [
+            b"{".to_vec(),
+            b"{}".to_vec(),
+            b"{\"open_clocks\":null}".to_vec(),
+        ] {
+            let mut input = native_input();
+            input.evidence_members = vec![ExportEvidenceMember::OpenClocks { bytes }];
+            assert!(write_export(input).is_err());
+        }
+        let mut input = open_clock_input();
+        let ExportEvidenceMember::OpenClocks { bytes } = &mut input.evidence_members[0] else {
+            unreachable!();
+        };
+        bytes.push(b'\n');
+        let package = write_export(input).expect("opaque carriage does not normalize JSON");
+        let report = trellis_verify_wos::verify_export_zip(&package.zip_bytes);
+        assert!(
+            !report.trellis.integrity_verified,
+            "noncanonical JSON accepted by composed verifier"
+        );
+    }
+
     #[test]
     fn given_export_001_fixture_inputs_when_write_export_then_zip_and_members_match_fixture() {
         let root = fixtures_root();
@@ -1761,6 +2283,7 @@ mod tests {
             signed_acts_catalog: None,
             signed_acts_manifest: None,
             policy_closure: None,
+            evidence_members: Vec::new(),
         };
         let error = write_export(input).expect_err("empty export must reject");
         assert!(error.to_string().contains("requires at least one"));

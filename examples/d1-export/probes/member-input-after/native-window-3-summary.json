@@ -1,0 +1,18 @@
+{
+  "scope": "Caller compilation only; full D1 remains unqualified.",
+  "receiptSha256": "4422ec5d37da2846d71d959b1549eb53f7675b63637bda6910ed063f8a9d5b85",
+  "logSha256": "696748bcaba9e44a0170d6993ab4eaafad67591eacca7a0caec2869921cb64f7",
+  "resolvedLockSha256": "e8db9355f0959eebb70c3d951168497ae579224fb7d1ee07ab71f4c90e6b8523",
+  "packageVersionDiff": {
+    "removed": [],
+    "added": [],
+    "registryVersionReplacements": []
+  },
+  "exitCode": 0,
+  "ownedProcessGroup": 7300,
+  "ownedGroupAbsentIndependentlyVerified": true,
+  "restoredStartingLockSha256": "34de175327773ca900c0fb4552ef0adfc0105f3fb336fd9e54d53adda7c00b1b",
+  "inputDrift": {},
+  "nextNativeOwner": "Core deferred/staging",
+  "elapsedSeconds": 91.65463495254517
+}

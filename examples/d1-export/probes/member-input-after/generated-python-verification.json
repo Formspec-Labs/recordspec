@@ -1,0 +1,74 @@
+{
+  "executions": [
+    {
+      "probe": "probe-010",
+      "argv": [
+        "/Users/mikewolfd/Work/formspec-stack/trellis/trellis-py/.venv/bin/python",
+        "-c",
+        "import sys,json,dataclasses\nfrom trellis_py.verify_wos import verify_export_zip\nr=verify_export_zip(open(sys.argv[1],\"rb\").read())\nprint(json.dumps({\"report\":dataclasses.asdict(r),\"verdict\":dataclasses.asdict(r.verdict)},default=str,sort_keys=True))\n",
+        "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/probes/member-input-after/probe-010/controlled-writer-output.zip"
+      ],
+      "cwd": "/Users/mikewolfd/Work/formspec-stack/trellis",
+      "inputSha256": "f5b46c3aa881339fcdf3ed79c4cc639d85a1e7b023aafdf02ae1683bd99f99d0",
+      "exitCode": 0,
+      "stdout": "{\"report\": {\"trellis\": {\"certificates_of_completion\": [{\"all_signing_events_resolved\": true, \"attachment_resolved\": true, \"certificate_id\": \"urn:trellis:certificate:export-010\", \"chain_summary_consistent\": true, \"completed_at\": \"TrellisTimestamp(seconds=1776900425, nanos=0)\", \"event_index\": 2, \"failures\": [], \"signer_count\": 1}], \"checkpoint_failures\": [], \"erasure_evidence\": [], \"event_failures\": [], \"integrity_verified\": true, \"interop_sidecars\": [], \"posture_transitions\": [], \"proof_failures\": [], \"readability_verified\": true, \"structure_verified\": true, \"user_content_attestations\": [], \"warnings\": []}, \"wos_findings\": [{\"detail\": \"export contains signature affirmation events but no policy closure evidence\", \"event_hash\": null, \"kind\": \"policy_closure_missing_for_signed_scope\", \"severity\": \"advisory\"}]}, \"verdict\": {\"blocking_reasons\": [], \"cryptographic_integrity\": \"pass\", \"domain_admissibility\": \"pass\", \"projection_integrity\": \"pass\", \"relying_party_result\": \"valid\"}}\n",
+      "stderr": ""
+    },
+    {
+      "probe": "probe-006",
+      "argv": [
+        "/Users/mikewolfd/Work/formspec-stack/trellis/trellis-py/.venv/bin/python",
+        "-c",
+        "import sys,json,dataclasses\nfrom trellis_py.verify_wos import verify_export_zip\nr=verify_export_zip(open(sys.argv[1],\"rb\").read())\nprint(json.dumps({\"report\":dataclasses.asdict(r),\"verdict\":dataclasses.asdict(r.verdict)},default=str,sort_keys=True))\n",
+        "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/probes/member-input-after/probe-006/controlled-writer-output.zip"
+      ],
+      "cwd": "/Users/mikewolfd/Work/formspec-stack/trellis",
+      "inputSha256": "895caa62395790afcd9e20ef69d2096ef318a3635a263f0ecce928f61a1d7dea",
+      "exitCode": 0,
+      "stdout": "{\"report\": {\"trellis\": {\"certificates_of_completion\": [], \"checkpoint_failures\": [], \"erasure_evidence\": [], \"event_failures\": [], \"integrity_verified\": true, \"interop_sidecars\": [], \"posture_transitions\": [], \"proof_failures\": [], \"readability_verified\": true, \"structure_verified\": true, \"user_content_attestations\": [], \"warnings\": []}, \"wos_findings\": []}, \"verdict\": {\"blocking_reasons\": [], \"cryptographic_integrity\": \"pass\", \"domain_admissibility\": \"pass\", \"projection_integrity\": \"pass\", \"relying_party_result\": \"valid\"}}\n",
+      "stderr": ""
+    },
+    {
+      "probe": "probe-007",
+      "argv": [
+        "/Users/mikewolfd/Work/formspec-stack/trellis/trellis-py/.venv/bin/python",
+        "-c",
+        "import sys,json,dataclasses\nfrom trellis_py.verify_wos import verify_export_zip\nr=verify_export_zip(open(sys.argv[1],\"rb\").read())\nprint(json.dumps({\"report\":dataclasses.asdict(r),\"verdict\":dataclasses.asdict(r.verdict)},default=str,sort_keys=True))\n",
+        "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/probes/member-input-after/probe-007/controlled-writer-output.zip"
+      ],
+      "cwd": "/Users/mikewolfd/Work/formspec-stack/trellis",
+      "inputSha256": "0b25d5949bf30efe9ed4273dcdc0e5d3811bb83df3b7378f2e3207523d76ba7b",
+      "exitCode": 0,
+      "stdout": "{\"report\": {\"trellis\": {\"certificates_of_completion\": [], \"checkpoint_failures\": [], \"erasure_evidence\": [], \"event_failures\": [], \"integrity_verified\": true, \"interop_sidecars\": [], \"posture_transitions\": [], \"proof_failures\": [], \"readability_verified\": true, \"structure_verified\": true, \"user_content_attestations\": [], \"warnings\": []}, \"wos_findings\": []}, \"verdict\": {\"blocking_reasons\": [], \"cryptographic_integrity\": \"pass\", \"domain_admissibility\": \"pass\", \"projection_integrity\": \"pass\", \"relying_party_result\": \"valid\"}}\n",
+      "stderr": ""
+    },
+    {
+      "probe": "probe-010-missing-inline",
+      "argv": [
+        "/Users/mikewolfd/Work/formspec-stack/trellis/trellis-py/.venv/bin/python",
+        "-c",
+        "import sys,json,dataclasses\nfrom trellis_py.verify_wos import verify_export_zip\nr=verify_export_zip(open(sys.argv[1],\"rb\").read())\nprint(json.dumps({\"report\":dataclasses.asdict(r),\"verdict\":dataclasses.asdict(r.verdict)},default=str,sort_keys=True))\n",
+        "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/probes/member-input-after/probe-010-missing-inline/controlled-writer-output.zip"
+      ],
+      "cwd": "/Users/mikewolfd/Work/formspec-stack/trellis",
+      "inputSha256": "e2c244e7fe514e6035bcd1ddc00d95162765ab881067e30bef2a807eba78ab3f",
+      "exitCode": 0,
+      "stdout": "{\"report\": {\"trellis\": {\"certificates_of_completion\": [{\"all_signing_events_resolved\": true, \"attachment_resolved\": false, \"certificate_id\": \"urn:trellis:certificate:export-010\", \"chain_summary_consistent\": true, \"completed_at\": \"TrellisTimestamp(seconds=1776900425, nanos=0)\", \"event_index\": 2, \"failures\": [\"presentation_artifact_attachment_missing\"], \"signer_count\": 1}], \"checkpoint_failures\": [], \"erasure_evidence\": [], \"event_failures\": [{\"kind\": \"missing_attachment_body\", \"location\": \"060-payloads/16b629b8298aca9e010970761f492a0bcd7a478d2d3284e0b4e3f0d40880e14f.bin\"}, {\"kind\": \"presentation_artifact_attachment_missing\", \"location\": \"9aa4effa7e88da9a546cdce6738722f1d8b9b67874b04f54933aecc3fac8aa61\"}], \"integrity_verified\": false, \"interop_sidecars\": [], \"posture_transitions\": [], \"proof_failures\": [], \"readability_verified\": true, \"structure_verified\": true, \"user_content_attestations\": [], \"warnings\": []}, \"wos_findings\": [{\"detail\": \"export contains signature affirmation events but no policy closure evidence\", \"event_hash\": null, \"kind\": \"policy_closure_missing_for_signed_scope\", \"severity\": \"advisory\"}]}, \"verdict\": {\"blocking_reasons\": [\"substrate_integrity\"], \"cryptographic_integrity\": \"fail\", \"domain_admissibility\": \"indeterminate\", \"projection_integrity\": \"indeterminate\", \"relying_party_result\": \"invalid\"}}\n",
+      "stderr": ""
+    }
+  ],
+  "verifierSourceSha256": {
+    "trellis-py/src/trellis_py/constants.py": "6ffc33f539082b937dcce9d210b6ec87ba7c8fe064c9041b1924a374e50cbfd2",
+    "trellis-py/src/trellis_py/__init__.py": "68130c9106010880081a535e50d30a7d7052c7db8e529730c7c29f1a07668f8e",
+    "trellis-py/src/trellis_py/_cbor_canonical.py": "398350c2b9eeea2d7198c6af99926c8b4d3c6d596320df6a390349712f69c1e5",
+    "trellis-py/src/trellis_py/export_zip.py": "6b5e0fe24926221fd145ebdbbdd16d7b76aaf5cede60f12cedb28d90caadcd0f",
+    "trellis-py/src/trellis_py/verify_export.py": "226322d25efd35090296ee02a234bf1b8da583a27cb97fce2557792d9a8c0d8c",
+    "trellis-py/src/trellis_py/conformance.py": "3f6bcc0376e097ecaab5a7f0dd7b346a049281f43040e4dae6c6ee66a6f369ea",
+    "trellis-py/src/trellis_py/parity_oracle.py": "cfd34e5375096d470abd2823367d43d1149494a5e13c6ace5ffacc1a42e2a1d4",
+    "trellis-py/src/trellis_py/_cbor_strict.py": "99192b32bd83746342db8989c056ca408a8949eede5a4af1daa79b406abd4efe",
+    "trellis-py/src/trellis_py/verify.py": "e84a1dbefdfb517a61d9a16dc790f7f4c2a02bb748912c0f8bb41389ed4b4a9a",
+    "trellis-py/src/trellis_py/append.py": "d99e08359f3a3e5db4752943b4a7fc4924bdec81c3db7b94e3487f000e44def7",
+    "trellis-py/src/trellis_py/codec.py": "20dee49ab7579917ff87ebf7a35d856d7a99de3d802926dceb30d64798d4c6b7",
+    "trellis-py/src/trellis_py/verify_wos.py": "33672a08f2454a81f1535ee9afb2609bfe2f0d76cb1f4872e94062b6c7c38490"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "classification": "Second bounded caller continuation incomplete during dependency checking; no server crate compilation acceptance",
+  "receipt": "examples/d1-export/probes/member-input-after/server-check-attempt-2-receipt.json",
+  "receiptSha256": "b7608109ab6be66baa801d56e63aabf7f256cd603c2e82904edbf35f61db6411",
+  "cleanupConfirmed": true,
+  "nextNativeOwner": "Core explicit release after this outcome",
+  "sourceChanged": false
+}

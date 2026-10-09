@@ -126,5 +126,6 @@ pub fn export_001_writer_input(vectors_root: &Path) -> ExportWriterInput {
         signed_acts_catalog: None,
         signed_acts_manifest: None,
         policy_closure: None,
+        evidence_members: Vec::new(),
     }
 }
