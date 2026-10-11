@@ -1,8 +1,6 @@
 // Rust guideline compliant 2026-02-21
 //! Durable and in-memory [`EventRepository`] implementations for the Trellis HTTP service.
 
-use std::collections::HashMap;
-
 use async_trait::async_trait;
 use sqlx::PgPool;
 use stack_common_error::StackError;
@@ -14,6 +12,11 @@ use trellis_store_postgres_async::{
 use trellis_types::StoredEvent;
 
 use crate::artifacts::{BundleIdentity, BundleIndexPort, BundleRecord};
+use trellis_core::SigningKeyMaterial;
+use trellis_core::external_attachment::{ExternalAttachmentAppend, RetainedExternalAttachment};
+use trellis_service_client::ComputeContext;
+#[path = "external_repository.rs"]
+mod external_repository;
 
 /// Core §17.3 identity for idempotent retries: same canonical + signed bytes, independent of
 /// optional `canonical_event_hash` materialization on [`StoredEvent`].
@@ -92,6 +95,30 @@ fn bundle_record_from_publication(record: BundlePublicationRecord) -> BundleReco
     }
 }
 
+/// Prepares native attachment inputs inside the repository's serialized scope snapshot.
+///
+/// Implementations reuse complete retained protection on retries and obtain fresh protection
+/// only for new operations. The repository checks returned scope and operation identity.
+pub trait ExternalAttachmentFactory: Send + Sync {
+    /// Prepares an append from committed events and an existing retained operation.
+    ///
+    /// # Errors
+    /// Refuses unavailable protection, inconsistent accepted facts or changed retry identity.
+    fn prepare(
+        &self,
+        events: &[StoredEvent],
+        retained: Option<&RetainedExternalAttachment>,
+    ) -> Result<ExternalAttachmentAppend, StackError>;
+}
+
+/// Checks whether a prefix supports the explicitly selected native attachment export.
+///
+/// # Errors
+/// Refuses malformed native profiles and unqualified unmarked payloads or bindings.
+pub(crate) fn qualify_native_prefix(events: &[StoredEvent]) -> Result<(), StackError> {
+    external_repository::validate_prefix(events)
+}
+
 /// Durable event repository used by the service composition root.
 #[async_trait]
 pub trait EventRepository: Send + Sync {
@@ -101,6 +128,67 @@ pub trait EventRepository: Send + Sync {
     ///
     /// Returns [`StackError::unavailable`] when a durable store read fails.
     async fn list_scope(&self, scope: &[u8]) -> Result<Vec<StoredEvent>, StackError>;
+
+    /// Atomically appends an admitted protected attachment and retains its exact body.
+    ///
+    /// # Errors
+    /// Refuses unsupported stores, changed retries, stale heads and storage failures.
+    async fn append_external_attachment(
+        &self,
+        input: ExternalAttachmentAppend,
+        signing_key: &SigningKeyMaterial,
+        compute: &ComputeContext,
+    ) -> Result<RetainedExternalAttachment, StackError> {
+        let scope = input.scope.clone();
+        let key = input.idempotency_key.clone();
+        self.append_external_attachment_with(
+            &scope,
+            &key,
+            signing_key,
+            compute,
+            &external_repository::FixedInputFactory(input),
+        )
+        .await
+    }
+    /// Prepares and atomically retains an attachment under the serialized scope lock.
+    ///
+    /// # Errors
+    /// Refuses unsupported stores, excessive prefixes, changed custody and factory failures.
+    async fn append_external_attachment_with(
+        &self,
+        _scope: &[u8],
+        _key: &[u8],
+        _signing_key: &SigningKeyMaterial,
+        _compute: &ComputeContext,
+        _factory: &dyn ExternalAttachmentFactory,
+    ) -> Result<RetainedExternalAttachment, StackError> {
+        Err(StackError::unavailable(
+            "external attachment retention is unsupported",
+        ))
+    }
+    /// Retrieves exact committed ciphertext for one authorized scope and content hash.
+    ///
+    /// # Errors
+    /// Refuses storage failures or malformed retained associations.
+    async fn external_attachment_body(
+        &self,
+        _scope: &[u8],
+        _hash: &[u8; 32],
+    ) -> Result<Option<Vec<u8>>, StackError> {
+        Ok(None)
+    }
+
+    /// Retrieves the immutable custody disclosure accompanying a retained body.
+    ///
+    /// # Errors
+    /// Refuses malformed persisted custody facts or storage failures.
+    async fn external_attachment_compute(
+        &self,
+        _scope: &[u8],
+        _hash: &[u8; 32],
+    ) -> Result<Option<ComputeContext>, StackError> {
+        Ok(None)
+    }
 
     /// Persists one ledger event as the next sequence for its scope.
     ///
@@ -115,7 +203,7 @@ pub trait EventRepository: Send + Sync {
 /// In-memory repository for tests and explicitly requested local runs.
 #[derive(Default)]
 pub struct InMemoryEventRepository {
-    events: Mutex<HashMap<Vec<u8>, Vec<StoredEvent>>>,
+    state: Mutex<external_repository::MemoryState>,
 }
 
 impl InMemoryEventRepository {
@@ -127,14 +215,39 @@ impl InMemoryEventRepository {
 
 #[async_trait]
 impl EventRepository for InMemoryEventRepository {
+    async fn external_attachment_compute(
+        &self,
+        scope: &[u8],
+        hash: &[u8; 32],
+    ) -> Result<Option<ComputeContext>, StackError> {
+        external_repository::memory_compute(self, scope, hash).await
+    }
+    async fn append_external_attachment_with(
+        &self,
+        scope: &[u8],
+        key: &[u8],
+        signing_key: &SigningKeyMaterial,
+        compute: &ComputeContext,
+        factory: &dyn ExternalAttachmentFactory,
+    ) -> Result<RetainedExternalAttachment, StackError> {
+        external_repository::memory_append_with(self, scope, key, signing_key, compute, factory)
+            .await
+    }
+    async fn external_attachment_body(
+        &self,
+        scope: &[u8],
+        hash: &[u8; 32],
+    ) -> Result<Option<Vec<u8>>, StackError> {
+        external_repository::memory_body(self, scope, hash).await
+    }
     async fn list_scope(&self, scope: &[u8]) -> Result<Vec<StoredEvent>, StackError> {
-        let events = self.events.lock().await;
-        Ok(events.get(scope).cloned().unwrap_or_default())
+        let state = self.state.lock().await;
+        Ok(state.events.get(scope).cloned().unwrap_or_default())
     }
 
     async fn append_event(&self, event: StoredEvent) -> Result<(), StackError> {
-        let mut events = self.events.lock().await;
-        let scope_events = events.entry(event.scope().to_vec()).or_default();
+        let mut state = self.state.lock().await;
+        let scope_events = state.events.entry(event.scope().to_vec()).or_default();
         let expected = u64::try_from(scope_events.len())
             .map_err(|_| StackError::internal("event count exceeds u64"))?;
         if event.sequence() != expected {
@@ -176,6 +289,31 @@ impl PostgresEventRepository {
 
 #[async_trait]
 impl EventRepository for PostgresEventRepository {
+    async fn external_attachment_compute(
+        &self,
+        scope: &[u8],
+        hash: &[u8; 32],
+    ) -> Result<Option<ComputeContext>, StackError> {
+        external_repository::postgres_compute(self, scope, hash).await
+    }
+    async fn append_external_attachment_with(
+        &self,
+        scope: &[u8],
+        key: &[u8],
+        signing_key: &SigningKeyMaterial,
+        compute: &ComputeContext,
+        factory: &dyn ExternalAttachmentFactory,
+    ) -> Result<RetainedExternalAttachment, StackError> {
+        external_repository::postgres_append_with(self, scope, key, signing_key, compute, factory)
+            .await
+    }
+    async fn external_attachment_body(
+        &self,
+        scope: &[u8],
+        hash: &[u8; 32],
+    ) -> Result<Option<Vec<u8>>, StackError> {
+        external_repository::postgres_body(self, scope, hash).await
+    }
     async fn list_scope(&self, scope: &[u8]) -> Result<Vec<StoredEvent>, StackError> {
         let rows = sqlx::query_as::<
             _,
@@ -231,6 +369,7 @@ ORDER BY sequence",
         let mut tx = self.pool.begin().await.map_err(|error| {
             StackError::unavailable(format!("trellis tx begin failed: {error}"))
         })?;
+        external_repository::lock_scope(&mut tx, event.scope()).await?;
         trellis_store_postgres_async::append_event_in_tx(&mut tx, &event)
             .await
             .map_err(map_postgres_append_error)?;
@@ -267,6 +406,17 @@ impl BundleIndexPort for PostgresBundleIndex {
         )
         .await
         .map_err(map_postgres_bundle_error)
+    }
+
+    async fn get_by_seal(
+        &self,
+        scope: &[u8],
+        seal: u64,
+    ) -> Result<Option<BundleRecord>, StackError> {
+        trellis_store_postgres_async::get_bundle_publication_by_seal(&self.pool, scope, seal)
+            .await
+            .map(|record| record.map(bundle_record_from_publication))
+            .map_err(map_postgres_bundle_error)
     }
 
     async fn get_by_digest(

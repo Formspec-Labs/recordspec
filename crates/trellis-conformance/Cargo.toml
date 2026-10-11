@@ -16,6 +16,9 @@ name = "canonical_cbor_emit"
 path = "examples/canonical_cbor_emit.rs"
 
 [dev-dependencies]
+integrity-hpke = { path = "../../../integrity-stack/crates/integrity-hpke" }
+integrity-seam = { path = "../../../integrity-stack/crates/integrity-seam" }
+x25519-dalek = { version = "=2.0.1", features = ["static_secrets"] }
 integrity-bundle-fixtures = { path = "../../../integrity-stack/crates/integrity-bundle-fixtures" }
 integrity-cbor = { path = "../../../integrity-stack/crates/integrity-cbor" }
 integrity-cose = { path = "../../../integrity-stack/crates/integrity-cose" }

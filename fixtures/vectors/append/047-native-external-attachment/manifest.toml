@@ -1,0 +1,22 @@
+id = "append/047-native-external-attachment"
+op = "append"
+status = "active"
+description = "Explicit native suite1 external attachment: actual producer, signed marker, retained key bag and offline recipient open. Fixture keys/entropy are public test artifacts only."
+[coverage]
+tr_core = ["TR-CORE-018", "TR-CORE-031", "TR-CORE-033", "TR-CORE-182"]
+[inputs]
+signing_key = "../../_keys/issuer-001.cose_key"
+authored_event = "input-author-event-hash-preimage.cbor"
+original = "input-original.bin"
+attachment_ciphertext = "input-attachment-ciphertext.bin"
+recipient_private_key = "../../_keys/append047-reader.seed"
+fixture_entropy = "../../_keys/append047-entropy.seed"
+[expected]
+author_event_hash = "author-event-hash.bin"
+canonical_event = "expected-event-payload.cbor"
+signed_event = "expected-event.cbor"
+append_head = "expected-append-head.cbor"
+[derivation]
+document = "derivation.md"
+[security]
+test_artifact = true

@@ -12,8 +12,9 @@ use axum::response::Response;
 use stack_common_auth::{AccessTokenVerifier, JwtConfig, JwtVerifier, VerifiedAccessIdentity};
 use stack_common_error::{ErrorCode, StackError};
 use stack_common_http::idempotency::{
-    HttpIdempotencyState, IdempotencyCall, IdempotencyDecision, IdempotencyDriverError,
-    IdempotencyFailure, IdempotencyOperation,
+    HttpIdempotencyState, IdempotencyCall, IdempotencyClaim, IdempotencyDecision,
+    IdempotencyDriverError, IdempotencyFailure, IdempotencyOperation,
+    IdempotencyResponseDisposition,
 };
 use stack_common_http::problem_response;
 use stack_common_http::tenant::{
@@ -21,7 +22,8 @@ use stack_common_http::tenant::{
     extract_tenant_multi_producer,
 };
 use stack_common_idempotency::{
-    HttpReplayStore, InMemoryHttpReplayStore, ReplayOutcome, StoredResponse,
+    HttpReplayScope, HttpReplayStore, InMemoryHttpReplayStore, ReplayOutcome,
+    ScopedHttpReplayStore, ScopedReplayOutcome, StoredResponse,
 };
 use stack_common_ops::{ComponentHealth, HealthProbe};
 use trellis_export_writer::TrellisTimestamp;
@@ -82,6 +84,9 @@ impl AuthenticatedRequest {
 /// Cloneable Axum state for the Trellis service.
 #[derive(Clone)]
 pub struct TrellisServerState {
+    pub(crate) external_attachment_recipients:
+        Option<Arc<dyn crate::ExternalAttachmentRecipientSelector>>,
+    pub(crate) external_attachment_random: Arc<dyn integrity_seam::SecureRandom>,
     pub(crate) repository: Arc<dyn EventRepository>,
     pub(crate) artifact_store: Arc<dyn ArtifactStore<Error = StackError>>,
     pub(crate) admission_policy: Arc<dyn EventAdmissionPolicy<Error = StackError>>,
@@ -121,6 +126,8 @@ impl TrellisServerState {
         tenant_header_mode: TenantHeaderMode,
     ) -> Self {
         Self {
+            external_attachment_recipients: None,
+            external_attachment_random: Arc::new(integrity_seam::OsSecureRandom),
             repository,
             artifact_store: Arc::new(InMemoryArtifactStore::default()),
             admission_policy: default_admission_policy(),
@@ -137,6 +144,16 @@ impl TrellisServerState {
             event_type_catalog: Arc::new(EventTypeCatalog::default_stack()),
             profile_export_verifier: Arc::new(crate::composition::wos_profile_export_verified),
         }
+    }
+
+    /// Selects trusted recipient lookup for the closed protected transport.
+    #[must_use]
+    pub fn with_external_attachment_recipients(
+        mut self,
+        selector: Arc<dyn crate::ExternalAttachmentRecipientSelector>,
+    ) -> Self {
+        self.external_attachment_recipients = Some(selector);
+        self
     }
 
     /// Test-only: replace the append runner (constructor injection for delegation proofs).
@@ -322,6 +339,27 @@ impl HttpIdempotencyState for TrellisServerState {
         &self,
         call: &IdempotencyCall,
     ) -> Result<IdempotencyDecision, IdempotencyDriverError<Self::Error>> {
+        if native_replay_call(call) {
+            return match self
+                .replay_store
+                .check_or_record(
+                    &NativeReplayScope(tenant_replay_scope(call)),
+                    "",
+                    &call.request.key,
+                    &call.request.request_hash,
+                )
+                .await
+            {
+                Ok(ScopedReplayOutcome::Recorded) => Ok(IdempotencyDecision::Fresh),
+                Ok(ScopedReplayOutcome::Replayed { response }) => {
+                    Ok(IdempotencyDecision::Replay(response))
+                }
+                Err(error) if error.status() == StatusCode::CONFLICT => {
+                    Ok(IdempotencyDecision::Conflict)
+                }
+                Err(error) => Err(IdempotencyDriverError::store(error)),
+            };
+        }
         match self
             .replay_store
             .check(
@@ -343,6 +381,19 @@ impl HttpIdempotencyState for TrellisServerState {
         call: &IdempotencyCall,
         response: StoredResponse,
     ) -> Result<(), IdempotencyDriverError<Self::Error>> {
+        if native_replay_call(call) {
+            return self
+                .replay_store
+                .record_response(
+                    &NativeReplayScope(tenant_replay_scope(call)),
+                    "",
+                    &call.request.key,
+                    &call.request.request_hash,
+                    response,
+                )
+                .await
+                .map_err(IdempotencyDriverError::store);
+        }
         self.replay_store
             .record(
                 &tenant_replay_scope(call),
@@ -352,6 +403,45 @@ impl HttpIdempotencyState for TrellisServerState {
             )
             .await
             .map_err(IdempotencyDriverError::store)
+    }
+
+    fn http_idempotency_response_disposition(
+        &self,
+        call: &IdempotencyCall,
+        response: &Response,
+    ) -> IdempotencyResponseDisposition {
+        if native_replay_call(call)
+            && response
+                .extensions()
+                .get::<crate::external_transport::RetryableStorageAttempt>()
+                .is_some()
+        {
+            IdempotencyResponseDisposition::RetryableAttempt
+        } else {
+            IdempotencyResponseDisposition::Replay
+        }
+    }
+
+    async fn finish_http_idempotency_attempt(
+        &self,
+        call: &IdempotencyCall,
+        claim: Option<&IdempotencyClaim>,
+        disposition: IdempotencyResponseDisposition,
+        response: StoredResponse,
+    ) -> Result<(), IdempotencyDriverError<Self::Error>> {
+        if claim.is_some() {
+            return Err(IdempotencyDriverError::store(StackError::unavailable(
+                "unexpected HTTP replay claim",
+            )));
+        }
+        if native_replay_call(call)
+            && disposition == IdempotencyResponseDisposition::RetryableAttempt
+        {
+            // Reservation already retained the exact fingerprint. Failed storage attempts
+            // leave response=None; completion never overwrites a concurrent success.
+            return Ok(());
+        }
+        self.record_http_idempotency_response(call, response).await
     }
 
     fn idempotency_failure_response(&self, failure: IdempotencyFailure) -> Response {
@@ -578,5 +668,26 @@ impl HealthProbe for TrellisHealthProbe {
         } else {
             ComponentHealth::degraded("trellis-server", issues.join("; "))
         }
+    }
+}
+
+// This partition is minted by the authenticated typed middleware, never a request header.
+fn native_replay_call(call: &IdempotencyCall) -> bool {
+    call.replay_partition
+        .as_deref()
+        .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+        .and_then(|value| {
+            value
+                .as_array()
+                .and_then(|values| values.get(3))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .is_some_and(|route| route == "accepted-attachment")
+}
+struct NativeReplayScope(String);
+impl HttpReplayScope for NativeReplayScope {
+    fn replay_scope_id(&self) -> String {
+        self.0.clone()
     }
 }

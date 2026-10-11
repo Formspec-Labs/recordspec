@@ -170,6 +170,33 @@ async fn ensure_publishable(
     Ok(())
 }
 
+/// Returns only a published bundle at the exact scope and seal.
+///
+/// Reuses immutable identity and digest lookup; reservations remain hidden.
+///
+/// # Errors
+/// Refuses an out-of-range seal, SQL failure, or inconsistent persisted identity.
+pub async fn get_bundle_publication_by_seal(
+    pool: &PgPool,
+    scope: &[u8],
+    seal: u64,
+) -> Result<Option<BundlePublicationRecord>, BundlePublicationError> {
+    let sql_seal =
+        i64::try_from(seal).map_err(|_| BundlePublicationError::DomainViolation(seal))?;
+    let Some(identity) = identity_by_seal(pool, scope, sql_seal).await? else {
+        return Ok(None);
+    };
+    let record = get_bundle_publication_by_digest(pool, scope, &identity.checkpoint_digest).await?;
+    if let Some(record) = &record {
+        if record.identity != identity || identity.scope != scope || identity.seal_version != seal {
+            return Err(BundlePublicationError::Conflict(
+                "published seal identity mismatch",
+            ));
+        }
+    }
+    Ok(record)
+}
+
 async fn identity_by_seal(
     pool: &PgPool,
     scope: &[u8],

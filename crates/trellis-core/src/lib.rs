@@ -200,3 +200,6 @@ mod tests {
         }
     }
 }
+
+/// Explicit native external attachment authoring and retained append.
+pub mod external_attachment;

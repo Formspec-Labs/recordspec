@@ -42,9 +42,22 @@ pub fn router(state: TrellisServerState) -> Result<Router, StackError> {
             crate::auth::authorize_append,
         ));
 
+    let accepted_attachments = post(crate::external_transport::append)
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            idempotency_middleware::<TrellisServerState>,
+        ))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::external_transport::authorize,
+        ));
     Ok(Router::new()
         .route("/openapi.json", get(crate::openapi::openapi_json))
         .route("/v1/scopes/{scope}/events", append)
+        .route(
+            "/v1/scopes/{scope}/accepted-attachments",
+            accepted_attachments,
+        )
         .route("/v1/scopes/{scope}/bundles/head", get(head_bundle))
         .route(
             "/v1/scopes/{scope}/bundles/{checkpoint_digest}",

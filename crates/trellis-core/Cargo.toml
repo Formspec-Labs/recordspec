@@ -9,5 +9,7 @@ trellis-cddl = { path = "../trellis-cddl" }
 integrity-cose = { path = "../../../integrity-stack/crates/integrity-cose" }
 trellis-types = { path = "../trellis-types" }
 
+integrity-hpke = { path = "../../../integrity-stack/crates/integrity-hpke" }
+
 [dev-dependencies]
 proptest = "1.6"

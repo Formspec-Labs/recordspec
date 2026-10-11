@@ -32,6 +32,102 @@ pub use trellis_admission_formspec::{
     FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH, FORMSPEC_RESPONSE_SUBMITTED,
 };
 
+/// Derives bounded062 and exact060 originals from actual admitted affirmations.
+///
+/// Preserves every prior affirmation. This pure operation grants no Source
+/// access and does not establish original signed Response/proof custody.
+///
+/// # Errors
+/// Refuses invalid actual prefixes, unreadable or unrepresentable affirmations,
+/// hash conflicts and finite canonical-input/payload/catalog/member limits.
+pub(crate) fn signature_evidence_members(
+    scope: &[u8],
+    events: &[&trellis_types::StoredEvent],
+) -> Result<Vec<trellis_export_writer::ExportEvidenceMember>, StackError> {
+    use integrity_cbor::{
+        decode_cbor_value, domain_separated_sha256, map_lookup_bytes, map_lookup_map,
+    };
+    use std::collections::BTreeMap;
+    use trellis_export_writer::ExportEvidenceMember;
+    const MAX_BYTES: usize = 1024 * 1024;
+    const MAX_MEMBERS: usize = 256;
+    let mut affirmed = Vec::new();
+    for event in events {
+        if crate::event_summary(event)?.event_type == wos_signature_affirmation_event_type() {
+            if events.len() > MAX_MEMBERS {
+                return Err(StackError::bad_request(
+                    "signature prefix event count limit",
+                ));
+            }
+            affirmed.push(*event);
+        }
+    }
+    if affirmed.is_empty() {
+        return Ok(Vec::new());
+    }
+    if events.first().is_none_or(|event| event.scope() != scope) {
+        return Err(StackError::bad_request("signature export scope mismatch"));
+    }
+    let mut total = 0usize;
+    for event in events {
+        total = total
+            .checked_add(event.canonical_event().len())
+            .filter(|bytes| *bytes <= MAX_BYTES)
+            .ok_or_else(|| StackError::bad_request("signature evidence aggregate byte limit"))?;
+    }
+    let catalog =
+        trellis_verify_wos::encode_signature_affirmations_v1(events, MAX_MEMBERS, MAX_BYTES)
+            .map_err(|_| StackError::bad_request("actual signature affirmation inventory refused"))?
+            .ok_or_else(|| StackError::internal("actual affirmation catalog absent"))?;
+    total = total
+        .checked_add(catalog.len())
+        .filter(|bytes| *bytes <= MAX_BYTES)
+        .ok_or_else(|| StackError::bad_request("signature evidence aggregate byte limit"))?;
+    let mut originals = BTreeMap::<[u8; 32], Vec<u8>>::new();
+    for event in affirmed {
+        let canonical =
+            decode_cbor_value(event.canonical_event()).map_err(crate::cbor_bad_request)?;
+        let map = canonical
+            .as_map()
+            .ok_or_else(|| StackError::bad_request("invalid actual signature event"))?;
+        let reference = map_lookup_map(map, "payload_ref").map_err(crate::cbor_bad_request)?;
+        let bytes = map_lookup_bytes(reference, "ciphertext").map_err(crate::cbor_bad_request)?;
+        let hash = domain_separated_sha256(trellis_types::CONTENT_DOMAIN, &bytes);
+        if crate::event_summary(event)?.content_hash != hash {
+            return Err(StackError::bad_request(
+                "signature payload content hash mismatch",
+            ));
+        }
+        if let Some(existing) = originals.get(&hash) {
+            if existing != &bytes {
+                return Err(StackError::conflict(
+                    "signature original payload hash collision",
+                ));
+            }
+        } else {
+            total = total
+                .checked_add(bytes.len())
+                .filter(|bytes| *bytes <= MAX_BYTES)
+                .ok_or_else(|| {
+                    StackError::bad_request("signature evidence aggregate byte limit")
+                })?;
+            if originals.len() >= MAX_MEMBERS - 1 {
+                return Err(StackError::bad_request("signature evidence member limit"));
+            }
+            originals.insert(hash, bytes);
+        }
+    }
+    let mut members = originals
+        .into_iter()
+        .map(|(content_hash, bytes)| ExportEvidenceMember::Payload {
+            content_hash,
+            bytes,
+        })
+        .collect::<Vec<_>>();
+    members.push(ExportEvidenceMember::SignatureAffirmations { bytes: catalog });
+    Ok(members)
+}
+
 const POLICY_VALID_FROM: &str = "2026-05-16T00:00:00Z";
 const POLICY_VERSION: &str = "2026-05-16";
 const FORMSPEC_RESPONSE_SCHEMA: &[u8] =
@@ -236,6 +332,9 @@ pub fn default_admission_policy() -> Arc<dyn EventAdmissionPolicy<Error = StackE
 pub fn default_event_type_specs() -> Vec<EventTypeSpec> {
     let mut specs = wos_event_type_specs();
     specs.extend(formspec_event_type_specs());
+    specs.push(
+        trellis_admission_formspec::accepted_attachment::accepted_attachment_event_type_spec(),
+    );
     specs
 }
 

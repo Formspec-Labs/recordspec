@@ -18,7 +18,8 @@ pub use append::{AppendError, append_event_in_tx};
 #[doc(inline)]
 pub use bundle_publications::{
     BundlePublicationError, BundlePublicationIdentity, BundlePublicationRecord,
-    get_bundle_publication_by_digest, publish_bundle_publication, reserve_bundle_publication,
+    get_bundle_publication_by_digest, get_bundle_publication_by_seal, publish_bundle_publication,
+    reserve_bundle_publication,
 };
 #[doc(inline)]
 pub use migrations::{MigrationError, run_migrations};

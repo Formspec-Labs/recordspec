@@ -14,9 +14,9 @@
 //! vocabulary belongs in this crate; future overlays ship their own
 //! `<producer>-trellis-binding` crate.
 //!
-//! ## Append dialects (single HTTP route)
+//! ## Append dialects
 //!
-//! All producers post to [`SubstrateClient::append_event`]
+//! Ordinary event producers post through [`SubstrateClient::append_event`]
 //! (`POST /v1/scopes/{scope}/events`). The Trellis admission composition root
 //! (`trellis-server::composition::DefaultAdmissionPolicy`) routes the request
 //! to one of two adapters before append commits:
@@ -31,6 +31,11 @@
 //!   proof literal and the Response Actions session operation-batch literal.
 //!   Additional Formspec literals require extending `trellis-admission-formspec`
 //!   and the Trellis composition router alongside admission updates.
+//!
+//! Accepted attachments use [`TrellisServiceClient::append_accepted_attachment`]
+//! (`POST /v1/scopes/{scope}/accepted-attachments`). The caller sends its accepted
+//! descriptor and exact original bytes; the server selects protection and recipients.
+//! The client preserves the descriptor as JSON and leaves domain validation to admission.
 //!
 //! ## Trust boundaries
 //!
@@ -62,9 +67,12 @@ mod wos_ext;
 
 pub use wos_ext::{SubstrateClientExt, WosProvenanceAppend, wos_provenance_append_request};
 
-use std::time::Duration;
+use std::{fmt, sync::Arc, time::Duration};
+
+use stack_common_auth::client_credentials::ClientCredentialsTokenProvider;
 
 use async_trait::async_trait;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use stack_common_error::StackError;
 use stack_common_http::idempotency::IDEMPOTENCY_KEY_HEADER;
@@ -266,6 +274,109 @@ pub struct SubstrateAppendBody {
     /// `trellis-server` until verification is implemented (see [`ClientAttestation`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_attestation: Option<ClientAttestation>,
+}
+
+/// Maximum original bytes accepted by the protected attachment HTTP route.
+pub const ACCEPTED_ATTACHMENT_ORIGINAL_BYTES_LIMIT: usize = 1024 * 1024;
+/// Maximum serialized descriptor metadata accepted by the attachment HTTP route.
+pub const ACCEPTED_ATTACHMENT_DESCRIPTOR_BYTES_LIMIT: usize = 64 * 1024;
+/// Event literal used to validate accepted attachment receipts.
+pub const ACCEPTED_ATTACHMENT_EVENT_TYPE_LITERAL: &str =
+    "substrate.append.accepted_attachment_binding";
+
+/// Original attachment and accepted descriptor sent to the protected append route.
+///
+/// The server selects protection, recipients and compute disclosure. The descriptor
+/// remains generic JSON here; the server validates its closed domain schema and
+/// the authenticated caller's authority. `original_bytes` uses standard padded Base64.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AcceptedAttachmentAppendBody {
+    #[schema(min_length = 1, max_length = 64)]
+    pub idempotency_key: String,
+    #[serde(deserialize_with = "deserialize_attachment_actor")]
+    #[schema(value_type = ClosedAttachmentActor)]
+    pub actor: AppendActor,
+    #[schema(schema_with = attachment_descriptor_openapi_schema)]
+    pub descriptor: serde_json::Value,
+    /// Standard padded Base64 for one nonempty original, bounded to 1 MiB decoded.
+    pub original_bytes: String,
+}
+
+fn attachment_descriptor_openapi_schema() -> RefOr<Schema> {
+    ObjectBuilder::new()
+        .schema_type(SchemaType::new(Type::Object))
+        .description(Some("Accepted Source descriptor object; serialized metadata is limited to 64 KiB and the server validates its closed domain schema."))
+        .into()
+}
+
+fn attachment_actor_kind_openapi_schema() -> RefOr<Schema> {
+    ObjectBuilder::new()
+        .schema_type(SchemaType::new(Type::String))
+        .enum_values(Some(["service"]))
+        .into()
+}
+
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+struct ClosedAttachmentActor {
+    #[schema(schema_with = attachment_actor_kind_openapi_schema)]
+    kind: String,
+    subject: String,
+}
+
+fn deserialize_attachment_actor<'de, D>(deserializer: D) -> Result<AppendActor, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let actor = ClosedAttachmentActor::deserialize(deserializer)?;
+    Ok(AppendActor {
+        kind: actor.kind,
+        subject: actor.subject,
+    })
+}
+
+impl AcceptedAttachmentAppendBody {
+    /// Validates bounded attachment transport fields before sending original bytes.
+    ///
+    /// # Errors
+    /// Refuses an invalid idempotency key, nonservice actor, oversized or nonobject
+    /// descriptor, and empty, oversized or noncanonical standard Base64 bytes.
+    pub fn validate(&self) -> Result<(), StackError> {
+        validate_required("idempotency_key", &self.idempotency_key)?;
+        if self.idempotency_key.len() > 64 || self.actor.kind != "service" {
+            return Err(StackError::bad_request(
+                "attachment requires a 1..64-byte key and service actor",
+            ));
+        }
+        validate_required("actor.subject", &self.actor.subject)?;
+        if !self.descriptor.is_object()
+            || serde_json::to_vec(&self.descriptor)
+                .map_err(|_| StackError::bad_request("attachment descriptor encoding failed"))?
+                .len()
+                > ACCEPTED_ATTACHMENT_DESCRIPTOR_BYTES_LIMIT
+        {
+            return Err(StackError::bad_request(
+                "attachment descriptor must be a bounded object",
+            ));
+        }
+        let encoded_limit = ACCEPTED_ATTACHMENT_ORIGINAL_BYTES_LIMIT.div_ceil(3) * 4;
+        if self.original_bytes.is_empty() || self.original_bytes.len() > encoded_limit {
+            return Err(StackError::bad_request("attachment original byte limit"));
+        }
+        let original = STANDARD.decode(&self.original_bytes).map_err(|_| {
+            StackError::bad_request("attachment original bytes require standard padded Base64")
+        })?;
+        if original.is_empty()
+            || original.len() > ACCEPTED_ATTACHMENT_ORIGINAL_BYTES_LIMIT
+            || STANDARD.encode(&original) != self.original_bytes
+        {
+            return Err(StackError::bad_request(
+                "attachment original bytes are oversized or noncanonical Base64",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl SubstrateAppendRequest {
@@ -475,12 +586,26 @@ pub trait SubstrateClient: Send + Sync {
 }
 
 /// Configures the concrete HTTP client.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct TrellisServiceClientConfig {
     pub endpoint: String,
     pub service_bearer_token: Option<String>,
     pub tenant_headers: HeaderConfig,
     pub timeout: Duration,
+}
+
+impl fmt::Debug for TrellisServiceClientConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TrellisServiceClientConfig")
+            .field("endpoint", &self.endpoint)
+            .field(
+                "service_bearer_token",
+                &self.service_bearer_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("tenant_headers", &self.tenant_headers)
+            .field("timeout", &self.timeout)
+            .finish()
+    }
 }
 
 impl TrellisServiceClientConfig {
@@ -508,10 +633,23 @@ impl TrellisServiceClientConfig {
 }
 
 /// Reqwest-backed Trellis service client.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct TrellisServiceClient {
     config: TrellisServiceClientConfig,
     http: reqwest::Client,
+    token_provider: Option<Arc<dyn ClientCredentialsTokenProvider>>,
+}
+
+impl fmt::Debug for TrellisServiceClient {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TrellisServiceClient")
+            .field("config", &self.config)
+            .field(
+                "token_provider",
+                &self.token_provider.as_ref().map(|_| "[configured]"),
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 impl TrellisServiceClient {
@@ -524,65 +662,56 @@ impl TrellisServiceClient {
         validate_endpoint(&config.endpoint)?;
         let http = reqwest::Client::builder()
             .timeout(config.timeout)
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|error| {
                 StackError::internal(format!("failed to construct Trellis HTTP client: {error}"))
             })?;
-        Ok(Self { config, http })
+        Ok(Self {
+            config,
+            http,
+            token_provider: None,
+        })
     }
 
-    fn url(&self, path: &str) -> String {
-        format!(
-            "{}/{}",
-            self.config.endpoint.trim_end_matches('/'),
-            path.trim_start_matches('/')
-        )
-    }
-
-    fn request(
+    /// Sends original attachment bytes through the server's selected protection path.
+    ///
+    /// Reuses bearer, tenant and idempotency headers from the maintained client.
+    /// The descriptor is domain-validated by the server; successful responses must
+    /// identify the requested scope and accepted attachment event literal.
+    ///
+    /// # Errors
+    /// Refuses invalid transport fields, HTTP failures and invalid append receipts.
+    pub async fn append_accepted_attachment(
         &self,
-        method: reqwest::Method,
-        path: &str,
-        tenant_scope: &TenantScope,
-    ) -> reqwest::RequestBuilder {
-        let mut request = self
-            .http
-            .request(method, self.url(path))
-            .header(
-                self.config.tenant_headers.tenant,
-                tenant_scope.tenant.as_str(),
-            )
-            .header(
-                self.config.tenant_headers.workspace,
-                tenant_scope.workspace.as_str(),
-            )
-            .header(
-                self.config.tenant_headers.environment,
-                tenant_scope.environment.as_str(),
-            )
-            .header(self.config.tenant_headers.cell, tenant_scope.cell.as_str());
-        if let Some(token) = &self.config.service_bearer_token {
-            request = request.bearer_auth(token);
-        }
-        request
-    }
-}
-
-#[async_trait]
-impl SubstrateClient for TrellisServiceClient {
-    async fn append_event(
-        &self,
-        request: SubstrateAppendRequest,
+        scope: &str,
+        tenant: &TenantScope,
+        body: &AcceptedAttachmentAppendBody,
     ) -> Result<SubstrateAppendResult, StackError> {
-        request.validate()?;
-        let path = format!("/v1/scopes/{}/events", encode_path_segment(&request.scope));
+        validate_scope(scope)?;
+        body.validate()?;
+        let path = format!(
+            "/v1/scopes/{}/accepted-attachments",
+            encode_path_segment(scope)
+        );
         let response = self
-            .request(reqwest::Method::POST, &path, &request.tenant_scope)
-            .header(IDEMPOTENCY_KEY_HEADER, request.idempotency_key.as_str())
-            .json(&request.body())
+            .request(reqwest::Method::POST, &path, tenant)
+            .await?
+            .header(IDEMPOTENCY_KEY_HEADER, body.idempotency_key.as_str())
+            .json(body)
             .send()
             .await
-            .map_err(|error| StackError::unavailable(format!("trellis append failed: {error}")))?;
+            .map_err(|error| {
+                StackError::unavailable(format!("trellis attachment append failed: {error}"))
+            })?;
+        Self::append_response(response, scope, ACCEPTED_ATTACHMENT_EVENT_TYPE_LITERAL).await
+    }
+
+    async fn append_response(
+        response: reqwest::Response,
+        scope: &str,
+        event_type: &str,
+    ) -> Result<SubstrateAppendResult, StackError> {
         if !response.status().is_success() {
             let status = response.status();
             let body = truncate_utf8_body_for_error_preview(
@@ -599,8 +728,90 @@ impl SubstrateClient for TrellisServiceClient {
             .map_err(|error| {
                 StackError::unavailable(format!("trellis append response is invalid: {error}"))
             })?;
-        result.validate_for_event_append(&request.scope, &request.event_type)?;
+        result.validate_for_event_append(scope, event_type)?;
         Ok(result)
+    }
+
+    /// Selects current workload tokens from a maintained injected provider.
+    ///
+    /// The provider owns issuer, audience, scopes, credentials and renewal. This
+    /// client acquires once per request and never caches or falls back to a token.
+    ///
+    /// # Errors
+    /// Refuses any simultaneous configured static bearer token.
+    pub fn with_token_provider(
+        mut self,
+        provider: Arc<dyn ClientCredentialsTokenProvider>,
+    ) -> Result<Self, StackError> {
+        if self.config.service_bearer_token.is_some() {
+            return Err(StackError::bad_request(
+                "Trellis static bearer and current token provider are mutually exclusive",
+            ));
+        }
+        self.token_provider = Some(provider);
+        Ok(self)
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!(
+            "{}/{}",
+            self.config.endpoint.trim_end_matches('/'),
+            path.trim_start_matches('/')
+        )
+    }
+
+    async fn request(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        tenant_scope: &TenantScope,
+    ) -> Result<reqwest::RequestBuilder, StackError> {
+        let mut request = self
+            .http
+            .request(method, self.url(path))
+            .header(
+                self.config.tenant_headers.tenant,
+                tenant_scope.tenant.as_str(),
+            )
+            .header(
+                self.config.tenant_headers.workspace,
+                tenant_scope.workspace.as_str(),
+            )
+            .header(
+                self.config.tenant_headers.environment,
+                tenant_scope.environment.as_str(),
+            )
+            .header(self.config.tenant_headers.cell, tenant_scope.cell.as_str());
+        if let Some(provider) = &self.token_provider {
+            let token = provider
+                .access_token()
+                .await
+                .map_err(|_| StackError::unavailable("Trellis service token acquisition failed"))?;
+            request = request.bearer_auth(token.expose_secret());
+        } else if let Some(token) = &self.config.service_bearer_token {
+            request = request.bearer_auth(token);
+        }
+        Ok(request)
+    }
+}
+
+#[async_trait]
+impl SubstrateClient for TrellisServiceClient {
+    async fn append_event(
+        &self,
+        request: SubstrateAppendRequest,
+    ) -> Result<SubstrateAppendResult, StackError> {
+        request.validate()?;
+        let path = format!("/v1/scopes/{}/events", encode_path_segment(&request.scope));
+        let response = self
+            .request(reqwest::Method::POST, &path, &request.tenant_scope)
+            .await?
+            .header(IDEMPOTENCY_KEY_HEADER, request.idempotency_key.as_str())
+            .json(&request.body())
+            .send()
+            .await
+            .map_err(|error| StackError::unavailable(format!("trellis append failed: {error}")))?;
+        Self::append_response(response, &request.scope, &request.event_type).await
     }
 
     async fn head_bundle(
@@ -669,6 +880,7 @@ impl SubstrateClient for TrellisServiceClient {
                 ),
                 tenant_scope,
             )
+            .await?
             .send()
             .await
             .map_err(|error| {
@@ -699,6 +911,7 @@ impl TrellisServiceClient {
     ) -> Result<Vec<u8>, StackError> {
         let response = self
             .request(reqwest::Method::GET, path, tenant_scope)
+            .await?
             .send()
             .await
             .map_err(|error| {
@@ -781,6 +994,126 @@ mod tests {
     use wos_events::{ProvenanceKind, ProvenanceRecord};
 
     use super::*;
+
+    mod current_token_tests {
+        include!("current_token_tests.rs");
+    }
+
+    fn attachment_body() -> AcceptedAttachmentAppendBody {
+        AcceptedAttachmentAppendBody {
+            idempotency_key: "attachment-1".into(),
+            actor: AppendActor::service("formspec-server"),
+            descriptor: serde_json::json!({"sourceArtifactRef":"fixture"}),
+            original_bytes: STANDARD.encode(b"original attachment"),
+        }
+    }
+
+    #[tokio::test]
+    async fn attachment_append_posts_closed_body_with_authenticated_headers() {
+        let endpoint = test_server(|request| {
+            assert!(request.starts_with("POST /v1/scopes/case_123/accepted-attachments "));
+            assert!(request.contains("authorization: Bearer attachment-token\r\n"));
+            assert!(request.contains("idempotency-key: attachment-1\r\n"));
+            assert!(request.contains("x-wos-tenant-id: tenant-a\r\n"));
+            let value: serde_json::Value = serde_json::from_str(request_body(&request)).unwrap();
+            assert_eq!(value.as_object().unwrap().len(), 4);
+            assert_eq!(value["actor"]["kind"], "service");
+            assert_eq!(
+                STANDARD
+                    .decode(value["originalBytes"].as_str().unwrap())
+                    .unwrap(),
+                b"original attachment"
+            );
+            response(
+                "application/json",
+                r#"{"eventId":"evt_1","sequence":0,"canonicalEventHash":"sha256:abc","checkpointRef":"trellis://case_123/checkpoints/cp_1","bundleRef":"s3://bucket/bundle.zip","verificationReceipt":{"verified":true,"artifactType":"event","eventType":"substrate.append.accepted_attachment_binding"}}"#,
+            )
+        });
+        let client = TrellisServiceClient::new(
+            TrellisServiceClientConfig::new(endpoint, HeaderConfig::wos())
+                .with_service_bearer_token("attachment-token"),
+        )
+        .unwrap();
+        assert!(
+            client
+                .append_accepted_attachment("case_123", &tenant_scope(), &attachment_body())
+                .await
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn attachment_body_refuses_unknown_fields_and_invalid_transport() {
+        let body = attachment_body();
+        assert!(body.validate().is_ok());
+        let mut wire = serde_json::to_value(&body).unwrap();
+        wire["computeContext"] = serde_json::json!({});
+        assert!(serde_json::from_value::<AcceptedAttachmentAppendBody>(wire).is_err());
+        let mut wire = serde_json::to_value(&body).unwrap();
+        wire["actor"]["extra"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<AcceptedAttachmentAppendBody>(wire).is_err());
+        assert!(serde_json::from_str::<AcceptedAttachmentAppendBody>(r#"{"idempotencyKey":"a","idempotencyKey":"b","actor":{"kind":"service","subject":"s"},"descriptor":{},"originalBytes":"YQ=="}"#).is_err());
+        for invalid in ["", "YQ", "YQ=", "YR==", "YQ==\n", "____"] {
+            let mut changed = body.clone();
+            changed.original_bytes = invalid.into();
+            assert!(changed.validate().is_err(), "accepted {invalid:?}");
+        }
+        let mut changed = body.clone();
+        changed.original_bytes =
+            STANDARD.encode(vec![1; ACCEPTED_ATTACHMENT_ORIGINAL_BYTES_LIMIT + 1]);
+        assert!(changed.validate().is_err());
+        changed = body.clone();
+        changed.actor = AppendActor::user("person");
+        assert!(changed.validate().is_err());
+        changed = body.clone();
+        changed.idempotency_key = "k".repeat(65);
+        assert!(changed.validate().is_err());
+        changed = body.clone();
+        changed.descriptor =
+            serde_json::json!({"large":"x".repeat(ACCEPTED_ATTACHMENT_DESCRIPTOR_BYTES_LIMIT)});
+        assert!(changed.validate().is_err());
+        changed.descriptor = serde_json::json!([]);
+        assert!(changed.validate().is_err());
+    }
+
+    #[test]
+    fn attachment_openapi_schema_declares_closed_body_and_service_actor() {
+        let schema =
+            serde_json::to_value(<AcceptedAttachmentAppendBody as utoipa::PartialSchema>::schema())
+                .unwrap();
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(schema["properties"].as_object().unwrap().len(), 4);
+        assert_eq!(schema["properties"]["descriptor"]["type"], "object");
+        let actor =
+            serde_json::to_value(<ClosedAttachmentActor as utoipa::PartialSchema>::schema())
+                .unwrap();
+        assert_eq!(actor["additionalProperties"], false);
+        assert_eq!(
+            actor["properties"]["kind"]["enum"],
+            serde_json::json!(["service"])
+        );
+    }
+
+    #[tokio::test]
+    async fn attachment_append_refuses_a_receipt_for_another_event_type() {
+        let endpoint = test_server(|_| {
+            response(
+                "application/json",
+                r#"{"eventId":"evt_1","sequence":0,"canonicalEventHash":"sha256:abc","checkpointRef":"trellis://case_123/checkpoints/cp_1","bundleRef":"s3://bucket/bundle.zip","verificationReceipt":{"verified":true,"artifactType":"event","eventType":"wos.kernel.case_created"}}"#,
+            )
+        });
+        let client = TrellisServiceClient::new(TrellisServiceClientConfig::new(
+            endpoint,
+            HeaderConfig::wos(),
+        ))
+        .unwrap();
+        assert!(
+            client
+                .append_accepted_attachment("case_123", &tenant_scope(), &attachment_body())
+                .await
+                .is_err()
+        );
+    }
 
     #[tokio::test]
     async fn append_wos_provenance_posts_shared_wire_shape() {

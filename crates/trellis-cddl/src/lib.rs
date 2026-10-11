@@ -3,6 +3,13 @@
 
 #![forbid(unsafe_code)]
 
+mod external_attachment;
+#[doc(inline)]
+pub use external_attachment::{
+    EXTERNAL_ATTACHMENT_PROFILE, PROFILE_EXTENSION, ParsedExternalAttachment,
+    ParsedExternalAttachmentWrap, parse_external_attachment_profile,
+};
+
 use std::backtrace::Backtrace;
 use std::fmt::{Display, Formatter};
 

@@ -36,10 +36,16 @@
 mod admission;
 mod append;
 mod artifacts;
+mod auth;
 mod composition;
 mod event_repository;
+mod external_attachment;
+mod external_transport;
+pub use external_attachment::{
+    ExternalAttachmentRecipientPolicy, append_prepared_external_attachment,
+};
+pub use external_transport::{ExternalAttachmentRecipient, ExternalAttachmentRecipientSelector};
 mod export_profile;
-mod auth;
 mod http;
 pub mod openapi;
 mod scope_startup;
@@ -51,7 +57,9 @@ pub use composition::{AdmissionRouter, default_admission_policy};
 use artifacts::{BundleIdentity, BundleRecord};
 
 #[doc(inline)]
-pub use event_repository::{EventRepository, InMemoryEventRepository, PostgresEventRepository};
+pub use event_repository::{
+    EventRepository, ExternalAttachmentFactory, InMemoryEventRepository, PostgresEventRepository,
+};
 #[doc(inline)]
 pub use scope_startup::TrellisScopeAuthorizerStartupInputs;
 
@@ -185,6 +193,16 @@ impl ServerSigningKey {
 #[must_use]
 pub(crate) fn export_bundle_cryptographically_verified(zip_bytes: &[u8]) -> bool {
     let report = integrity_verify::trellis::verify_export_zip(zip_bytes);
+    #[cfg(test)]
+    if !report.structure_verified || !report.integrity_verified {
+        eprintln!(
+            "export verification failures: events={:?}; checkpoints={:?}; proofs={:?}; warnings={:?}",
+            report.event_failures,
+            report.checkpoint_failures,
+            report.proof_failures,
+            report.warnings
+        );
+    }
     report.structure_verified && report.integrity_verified
 }
 
@@ -219,6 +237,24 @@ pub(crate) async fn publish_bundle(
         high_water_sequence,
         high_water_event_hash,
     )?;
+    if let Some(record) = state.bundles.get_by_seal(scope, seal_version).await? {
+        if record.seal_version != seal_version || record.export_attempt_id != export_attempt_id {
+            return Err(StackError::conflict(
+                "published bundle prefix identity mismatch",
+            ));
+        }
+        verify_retained_publication(state, scope, events, &record).await?;
+        state
+            .bundles
+            .insert_published_record(scope, &record, update_head)
+            .await?;
+        return Ok(record);
+    }
+    let retained_compute =
+        external_attachment::export_compute(state, scope, events, compute).await?;
+    let mut evidence_members =
+        signature_evidence_members(scope, &events.iter().collect::<Vec<_>>())?;
+    evidence_members.extend(external_attachment::evidence_members(state, scope, events).await?);
     let registry_bytes = event_type_registry_cbor(state.event_type_catalog.as_ref())?;
     let policy_artifacts = composition::default_signature_policy_artifacts();
     let export_profile = export_profile::build_export_profile_members(
@@ -241,7 +277,7 @@ pub(crate) async fn publish_bundle(
         generator: "trellis-server".to_string(),
         generated_at,
         checkpoint_timestamps: timestamps,
-        posture_declaration: append::export_posture_from_compute(compute),
+        posture_declaration: append::export_posture_from_compute(&retained_compute),
         omitted_payload_checks: Vec::new(),
         readme_title: format!("Trellis export for {}", String::from_utf8_lossy(scope)),
         root_dir_override: None,
@@ -258,7 +294,7 @@ pub(crate) async fn publish_bundle(
         signed_acts_catalog: export_profile.signed_acts_catalog,
         signed_acts_manifest: export_profile.signed_acts_manifest,
         policy_closure: export_profile.policy_closure,
-        evidence_members: Vec::new(),
+        evidence_members,
     })?;
     let checkpoint_digest = format!("sha256:{}", hex::encode(package.head_checkpoint_digest));
     let key = format!(
@@ -298,6 +334,188 @@ pub(crate) async fn publish_bundle(
         .insert_published_record(scope, &record, update_head)
         .await?;
     Ok(record)
+}
+
+/// Forwards opaque actual-event evidence through the selected composition seam.
+pub(crate) fn signature_evidence_members(
+    scope: &[u8],
+    events: &[&StoredEvent],
+) -> Result<Vec<trellis_export_writer::ExportEvidenceMember>, StackError> {
+    composition::signature_evidence_members(scope, events)
+}
+
+/// Checks fixed published bytes against their exact repository prefix.
+async fn verify_retained_publication(
+    state: &TrellisServerState,
+    scope: &[u8],
+    events: &[StoredEvent],
+    record: &BundleRecord,
+) -> Result<(), StackError> {
+    let bytes = state
+        .artifact_store
+        .get(&record.artifact_ref)
+        .await?
+        .ok_or_else(|| StackError::unavailable("published bundle artifact unavailable"))?;
+    // This is a processing limit after store allocation, not a streaming-read claim.
+    if bytes.len() > 32 * 1024 * 1024 || !export_bundle_cryptographically_verified(&bytes) {
+        return Err(StackError::conflict(
+            "retained bundle fails integrity or byte limit",
+        ));
+    }
+    let entries = integrity_bundle::read_stored_zip(&bytes)
+        .map_err(|_| StackError::conflict("retained bundle ZIP unreadable"))?;
+    let member = |name: &str| -> Result<&[u8], StackError> {
+        let mut matches = entries
+            .iter()
+            .filter(|entry| entry.path().rsplit('/').next() == Some(name));
+        let entry = matches
+            .next()
+            .ok_or_else(|| StackError::conflict("retained bundle member absent"))?;
+        if matches.next().is_some() {
+            return Err(StackError::conflict("retained bundle member repeated"));
+        }
+        Ok(entry.bytes())
+    };
+    let manifest =
+        integrity_cbor::decode_cbor_value(member(trellis_export_writer::MANIFEST_MEMBER)?)
+            .map_err(|_| StackError::conflict("retained manifest unreadable"))?;
+    let Value::Tag(18, inner) = manifest else {
+        return Err(StackError::conflict("retained manifest COSE tag invalid"));
+    };
+    let fields = inner
+        .as_array()
+        .filter(|fields| fields.len() == 4)
+        .ok_or_else(|| StackError::conflict("retained manifest COSE fields invalid"))?;
+    let payload = fields[2]
+        .as_bytes()
+        .ok_or_else(|| StackError::conflict("retained manifest detached"))?;
+    let manifest = integrity_cbor::decode_cbor_value(payload)
+        .map_err(|_| StackError::conflict("retained manifest payload unreadable"))?;
+    let manifest = manifest
+        .as_map()
+        .ok_or_else(|| StackError::conflict("retained manifest not a map"))?;
+    let get_bytes = |name| {
+        map_lookup_bytes(manifest, name)
+            .map_err(|_| StackError::conflict("retained manifest identity absent"))
+    };
+    if get_bytes("scope")? != scope
+        || integrity_cbor::map_lookup_u64(manifest, "tree_size")
+            .map_err(|_| StackError::conflict("retained manifest tree size absent"))?
+            != record.seal_version
+        || format!(
+            "sha256:{}",
+            hex::encode(get_bytes("head_checkpoint_digest")?)
+        ) != record.checkpoint_digest
+    {
+        return Err(StackError::conflict("retained manifest identity mismatch"));
+    }
+    let event_values =
+        integrity_cbor::decode_cbor_value(member(trellis_export_writer::EVENTS_MEMBER)?)
+            .map_err(|_| StackError::conflict("retained events unreadable"))?;
+    let event_values = event_values
+        .as_array()
+        .ok_or_else(|| StackError::conflict("retained events not array"))?;
+    if event_values.len() != events.len() {
+        return Err(StackError::conflict("retained event count mismatch"));
+    }
+    for (index, (actual, retained)) in events.iter().zip(event_values).enumerate() {
+        if actual.scope() != scope
+            || actual.sequence() != index as u64
+            || encode_canonical_cbor_value(retained)
+                .map_err(|_| StackError::conflict("retained signed event unreadable"))?
+                != actual.signed_event()
+        {
+            return Err(StackError::conflict("retained signed prefix mismatch"));
+        }
+    }
+    // Native members were authored under an explicit profile; reuse requires exact retained bytes.
+    for expected in external_attachment::evidence_members(state, scope, events).await? {
+        match expected {
+            trellis_export_writer::ExportEvidenceMember::Payload {
+                content_hash,
+                bytes,
+            } => {
+                let name = format!("060-payloads/{}.bin", hex::encode(content_hash));
+                let suffix = format!("/{name}");
+                let matches = entries
+                    .iter()
+                    .filter(|entry| entry.path().ends_with(&suffix))
+                    .collect::<Vec<_>>();
+                if matches.len() != 1 || matches[0].bytes() != bytes {
+                    return Err(StackError::conflict(
+                        "retained protected payload differs from repository",
+                    ));
+                }
+            }
+            trellis_export_writer::ExportEvidenceMember::Attachments { bytes, .. } => {
+                if member("061-attachments.cbor")? != bytes {
+                    return Err(StackError::conflict(
+                        "retained attachment catalog differs from signed prefix",
+                    ));
+                }
+            }
+            _ => return Err(StackError::internal("unexpected native evidence member")),
+        }
+    }
+    let compute = external_attachment::export_compute(
+        state,
+        scope,
+        events,
+        &append::default_public_compute_context(),
+    )
+    .await?;
+    if events.iter().any(|event| {
+        matches!(
+            trellis_cddl::parse_external_attachment_profile(event.canonical_event()),
+            Ok(Some(_))
+        )
+    }) {
+        let posture = integrity_cbor::map_lookup_optional_value(manifest, "posture_declaration")
+            .and_then(Value::as_map)
+            .ok_or_else(|| StackError::conflict("retained native custody posture absent"))?;
+        let expected = append::export_posture_from_compute(&compute);
+        for (key, value) in [
+            ("provider_readable", expected.provider_readable),
+            ("reader_held", expected.reader_held),
+            ("delegated_compute", expected.delegated_compute),
+        ] {
+            if integrity_cbor::map_lookup_optional_value(posture, key) != Some(&Value::Bool(value))
+            {
+                return Err(StackError::conflict(
+                    "retained native custody posture differs from retained policy",
+                ));
+            }
+        }
+    }
+    // Preserve the current selected verifier for existing profile members. Do
+    // not invoke the new producer or retroactively demand062 from fixed history.
+    let has_profile = entries.iter().any(|entry| {
+        matches!(
+            entry.path().rsplit('/').next(),
+            Some(
+                trellis_export_writer::SIGNED_ACTS_MEMBER
+                    | trellis_export_writer::SIGNED_ACTS_MANIFEST_MEMBER
+                    | trellis_export_writer::POLICY_CLOSURE_MEMBER
+            )
+        )
+    });
+    let profile_applies = export_profile::build_export_profile_members(
+        scope,
+        events,
+        event_timestamp(
+            events
+                .last()
+                .ok_or_else(|| StackError::conflict("retained prefix absent"))?,
+        )?,
+        &composition::default_signature_policy_artifacts(),
+    )?
+    .requires_profile_validation();
+    if (has_profile || profile_applies) && !(state.profile_export_verifier.as_ref())(&bytes) {
+        return Err(StackError::internal(
+            "retained export bundle failed WOS/Formspec profile verification",
+        ));
+    }
+    Ok(())
 }
 
 fn export_attempt_id(
@@ -479,10 +697,18 @@ fn event_type_registry_cbor(
     catalog: &composition::EventTypeCatalog,
 ) -> Result<Vec<u8>, StackError> {
     const SERVICE_CLASSIFICATION: &str = "x-trellis-service/public-metadata";
+    const ATTACHMENT_CLASSIFICATION: &str = "x-trellis-service/private-attachment";
     let mut event_types = Vec::with_capacity(catalog.len());
     for entry in catalog.entries() {
         let map_entry = text_map(vec![
-            ("privacy_class", Value::Text("publicMetadata".to_string())),
+            (
+                "privacy_class",
+                Value::Text(if entry.event_type == trellis_admission_formspec::accepted_attachment::ACCEPTED_ATTACHMENT_EVENT {
+                    "privateAttachment"
+                } else {
+                    "publicMetadata"
+                }.to_string()),
+            ),
             (
                 "binding_family",
                 Value::Text(entry.event_family.as_str().to_string()),
@@ -494,7 +720,10 @@ fn event_type_registry_cbor(
         ("event_types", Value::Map(event_types)),
         (
             "classifications",
-            Value::Array(vec![Value::Text(SERVICE_CLASSIFICATION.to_string())]),
+            Value::Array(vec![
+                Value::Text(SERVICE_CLASSIFICATION.to_string()),
+                Value::Text(ATTACHMENT_CLASSIFICATION.to_string()),
+            ]),
         ),
         (
             "registry_version",
@@ -589,6 +818,12 @@ fn hex_digit(value: u8) -> char {
 
 #[cfg(test)]
 mod tests {
+    mod external_attachment_tests {
+        include!("external_attachment_tests.rs");
+    }
+    mod external_transport_tests {
+        include!("external_transport_tests.rs");
+    }
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
     use integrity_seam::OsSecureRandom;
@@ -1476,7 +1711,10 @@ mod tests {
             .list_scope(b"case_publish_conflict")
             .await
             .expect("load scope events");
-        let conflict_state = state.with_artifact_store(Arc::new(ConflictOnImmutableArtifactStore));
+        // Exercise a new publication's immutable put, rather than retained ZIP reuse.
+        let conflict_state = state
+            .with_bundle_index(Arc::new(crate::artifacts::BundleIndex::default()))
+            .with_artifact_store(Arc::new(ConflictOnImmutableArtifactStore));
 
         let error = publish_bundle(
             &conflict_state,
@@ -1589,9 +1827,25 @@ mod tests {
             .await
             .expect("append response");
         assert_eq!(response.status(), StatusCode::CREATED);
-        let conflict_app =
-            router(state.with_artifact_store(Arc::new(ConflictOnImmutableArtifactStore)))
-                .expect("router");
+        // A published seal must reuse its retained ZIP and refuse a missing artifact.
+        let missing_app = router(
+            state
+                .clone()
+                .with_artifact_store(Arc::new(ConflictOnImmutableArtifactStore)),
+        )
+        .expect("router");
+        let missing = missing_app
+            .oneshot(get_request("/v1/scopes/case_head_conflict/bundles/head"))
+            .await
+            .expect("missing retained bundle response");
+        assert_eq!(missing.status(), StatusCode::SERVICE_UNAVAILABLE);
+        // With no published seal, head export reaches the immutable-put conflict.
+        let conflict_app = router(
+            state
+                .with_bundle_index(Arc::new(crate::artifacts::BundleIndex::default()))
+                .with_artifact_store(Arc::new(ConflictOnImmutableArtifactStore)),
+        )
+        .expect("router");
 
         let response = conflict_app
             .oneshot(get_request("/v1/scopes/case_head_conflict/bundles/head"))
@@ -2810,4 +3064,509 @@ mod tests {
         include!("auth_boundary_tests.rs");
     }
 
+    // IF034 qualification fixtures exercise the real maintained HTTP append and ZIP path.
+    async fn if034_062_head_bytes(app: &axum::Router, scope: &str) -> Vec<u8> {
+        let response = app
+            .clone()
+            .oneshot(get_request(&format!("/v1/scopes/{scope}/bundles/head")))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        to_bytes(response.into_body(), 10 * 1024 * 1024)
+            .await
+            .unwrap()
+            .to_vec()
+    }
+
+    #[tokio::test]
+    async fn if034_062_actual_append_exports_catalog_originals_and_continuation() {
+        let state = test_state();
+        let app = router(state.clone()).unwrap();
+        let scope = "case_if034_062_actual";
+        let mut originals = Vec::new();
+        for (key, act) in [
+            ("if034-062-first", "retained-act-first"),
+            ("if034-062-second", "retained-act-second"),
+        ] {
+            let mut body: serde_json::Value =
+                serde_json::from_slice(&signature_affirmation_append_body(key)).unwrap();
+            body["payload"]["data"]["signingActId"] = serde_json::json!(act);
+            body["payload"]["data"]["identityBinding"] =
+                serde_json::json!({"nested":[{"identity":"original"},null,true]});
+            body["payload"]["data"]["consentReference"] =
+                serde_json::json!({"exactText":"original consent", "nested":[1,2]});
+            body["payload"]["data"]["profileRef"] = serde_json::Value::Null;
+            body["payload"]["data"]
+                .as_object_mut()
+                .unwrap()
+                .remove("profileKey");
+            originals.push(integrity_cbor::json_to_dcbor_bytes(&body["payload"], &[]).unwrap());
+            let response = app
+                .clone()
+                .oneshot(post_request(
+                    &format!("/v1/scopes/{scope}/events"),
+                    serde_json::to_vec(&body).unwrap(),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::CREATED);
+            let zip = if034_062_head_bytes(&app, scope).await;
+            let entries = integrity_bundle::read_stored_zip(&zip).unwrap();
+            let catalog = entries
+                .iter()
+                .find(|entry| entry.path().ends_with("062-signature-affirmations.cbor"))
+                .expect("actual affirmation exports must include062");
+            let decoded = integrity_cbor::decode_cbor_value(catalog.bytes()).unwrap();
+            let rows = decoded.as_array().unwrap();
+            assert_eq!(rows.len(), originals.len());
+            let events = state.repository.list_scope(scope.as_bytes()).await.unwrap();
+            for (index, (row, original)) in rows.iter().zip(&originals).enumerate() {
+                let row = row.as_map().unwrap();
+                assert_eq!(
+                    integrity_cbor::map_lookup_bytes(row, "canonical_event_hash").unwrap(),
+                    events[index].canonical_event_hash().unwrap().to_vec()
+                );
+                let value = integrity_cbor::decode_cbor_value(original).unwrap();
+                let data = integrity_cbor::map_lookup_map(value.as_map().unwrap(), "data").unwrap();
+                for (source, output) in [
+                    ("identityBinding", "identity_binding"),
+                    ("consentReference", "consent_reference"),
+                    ("profileRef", "profile_ref"),
+                ] {
+                    assert_eq!(
+                        integrity_cbor::map_lookup_value(row, output).unwrap(),
+                        integrity_cbor::map_lookup_value(data, source).unwrap()
+                    );
+                }
+                assert!(integrity_cbor::map_lookup_optional_value(row, "profile_key").is_none());
+                let hash = integrity_cbor::domain_separated_sha256(
+                    trellis_types::CONTENT_DOMAIN,
+                    original,
+                );
+                let path = format!("060-payloads/{}.bin", hex::encode(hash));
+                assert_eq!(
+                    entries
+                        .iter()
+                        .find(|entry| entry.path().ends_with(&path))
+                        .expect("exact060 original")
+                        .bytes(),
+                    original.as_slice()
+                );
+            }
+            for member in [
+                "066-signed-acts.cbor",
+                "068-signed-acts-manifest.cbor",
+                "067-policy-closure.cbor",
+            ] {
+                assert!(
+                    entries.iter().any(|entry| entry.path().ends_with(member)),
+                    "prior profile member must survive"
+                );
+            }
+            let report = trellis_verify_wos::verify_export_zip(&zip);
+            assert!(
+                report.substrate().structure_verified
+                    && report.substrate().integrity_verified
+                    && report.relying_party_valid(),
+                "{report:#?}"
+            );
+        }
+        let before = if034_062_head_bytes(&app, scope).await;
+        let before_entries = integrity_bundle::read_stored_zip(&before).unwrap();
+        let prior_catalog = before_entries
+            .iter()
+            .find(|entry| entry.path().ends_with("062-signature-affirmations.cbor"))
+            .unwrap()
+            .bytes()
+            .to_vec();
+        let prior_events = state.repository.list_scope(scope.as_bytes()).await.unwrap();
+        let ordinary = app
+            .clone()
+            .oneshot(post_request(
+                &format!("/v1/scopes/{scope}/events"),
+                append_body("if034-062-later-ordinary"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(ordinary.status(), StatusCode::CREATED);
+        let zip = if034_062_head_bytes(&app, scope).await;
+        let entries = integrity_bundle::read_stored_zip(&zip).unwrap();
+        let catalog = entries
+            .iter()
+            .find(|entry| entry.path().ends_with("062-signature-affirmations.cbor"))
+            .unwrap()
+            .bytes();
+        assert_eq!(
+            catalog,
+            prior_catalog.as_slice(),
+            "ordinary continuation must preserve the exact prior062 rows"
+        );
+        let decoded = integrity_cbor::decode_cbor_value(catalog).unwrap();
+        let rows = decoded.as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        let current = state.repository.list_scope(scope.as_bytes()).await.unwrap();
+        assert_eq!(current.len(), 3);
+        assert_ne!(
+            event_summary(&current[2]).unwrap().event_type,
+            composition::wos_signature_affirmation_event_type()
+        );
+        for ((row, event), original) in rows.iter().zip(&prior_events).zip(&originals) {
+            assert_eq!(
+                integrity_cbor::map_lookup_bytes(row.as_map().unwrap(), "canonical_event_hash")
+                    .unwrap(),
+                event.canonical_event_hash().unwrap().to_vec()
+            );
+            let hash =
+                integrity_cbor::domain_separated_sha256(trellis_types::CONTENT_DOMAIN, original);
+            let path = format!("060-payloads/{}.bin", hex::encode(hash));
+            assert_eq!(
+                entries
+                    .iter()
+                    .find(|entry| entry.path().ends_with(&path))
+                    .unwrap()
+                    .bytes(),
+                original.as_slice(),
+                "ordinary continuation must preserve exact admitted original060 bytes"
+            );
+        }
+        let report = trellis_verify_wos::verify_export_zip(&zip);
+        assert!(
+            report.substrate().structure_verified
+                && report.substrate().integrity_verified
+                && report.relying_party_valid(),
+            "{report:#?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn if034_062_missing_act_refuses_before_native_repository_commit() {
+        let state = test_state();
+        let app = router(state.clone()).unwrap();
+        let scope = "case_if034_062_missing_act";
+        let mut body: serde_json::Value =
+            serde_json::from_slice(&signature_affirmation_append_body("if034-062-missing-act"))
+                .unwrap();
+        body["payload"]["data"]
+            .as_object_mut()
+            .unwrap()
+            .remove("signingActId");
+        let response = app
+            .oneshot(post_request(
+                &format!("/v1/scopes/{scope}/events"),
+                serde_json::to_vec(&body).unwrap(),
+            ))
+            .await
+            .unwrap();
+        assert_ne!(response.status(), StatusCode::CREATED);
+        assert!(
+            state
+                .repository
+                .list_scope(scope.as_bytes())
+                .await
+                .unwrap()
+                .is_empty(),
+            "unrepresentable062 must refuse before committing actual event"
+        );
+    }
+
+    #[tokio::test]
+    async fn if034_062_aggregate_refuses_before_native_repository_commit() {
+        let state = test_state();
+        let app = router(state.clone()).unwrap();
+        let scope = "case_if034_062_large";
+        let mut body: serde_json::Value =
+            serde_json::from_slice(&signature_affirmation_append_body("if034-062-large")).unwrap();
+        body["payload"]["data"]["identityBinding"] =
+            serde_json::json!({"retainedIdentity":"x".repeat(350 * 1024)});
+        let original = integrity_cbor::json_to_dcbor_bytes(&body["payload"], &[]).unwrap();
+        assert!(
+            2 * original.len() + 4096 < 1024 * 1024,
+            "event metadata plus060 must independently fit"
+        );
+        assert!(
+            3 * original.len() > 1024 * 1024,
+            "adding copied062 identity must cross aggregate bound"
+        );
+        let response = app
+            .oneshot(post_request(
+                &format!("/v1/scopes/{scope}/events"),
+                serde_json::to_vec(&body).unwrap(),
+            ))
+            .await
+            .unwrap();
+        assert_ne!(response.status(), StatusCode::CREATED);
+        assert!(
+            state
+                .repository
+                .list_scope(scope.as_bytes())
+                .await
+                .unwrap()
+                .is_empty(),
+            "oversized062 aggregate must refuse before committing actual event"
+        );
+    }
+    // Retains a controlled predecessor archive using the unchanged maintained writer
+    // input and actual router-authored signed events. No event or future hash is invented.
+    fn if034_062_legacy_package(
+        state: &TrellisServerState,
+        scope: &[u8],
+        events: &[StoredEvent],
+    ) -> Result<(trellis_export_writer::ExportPackage, String, u64), StackError> {
+        let compute = append::default_public_compute_context();
+        let timestamps = events
+            .iter()
+            .map(event_timestamp)
+            .collect::<Result<Vec<_>, _>>()?;
+        let generated_at = timestamps
+            .last()
+            .copied()
+            .ok_or_else(|| StackError::internal("empty timestamp set"))?;
+        let seal_version = u64::try_from(events.len())
+            .map_err(|_| StackError::internal("event count exceeds u64"))?;
+        let high_water_event = events
+            .last()
+            .ok_or_else(|| StackError::internal("empty event set"))?;
+        let high_water_sequence = high_water_event.sequence();
+        let high_water_event_hash = event_hash(scope, high_water_event)?;
+        let export_attempt_id = export_attempt_id(
+            scope,
+            seal_version,
+            high_water_sequence,
+            high_water_event_hash,
+        )?;
+        let registry_bytes = event_type_registry_cbor(state.event_type_catalog.as_ref())?;
+        let policy_artifacts = composition::default_signature_policy_artifacts();
+        let export_profile = export_profile::build_export_profile_members(
+            scope,
+            events,
+            generated_at,
+            &policy_artifacts,
+        )?;
+        let package = write_export(ExportWriterInput {
+            scope: scope.to_vec(),
+            events: events.to_vec(),
+            registries: vec![ExportRegistrySnapshot {
+                bytes: registry_bytes,
+                registry_format: 1,
+                registry_version: EVENT_TYPE_REGISTRY_VERSION.to_string(),
+                bound_at_sequence: 0,
+            }],
+            signing_key: state.signing_key.export_key(),
+            generator: "trellis-server".to_string(),
+            generated_at,
+            checkpoint_timestamps: timestamps,
+            posture_declaration: append::export_posture_from_compute(&compute),
+            omitted_payload_checks: Vec::new(),
+            readme_title: format!("Trellis export for {}", String::from_utf8_lossy(scope)),
+            root_dir_override: None,
+            external_anchors: Vec::new(),
+            extensions: None,
+            seal_fence: Some(ExportSealFence {
+                bundle_scope: scope.to_vec(),
+                export_attempt_id: export_attempt_id.clone(),
+                seal_version,
+                event_count: seal_version,
+                high_water_sequence,
+            }),
+            witness_key_registry: None,
+            signed_acts_catalog: export_profile.signed_acts_catalog,
+            signed_acts_manifest: export_profile.signed_acts_manifest,
+            policy_closure: export_profile.policy_closure,
+            evidence_members: Vec::new(),
+        })?;
+
+        Ok((package, export_attempt_id, seal_version))
+    }
+
+    #[tokio::test]
+    async fn if034_062_historical_published_bytes_survive_head_and_exact_retry() {
+        let scope = "case_if034_062_historical";
+        let body = signature_affirmation_append_body("if034-062-historical");
+        let source = test_state();
+        let source_app = router(source.clone()).unwrap();
+        let response = source_app
+            .oneshot(post_request(
+                &format!("/v1/scopes/{scope}/events"),
+                body.clone(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let events = source
+            .repository
+            .list_scope(scope.as_bytes())
+            .await
+            .unwrap();
+        let frozen = test_state();
+        for event in &events {
+            frozen.repository.append_event(event.clone()).await.unwrap();
+        }
+        let (legacy, attempt, seal) =
+            if034_062_legacy_package(&frozen, scope.as_bytes(), &events).unwrap();
+        assert!(export_bundle_cryptographically_verified(&legacy.zip_bytes));
+        assert!(
+            !legacy
+                .entries
+                .iter()
+                .any(|entry| entry.path().ends_with("062-signature-affirmations.cbor"))
+        );
+        let key = format!(
+            "{}/bundles/{}.zip",
+            encode_path_segment(scope),
+            attempt.trim_start_matches("sha256:")
+        );
+        let artifact = frozen
+            .artifact_store
+            .put_immutable(&key, &legacy.zip_bytes)
+            .await
+            .unwrap();
+        let record = BundleRecord {
+            checkpoint_digest: format!("sha256:{}", hex::encode(legacy.head_checkpoint_digest)),
+            seal_version: seal,
+            export_attempt_id: attempt,
+            artifact_ref: artifact,
+        };
+        frozen
+            .bundles
+            .insert_published_record(scope.as_bytes(), &record, true)
+            .await
+            .unwrap();
+        let app = router(frozen.clone()).unwrap();
+        assert_eq!(
+            if034_062_head_bytes(&app, scope).await,
+            legacy.zip_bytes,
+            "historical bytes must not be enriched at the same attempt"
+        );
+        let replay = app
+            .clone()
+            .oneshot(post_request(&format!("/v1/scopes/{scope}/events"), body))
+            .await
+            .unwrap();
+        assert_eq!(replay.status(), StatusCode::CREATED);
+        assert_eq!(if034_062_head_bytes(&app, scope).await, legacy.zip_bytes);
+        let missing = frozen.clone().with_artifact_store(std::sync::Arc::new(
+            crate::artifacts::InMemoryArtifactStore::default(),
+        ));
+        let missing_response = router(missing)
+            .unwrap()
+            .oneshot(get_request(&format!("/v1/scopes/{scope}/bundles/head")))
+            .await
+            .unwrap();
+        assert_ne!(
+            missing_response.status(),
+            StatusCode::OK,
+            "a published missing artifact must not be rebuilt"
+        );
+        let corrupted_store =
+            std::sync::Arc::new(crate::artifacts::InMemoryArtifactStore::default());
+        trellis_server_ports::ArtifactStore::put_immutable(
+            corrupted_store.as_ref(),
+            &key,
+            b"controlled-corrupt-archive",
+        )
+        .await
+        .unwrap();
+        let corrupted = frozen.clone().with_artifact_store(corrupted_store);
+        assert_ne!(
+            router(corrupted)
+                .unwrap()
+                .oneshot(get_request(&format!("/v1/scopes/{scope}/bundles/head")))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK,
+            "corrupt published bytes must not be rebuilt"
+        );
+        let foreign_scope = "case_if034_062_foreign_archive";
+        assert_eq!(
+            router(source.clone())
+                .unwrap()
+                .oneshot(post_request(
+                    &format!("/v1/scopes/{foreign_scope}/events"),
+                    signature_affirmation_append_body("if034-062-foreign")
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::CREATED
+        );
+        let foreign_events = source
+            .repository
+            .list_scope(foreign_scope.as_bytes())
+            .await
+            .unwrap();
+        let (foreign_package, _, _) =
+            if034_062_legacy_package(&source, foreign_scope.as_bytes(), &foreign_events).unwrap();
+        assert!(export_bundle_cryptographically_verified(
+            &foreign_package.zip_bytes
+        ));
+        let foreign_store = std::sync::Arc::new(crate::artifacts::InMemoryArtifactStore::default());
+        trellis_server_ports::ArtifactStore::put_immutable(
+            foreign_store.as_ref(),
+            &key,
+            &foreign_package.zip_bytes,
+        )
+        .await
+        .unwrap();
+        let foreign = frozen.clone().with_artifact_store(foreign_store);
+        assert_ne!(
+            router(foreign)
+                .unwrap()
+                .oneshot(get_request(&format!("/v1/scopes/{scope}/bundles/head")))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK,
+            "another valid signed ZIP cannot replace the exact published prefix"
+        );
+        let mut rejecting = frozen.clone();
+        rejecting.profile_export_verifier = std::sync::Arc::new(|_| false);
+        let refusal = router(rejecting)
+            .unwrap()
+            .oneshot(get_request(&format!("/v1/scopes/{scope}/bundles/head")))
+            .await
+            .unwrap();
+        assert_ne!(
+            refusal.status(),
+            StatusCode::OK,
+            "historic reuse must enforce the current selected profile verifier"
+        );
+        assert_eq!(
+            frozen
+                .artifact_store
+                .get(&record.artifact_ref)
+                .await
+                .unwrap()
+                .unwrap(),
+            legacy.zip_bytes,
+            "verifier refusal cannot enrich retained history"
+        );
+        let new = app
+            .clone()
+            .oneshot(post_request(
+                &format!("/v1/scopes/{scope}/events"),
+                signature_affirmation_append_body("if034-062-new-prefix"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(new.status(), StatusCode::CREATED);
+        let bytes = if034_062_head_bytes(&app, scope).await;
+        assert!(
+            integrity_bundle::read_stored_zip(&bytes)
+                .unwrap()
+                .iter()
+                .any(|entry| entry.path().ends_with("062-signature-affirmations.cbor")),
+            "only a genuinely new prefix gains062"
+        );
+        assert_eq!(
+            frozen
+                .artifact_store
+                .get(&record.artifact_ref)
+                .await
+                .unwrap()
+                .unwrap(),
+            legacy.zip_bytes,
+            "prior immutable archive remains intact"
+        );
+    }
 }

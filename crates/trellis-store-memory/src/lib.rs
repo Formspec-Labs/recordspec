@@ -433,3 +433,6 @@ mod tests {
         assert_eq!(store.events().len(), 2);
     }
 }
+
+/// Atomic in-memory native external attachment retention.
+pub mod external_attachment;

@@ -10,3 +10,7 @@ serde_json = "1.0"
 trellis-types = { path = "../trellis-types" }
 integrity-verify = { path = "../../../integrity-stack/crates/integrity-verify" }
 wos-events = { path = "../../../work-spec/crates/wos-events" }
+trellis-cddl = { path = "../trellis-cddl" }
+
+[dev-dependencies]
+integrity-cbor = { path = "../../../integrity-stack/crates/integrity-cbor" }

@@ -3,8 +3,8 @@ mod support;
 use support::TestCluster;
 use trellis_store_postgres_async::{
     BundlePublicationError, BundlePublicationIdentity, BundlePublicationRecord,
-    get_bundle_publication_by_digest, publish_bundle_publication, reserve_bundle_publication,
-    run_migrations,
+    get_bundle_publication_by_digest, get_bundle_publication_by_seal, publish_bundle_publication,
+    reserve_bundle_publication, run_migrations,
 };
 
 #[tokio::test]
@@ -98,4 +98,53 @@ fn bundle_identity(
         seal_version,
         export_attempt_id: export_attempt_id.to_string(),
     }
+}
+
+#[tokio::test]
+async fn if034_062_published_seal_lookup_hides_reservations_and_pins_exact_scope() {
+    // Uses the maintained attempt-private TLS TestCluster, never a selected service DB.
+    let cluster = TestCluster::start_without_migrations();
+    let pool = cluster.tls_pool(4).await;
+    run_migrations(&pool).await.unwrap();
+    let identity = bundle_identity(
+        "if034-062-seal",
+        7,
+        "sha256:controlled-checkpoint",
+        "sha256:controlled-attempt",
+    );
+    reserve_bundle_publication(&pool, &identity).await.unwrap();
+    assert!(
+        get_bundle_publication_by_seal(&pool, b"if034-062-seal", 7)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let record = BundlePublicationRecord {
+        identity,
+        artifact_ref: "memory://controlled-fixed-archive".into(),
+    };
+    publish_bundle_publication(&pool, &record).await.unwrap();
+    assert_eq!(
+        get_bundle_publication_by_seal(&pool, b"if034-062-seal", 7)
+            .await
+            .unwrap(),
+        Some(record.clone())
+    );
+    assert!(
+        get_bundle_publication_by_seal(&pool, b"foreign", 7)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        get_bundle_publication_by_seal(&pool, b"if034-062-seal", 8)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(matches!(
+        get_bundle_publication_by_seal(&pool, b"if034-062-seal", u64::MAX).await,
+        Err(BundlePublicationError::DomainViolation(_))
+    ));
+    pool.close().await;
 }

@@ -24,6 +24,8 @@ use trellis_server_ports::{
 };
 use trellis_types::ArtifactType;
 
+pub mod accepted_attachment;
+
 /// Logical event family for Formspec aggregate append events.
 pub const FORMSPEC_EVENT_FAMILY: &str = "formspec.response";
 

@@ -1,0 +1,28 @@
+{
+  "png": {
+    "accepted-source-input.json": {
+      "sha256": "8dd63213c1170d457cf39d1ed4bb8192d9faa1d2bbb3d0ab000d437cc033a8d1",
+      "bytes": 138467,
+      "source": "/Users/mikewolfd/Work/formspec-stack/thoughts/plans/benefits-scenarios/execution/reports/formspec-server/accepted-attachment-producer-v1/actual-source-inputs/png/accepted-source-input.json"
+    },
+    "original.bin": {
+      "sha256": "1c5ce851caad0d2f81ca59ff120c6486ba3f93014be26ebf4096049ce035fc47",
+      "bytes": 70,
+      "source": "/Users/mikewolfd/Work/formspec-stack/thoughts/plans/benefits-scenarios/execution/reports/formspec-server/accepted-attachment-producer-v1/actual-source-inputs/png/original.bin"
+    },
+    "descriptorSha256": "48ab9507d8a0784acb3b269f4a042be73dc09053da5cb7d7727fd89eae75f327"
+  },
+  "jpeg": {
+    "accepted-source-input.json": {
+      "sha256": "1d6e87e151a5485805bfb120ec607064734a8a79af009611eac4192ae693b71e",
+      "bytes": 138486,
+      "source": "/Users/mikewolfd/Work/formspec-stack/thoughts/plans/benefits-scenarios/execution/reports/formspec-server/accepted-attachment-producer-v1/actual-source-inputs/jpeg/accepted-source-input.json"
+    },
+    "original.bin": {
+      "sha256": "7d461aefec5b5952e3974aff2f5675645f021d6cd7df81f56aedde7b55b7f194",
+      "bytes": 634,
+      "source": "/Users/mikewolfd/Work/formspec-stack/thoughts/plans/benefits-scenarios/execution/reports/formspec-server/accepted-attachment-producer-v1/actual-source-inputs/jpeg/original.bin"
+    },
+    "descriptorSha256": "d04d183bfe09e892ac1009e5a790edfe5dbcb88c534811bab0fc2c19c01e21c3"
+  }
+}

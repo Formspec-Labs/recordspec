@@ -16,7 +16,7 @@ async fn migrations_apply_idempotently() {
             .fetch_all(&pool)
             .await
             .unwrap();
-    assert_eq!(versions, vec![1, 2, 3, 4]);
+    assert_eq!(versions, vec![1, 2, 3, 4, 5]);
 }
 
 #[tokio::test]
@@ -35,7 +35,7 @@ async fn forward_rollback_detected_when_schema_has_unknown_version() {
         error,
         MigrationError::SchemaAhead {
             applied_version: 99,
-            declared_max: 4
+            declared_max: 5
         }
     ));
 }
@@ -54,5 +54,5 @@ async fn concurrent_migration_runners_serialize_via_advisory_lock() {
         .fetch_one(&pool_a)
         .await
         .unwrap();
-    assert_eq!(count, 4);
+    assert_eq!(count, 5);
 }

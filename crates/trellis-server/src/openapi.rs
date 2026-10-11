@@ -24,6 +24,7 @@ use utoipa::{OpenApi, ToSchema};
     ),
     paths(
         crate::http::append_event,
+        crate::external_transport::append,
         crate::http::head_bundle,
         crate::http::pinned_bundle,
         crate::http::signing_key_registry,
@@ -32,6 +33,9 @@ use utoipa::{OpenApi, ToSchema};
     ),
     components(schemas(
         AppendActor,
+        crate::external_transport::WireRequest,
+        crate::external_transport::WireActor,
+        trellis_admission_formspec::accepted_attachment::AcceptedAttachmentDescriptor,
         ClientAttestation,
         ComputeContext,
         ComputeSensitivity,

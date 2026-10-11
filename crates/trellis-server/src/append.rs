@@ -214,6 +214,11 @@ impl<'a> AppendCoordinator<'a> {
     ) -> Result<AppendOutcome, StackError> {
         let compute = unit.compute_context().clone();
         let stored = unit.event().clone();
+        let prefix = events
+            .iter()
+            .chain(std::iter::once(&stored))
+            .collect::<Vec<_>>();
+        crate::signature_evidence_members(scope.as_bytes(), &prefix)?;
         self.state.repository.append_event(stored.clone()).await?;
         let prior_event_hash = prior_event_hash_for(scope, events, &stored)?;
         events.push(stored.clone());

@@ -93,6 +93,13 @@ pub(crate) trait BundleIndexPort: Send + Sync {
         identity: &BundleIdentity,
     ) -> Result<(), StackError>;
 
+    /// Returns only an already published record for the exact scope/seal.
+    async fn get_by_seal(
+        &self,
+        scope: &[u8],
+        seal: u64,
+    ) -> Result<Option<BundleRecord>, StackError>;
+
     async fn get_by_digest(
         &self,
         scope: &[u8],
@@ -123,6 +130,20 @@ impl BundleIndexPort for BundleIndex {
     ) -> Result<(), StackError> {
         let records = self.records.lock().await;
         records.ensure_publishable(scope, identity)
+    }
+
+    async fn get_by_seal(
+        &self,
+        scope: &[u8],
+        seal: u64,
+    ) -> Result<Option<BundleRecord>, StackError> {
+        Ok(self
+            .records
+            .lock()
+            .await
+            .by_seal
+            .get(&(scope.to_vec(), seal))
+            .cloned())
     }
 
     async fn get_by_digest(
@@ -366,5 +387,32 @@ mod tests {
 
         first.await.expect("first task");
         second.await.expect("second task");
+    }
+    #[tokio::test]
+    async fn if034_062_memory_published_seal_lookup_uses_exact_scope_and_seal() {
+        let index = BundleIndex::default();
+        let identity = BundleIdentity {
+            checkpoint_digest: "sha256:controlled".into(),
+            seal_version: 7,
+            export_attempt_id: "sha256:controlled-attempt".into(),
+        };
+        index
+            .reserve_publishable(b"scope", &identity)
+            .await
+            .unwrap();
+        assert!(index.get_by_seal(b"scope", 7).await.unwrap().is_none());
+        let record = BundleRecord {
+            checkpoint_digest: identity.checkpoint_digest,
+            seal_version: 7,
+            export_attempt_id: identity.export_attempt_id,
+            artifact_ref: ArtifactRef::new("memory://controlled"),
+        };
+        index
+            .insert_published_record(b"scope", &record, true)
+            .await
+            .unwrap();
+        assert_eq!(index.get_by_seal(b"scope", 7).await.unwrap(), Some(record));
+        assert!(index.get_by_seal(b"foreign", 7).await.unwrap().is_none());
+        assert!(index.get_by_seal(b"scope", 8).await.unwrap().is_none());
     }
 }

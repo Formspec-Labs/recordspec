@@ -76,6 +76,26 @@ CREATE TABLE trellis_bundle_publications (
 );
 ",
     },
+    Migration {
+        version: 5,
+        name: "external_attachment_retention",
+        up_sql: "\
+CREATE TABLE trellis_external_attachments (
+    scope BYTEA NOT NULL,
+    sequence BIGINT NOT NULL,
+    idempotency_key BYTEA NOT NULL,
+    content_hash BYTEA NOT NULL CHECK (octet_length(content_hash) = 32),
+    ciphertext BYTEA NOT NULL,
+    nonce BYTEA NOT NULL CHECK (octet_length(nonce) = 12),
+    replay_identity BYTEA NOT NULL CHECK (octet_length(replay_identity) = 32),
+    compute_json TEXT NOT NULL,
+    PRIMARY KEY (scope, sequence),
+    UNIQUE (scope, idempotency_key),
+    CHECK (octet_length(idempotency_key) BETWEEN 1 AND 64),
+    FOREIGN KEY (scope, sequence) REFERENCES trellis_events(scope, sequence)
+);
+",
+    },
 ];
 
 /// Error returned by async migration setup.
