@@ -1,0 +1,90 @@
+{
+  "status": "actual Root-selected local operator prepared; inactive",
+  "authority": "urn:formspec:demo:d1:completion-authority:local",
+  "authorityClass": "new",
+  "publicKey": [
+    105,
+    139,
+    238,
+    60,
+    10,
+    240,
+    152,
+    157,
+    195,
+    232,
+    203,
+    175,
+    86,
+    171,
+    160,
+    3,
+    149,
+    116,
+    176,
+    38,
+    57,
+    107,
+    148,
+    28,
+    170,
+    219,
+    124,
+    139,
+    10,
+    195,
+    77,
+    121
+  ],
+  "validFrom": [
+    1791696184,
+    13346000
+  ],
+  "validUntil": [
+    1794288184,
+    13346000
+  ],
+  "trust": "fictional local demo; no official agency trust",
+  "ledgerKeyReused": false,
+  "files": [
+    {
+      "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-completion-operator-20261011-v1/completion-operator.cose",
+      "sha256": "589a23ae11d494a3db9221d25b4cbc5e8a9061021e9e16e5f16c0caf355f1c78",
+      "mode": "0600"
+    },
+    {
+      "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-completion-operator-20261011-v1/completion-operators.pending.json",
+      "sha256": "9a23c6dc999e2d30c44f4384dedd961ec4a22974656213c74781ff6970316eb3",
+      "mode": "0600"
+    },
+    {
+      "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-completion-operator-20261011-v1/completion-authorities.public.json",
+      "sha256": "39fdb9db4643481e1e2142f45d78a523b3ef384ea133ca66fd1232498eeb3559",
+      "mode": "0600"
+    },
+    {
+      "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-completion-operator-20261011-v1/preparation-receipt.json",
+      "sha256": "7d9703f1513312041bace1e5513567bff058bfded149c4154d6622279b8119dc",
+      "mode": "0600"
+    },
+    {
+      "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-completion-operator-20261011-v1/normal-startup-key-admission-v1.json",
+      "sha256": "cb692a129de294f62821d5807db8145302a4a79b1c135c131896a24cbca81eb9",
+      "mode": "0600"
+    },
+    {
+      "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-completion-operator-20261011-v1/TRUST.txt",
+      "sha256": "1abb744dbcb7a273f17dbd13f2962d6c62a75d8e33965c36530e2035ce814a34",
+      "mode": "0600"
+    }
+  ],
+  "normalStartupKeyPairAdmission": "PASS exact key; mismatched public key refused before ledger setup",
+  "tokenRequested": false,
+  "runtimeCompletionPairSelected": false,
+  "grantsActivated": false,
+  "pending": [
+    "WOS actual full case completion route",
+    "current machine and human full archive and all six field permissions",
+    "actual scoped whole-case archive-to-prefix qualification"
+  ]
+}

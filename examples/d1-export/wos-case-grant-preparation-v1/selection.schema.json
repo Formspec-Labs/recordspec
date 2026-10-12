@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Future exact WOS case authority selection; not a grant file",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "startResponse",
+    "expectedDraftRef",
+    "actors",
+    "payloadActors",
+    "qualifiedCallerInputs"
+  ],
+  "properties": {
+    "startResponse": {
+      "$ref": "#/$defs/evidence"
+    },
+    "startStatus": {
+      "$ref": "#/$defs/evidence"
+    },
+    "expectedDraftRef": {
+      "type": "string",
+      "minLength": 1
+    },
+    "actors": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "subject"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "user",
+              "service"
+            ]
+          },
+          "subject": {
+            "$ref": "#/$defs/evidence"
+          }
+        }
+      }
+    },
+    "payloadActors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "pointer",
+          "required",
+          "subjects"
+        ],
+        "properties": {
+          "pointer": {
+            "type": "string",
+            "pattern": "^($|/)"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "subjects": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/$defs/evidence"
+            }
+          }
+        }
+      }
+    },
+    "qualifiedCallerInputs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "sha256"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "pattern": "^/"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        }
+      }
+    },
+    "committedReservation": {
+      "$ref": "#/$defs/evidence"
+    }
+  },
+  "$defs": {
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "pointer"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "pointer": {
+          "type": "string",
+          "pattern": "^($|/)"
+        }
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "required": [
+        "startStatus"
+      ]
+    },
+    {
+      "required": [
+        "committedReservation"
+      ]
+    }
+  ]
+}

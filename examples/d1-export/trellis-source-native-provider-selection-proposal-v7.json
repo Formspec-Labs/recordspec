@@ -1,0 +1,181 @@
+{
+  "status": "STATIC purpose-bound Source-to-Trellis selection proposal; not provisioned, not loadable or installed",
+  "rootSelectedPath": "Source SubstratePublisher appends own respondent/signing records directly; WOS retains separate workflow/case custody",
+  "proposedProvider": {
+    "clientId": "formspec-source-trellis-dev",
+    "clientIdSelection": "proposed distinct external name; Root provisioning selection pending",
+    "principal": "source-native-producer",
+    "issuer": "http://127.0.0.1:18090/realms/formspec-dev",
+    "subject": null,
+    "actualProviderReceipt": null,
+    "audience": "trellis-api",
+    "expectedAudiences": [
+      "trellis-api",
+      "formspec-trellis-introspection-dev"
+    ],
+    "scopes": [
+      "trellis.access",
+      "trellis.read",
+      "trellis.append"
+    ],
+    "prohibitedScope": "trellis.administer",
+    "method": "ClientSecretBasic",
+    "credentials": "new private Source purpose credential; existing Source-to-WOS/WOS/exporter credentials ineligible"
+  },
+  "receivingSuccessor": {
+    "preserveWosExporterIdentities": true,
+    "newAllowedClient": "formspec-source-trellis-dev",
+    "mapping": {
+      "issuer": "http://127.0.0.1:18090/realms/formspec-dev",
+      "subject": null,
+      "clientId": "formspec-source-trellis-dev",
+      "principal": "source-native-producer"
+    },
+    "scopeObservedInCurrentSource": "formspec.managed-single-cell",
+    "scopeSelectedPrivateConfirmed": true,
+    "grantPurpose": [
+      "read exact native scope formspec.managed-single-cell",
+      "append exact native scope formspec.managed-single-cell with actor kind service and subject formspec-server"
+    ],
+    "sourceHasNoWosCaseGrant": true,
+    "sourceHasNoAdministerGrant": true,
+    "payloadActorBindings": "Root selected no human-payload restriction on shared Source Append grant. Source is authenticated producer responsible for native action/signing identity checks.",
+    "profileReloadRequiredForNewIdentity": true,
+    "selectedTenantHeaderSet": "wos",
+    "genericHeaderConfigApi": "stack_common_http::tenant::HeaderConfig::wos()",
+    "selectedGrantRows": [
+      {
+        "principal": "source-native-producer",
+        "scope": "formspec.managed-single-cell",
+        "action": "read"
+      },
+      {
+        "principal": "source-native-producer",
+        "scope": "formspec.managed-single-cell",
+        "action": "append",
+        "actors": [
+          {
+            "kind": "service",
+            "subject": "formspec-server"
+          }
+        ],
+        "payloadActors": []
+      }
+    ],
+    "humanPayloadRestrictionSelected": false,
+    "tenantScope": {
+      "tenant": "tenant_test",
+      "workspace": "workspace_test",
+      "environment": "environment_test",
+      "cell": "cell_test"
+    }
+  },
+  "observedGenericGaps": [
+    "Source private provider/HeaderConfig adapter authored; coherent qualified Trellis/Common adoption and native qualification pending; frozen signed-export inputs must remain untouched",
+    "Source adapter uses HeaderConfig::formspec while selected18198 uses wos; externally select maintained header configuration in generic composition",
+    "one canonical Common crate/trait identity across adopted closure required; do not duplicate private and canonical packages"
+  ],
+  "nativePayloadObservations": {
+    "appendWrapper": [
+      "aggregateType",
+      "aggregateId",
+      "payload"
+    ],
+    "actionLedgerEventType": "substrate.append.response_action_session_op_batch",
+    "actionLedgerPayload": [
+      "ledgerScope",
+      "sessionRef",
+      "branchId",
+      "opBatch",
+      "opBatchHash",
+      "ledgerPortIdempotencyKey",
+      "mode"
+    ],
+    "submissionProofPayload": [
+      "responseId",
+      "formVersionId",
+      "responseHash",
+      "signedPayloadDigest",
+      "formspecSealFence"
+    ],
+    "meaning": "Source owner confirmed selected native operations and authored private generic adapter; no compilation or live-operation proof",
+    "submissionEventType": "substrate.append.response_submitted",
+    "submissionAggregateType": "response",
+    "actionLedgerAggregateType": "formspec.response_action_session_op_batch",
+    "actionLedgerActor": {
+      "shape": "object",
+      "id": "string urn:formspec:actor:*",
+      "kind": [
+        "human",
+        "ai-agent",
+        "service"
+      ],
+      "actChannel": [
+        "human",
+        "mcp",
+        "agent",
+        "service"
+      ],
+      "grantIdentityPointer": "/payload/opBatch/actor/id",
+      "grantKindPointer": "/payload/opBatch/actor/kind",
+      "httpBodyIdentityPointer": "/payload/payload/opBatch/actor/id",
+      "actualAllowedIds": null
+    }
+  },
+  "sourcePins": {
+    "crates/formspec-server-substrate-trellis/src/lib.rs": {
+      "path": "/Users/mikewolfd/Work/formspec-stack/formspec-server/crates/formspec-server-substrate-trellis/src/lib.rs",
+      "sha256": "cf11998de167ad8baf3d389af69a090f977bee14c119ab73558b0ec695093763"
+    },
+    "crates/formspec-server/src/composition.rs": {
+      "path": "/Users/mikewolfd/Work/formspec-stack/formspec-server/crates/formspec-server/src/composition.rs",
+      "sha256": "b4bc0563c05fd7696d292e9db7128adae6b1ac6e08a20b6b48e6351eb89edf67"
+    },
+    "crates/formspec-server/src/services/action_ledger.rs": {
+      "path": "/Users/mikewolfd/Work/formspec-stack/formspec-server/crates/formspec-server/src/services/action_ledger.rs",
+      "sha256": "b3185bd1b6876a51f27953e1bfbb1b129c352279cd151d924a1353cb17d4f151"
+    },
+    "crates/formspec-server/src/services/receipts.rs": {
+      "path": "/Users/mikewolfd/Work/formspec-stack/formspec-server/crates/formspec-server/src/services/receipts.rs",
+      "sha256": "e0ae6a43155fb1b279b444ec9e722ad17772df7a2016597ad310d19f04df6de3"
+    }
+  },
+  "materializationPrerequisites": [
+    "Source owner static adapter receipt confirmed; generic adapter dependency adoption/tests and actual invoked operation records still require qualification",
+    "Root confirms external client name/audience/credential purpose and provisions in assigned slot",
+    "actual service account subject/scopes/audiences readback receipt, no guessed subject",
+    "generic provider/header composition qualified in owner frozen successor",
+    "explicit reviewed receiving profile and native Source scope grant successor; preserve active identity/grant files until activation slot"
+  ],
+  "operationsPerformed": false,
+  "activeFilesChanged": false,
+  "rootAuthorityDecision": "Use existing receiving scope/actor/read-or-append enforcement; native Source publisher selects operations. No new event-type allowlist or authorization language.",
+  "authorityLimits": [
+    "Receiving grants do not implement event-type or aggregate-type allowlists; scope/actor/action is the actual enforced boundary",
+    "Source publisher selects its native operations; no WOS case Append or exporter Administer right for Source",
+    "Root selects WOS headers externally; no active host/profile/grant change made",
+    "Root selected shared native Source Append grant without human-payload restrictions. Source owns native action/signing identity checks; receiving authority is exact principal/tuple/namespace/action/service actor. This is final selected scope, not pending conditional-grant design."
+  ],
+  "sourceOwnerStaticAdapterReceipt": {
+    "path": "/Users/mikewolfd/Work/formspec-stack/thoughts/plans/benefits-scenarios/execution/reports/formspec-server/source-trellis-native-adapter-static-v1.json",
+    "sha256": "b392e932b2005e52d00d5c30dc5f10be46e6be5b0edbd1dbee96466f26de7390",
+    "librarySha256": "e22e1bd2689f6c1f601834e71d41a924a4f31e23359e2816d1085684f6cc83d1",
+    "api": "TrellisSubstratePublisher::with_token_provider(config, HeaderConfig, Arc<dyn Common ClientCredentialsTokenProvider>)",
+    "testsAuthored": 2,
+    "testsExecuted": false,
+    "qualifiedTrellisDependencyAdopted": false,
+    "sharedGenericProviderSelectionReady": "existing maintained provider selected; host composition/adoption qualification pending"
+  },
+  "outgoingAssuranceDecision": {
+    "status": "Root selected maintained provider reuse",
+    "maintainedGuarantee": "configured service audience membership, fixed client and requested/required scope checks; no additional outgoing exact subject or audience/scope-set guarantee",
+    "receivingAuthority": "Trellis OIDC verification, current introspection, exact issuer/subject/client principal mapping and current scope/action/actor grants",
+    "composition": "separate minimal host composition for configured multi-scope service; existing singleton-purpose loader remains strict",
+    "additionalApi": "none; no verify_with_audiences, duplicate JWT parsing or proposed private exact verifier",
+    "distinctSourceCredentialRequired": true,
+    "currentTokensRequired": true,
+    "staticBearerFallback": false,
+    "singleCanonicalCommonTraitIdentityRequired": true,
+    "exploratoryDraft": "preserve without consuming"
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "status": "paired static reviews approve; live activation held by Root",
+  "operator": {
+    "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/activate-source-native-restart-v2.py",
+    "sha256": "45d849a3c90810e2b7bf342aff019914598ec0491b9b3455616030c5e7c9d0be"
+  },
+  "command": {
+    "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/activate-source-native-restart-v2.command.txt",
+    "sha256": "1e1c6d254bfe6df07a76c9ffa96e85f6ab43050fc2c54232c76c379c1e78590d"
+  },
+  "config": {
+    "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/activate-source-native-restart-config-v1.json",
+    "sha256": "8d1aee614df411f9d726af72ea30104760529a8835aeeff7ae950b76590ddcec"
+  },
+  "reviews": {
+    "code": {
+      "path": "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/trellis-source-native-activation-correction-before-code-review-v1.md",
+      "sha256": "2b3fab2a67e55d77d350e1ce2121379ff11cf4bb9a1ed34a4512e1c96c78f021",
+      "verdict": "APPROVE static only"
+    },
+    "architecture": {
+      "path": "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/trellis-source-native-activation-correction-before-architecture-review-v1.md",
+      "sha256": "e481ef5f3c333d862ad0f4fd7ac0c795862b4d9e1fa53528538c52b3b9cd8ec2",
+      "verdict": "APPROVE static only"
+    }
+  },
+  "failedAttemptClosure": {
+    "path": "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/trellis-source-native-activation-failed-actual-closure-v1.json",
+    "sha256": "9cec0534e43231aa44a7de2462d74e7829f8019bdbc56dc4f55129375e7f0f9b"
+  },
+  "change": "Custom cancellation exception escapes KqueueSelector; exact owned identity checks precede bounded old group and supervisor force-stop if TERM does not stop them; both original groups must be absent before activation or rollback. Existing readiness, database preservation, file pins, log limits and rollback bounds remain.",
+  "checks": {
+    "staticSyntaxPassed": true,
+    "isolatedOldHandlerFailureReproduced": true,
+    "isolatedCorrectedHandlerEscapesSelector": true,
+    "isolatedProcessesCompletedAndReaped": true,
+    "actualCorrectionExecuted": false,
+    "liveRetryAuthorized": false,
+    "executionWindowReleased": true,
+    "nativeSourceAppendQualified": false
+  },
+  "boundSeconds": {
+    "operation": 180,
+    "readiness": 30,
+    "oldTerm": 10,
+    "oldServiceForceStop": 3,
+    "oldSupervisorForceStop": 3,
+    "rollback": 90
+  },
+  "nextStep": "Root must select a new serialized execution window and authorize this exact reviewed operation. WOS attempt 4 has the next window; no automatic retry."
+}

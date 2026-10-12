@@ -1,0 +1,86 @@
+{
+  "status": "BEFORE design; privateimplementation authorized, compiler/services prohibited pendingRootwindow.",
+  "privateOwner": "/private/tmp/trellis-native-provenance-qualified-v1-20261009/trellis",
+  "parent": "eda346c166a71c7b8df55afd8549247456229277",
+  "problem": "CLI never composes external verifier/exactcurrentresourceauthorizer despite existing DI ports.",
+  "shape": [
+    "New oidc_startup module loads required TRELLIS_OIDC_CONFIG_FILE before key/DB startup; closed bounded JSON with fixedtrust, introspectionclient credentialfile, currentgrantfile. NoCLIpermissive/HS256fallback. Existing manual DI local/dev modes preserved for callers/tests.",
+    "Compose maintained OidcAccessTokenVerifier +OidcCurrentAuthority with ReqwestAuthHttpClient/SystemAuthClock andStaticClientSecret. Profiles Keycloak/OktaCustomAuthorizationServer/Rfc9068, transport HTTPSdefault or explicitDevelopmentLiteralLoopback. No customJWT/JWKS/introspectionimplementation.",
+    "New host ScopeAuthorizer loads closed bounded grantfile on EVERYauthorization; unavailable/invalid file refuses. Exact issuer/subject/client\u2192internalprincipal, exact4componentTenantScope, exactresource scope, action and action-requiredOAuthscope. Rejectduplicate/ambiguousmatching grants/emptyfields, missing/revoked grants; nopositivegrantcache.",
+    "Appendgrant must authorize exact body.actor.subject. Optional configured JSONpointer actor rules apply to owning producer payload fields: present values must be text in delegatedsubjects; required fields cannot be absent. Nohardcoded WOS/Formspeceventsemantics or D1branches.",
+    "state_from_env selects strictOIDC first and injects existing verifier/authorizer ports; router currentauth/idempotencypartition/publicationcheck remainsunchanged. RequireconfigevenmemoryCLI; old18088process unaffected.",
+    "Trustedoperator file controls exactresource grants. This is localmanagedcurrentresourceauthority through existingScopeAuthorizer; providerOAuthscope alone never grants case. No new genericpublicauthorizationport."
+  ],
+  "configShape": {
+    "issuer": "fixedURL",
+    "audience": "exactAPIaudience",
+    "requiredScopes": [
+      "baseAPI accessscope"
+    ],
+    "allowedClients": [
+      "registeredclient"
+    ],
+    "profile": "keycloak|oktaCustomAuthorizationServer|rfc9068",
+    "allowDevelopmentLoopbackHttp": false,
+    "introspectionEndpoint": "fixedtrustedissueroriginURL",
+    "introspectionClientId": "registeredconfidentialclient",
+    "introspectionClientSecretFile": "privateoperatorpath",
+    "grantsFile": "privatecurrentresourceauthoritypath"
+  },
+  "grantShape": {
+    "grants": [
+      {
+        "issuer": "fixedissuer",
+        "subject": "externalsub",
+        "clientId": "verifiedclient",
+        "principal": "internalstableprincipal",
+        "tenant": "tenant",
+        "workspace": "workspace",
+        "environment": "environment",
+        "cell": "cell",
+        "scope": "exactcase",
+        "action": "read|append|administer",
+        "requiredScope": "ownactionOAuthscope",
+        "actors": [
+          "allowedtransportactorforappend"
+        ],
+        "payloadActors": [
+          {
+            "pointer": "/configuredOwnerField",
+            "required": false,
+            "subjects": [
+              "exactdelegatedhuman"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "tests": [
+    "ActualCLIstartup refusesmissing/invalidprofile beforeDB/key andrejectspermissive/HSfallbacksettings.",
+    "Injected maintainedOIDC protocoltransport+fixedclock tests actualsignedRS256token/JWKS/discovery/introspection active\u2192inactive andwrongissuer/audience/scope/client refusal; do not substitute allverifierbehavior with identitydouble.",
+    "Currentgrantfile revoke/change between identicalappendretry blocks cache; eachtuplecomponent/resource/action mismatchblocks; unchangedbodydelegationrevokeblocks.",
+    "Configuredpayloadhumanselectors refusemissingrequired/nontext/foreignhuman; rawrequestbodyreplayhashunchanged.",
+    "SameCLIstartup builder usedbybinary is injected tests; actual childbinarymissingconfig startuprefusal in futurewindow.",
+    "Existing14authregressions thenactualtrellis-serverbuild andfresh18198Postgreshostqualification underRootwindow."
+  ],
+  "rationaleSources": [
+    "stack-common/crates/stack-common-auth/src/oidc/{verifier,introspection,transport,credentials}.rs",
+    "formspec-server/crates/formspec-server/src/auth_config.rs",
+    "workspec-server/crates/wos-server/src/auth/{mod,oidc,profile}.rs",
+    "trellis-server/src/{main,state,auth,admission}.rs;trellis-server-ports ScopeAuthorization/ScopeAuthorizer"
+  ],
+  "RootSelectedCohort": {
+    "bind": "127.0.0.1:18198",
+    "database": "CommonpreparesisolatedDBon18185; noURLassignedyet",
+    "exportKey": "ExistingRootselectedlocaldemoCOSEkey; no rotation/validtooverride",
+    "independentRegistrySha256": "06516ab2228e2ff95fe247780a28436d01f0a77e028ef8f14997912dcaba51f2",
+    "startupReadback": false
+  },
+  "noClaims": [
+    "Noagencytrust",
+    "No no-swapguarantee",
+    "No actualD1/exportadditionalmemberprovidercompletion",
+    "No nativeexecutionbeforeRootwindow"
+  ]
+}

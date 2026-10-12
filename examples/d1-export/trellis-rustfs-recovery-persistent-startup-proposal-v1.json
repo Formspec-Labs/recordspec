@@ -1,0 +1,88 @@
+{
+  "status": "preparedstatic; Rootselectedrecovery; pairedreviewpending; no execution",
+  "rootSelection": "restartexistingtaskRustFSsamecachedimage+namedvolumes, newbucket trellis-full-d1-20261009-v1 prefix trellis",
+  "privateDirectory": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1",
+  "SDK": {
+    "python": "/Users/mikewolfd/.pyenv/versions/3.12.9/bin/python3",
+    "boto3": "1.43.104",
+    "botocore": "1.43.104",
+    "putObjectIfNoneMatchModelVerified": true
+  },
+  "files": [
+    {
+      "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/artifact.private.json",
+      "sha256": "18068348904f79b7191951741e2eb4040dcce7678541ac87f318aced157b2885",
+      "mode": "0o600"
+    },
+    {
+      "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/recover-rustfs-reviewed-v1.py",
+      "sha256": "3a9e2dc2d544ffccd28b55b7f3bd7736455062b10837b44bf26cea48852dac8f",
+      "mode": "0o700"
+    },
+    {
+      "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/start-trellis-persistent-reviewed-v5.py",
+      "sha256": "aba250439f1203accdb2afc77e33aada33516a65448de51c2d7f4bc8136b72f7",
+      "mode": "0o700"
+    }
+  ],
+  "inheritedStartupInputs": {
+    "binarySha256": "f0a0eb62da9d52c5a5e5a2bac8f60af8b7ff97084cd0de6c5cae63d5256e90c7",
+    "privateDatabaseConfigSha256": "d15d5c863b4920cfc4b91c6ac72fbd08dbd7cb7cc81362531cf324928f01a983",
+    "selectedRetainedKeyFileSha256": "62644accd6ef7af276945418ee794ce6428ac63a0a79f78180addd372b053608",
+    "profileSha256": "c8de0c4bfba003b93c2ef28a937a3e8bef1f21c3d12f26685af7a294c196e057",
+    "grantsSha256": "2ee9697269d53fdb94daf48af6d6a586a92b81bbdaf0dd24e95b38c6ce0caae0"
+  },
+  "executionRecipe": [
+    {
+      "script": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/recover-rustfs-reviewed-v1.py",
+      "args": [
+        "--execute"
+      ],
+      "effect": "inspectprivate/startsamecontainer/inspectprivate/HeadBucket/createNEWbucket/conditionalputandreadisolatedUUIDkey; retainallreceipts/noautomaticstopdelete"
+    },
+    {
+      "script": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/start-trellis-persistent-reviewed-v5.py",
+      "args": [
+        "--artifact-qualification",
+        "ACTUAL_SUCCESSFUL_RECOVERY_QUALIFICATION_JSON",
+        "--expected-artifact-qualification-sha256",
+        "ACTUAL_QUALIFICATION_SHA256",
+        "--expected-grants-sha256",
+        "2ee9697269d53fdb94daf48af6d6a586a92b81bbdaf0dd24e95b38c6ce0caae0",
+        "--allow-deny-all-startup",
+        "--execute"
+      ],
+      "effect": "requirepinnedpositiveS3SDKqualification +exactallstartupinputs; execmaintainedserverwithpersistentS3environment andemptygrants"
+    }
+  ],
+  "bounds": {
+    "dockerCommandSeconds": 30,
+    "S3ConnectTimeoutSeconds": 2,
+    "S3ReadTimeoutSeconds": 5,
+    "SDKAtemptsPerCall": 1,
+    "readinessAttempts": 20,
+    "readinessSleepSeconds": 1,
+    "qualificationReadBytes": 4096,
+    "isolatedKeysPerRun": 1,
+    "overallOperatorLimitRecommendedSeconds": 300
+  },
+  "providerSemantics": "SDKfirstIfNoneMatch*create200; bothidentical/conflictingretriesMUST412; eachGETsaved/hashcomparedexact. Commonobject_storeadaptermaps412toAlreadyExists thencomparesbytes: identicalaccepted/conflictingrefused. SDKreceiptdoesnotclaimactualTrellishelperwasrun.",
+  "preservation": [
+    "Nooldbucket/objectkeysaccessed/deleted/overwritten",
+    "Noexistingvolume/containerrecreation",
+    "Onlyselectednewbucket+isolatedtestkeywritten",
+    "Existingserverstoppedtorunningtransition recorded; prior255causeunknown",
+    "Noautomaticcleanup/stop onfailure; partialreceiptsretained",
+    "Trellisdoesnotlaunchbeforeartifactqualification",
+    "Nohandwrittensigning/OAuth",
+    "No credentials inlogs/argv"
+  ],
+  "separateGates": [
+    "actualRootliveexecution",
+    "maintainedTrellisS3helperactualexport/restart/samecheckpointretrieval",
+    "freshcase/readappend/exporterReadAdministergrants",
+    "currentOIDCtokenpositiveadmission",
+    "actualD1 ZIP/agencytrust"
+  ],
+  "noExecution": true
+}

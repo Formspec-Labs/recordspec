@@ -1,0 +1,87 @@
+{
+  "status": "paired AFTER APPROVE retained point-in-time startup closure",
+  "liveActionsByThisPreparation": false,
+  "actualStartupExecutedByRoot": true,
+  "operatorPid": 73745,
+  "trellisPidAndPgid": 74338,
+  "bind": "127.0.0.1:18198",
+  "startupReceipts": {
+    "startup-result.json": {
+      "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/bounded-start-82c98432-cdbe-4d25-a445-f145a543fd7b/startup-result.json",
+      "sha256": "590f4746f1add0e300dc1de62974a5ede1f34c853f0e2b68efbdd5a87463372c"
+    },
+    "started.json": {
+      "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/bounded-start-82c98432-cdbe-4d25-a445-f145a543fd7b/started.json",
+      "sha256": "0a0272dcf5b8c69d2a3c1ac7cff65fc14257a2bcea51c2a4b78444d893d6c190"
+    },
+    "readiness.json": {
+      "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/bounded-start-82c98432-cdbe-4d25-a445-f145a543fd7b/readiness.json",
+      "sha256": "2f4be33db05ad997c7629ebc0e9a93630bc9e83568307282e702d7c271d59115"
+    },
+    "database-before.private.json": {
+      "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/bounded-start-82c98432-cdbe-4d25-a445-f145a543fd7b/database-before.private.json",
+      "sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+    },
+    "database-after.private.json": {
+      "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/bounded-start-82c98432-cdbe-4d25-a445-f145a543fd7b/database-after.private.json",
+      "sha256": "eef93e13149ada2228b8d58cb3ca37148ed04a5d0654c10b0b0a37285fb15bb5"
+    },
+    "launcher-preflight.json": {
+      "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/bounded-start-82c98432-cdbe-4d25-a445-f145a543fd7b/launcher-preflight.json",
+      "sha256": "61f89bf5b724dfb2d1a17ce6e9a2f8e1886a6c63840668b06f7ee7b795ad7d55"
+    },
+    "launcher-preflight.stdout": {
+      "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/bounded-start-82c98432-cdbe-4d25-a445-f145a543fd7b/launcher-preflight.stdout",
+      "sha256": "7c5bb339719fa291c437a9db7bbc33d91d870c797e928ff8feb7f47edb112334"
+    },
+    "launcher-preflight.stderr": {
+      "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/bounded-start-82c98432-cdbe-4d25-a445-f145a543fd7b/launcher-preflight.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "process-auxiliary-diagnostics.json": {
+      "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/bounded-start-82c98432-cdbe-4d25-a445-f145a543fd7b/process-auxiliary-diagnostics.json",
+      "sha256": "b0f41fde5d31516cee2e7106409b174979528e79cc13b84f668aaf84a88771d2"
+    },
+    "actual-process.private.json": {
+      "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/bounded-start-82c98432-cdbe-4d25-a445-f145a543fd7b/actual-process.private.json",
+      "sha256": "1443990f80dc1da2fb8b9398405fc1f251f583217c3c09faaf7da2891b29c4f8"
+    },
+    "old-process-before.private.json": {
+      "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/bounded-start-82c98432-cdbe-4d25-a445-f145a543fd7b/old-process-before.private.json",
+      "sha256": "bcaec1fcebf2422c9185176778c2ae38afc9cd61e4224ac0a56c568dd4a3e388"
+    }
+  },
+  "reviewedOperator": {
+    "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/run-trellis-bounded-v2.py",
+    "sha256": "11429bab85631f43c7ec86acdd6c39de579a9cda50ebb368bb4d1f15148c1958"
+  },
+  "passingRecovery": {
+    "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/rustfs-recovery-96abbe2b6f3a49d89b10c601d7d438ba/qualification.json",
+    "sha256": "c8ea70d60d88f569dd2e0b35c08d689864e8b37208e8a31906926a00a468d819"
+  },
+  "afterReviews": {
+    "code": {
+      "path": "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/trellis-bounded-outer-after-actual-code-review-v4.md",
+      "sha256": "f1ddc7d253b98e44dfff494db4ab755f8653d6239acd4f6d91fe4e6e4b9647a4"
+    },
+    "architecture": {
+      "path": "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/trellis-bounded-outer-after-actual-architecture-review-v3.md",
+      "sha256": "08f214a3c0a1bd2f0230432fd6f7677fafea693908b8454622b6fa314107c076"
+    }
+  },
+  "established": [
+    "selected qualified server and exact real startup environment matched retained private inputs",
+    "new DB before empty; after only migration1\u20134 and no events/publications",
+    "maintained readiness returned200 after repository list and selected artifact health-key roundtrip",
+    "old18088 process/binary/config comparison passed in wrapper"
+  ],
+  "limits": [
+    "point-in-time retained evidence; no fresh liveness check",
+    "old process-after raw snapshot not saved; preservation rests on reviewed successful wrapper checks",
+    "old memory rows not independently compared",
+    "raw readiness response not saved; retained200/body digest only",
+    "positive OIDC admission and fresh case authority unqualified; grants intentionally empty",
+    "acknowledgement/export/restart/pinned archive retrieval/owning ZIP verification pending",
+    "readiness is selected health artifact roundtrip, not full archive lifecycle qualification"
+  ]
+}

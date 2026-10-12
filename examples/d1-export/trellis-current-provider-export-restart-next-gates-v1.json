@@ -1,0 +1,147 @@
+{
+  "status": "bounded next-stage preparation; no operation or grant selected",
+  "currentAuthority": "Root assigned future windows; WOS actual fresh case absent; grants remain empty",
+  "startupClosure": {
+    "path": "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/trellis-persistent-startup-actual-closure-v1.json",
+    "sha256": "cd38409ab994528cf7eb9c3c147e7d9b1f6acb8c5277346141c35425fe96f76b"
+  },
+  "sourceEvidence": {
+    "qualifiedTrellisClient": {
+      "path": "/private/tmp/trellis-native-provenance-qualified-v1-20261009/trellis/crates/trellis-service-client/src/lib.rs",
+      "sha256": "13391c903ffc076bb6f23f979c8d87f79c0c1f81ed5bd6040bd6a53e8b09095e"
+    },
+    "qualifiedTrellisRoutes": {
+      "path": "/private/tmp/trellis-native-provenance-qualified-v1-20261009/trellis/crates/trellis-server/src/http.rs",
+      "sha256": "7aa3688c7bb62977f2c8ffd9cf57fae3b33376fddc436857adf0a665d4ad1d44"
+    },
+    "commonApiHandoff": {
+      "path": "/Users/mikewolfd/Work/formspec-stack/thoughts/plans/benefits-scenarios/execution/reports/stack-common/trellis-exporter-common-provider-api-v1.json",
+      "sha256": "31c67f6cb4d599faef1ca7abc0daa5fa6b8a5fdb728ef5a172320e4ddd99b3b8"
+    }
+  },
+  "implementationGap": {
+    "wosOwnerReported": "Current private WOS build_substrate_client remains static-bearer and nonmock bootstrap does not inject token provider; Source intake OAuth loader is not Trellis composition",
+    "commonOwnerReported": "No standalone maintained exporter probe executable found",
+    "requiredNextWork": "WOS-owned generic outbound Trellis provider composition/probe through qualified TrellisServiceClient::with_token_provider; qualify in separately assigned native window",
+    "noExecutableClaim": true
+  },
+  "stages": [
+    {
+      "stage": 1,
+      "name": "select actual fresh case and grants",
+      "inputs": [
+        "WOS receipt for newly created 0.3.1 case, exact storage tuple, actual case identifier and native records",
+        "Root explicitly selects exact case grants; no old456/native defaultcase reuse"
+      ],
+      "grantShape": {
+        "wos-trellis-producer": [
+          "Read",
+          "Append with exact actor and payload actor selectors from actual records"
+        ],
+        "trellis-local-exporter": [
+          "Read",
+          "Administer; no Append"
+        ]
+      },
+      "output": "reviewed successor current-grants.json plus before/after hashes; existing identity profile preserved"
+    },
+    {
+      "stage": 2,
+      "name": "qualify maintained current-token client",
+      "inputs": [
+        "exact actual fresh case and selected grant receipt",
+        "qualified owner probe executable/source/lock pins",
+        "private exporter secret already provisioned"
+      ],
+      "composition": [
+        "StaticClientSecret fixed exporter client",
+        "OidcTrust exact issuer/audience/required scopes and allowed client; maintained dependencies and verifier",
+        "OidcClientCredentials ClientSecretBasic and RegisteredClient",
+        "verify acquired token with cloned Common verifier, then require exact exporter subject and exact scope set",
+        "inject Arc<ClientCredentialsTokenProvider> into qualified TrellisServiceClient::with_token_provider"
+      ],
+      "expectedExporterSubject": "e3b2f43f-4656-471d-8be3-b32e9c4d658c",
+      "exactExporterScopes": [
+        "trellis.access",
+        "trellis.read",
+        "trellis.administer"
+      ],
+      "positive": "SubstrateClient::signing_key_registry(actual fresh case, exact TenantScope) succeeds and raw030 SHA256 is06516ab2228e2ff95fe247780a28436d01f0a77e028ef8f14997912dcaba51f2",
+      "negatives": [
+        "missing bearer401 on actual case",
+        "invalid bearer401 on actual case",
+        "exporter structurally valid Append refused before event write; no Append scope/grant",
+        "WOS read/append identity cannot call explicit head_bundle publication without Administer; ordinary authorized append may publish its acknowledgement bundle",
+        "current grant refusal on actual case checked only through separately selected temporary exact-grant change, if Root authorizes it; no fabricated foreigncase"
+      ],
+      "limits": {
+        "wholeStageSeconds": 120,
+        "combinedOutputBytes": 1048576,
+        "cleanupOwnedProcessGroup": true,
+        "tokenLoggedOrPrinted": false,
+        "handwrittenOAuth": false,
+        "memoryBoundClaim": false
+      }
+    },
+    {
+      "stage": 3,
+      "name": "append and export actual fresh records",
+      "inputs": [
+        "WOS maintained native provenance append path with fresh qualified form definition/version pin",
+        "native payloads selected from actual fresh intake/reviewer state; no invented sampleevents"
+      ],
+      "checks": [
+        "persist actual acknowledgement identity/sequence/event digest",
+        "retry identical actual request uses existing idempotency and compare persisted event count; no extra event",
+        "changed reuse is refused and original bytes retained",
+        "exporter SubstrateClient::head_bundle requires both exact Read and Administer; may create publication and S3 artifacts",
+        "retain raw ZIP, checkpoint digest, publication identity and DB/S3 evidence",
+        "owning trellis_verify_wos::verify_export_zip original PASS and required tamper-negative FAIL; compare raw030 to preselected independent registry"
+      ],
+      "limits": {
+        "wholeStageSeconds": 180,
+        "combinedOutputBytes": 33554432,
+        "admittedZipBytes": 33554432,
+        "zipAdmissionOccursAfterCurrentClientBuffersResponse": true,
+        "memoryBoundClaim": false
+      },
+      "authorityLimit": "head_bundle performs publication; this is a separately assigned mutation window, not an ordinary read"
+    },
+    {
+      "stage": 4,
+      "name": "restart and retrieve pinned archive",
+      "inputs": [
+        "successful actual append/export evidence and immutable ZIP/checkpoint pins",
+        "full DB before snapshot",
+        "reviewed restart-specific operator successor; first-start wrapper refuses nonempty DB and cannot be reused unchanged"
+      ],
+      "actions": [
+        "preflight exact saved binary/key/OIDC/current grants/database/S3 inputs and ready artifact evidence",
+        "stop only resident operator73745 through SIGTERM; its owned service group74338 must empty; never touch18088 or RustFS",
+        "launch same selected qualified binary/settings through reviewed existing-database restart wrapper",
+        "capture exact new PID/argv/real environment plus DB before/after preserving all prior rows",
+        "use maintained current provider/client bundle(actual case, exact checkpoint digest, exact tuple)",
+        "require raw ZIP SHA256 identical to pre-restart artifact and rerun owning verification; retain all receipts"
+      ],
+      "limits": {
+        "startupSeconds": 180,
+        "readinessSeconds": 30,
+        "combinedLogBytes": 33554432,
+        "ownedCleanupSeconds": 2
+      },
+      "noSilentFallback": [
+        "no memory repository/artifact store",
+        "no key regeneration",
+        "no database restore/rollback or RustFS recreation",
+        "no current-head substitution for pinned checkpoint retrieval"
+      ]
+    }
+  ],
+  "unchangedNow": [
+    "profile and grants files",
+    "running service/operator and original18088",
+    "RustFS container/bucket/retained recovery keys",
+    "PostgreSQL rows"
+  ],
+  "executionPerformed": false
+}

@@ -1,0 +1,21 @@
+{
+  "at": "2026-10-11T03:56:51.567247+00:00",
+  "status": "SELECTED_INACTIVE",
+  "scope": "d1_run_14c20a38fad84af99efc050363caba22",
+  "scopeGrammarPass": true,
+  "eventCount": 0,
+  "bundlePublicationCount": 0,
+  "currentGrantRows": 0,
+  "databaseReadOnly": true,
+  "profilePath": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/oidc-profile-source-native-v8.json",
+  "profileSha256": "55589b8ee357064b9eb648411253d5cacb27b559e2e8017fe4593f8ccc3492bf",
+  "grantsPath": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/current-grants-source-native-v8.json",
+  "grantsSha256": "b5a493268a7f652402b3f9d11ca00fe558763174a282dfdd2bbe26bfb1082de8",
+  "signingKeyFileSha256": "62644accd6ef7af276945418ee794ce6428ac63a0a79f78180addd372b053608",
+  "requiredActivationGates": [
+    "Source receipt/export proof exact response joins owning WOS first claim",
+    "Common exact current scope grants plus WOS actor/payload association",
+    "independent selected signer authority and current public registry readback"
+  ],
+  "noGrantOrRuntimeWrite": true
+}

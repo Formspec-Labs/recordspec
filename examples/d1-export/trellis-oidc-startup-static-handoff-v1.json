@@ -1,0 +1,52 @@
+{
+  "status": "paired-static-approved-awaiting-Root-native-window",
+  "sourceBase": "eda346c166a71c7b8df55afd8549247456229277",
+  "privateSourceRoot": "/private/tmp/trellis-native-provenance-qualified-v1-20261009/trellis",
+  "artifacts": [
+    {
+      "path": "trellis-oidc-startup-static-after-v3.json",
+      "sha256": "807d68d1ec51442d11eb4a1562977493ab5c9ea634bd6566e19a86fa1727db96"
+    },
+    {
+      "path": "trellis-oidc-startup-static-after-v3.patch",
+      "sha256": "be0863e1f6c8c49e4ed2385c7e4cf6997eeff0cb38f3f76047b0d5dcc0b2587a"
+    },
+    {
+      "path": "trellis-oidc-startup-after-code-review-v3.md",
+      "sha256": "e711d169f459be5b7acd0993ec46bb9ebab15dcf66072564b2d878f50ac89a88"
+    },
+    {
+      "path": "trellis-oidc-startup-after-architecture-review-v3.md",
+      "sha256": "3eb9b02fac908ee7f217813b976a25dbf2f64038354bd4d95259583c8a6a9d0d"
+    },
+    {
+      "path": "trellis-oidc-startup-native-window-plan-v3.json",
+      "sha256": "8927703a646f09e6b913ed5c7368e5717465abe73fa759519229369e887234e4"
+    },
+    {
+      "path": "trellis-oidc-cohort-selected-identity-facts-v2.json",
+      "sha256": "8bc091e334b73710aeb701e211fbeaed04d03827cbeb1d2ce4babaac415d0b55"
+    }
+  ],
+  "verified": [
+    "all11sourcepins",
+    "reverse portable patch check",
+    "git diff --check",
+    "direct rustfmt on changed standalone Rust files",
+    "paired full static code/architecture review"
+  ],
+  "unverified": [
+    "dependency lock preparation",
+    "actual CLI RED/GREEN",
+    "RS256 current-provider and resource authority tests",
+    "auth14 regressions",
+    "2routerposturetests",
+    "client tests",
+    "actual server build",
+    "provider/database facts",
+    "isolated service18198 startup",
+    "D1 archive"
+  ],
+  "original18088Preserved": true,
+  "nativeCommandsRun": false
+}

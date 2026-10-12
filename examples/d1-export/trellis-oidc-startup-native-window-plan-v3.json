@@ -1,0 +1,68 @@
+{
+  "status": "prepared-not-authorized-to-run",
+  "sourceReceipt": "trellis-oidc-startup-static-after-v3.json",
+  "sourceReceiptSha256": "807d68d1ec51442d11eb4a1562977493ab5c9ea634bd6566e19a86fa1727db96",
+  "execution": "Root serial allocation only; never use original18088 or shared source",
+  "bounds": {
+    "jobs": 1,
+    "secondsPerStage": 600,
+    "logBytesPerStage": 33554432
+  },
+  "stages": [
+    {
+      "name": "parent CLI RED",
+      "input": "qualified parent eda346c plus preserved trellis-oidc-startup-red-cli-tests.patch in isolated coherent closure",
+      "command": "cargo test --offline --locked -j1 -p trellis-server --test oidc_cli_startup -- --nocapture",
+      "expected": "exact two CLI assertions fail because parent lacks required OIDC profile selection"
+    },
+    {
+      "name": "lock preparation",
+      "command": "cargo metadata --offline --format-version 1",
+      "requirements": [
+        "Run only in isolated GREEN closure",
+        "Retain before/after lock diff and dependency package/version receipt",
+        "Review optional OIDC feature dependencies and rustix fs/process edge; preserve unrelated rand_core baseline separately"
+      ]
+    },
+    {
+      "name": "strict startup unit protocol and authority",
+      "command": "cargo test --offline --locked -j1 -p trellis-server --lib oidc_startup_ -- --nocapture",
+      "expected": "12 startup tests"
+    },
+    {
+      "name": "actual CLI GREEN",
+      "command": "cargo test --offline --locked -j1 -p trellis-server --test oidc_cli_startup -- --nocapture",
+      "expected": "3 actual CLI tests"
+    },
+    {
+      "name": "existing auth regressions",
+      "command": "cargo test --offline --locked -j1 -p trellis-server --lib authorized_append_replay_ -- --nocapture",
+      "expected": "14 pass; compare retained earlier auth fixture names"
+    },
+    {
+      "name": "updated router posture assertions",
+      "command": "cargo test --offline --locked -j1 -p trellis-server --lib given_production_like_posture_ -- --nocapture",
+      "expected": "both updated existing router posture tests pass"
+    },
+    {
+      "name": "full client suite",
+      "command": "cargo test --offline --locked -j1 -p trellis-service-client -- --nocapture",
+      "expected": "existing client tests plus4 current-token tests"
+    },
+    {
+      "name": "actual server binary",
+      "command": "cargo build --offline --locked -j1 -p trellis-server --bin trellis-server",
+      "requirements": [
+        "Copy resulting binary outside shared target",
+        "Record hash/size, source closure and final lock hash"
+      ]
+    }
+  ],
+  "notIncluded": [
+    "provider changes",
+    "database changes",
+    "starting service18198",
+    "original18088 changes",
+    "actual D1 export or trust assertion"
+  ]
+}

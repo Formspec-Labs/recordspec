@@ -1,0 +1,29 @@
+{
+  "status": "static prepared; no launch; deny-all grants until fresh-case selection",
+  "privateDirectory": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1",
+  "bind": "127.0.0.1:18198",
+  "databaseCreated": true,
+  "databaseMigrationsAppliedAccordingToRootReceipt": false,
+  "startupWillApplyMaintainedMigrations": true,
+  "profileFile": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/oidc-profile.json",
+  "profileSha256": "c8de0c4bfba003b93c2ef28a937a3e8bef1f21c3d12f26685af7a294c196e057",
+  "grantsFile": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/current-grants.json",
+  "grantsSha256": "2ee9697269d53fdb94daf48af6d6a586a92b81bbdaf0dd24e95b38c6ce0caae0",
+  "actualCallerSubject": "4af85e55-7498-43e7-ab7b-c5c08aa05b4f",
+  "internalPrincipal": "wos-trellis-producer",
+  "selectedKeyPath": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/oidc-reviewer-lineage-20261007-v1/trellis-local-memory-signing-v1.cose_key",
+  "raw030ExpectedSha256": "06516ab2228e2ff95fe247780a28436d01f0a77e028ef8f14997912dcaba51f2",
+  "binaryPath": "/private/tmp/trellis-native-provenance-qualified-v1-20261009/execution/trellis-server-oidc-qualified-v4",
+  "binarySha256": "f0a0eb62da9d52c5a5e5a2bac8f60af8b7ff97084cd0de6c5cae63d5256e90c7",
+  "pending": [
+    "Root fresh0.3.1case exactscope",
+    "explicit exactcase/read/append actor+human grants",
+    "freeze final profile/grants before relying on them",
+    "Root authorized operator launch",
+    "maintained WOS currenttoken qualification",
+    "HTTP publickey registry readback",
+    "independent agencytrust andactualD1 export qualification"
+  ],
+  "callerNoAdminister": "Current WOS caller has read+append; head publication still requires administer and is not granted",
+  "noLiveCallsExecuted": true
+}

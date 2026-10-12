@@ -1,0 +1,24 @@
+{
+  "status": "qualified_and_adopted_locally",
+  "retainedReceipt": "/private/tmp/trellis-coherent-startup-v1-20261011/adoption-v1.json",
+  "serverSha256": "18447cf8a6f68380f56f974bb3b8b069e19c796f7a1d9be2b12445865c5cd26e",
+  "cliSha256": "82f53dfee58eb030062e884c33f70537fb1e512e92cfa371925ec8c2378cdafc",
+  "checks": {
+    "serverLib": {
+      "passed": 144,
+      "failed": 0,
+      "ignored": 2
+    },
+    "normalStartupCli": 4,
+    "controlledRetainedExportCli": 8,
+    "testHarnessCheck": "PASS",
+    "normalServerAndCliBuild": "PASS"
+  },
+  "runtimeActivation": false,
+  "limitations": [
+    "Two PostgreSQL tests ignored in this run; prior separate evidence retained",
+    "Actual WOS completion route and current human/service field grants require owning-service qualification",
+    "Actual operator selection and full Source/case journey pending",
+    "No runtime activation, token request, provider enablement, or grant writes"
+  ]
+}

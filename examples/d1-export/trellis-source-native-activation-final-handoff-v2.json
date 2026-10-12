@@ -1,0 +1,26 @@
+{
+  "status": "actual activation and paired retained-evidence reviews pass",
+  "references": {
+    "actualClosure": {
+      "path": "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/trellis-source-native-activation-actual-closure-v2.json",
+      "sha256": "f33397d64282af55cfe59cb65faf4999ff8fad2a911712b9b68e76b0d0d905b6"
+    },
+    "afterCodeReview": {
+      "path": "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/trellis-source-native-activation-after-code-review-v2.md",
+      "sha256": "a38cc14b3f697c20ec83af1c70bd76b240b8763c0345864d266cec798857bd34"
+    },
+    "afterArchitectureReview": {
+      "path": "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/trellis-source-native-activation-after-architecture-review-v2.md",
+      "sha256": "7412bbbdab1c5bb6dfdb2e6b8d56b05ecfc77e543fe5d804f7f05000022987d7"
+    }
+  },
+  "executionWindowReleased": true,
+  "residentSupervisorPid": 15442,
+  "residentServicePid": 16071,
+  "servicePort": 18198,
+  "remainingOwnedTransientProcesses": [],
+  "sourceNativeAppendQualified": false,
+  "archiveQualified": false,
+  "rollbackExecuted": false,
+  "livenessAuthority": "owner closure point-in-time check; reviewers performed no live checks"
+}

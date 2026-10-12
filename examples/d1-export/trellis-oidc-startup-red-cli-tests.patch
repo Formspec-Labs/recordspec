@@ -1,0 +1,37 @@
+diff --git a/crates/trellis-server/tests/oidc_cli_startup.rs b/crates/trellis-server/tests/oidc_cli_startup.rs
+new file mode 100644
+index 0000000..c4c5384
+--- /dev/null
++++ b/crates/trellis-server/tests/oidc_cli_startup.rs
+@@ -0,0 +1,31 @@
++//! Exercises the actual CLI's fail-closed authentication selection.
++// Rust guideline compliant 2026-02-21
++
++use std::process::Command;
++
++fn cli() -> Command {
++    let mut command = Command::new(env!("CARGO_BIN_EXE_trellis-server"));
++    command.env_clear().env("TRELLIS_STORAGE", "memory");
++    command
++}
++
++#[test]
++fn oidc_cli_requires_profile_before_signing_key_or_storage() {
++    let output = cli().output().unwrap();
++    assert!(!output.status.success());
++    let error = String::from_utf8_lossy(&output.stderr);
++    assert!(error.contains("TRELLIS_OIDC_CONFIG_FILE"), "{error}");
++    assert!(!error.contains("TRELLIS_SIGNING_KEY_COSE_PATH"));
++}
++
++#[test]
++fn oidc_cli_legacy_flags_cannot_supply_missing_current_authority() {
++    let output = cli()
++        .env("TRELLIS_PERMISSIVE_SCOPE_AUTH", "1")
++        .env("TRELLIS_JWT_HS256_SECRET", "public-test-only-legacy-secret")
++        .output()
++        .unwrap();
++    assert!(!output.status.success());
++    let error = String::from_utf8_lossy(&output.stderr);
++    assert!(error.contains("TRELLIS_OIDC_CONFIG_FILE"), "{error}");
++}

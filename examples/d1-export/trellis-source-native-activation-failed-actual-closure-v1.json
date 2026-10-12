@@ -1,0 +1,59 @@
+{
+  "status": "activation refused; original service remains live",
+  "dispatchPid": 83271,
+  "failedAttemptDirectory": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/source-native-activation-e9a11ca0-70dc-4fce-98ea-b6b58ac2f111",
+  "operationCommandSha256": "582055a9ecc0b0fbf2a2fbb8369d3fe48f53f9164be26b8808a4ec78f0052850",
+  "operationOperatorSha256": "b87a07b3ad36afccf8fdeb85d1e641d043de5836d7a40d20dff312edded1e042",
+  "diagnostic": {
+    "databaseRowsPreserved": true,
+    "rowCounts": {
+      "trellis_bundle_publications": 0,
+      "trellis_events": 0,
+      "trellis_schema_migrations": 4
+    },
+    "all15PinsPreserved": true,
+    "originalServiceArgvAndEnvironmentPreserved": true,
+    "historical18088ProcessPreserved": true,
+    "listeners": {
+      "18198": "74338",
+      "18088": "16414"
+    },
+    "supervisorPid": 73745,
+    "originalServicePid": 74338,
+    "failedOperatorAbsent": true,
+    "replacementLaunched": false,
+    "sourceProfileActivated": false,
+    "applicationAppendPerformed": false,
+    "readinessProbePerformedByFailedAttempt": false
+  },
+  "cause": {
+    "verifiedStaticAndIsolated": "KqueueSelector.select catches InterruptedError raised by the original supervisor stop handler after that handler changes TERM/INT to SIG_IGN",
+    "liveCausalInference": "TERM likely arrived during the resident selector wait; the live Python stack was not inspected"
+  },
+  "mutations": {
+    "signalSentToOriginalSupervisor": "SIGTERM",
+    "replacementLaunch": false,
+    "databaseWritesByOperator": false,
+    "artifactProbeOrAppendByOperator": false,
+    "dataRestoreOrDelete": false,
+    "sourceProfileActivated": false
+  },
+  "rollbackFailureInterpretation": "ownedGroupEmpty=true refers to the failed new operator owning no replacement process; original group74338 remains live",
+  "evidence": {
+    "activation-failure.json": "f5f7dabcafbc2ab1b545a91ab1424bd57a9f94ee2a300ea76e60a8ace4f30320",
+    "rollback-failure.json": "d57020b2af9f8614b1a79c11a9c804ebe767e862fe40dd0dce0425446c462aeb",
+    "database-before.private.json": "eef93e13149ada2228b8d58cb3ca37148ed04a5d0654c10b0b0a37285fb15bb5",
+    "database-diagnostic-after.private.json": "eef93e13149ada2228b8d58cb3ca37148ed04a5d0654c10b0b0a37285fb15bb5",
+    "diagnostic-result.json": "21184fe53af0ef87afa695fb528f7e436df8483d6d06e61d898fccbe7e924945",
+    "isolated-stop-handler-proof.json": "050a603c83028be9ad93a1293078a3caffef543a4865837102c62b8c664dc4ad"
+  },
+  "correction": {
+    "operatorPath": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/activate-source-native-restart-v2.py",
+    "operatorSha256": "45d849a3c90810e2b7bf342aff019914598ec0491b9b3455616030c5e7c9d0be",
+    "commandSha256": "1e1c6d254bfe6df07a76c9ffa96e85f6ab43050fc2c54232c76c379c1e78590d",
+    "executed": false,
+    "pairedReviewPending": true
+  },
+  "nativeSourceAppendQualified": false,
+  "liveRetryAuthorized": false
+}

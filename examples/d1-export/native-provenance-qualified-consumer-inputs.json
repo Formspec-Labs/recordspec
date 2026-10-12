@@ -1,0 +1,31 @@
+{
+  "status": "Native qualification401PASS; final paired AFTER review pending; private only.",
+  "snapshot": "/private/tmp/core-native-provenance-inputs-v1-20261009/trellis",
+  "preservedV2PacketSha256": "c2cadd4c74e35891258d979c071a6749c5ad3cbce957d3687380c0cabc696e86",
+  "sourceSha256": {
+    "crates/trellis-admission-wos/src/lib.rs": "e3092704dd73fe916f9fa4c873fee46fcaec2b0b08effa74639ba830c23778f7",
+    "crates/trellis-service-client/src/lib.rs": "4c608bad9c89cfb9125dbc619864cd2cd37193b3486a705d2bb9863142d3d7f3",
+    "crates/trellis-service-client/src/wos_ext.rs": "7e57ce296cdae460a221f554a45c69df6b80f16ead764c060090b0f3a9a03bb6",
+    "crates/trellis-server/src/composition.rs": "61717cd16c8135ee56cc0e13ce799c5270dadfdad5819d10b1e2649f6d9aac7f",
+    "crates/trellis-server/src/openapi.rs": "c7d5c526af8e212138f6802b24e88bf6460dcb2cc329934231e2a6751c7f781e",
+    "crates/trellis-verify-wos/src/lib.rs": "b0cc2fa240d5bd51d2a1b9965930c132900cd499b899a3cd8f1cc3c31ee737e9",
+    "crates/trellis-verify-wos/src/validator.rs": "e62ae040c4ab84711179ac31eabe253898b33d5b00bd5542d235e623a1ed31d0",
+    "crates/trellis-verify-wos/src/native_provenance.rs": "82553ea2c5d311204a0828375530b0223b813dfcea93047cda6a1e82dcce3d67",
+    "specs/trellis-http-api.schema.json": "3dd79d92c4e6613db438867c27468880dbb7189d9188eb1e5ceae4348d5fec4e",
+    "specs/wos-trellis-verification.md": "c424283b03622140af9c99dbc1fcf105fa9e035b39f430d1045af8c41c96a4c2",
+    "specs/trellis-requirements-matrix.md": "9f15446d75c4e51b490a82849297863cd009f4c9eacee04793e3e3344c617c08",
+    "fixtures/conformance/native-provenance-routing.json": "c25be87e3598edeb03fa7363a65c24ffa0b8da589eb47542fb193d01e2e0de88",
+    "scripts/check-http-api-schema.py": "1c3a9cd4226fe2adfc6ad9abc745bb1f24edc55902ef50fb490663bb850b1627",
+    "crates/trellis-conformance/Cargo.toml": "e3313426135c4cb4e6184cd864c43db18b71d250c33467d8a90d2448b6203476",
+    "crates/trellis-conformance/src/lib.rs": "5e47d7ed6784d34d68f5ed30c7c1e630a9fef2a9a1436984d57cbf574e683877",
+    "crates/trellis-conformance/src/native_http_schema.rs": "9b91c0eb0480b6c2d3bad0c2d30a063e0c25398770e2ac9cebb3a4d3173c424f"
+  },
+  "portablePatchSha256": "da9505aad0693a18e0bc8e77e7f0862e1ed67a9fd98049d568ac030192702957",
+  "testDeltaPatchSha256": "d7bbb7dbc3122c94632776096871488b61a45b69a6c0b3ca53ab24dba8a75328",
+  "qualificationReceipt": "/Users/mikewolfd/Work/formspec-stack/thoughts/plans/benefits-scenarios/execution/reports/work-spec/full-d1/native-provenance-qualification-receipt-v1.json",
+  "qualificationReceiptSha256": "bd388601cd21c705ba26cb56646eab533372a432a27c8cb21a52dcbfc23fa2cb",
+  "scope": "Full Core events/runtime suites; owning Trellis admission/client/verifier suites; focused HTTP native schema and OpenAPI parity. Core native window exports real ZIP and compares all original records/order/stamps/replay; owning verifier suite separate, no actual native-window ZIP full verifier claim. No live adoption.",
+  "productionDuringExecution": false,
+  "adoptionStatus": "Not adopted. Existing auth commit3d59b23 must be preserved on eventual integration; qualified consumer patch baseline ea8f547.",
+  "allSevenStageLogsHashVerified": true
+}

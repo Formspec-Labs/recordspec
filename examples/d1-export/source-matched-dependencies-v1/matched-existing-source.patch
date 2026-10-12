@@ -1,0 +1,965 @@
+--- a/trellis/crates/trellis-service-client/src/wos_ext.rs
++++ b/trellis/crates/trellis-service-client/src/wos_ext.rs
+@@ -18,8 +18,9 @@
+ use async_trait::async_trait;
+ use stack_common_error::StackError;
+ use stack_common_http::tenant::TenantScope;
+-use wos_events::ProvenanceRecord;
+ pub use wos_events::WOS_CANONICAL_EVENT_LITERALS;
++pub use wos_events::WOS_NATIVE_PROVENANCE_EVENT_LITERAL;
++use wos_events::{NativeProvenanceEvent, ProvenanceRecord};
+ 
+ use crate::{
+     AppendActor, ComputeContext, SubstrateAppendRequest, SubstrateAppendResult, SubstrateClient,
+@@ -27,12 +28,11 @@
+ 
+ /// Builds a typed WOS provenance append request from a [`ProvenanceRecord`].
+ ///
+-/// Validates that the record carries (or resolves to) a canonical event literal
+-/// and serializes the JSON payload deterministically.
++/// Preserves existing canonical routes. Other known kinds use the shared native
++/// record validator and retain their original fields inside `record`.
+ ///
+ /// # Errors
+-/// Returns an error when the record kind has no Trellis event literal or the
+-/// record cannot serialize to JSON.
++/// Returns an error when native record validation or JSON serialization fails.
+ pub fn wos_provenance_append_request(
+     scope: impl Into<String>,
+     tenant_scope: TenantScope,
+@@ -41,6 +41,19 @@
+     record: ProvenanceRecord,
+     compute_context: ComputeContext,
+ ) -> Result<SubstrateAppendRequest, StackError> {
++    if record.record_kind.canonical_event_literal().is_none() {
++        let native = NativeProvenanceEvent::from_record(&record)
++            .map_err(|_| StackError::bad_request("invalid native provenance record"))?;
++        return SubstrateAppendRequest::new_json(
++            scope,
++            tenant_scope,
++            WOS_NATIVE_PROVENANCE_EVENT_LITERAL,
++            idempotency_key,
++            actor,
++            native.payload().clone(),
++            compute_context,
++        );
++    }
+     let event_type = record
+         .event
+         .clone()
+@@ -108,3 +121,58 @@
+ }
+ 
+ impl<T> SubstrateClientExt for T where T: SubstrateClient + ?Sized {}
++
++#[cfg(test)]
++mod native_provenance_tests {
++    use super::*;
++    fn tenant() -> TenantScope {
++        TenantScope {
++            tenant: "tenant".into(),
++            workspace: "workspace".into(),
++            environment: "test".into(),
++            cell: "cell".into(),
++        }
++    }
++    #[test]
++    fn native_provenance_client_preserves_original_record() {
++        let fixture: serde_json::Value = serde_json::from_str(include_str!(
++            "../../../fixtures/conformance/native-provenance-routing.json"
++        ))
++        .unwrap();
++        let record: ProvenanceRecord = serde_json::from_value(fixture["payload"]["record"].clone()).unwrap();
++        // This helper accepts a typed record. Its original JSON follows the
++        // maintained serializer, which omits empty optional collections.
++        let original = serde_json::to_value(&record).unwrap();
++        let request = wos_provenance_append_request(
++            "case-1",
++            tenant(),
++            "native-client",
++            AppendActor::service("wos-server"),
++            record,
++            ComputeContext::no_delegated_compute("wos-server"),
++        )
++        .unwrap();
++        assert_eq!(request.event_type, WOS_NATIVE_PROVENANCE_EVENT_LITERAL);
++        assert_eq!(request.payload["record"], original);
++        assert_eq!(request.payload["record"]["event"], "original-entry-trigger");
++    }
++    #[test]
++    fn native_provenance_client_keeps_all_canonical_routes_exact() {
++        for literal in WOS_CANONICAL_EVENT_LITERALS {
++            let kind = wos_events::ProvenanceKind::from_canonical_event_literal(literal).unwrap();
++            let record = ProvenanceRecord::blank(kind);
++            let original = serde_json::to_value(&record).unwrap();
++            let request = wos_provenance_append_request(
++                "case-1",
++                tenant(),
++                "canonical-client",
++                AppendActor::service("wos-server"),
++                record,
++                ComputeContext::no_delegated_compute("wos-server"),
++            )
++            .unwrap();
++            assert_eq!(&request.event_type, literal);
++            assert_eq!(request.payload, original);
++        }
++    }
++}
+--- a/work-spec/crates/wos-events/Cargo.toml
++++ b/work-spec/crates/wos-events/Cargo.toml
+@@ -9,6 +9,7 @@
+ [dependencies]
+ base64 = "0.22"
+ integrity-cbor = { path = "../../../integrity-stack/crates/integrity-cbor", features = ["json"] }
++jsonschema = { version = "0.46", default-features = false }
+ serde = { version = "1", features = ["derive"] }
+ serde_json = "1"
+ serde_json_canonicalizer = "0.3"
+--- a/work-spec/crates/wos-events/src/lib.rs
++++ b/work-spec/crates/wos-events/src/lib.rs
+@@ -12,7 +12,12 @@
+ use serde::{Deserialize, Deserializer, Serialize, Serializer};
+ 
+ pub mod custody;
++mod native_provenance;
+ pub mod provenance;
++
++pub use native_provenance::{
++    NativeProvenanceError, NativeProvenanceEvent, WOS_NATIVE_PROVENANCE_EVENT_LITERAL,
++};
+ 
+ pub use custody::{
+     CustodyAppendContext, CustodyAppendError, CustodyAppendInput, CustodyAppendMetadata,
+--- a/work-spec/crates/wos-events/src/custody.rs
++++ b/work-spec/crates/wos-events/src/custody.rs
+@@ -12,6 +12,7 @@
+ use stack_common_typeid as typeid;
+ 
+ use crate::provenance::ProvenanceRecord;
++use crate::WOS_NATIVE_PROVENANCE_EVENT_LITERAL;
+ 
+ /// WOS authored records are small governance facts and must stay inside the
+ /// current inline-payload posture. If this bound changes, Trellis and WOS must
+@@ -277,17 +278,7 @@
+         };
+     }
+ 
+-    let kind = serde_json::to_value(record.record_kind)
+-        .map_err(|error| CustodyAppendError::JsonSerialization(error.to_string()))?;
+-    let Some(kind) = kind.as_str() else {
+-        return Err(CustodyAppendError::JsonSerialization(
+-            "provenance kind did not serialize to a string".to_string(),
+-        ));
+-    };
+-    Ok(format!(
+-        "{event_type_prefix}.{}",
+-        camel_case_record_kind_to_event_tail(kind)
+-    ))
++    Ok(WOS_NATIVE_PROVENANCE_EVENT_LITERAL.to_string())
+ }
+ 
+ fn provenance_record_to_custody_json(
+@@ -318,21 +309,6 @@
+     Ok(authored)
+ }
+ 
+-fn camel_case_record_kind_to_event_tail(kind: &str) -> String {
+-    let mut event_tail = String::with_capacity(kind.len());
+-    for character in kind.chars() {
+-        if character.is_ascii_uppercase() {
+-            if !event_tail.is_empty() {
+-                event_tail.push('_');
+-            }
+-            event_tail.push(character.to_ascii_lowercase());
+-        } else {
+-            event_tail.push(character);
+-        }
+-    }
+-    event_tail
+-}
+-
+ fn provenance_string_tags() -> Vec<(Vec<String>, u64)> {
+     vec![(vec!["timestamp".to_string()], 0u64)]
+ }
+@@ -400,26 +376,17 @@
+     }
+ 
+     #[test]
+-    fn provenance_event_type_uses_snake_case_record_tail() {
+-        assert_eq!(
+-            camel_case_record_kind_to_event_tail("signatureAffirmation"),
+-            "signature_affirmation"
+-        );
+-        assert_eq!(
+-            camel_case_record_kind_to_event_tail("stateTransition"),
+-            "state_transition"
+-        );
+-        assert_eq!(
+-            camel_case_record_kind_to_event_tail("dcrActivityExecuted"),
+-            "dcr_activity_executed"
+-        );
+-
+-        let record =
++    fn provenance_event_type_preserves_canonical_and_routes_native_kinds() {
++        let mut record =
+             ProvenanceRecord::state_transition("intake", "review", "submitted", Some("worker"));
+         assert_eq!(
+             provenance_event_type("wos.kernel", &record).expect("event type"),
+             "wos.kernel.state_transition"
+         );
++        record.record_kind = ProvenanceKind::OnEntry;
++        record.event = None;
++        assert_eq!(provenance_event_type("wos.kernel", &record).unwrap(),
++            WOS_NATIVE_PROVENANCE_EVENT_LITERAL);
+     }
+ 
+     fn record_with_seeded_kind(kind: ProvenanceKind, event: Option<&str>) -> ProvenanceRecord {
+--- /dev/null
++++ b/work-spec/crates/wos-events/src/native_provenance.rs
+@@ -0,0 +1,194 @@
++//! Validates complete native records without changing their original facts.
++
++use std::sync::OnceLock;
++
++use integrity_cbor::{Value as CborValue, canonicalize_cbor_value, cbor_value_to_json, decode_cbor_value};
++use serde_json::Value;
++
++use crate::{ProvenanceKind, ProvenanceRecord};
++
++/// Outer custody event for known kinds without a specialized canonical mapping.
++pub const WOS_NATIVE_PROVENANCE_EVENT_LITERAL: &str = "wos.provenance.recorded";
++
++const SCHEMA: &str = include_str!("../../../schemas/wos-native-provenance-event.schema.json");
++const MAX_DEPTH: usize = 128;
++static VALIDATOR: OnceLock<Result<jsonschema::Validator, String>> = OnceLock::new();
++
++/// Refusal to admit an original native provenance record.
++#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
++pub enum NativeProvenanceError {
++    /// The payload violates the closed native record schema or JSON subset.
++    #[error("invalid native provenance payload: {0}")]
++    InvalidPayload(String),
++    /// An explicit, recognized original record kind is required.
++    #[error("native provenance requires an explicit recognized recordKind")]
++    InvalidRecordKind,
++    /// Specialized kinds must retain their existing canonical route.
++    #[error("canonical provenance kind cannot use the generic route")]
++    CanonicalKind,
++    /// The original record identifier must be a native record TypeID.
++    #[error("native provenance record identifier is invalid")]
++    InvalidRecordId,
++    /// The bytes are not an unambiguous value in the owning CBOR subset.
++    #[error("invalid native provenance CBOR: {0}")]
++    InvalidCbor(String),
++    /// The embedded owning schema could not be initialized.
++    #[error("native provenance schema initialization failed: {0}")]
++    InvalidSchema(String),
++}
++
++/// Validated custody payload retaining the complete original JSON record.
++///
++/// Construction validates raw values before typed parsing can ignore fields.
++/// This type preserves JSON values; it does not assert raw HTTP byte identity.
++#[derive(Debug, Clone, PartialEq)]
++pub struct NativeProvenanceEvent {
++    payload: Value,
++    kind: ProvenanceKind,
++    record_id: String,
++}
++
++impl NativeProvenanceEvent {
++    /// Validates an original wrapped payload without rewriting its fields.
++    ///
++    /// # Errors
++    /// Refuses malformed fields, unknown kinds, canonical-route bypass and
++    /// values outside the owning JSON/CBOR subset.
++    pub fn from_json(value: &Value) -> Result<Self, NativeProvenanceError> {
++        validate_json_subset(value, 0)?;
++        let record = value.get("record").and_then(Value::as_object)
++            .ok_or_else(|| NativeProvenanceError::InvalidPayload("record must be an object".into()))?;
++        let kind: ProvenanceKind = serde_json::from_value(
++            record.get("recordKind").cloned().ok_or(NativeProvenanceError::InvalidRecordKind)?
++        ).map_err(|_| NativeProvenanceError::InvalidRecordKind)?;
++        if kind.canonical_event_literal().is_some() {
++            return Err(NativeProvenanceError::CanonicalKind);
++        }
++        let record_id = record.get("id").and_then(Value::as_str)
++            .filter(|id| stack_common_typeid::is_valid_record_type_id(id))
++            .ok_or(NativeProvenanceError::InvalidRecordId)?;
++        let validator = VALIDATOR.get_or_init(|| {
++            let schema: Value = serde_json::from_str(SCHEMA).map_err(|_| "invalid embedded JSON".to_string())?;
++            jsonschema::options().should_validate_formats(true).build(&schema)
++                .map_err(|_| "invalid embedded schema".to_string())
++        }).as_ref().map_err(|error| NativeProvenanceError::InvalidSchema(error.clone()))?;
++        validator.validate(value).map_err(|error| {
++            // Report the location, not an original answer or diagnostic value.
++            NativeProvenanceError::InvalidPayload(format!("schema violation at {}", error.instance_path()))
++        })?;
++        Ok(Self { payload: value.clone(), kind, record_id: record_id.to_string() })
++    }
++
++    /// Validates a typed source record serialized once into the native payload.
++    ///
++    /// # Errors
++    /// Refuses records that are unstamped, malformed or already canonical.
++    pub fn from_record(record: &ProvenanceRecord) -> Result<Self, NativeProvenanceError> {
++        let record = serde_json::to_value(record)
++            .map_err(|_| NativeProvenanceError::InvalidPayload("record serialization failed".into()))?;
++        Self::from_json(&serde_json::json!({ "record": record }))
++    }
++
++    /// Validates original wrapped archive CBOR before converting an inspection view.
++    ///
++    /// # Errors
++    /// Refuses ambiguous maps, tags, byte strings, trailing bytes and invalid records.
++    pub fn from_dcbor_slice(bytes: &[u8]) -> Result<Self, NativeProvenanceError> {
++        Self::from_json(&decode_original(bytes, false)?)
++    }
++
++    /// Validates bare authored custody bytes before any lossy inspection conversion.
++    ///
++    /// The owning custody encoder tags only the root timestamp with tag 0.
++    /// Original bytes remain the caller's evidence; the timestamp text is retained.
++    ///
++    /// # Errors
++    /// Refuses ambiguous maps, misplaced tags, byte strings and invalid records.
++    pub fn from_record_dcbor_slice(bytes: &[u8]) -> Result<Self, NativeProvenanceError> {
++        let record = decode_original(bytes, true)?;
++        Self::from_json(&serde_json::json!({ "record": record }))
++    }
++
++    /// Returns the validated complete append payload.
++    #[must_use]
++    pub fn payload(&self) -> &Value { &self.payload }
++
++    /// Returns the unchanged original record JSON value.
++    #[must_use]
++    pub fn record(&self) -> &Value { &self.payload["record"] }
++
++    /// Returns the recognized original record kind.
++    #[must_use]
++    pub fn record_kind(&self) -> ProvenanceKind { self.kind }
++
++    /// Returns the original native record identifier.
++    #[must_use]
++    pub fn record_id(&self) -> &str { &self.record_id }
++}
++
++fn validate_json_subset(value: &Value, depth: usize) -> Result<(), NativeProvenanceError> {
++    if depth > MAX_DEPTH {
++        return Err(NativeProvenanceError::InvalidPayload("maximum depth exceeded".into()));
++    }
++    match value {
++        Value::Number(number) if number.is_u64() && number.as_i64().is_none() =>
++            Err(NativeProvenanceError::InvalidPayload("integer outside signed 64-bit range".into())),
++        Value::Number(number) if number.is_f64() => {
++            let valid = number.as_f64().is_some_and(|n| n.is_finite() && !(n == 0.0 && n.is_sign_negative()));
++            if valid { Ok(()) } else {
++                Err(NativeProvenanceError::InvalidPayload("noncanonical float".into()))
++            }
++        }
++        Value::Array(items) => items.iter().try_for_each(|item| validate_json_subset(item, depth + 1)),
++        Value::Object(items) => items.values().try_for_each(|item| validate_json_subset(item, depth + 1)),
++        _ => Ok(()),
++    }
++}
++
++fn decode_original(bytes: &[u8], bare: bool) -> Result<Value, NativeProvenanceError> {
++    let decoded = decode_cbor_value(bytes)
++        .map_err(|_| NativeProvenanceError::InvalidCbor("expected exactly one CBOR value".into()))?;
++    validate_cbor_subset(&decoded, &mut Vec::new(), if bare { 1 } else { 0 }, bare)?;
++    // Reuse the maintained duplicate-key/float checks, discarding its sorted clone.
++    canonicalize_cbor_value(&decoded)
++        .map_err(|_| NativeProvenanceError::InvalidCbor("ambiguous map or noncanonical number".into()))?;
++    cbor_value_to_json(&decoded)
++        .map_err(|_| NativeProvenanceError::InvalidCbor("value outside JSON bridge".into()))
++}
++
++fn validate_cbor_subset(
++    value: &CborValue, path: &mut Vec<String>, depth: usize, bare: bool,
++) -> Result<(), NativeProvenanceError> {
++    let invalid = || NativeProvenanceError::InvalidCbor("unsupported value, tag or depth".into());
++    if depth > MAX_DEPTH { return Err(invalid()); }
++    match value {
++        CborValue::Tag(0, child) if bare && path.as_slice() == ["timestamp"] => {
++            if matches!(child.as_ref(), CborValue::Text(_)) { Ok(()) } else { Err(invalid()) }
++        }
++        CborValue::Tag(_, _) | CborValue::Bytes(_) => Err(invalid()),
++        CborValue::Array(items) => {
++            for item in items {
++                path.push(String::new());
++                let result = validate_cbor_subset(item, path, depth + 1, bare);
++                path.pop();
++                result?;
++            }
++            Ok(())
++        }
++        CborValue::Map(items) => {
++            for (key, value) in items {
++                let CborValue::Text(key) = key else { return Err(invalid()); };
++                path.push(key.clone());
++                let result = validate_cbor_subset(value, path, depth + 1, bare);
++                path.pop();
++                result?;
++            }
++            Ok(())
++        }
++        CborValue::Null | CborValue::Bool(_) | CborValue::Integer(_) | CborValue::Float(_) | CborValue::Text(_) => Ok(()),
++        _ => Err(invalid()),
++    }
++}
++
++#[cfg(test)]
++mod tests;
+--- /dev/null
++++ b/work-spec/crates/wos-events/src/native_provenance/tests.rs
+@@ -0,0 +1,170 @@
++use super::*;
++use crate::{CustodyAppendContext, CustodyAppendInput};
++use integrity_cbor::{encode_cbor_value, json_to_cbor_value, json_to_dcbor_bytes};
++
++fn record() -> ProvenanceRecord {
++    let mut record = ProvenanceRecord::state_entered("Draft");
++    record.timestamp = "2026-10-09T14:00:00.123Z".into();
++    record.definition_version = Some("1.0.0".into());
++    record.audit_layer = Some("facts".into());
++    record.event = Some("original.trigger".into());
++    record.data = Some(serde_json::json!({"nested":[null, true, {"original":"fact"}], "number":17}));
++    record
++}
++
++fn payload() -> Value { serde_json::json!({"record": record()}) }
++
++#[test]
++fn native_provenance_registry_parity_and_every_known_route() {
++    let registry: Value = serde_json::from_str(include_str!("../../../../schemas/record-kind-registry.json")).unwrap();
++    let schema: Value = serde_json::from_str(SCHEMA).unwrap();
++    let mut remaining = Vec::new();
++    let mut canonical = 0;
++    for entry in registry["recordKinds"].as_array().unwrap() {
++        let mut original = record();
++        original.record_kind = serde_json::from_value(entry["literal"].clone()).unwrap();
++        match original.record_kind.canonical_event_literal() {
++            Some(literal) => {
++                canonical += 1;
++                assert_eq!(entry["eventLiteral"], literal);
++                assert!(matches!(NativeProvenanceEvent::from_record(&original), Err(NativeProvenanceError::CanonicalKind)));
++            }
++            None => {
++                assert!(entry.get("eventLiteral").is_none());
++                remaining.push(entry["literal"].clone());
++                let event = NativeProvenanceEvent::from_record(&original).unwrap();
++                assert_eq!(event.record_kind(), original.record_kind);
++                assert_eq!(event.record(), &serde_json::to_value(&original).unwrap());
++                assert_eq!(event.record_id(), original.id);
++            }
++        }
++    }
++    assert_eq!(canonical, 28);
++    assert_eq!(remaining.len(), 106);
++    assert_eq!(schema["properties"]["record"]["properties"]["recordKind"]["enum"], Value::Array(remaining));
++}
++
++#[test]
++fn native_provenance_preserves_original_json_and_actual_timestamp_tag() {
++    let original = record();
++    let context = CustodyAppendContext { event_type_prefix: "wos.kernel".into(), case_id: None,
++        max_inline_record_bytes: None, workflow_ref: None };
++    let metadata = context.metadata_for_provenance_record(&stack_common_typeid::mint_case_ledger_id(), 0, &original).unwrap();
++    assert_eq!(metadata.event_type, WOS_NATIVE_PROVENANCE_EVENT_LITERAL);
++    let input = CustodyAppendInput::from_provenance_record(&original, &context, metadata).unwrap();
++    let bytes_before = input.record.clone();
++    let decoded = decode_cbor_value(input.record_bytes()).unwrap();
++    let CborValue::Map(fields) = decoded else { panic!("record map") };
++    assert!(fields.iter().any(|(key, value)| key == &CborValue::Text("timestamp".into())
++        && matches!(value, CborValue::Tag(0, _))));
++    let event = NativeProvenanceEvent::from_record_dcbor_slice(input.record_bytes()).unwrap();
++    assert_eq!(event.record(), &serde_json::to_value(&original).unwrap());
++    assert_eq!(input.record, bytes_before);
++    let wrapped = json_to_dcbor_bytes(event.payload(), &[]).unwrap();
++    assert_eq!(NativeProvenanceEvent::from_dcbor_slice(&wrapped).unwrap().payload(), event.payload());
++}
++
++#[test]
++fn native_provenance_preserves_native_task_expiry_without_broadening_other_outcomes() {
++    // Mirrors retire_expired_tasks: preserve its maintained constructor,
++    // system actor, detail shape and unmodified native outcome literal.
++    let mut expired = ProvenanceRecord::task_lifecycle(
++        ProvenanceKind::TaskFailed, "review-task", None,
++        Some(serde_json::json!({"taskStatus":"expired", "outcome":"expired",
++            "expiresAt":"2026-10-09T14:00:00Z", "timerRef":null})),
++    );
++    expired.timestamp = "2026-10-09T14:00:00Z".into();
++    expired.actor_type = Some("system".into());
++    expired.outcome = Some("expired".into());
++    expired.audit_layer = Some("facts".into());
++    expired.definition_version = Some("1.0.0".into());
++    let native = NativeProvenanceEvent::from_record(&expired).unwrap();
++    assert_eq!(native.record(), &serde_json::to_value(&expired).unwrap());
++    let bytes = json_to_dcbor_bytes(native.payload(), &[]).unwrap();
++    assert_eq!(NativeProvenanceEvent::from_dcbor_slice(&bytes).unwrap().record(), native.record());
++    expired.record_kind = ProvenanceKind::TaskCreated;
++    assert!(NativeProvenanceEvent::from_record(&expired).is_err());
++    expired.record_kind = ProvenanceKind::TaskFailed;
++    expired.outcome = Some("unknown-native-outcome".into());
++    assert!(NativeProvenanceEvent::from_record(&expired).is_err());
++}
++
++#[test]
++fn native_provenance_refuses_missing_unknown_and_malformed_fields() {
++    let mut invalids = Vec::new();
++    for required in ["id", "recordKind", "timestamp", "auditLayer", "definitionVersion"] {
++        let mut value = payload(); value["record"].as_object_mut().unwrap().remove(required); invalids.push(value);
++    }
++    for (field, value) in [
++        ("recordKind", serde_json::json!("x-unknown")), ("recordKind", Value::Null),
++        ("id", serde_json::json!("")), ("id", serde_json::json!("arbitrary-id")),
++        ("timestamp", serde_json::json!("not-a-time")), ("timestamp", serde_json::json!("")),
++        ("auditLayer", serde_json::json!("unknown")), ("inputs", serde_json::json!([7])),
++        ("fromState", serde_json::json!({})), ("definitionVersion", serde_json::json!("")),
++        ("canonicalEventHash", serde_json::json!("invalid")),
++    ] { let mut p = payload(); p["record"][field] = value; invalids.push(p); }
++    let mut extra = payload(); extra["unexpected"] = true.into(); invalids.push(extra);
++    let mut extra = payload(); extra["record"]["unexpected"] = true.into(); invalids.push(extra);
++    invalids.extend([Value::Null, serde_json::json!({"record": []}), serde_json::json!({})]);
++    for value in invalids { assert!(NativeProvenanceEvent::from_json(&value).is_err(), "accepted {value}"); }
++}
++
++#[test]
++fn native_provenance_json_and_cbor_share_numeric_and_depth_bounds() {
++    for number in [serde_json::json!(u64::MAX), serde_json::json!(-0.0)] {
++        let mut value = payload(); value["record"]["data"] = number;
++        assert!(NativeProvenanceEvent::from_json(&value).is_err());
++    }
++    let mut value = payload(); value["record"]["data"] = serde_json::json!([i64::MIN, i64::MAX, 1.25]);
++    assert!(NativeProvenanceEvent::from_json(&value).is_ok());
++    assert!(NativeProvenanceEvent::from_dcbor_slice(&json_to_dcbor_bytes(&value, &[]).unwrap()).is_ok());
++    let mut nested = Value::Null;
++    for _ in 0..126 { nested = Value::Array(vec![nested]); }
++    value["record"]["data"] = nested;
++    assert!(NativeProvenanceEvent::from_json(&value).is_ok());
++    assert!(NativeProvenanceEvent::from_dcbor_slice(&json_to_dcbor_bytes(&value, &[]).unwrap()).is_ok());
++    value["record"]["data"] = Value::Array(vec![value["record"]["data"].take()]);
++    assert!(NativeProvenanceEvent::from_json(&value).is_err());
++    assert!(NativeProvenanceEvent::from_dcbor_slice(&json_to_dcbor_bytes(&value, &[]).unwrap()).is_err());
++}
++
++#[test]
++fn native_provenance_refuses_duplicate_keys_before_json_conversion() {
++    let mut wrapped = json_to_cbor_value(&payload(), &[]).unwrap();
++    let CborValue::Map(fields) = &mut wrapped else { panic!("wrapper map") };
++    fields.push(fields[0].clone());
++    assert!(matches!(NativeProvenanceEvent::from_dcbor_slice(&encode_cbor_value(&wrapped).unwrap()), Err(NativeProvenanceError::InvalidCbor(_))));
++    let mut bare = json_to_cbor_value(&serde_json::to_value(record()).unwrap(), &[]).unwrap();
++    let CborValue::Map(fields) = &mut bare else { panic!("record map") };
++    let discriminator = fields.iter().find(|(key, _)| key == &CborValue::Text("recordKind".into())).unwrap().clone();
++    fields.push(discriminator);
++    assert!(matches!(NativeProvenanceEvent::from_record_dcbor_slice(&encode_cbor_value(&bare).unwrap()), Err(NativeProvenanceError::InvalidCbor(_))));
++}
++
++#[test]
++fn native_provenance_refuses_bytes_tags_and_trailing_input() {
++    for bad in [CborValue::Bytes(vec![1]), CborValue::Tag(32, Box::new(CborValue::Text("uri".into()))),
++        CborValue::Tag(0, Box::new(CborValue::Text("2026-10-09T00:00:00Z".into())))] {
++        let mut wrapped = json_to_cbor_value(&payload(), &[]).unwrap();
++        let CborValue::Map(fields) = &mut wrapped else { panic!("wrapper map") };
++        fields.push((CborValue::Text("extra".into()), bad));
++        assert!(matches!(NativeProvenanceEvent::from_dcbor_slice(&encode_cbor_value(&wrapped).unwrap()), Err(NativeProvenanceError::InvalidCbor(_))));
++    }
++    for (field, bad) in [
++        ("data", CborValue::Tag(0, Box::new(CborValue::Text("2026-10-09T00:00:00Z".into())))),
++        ("data", CborValue::Map(vec![(CborValue::Text("timestamp".into()),
++            CborValue::Tag(0, Box::new(CborValue::Text("2026-10-09T00:00:00Z".into()))))])),
++        ("timestamp", CborValue::Tag(0, Box::new(CborValue::Integer(7.into())))),
++        ("timestamp", CborValue::Tag(0, Box::new(CborValue::Tag(0,
++            Box::new(CborValue::Text("2026-10-09T00:00:00Z".into())))))),
++    ] {
++        let mut bare = json_to_cbor_value(&serde_json::to_value(record()).unwrap(), &[]).unwrap();
++        let CborValue::Map(fields) = &mut bare else { panic!("record map") };
++        let (_, value) = fields.iter_mut().find(|(key, _)| key == &CborValue::Text(field.into())).unwrap();
++        *value = bad;
++        assert!(matches!(NativeProvenanceEvent::from_record_dcbor_slice(&encode_cbor_value(&bare).unwrap()),
++            Err(NativeProvenanceError::InvalidCbor(_))));
++    }
++    let mut bytes = json_to_dcbor_bytes(&payload(), &[]).unwrap(); bytes.push(0);
++    assert!(NativeProvenanceEvent::from_dcbor_slice(&bytes).is_err());
++}
+--- /dev/null
++++ b/work-spec/schemas/wos-native-provenance-event.schema.json
+@@ -0,0 +1,375 @@
++{
++  "$schema": "https://json-schema.org/draft/2020-12/schema",
++  "$id": "https://wos-spec.org/schemas/wos-native-provenance-event.schema.json",
++  "title": "Complete native WOS provenance custody event",
++  "description": "Transport for known original provenance kinds without a specialized canonical event. Retains the original recordKind and all original typed fields; specialized canonical kinds retain their existing routes. The recordKind enum mirrors record-kind-registry.json entries without eventLiteral. Application data is arbitrary JSON within the owning signed-64-bit/depth-128 JSON-to-CBOR subset.",
++  "type": "object",
++  "additionalProperties": false,
++  "required": [
++    "record"
++  ],
++  "properties": {
++    "record": {
++      "type": "object",
++      "additionalProperties": false,
++      "allOf": [
++        {
++          "if": {
++            "required": ["outcome"],
++            "properties": {"outcome": {"const": "expired"}}
++          },
++          "then": {
++            "properties": {"recordKind": {"const": "taskFailed"}}
++          }
++        }
++      ],
++      "required": [
++        "id",
++        "recordKind",
++        "timestamp",
++        "auditLayer",
++        "definitionVersion"
++      ],
++      "properties": {
++        "id": {
++          "type": "string",
++          "minLength": 1
++        },
++        "timestamp": {
++          "type": "string",
++          "format": "date-time",
++          "minLength": 1
++        },
++        "actorId": {
++          "type": "string",
++          "minLength": 1
++        },
++        "fromState": {
++          "type": "string",
++          "minLength": 1
++        },
++        "toState": {
++          "type": "string",
++          "minLength": 1
++        },
++        "event": {
++          "type": "string",
++          "minLength": 1
++        },
++        "actorType": {
++          "type": "string",
++          "oneOf": [
++            {
++              "enum": [
++                "human",
++                "system",
++                "agent"
++              ]
++            },
++            {
++              "pattern": "^x-[a-z][a-z0-9-]*$"
++            }
++          ],
++          "description": "Actor classification when the processor can resolve one canonically. Reserved literals are `human`, `system`, and `agent`; extension values MUST use an `x-` prefix.",
++          "examples": [
++            "human",
++            "system",
++            "agent"
++          ]
++        },
++        "lifecycleState": {
++          "type": "string",
++          "minLength": 1
++        },
++        "definitionVersion": {
++          "type": "string",
++          "minLength": 1
++        },
++        "inputDigest": {
++          "type": "string",
++          "minLength": 1
++        },
++        "outputDigest": {
++          "type": "string",
++          "minLength": 1
++        },
++        "canonicalEventHash": {
++          "type": "string",
++          "pattern": "^(?:sha256:)?[a-f0-9]{64}$",
++          "description": "Trellis `canonical_event_hash` text stamped after custody admission, when present. Current Trellis service receipts use `sha256:<lowercase hex>`; older local fixtures may use bare lowercase hex.",
++          "examples": [
++            "sha256:9ad0556334071a0d40050c61ba4601506b87dbc4847d808fb3693b364af5090c"
++          ]
++        },
++        "outcome": {
++          "description": "Preserves maintained native TaskFailed expiry facts. The expired literal is allowed only with TaskFailed; other outcomes retain the shared provenance outcome rules.",
++          "anyOf": [
++            {"$ref": "#/$defs/ProvenanceOutcome"},
++            {"const": "expired"}
++          ]
++        },
++        "recordKind": {
++          "enum": [
++            "unmatchedEvent",
++            "caseStateMutation",
++            "timerCreated",
++            "timerFired",
++            "timerCancelled",
++            "onEntry",
++            "onExit",
++            "actionExecuted",
++            "invalidDuration",
++            "toleranceViolation",
++            "convergenceCapReached",
++            "deonticViolation",
++            "deonticEvaluation",
++            "deonticResolution",
++            "deonticBypass",
++            "rightsViolation",
++            "consistencyViolation",
++            "autonomyViolation",
++            "autonomyCapped",
++            "autonomyComputed",
++            "humanTaskCreated",
++            "toolViolation",
++            "escalationPending",
++            "autonomyDemotion",
++            "autonomyEscalation",
++            "confidenceViolation",
++            "confidenceDecay",
++            "cumulativeConfidenceViolation",
++            "sessionPaused",
++            "groundTruthLabel",
++            "agentOutput",
++            "actorTypeViolation",
++            "agentProvenanceAnnotation",
++            "agentVersionChange",
++            "narrativeTierRecorded",
++            "constraintTamperBlocked",
++            "driftReclassification",
++            "agentStateTransition",
++            "proxyInvocation",
++            "dispositiveViolation",
++            "fallbackTriggered",
++            "fallbackAttempt",
++            "fallbackTerminal",
++            "noticeSent",
++            "separationViolation",
++            "appealFiled",
++            "protocolViolation",
++            "independentFirstEnforced",
++            "samplingDecision",
++            "overrideViolation",
++            "overrideRecorded",
++            "legalHoldPlaced",
++            "legalHoldReleased",
++            "legalHoldDestructionRejected",
++            "continuationOfServicesActivated",
++            "pipelineStageCompleted",
++            "pipelineRiskProfile",
++            "pipelineRejection",
++            "taskCreated",
++            "taskPresented",
++            "taskDismissed",
++            "taskDraftPersisted",
++            "taskResponseSubmitted",
++            "taskResponseRejected",
++            "dataMapping",
++            "taskCompleted",
++            "taskFailed",
++            "taskSkipped",
++            "parameterResolved",
++            "compensationLogEntry",
++            "compensationExecuted",
++            "compensationScopeBoundary",
++            "delegationViolation",
++            "instanceSuspended",
++            "instanceResumed",
++            "instanceTerminated",
++            "stepResultPersisted",
++            "idempotencyDedup",
++            "contractValidation",
++            "historyCleared",
++            "dcrActivityExecuted",
++            "dcrRelationEvaluated",
++            "dcrResolutionError",
++            "zoneSatisfied",
++            "dcrZoneViolation",
++            "equityAlert",
++            "circuitBreakerTripped",
++            "circuitBreakerReset",
++            "shadowModeDivergence",
++            "driftAlert",
++            "verificationReportProduced",
++            "immutabilityViolation",
++            "activationBlocked",
++            "calendarIgnored",
++            "notificationSuppressed",
++            "reportTimedOut",
++            "configurationWarning",
++            "relationshipChanged",
++            "milestoneFired",
++            "eventEmitted",
++            "eventConsumed",
++            "callbackReceived",
++            "callbackPending",
++            "arazzoStep",
++            "toolInvoked",
++            "policyDecision"
++          ]
++        },
++        "auditLayer": {
++          "enum": [
++            "facts",
++            "reasoning",
++            "counterfactual",
++            "narrative"
++          ]
++        },
++        "data": {},
++        "inputs": {
++          "type": "array",
++          "description": "Input entity references used by this activity.",
++          "items": {
++            "type": "string",
++            "minLength": 1,
++            "description": "Opaque or resolvable token naming an input entity this activity consumed, aligned with PROV-O `prov:used` semantics for downstream audit graph materialization.",
++            "examples": [
++              "handoff-public-2026-0001"
++            ],
++            "x-wos": {
++              "openStringKind": "identifier"
++            }
++          },
++          "examples": [
++            [
++              "handoff-public-2026-0001"
++            ]
++          ]
++        },
++        "outputs": {
++          "type": "array",
++          "description": "Output entity references generated by this activity.",
++          "items": {
++            "type": "string",
++            "minLength": 1,
++            "description": "Opaque or resolvable token naming an output entity this activity produced so exporters can stitch forward references into case files or external systems.",
++            "examples": [
++              "sba-poc_case_01jqrpd32jf8xtx9qxkkv3rqsc"
++            ],
++            "x-wos": {
++              "openStringKind": "identifier"
++            }
++          },
++          "examples": [
++            [
++              "sba-poc_case_01jqrpd32jf8xtx9qxkkv3rqsc"
++            ]
++          ]
++        },
++        "transitionTags": {
++          "type": "array",
++          "description": "Semantic tags copied from the firing transition when this record represents a state transition. The presence of 'determination' makes caseFileSnapshot mandatory.",
++          "examples": [
++            [
++              "determination"
++            ],
++            [
++              "review"
++            ]
++          ],
++          "items": {
++            "type": "string",
++            "minLength": 1,
++            "description": "One semantic transition tag copied from the Kernel transition definition, such as 'determination' for consequential decisions or 'review' for human review steps.",
++            "examples": [
++              "determination",
++              "review"
++            ],
++            "x-wos": {
++              "openStringKind": "tagLabel"
++            }
++          }
++        },
++        "caseFileSnapshot": {
++          "$ref": "#/$defs/CaseFileSnapshot"
++        }
++      }
++    }
++  },
++  "$defs": {
++    "CaseFileSnapshot": {
++      "type": "object",
++      "description": "Canonical case-file snapshot captured immediately before a determination-tagged transition fires. The value is the factual input to the determination; jcsCanonical and sha256 make the snapshot stable and tamper-evident for notices, appeals, and audit export.",
++      "examples": [
++        {
++          "value": {
++            "income": 17500,
++            "eligible": true
++          },
++          "jcsCanonical": "{\"eligible\":true,\"income\":17500}",
++          "sha256": "b19f000c0cd497b52c4a78e50641651e4b1e96931a1b1558984d69e722f73f5e"
++        }
++      ],
++      "required": [
++        "value",
++        "jcsCanonical",
++        "sha256"
++      ],
++      "additionalProperties": false,
++      "properties": {
++        "value": {
++          "description": "Raw case-file JSON value observed immediately before the determination transition fires. This value may be an object, array, string, number, boolean, or null depending on the processor's case-state representation.",
++          "examples": [
++            {
++              "income": 17500,
++              "eligible": true
++            }
++          ]
++        },
++        "jcsCanonical": {
++          "type": "string",
++          "minLength": 1,
++          "description": "Canonical JSON string for value using JCS (RFC 8785) canonicalization semantics. Identical case-file state MUST produce byte-identical canonical strings.",
++          "examples": [
++            "{\"eligible\":true,\"income\":17500}"
++          ],
++          "x-wos": {
++            "openStringKind": "identifier"
++          }
++        },
++        "sha256": {
++          "type": "string",
++          "pattern": "^[a-f0-9]{64}$",
++          "description": "Lowercase SHA-256 hex digest of jcsCanonical. This digest links the human-readable snapshot to tamper-evident exports without requiring downstream systems to reserialize value.",
++          "examples": [
++            "b19f000c0cd497b52c4a78e50641651e4b1e96931a1b1558984d69e722f73f5e"
++          ]
++        }
++      }
++    },
++    "ProvenanceOutcome": {
++      "type": "string",
++      "description": "Outcome literal recorded on a Facts-tier provenance record when the processor completes (or declines to complete) an action. Open enum: the listed values are reserved across all tiers; vendor extensions MUST use an `x-` prefix to avoid future conflicts. Reserved literals currently defined: `preconditionNotSatisfied` (AI Integration \u00a73.3.1 -- emitted when a capability precondition FEL expression evaluates to false or non-boolean, blocking agent invocation and falling through to the fallback chain) and `convergenceCapReached` (Runtime \u00a710.3 -- emitted when continuous-mode re-evaluation hits the 100-cycle convergence cap for a single triggering mutation).",
++      "examples": [
++        "preconditionNotSatisfied",
++        "convergenceCapReached",
++        "x-vendor-quota-exceeded"
++      ],
++      "oneOf": [
++        {
++          "enum": [
++            "preconditionNotSatisfied",
++            "convergenceCapReached"
++          ]
++        },
++        {
++          "pattern": "^x-[a-z][a-z0-9-]*$"
++        }
++      ],
++      "x-wos": {
++        "open-enum": true
++      }
++    }
++  }
++}

@@ -1,0 +1,85 @@
+{
+  "status": "paired static APPROVE exact bounded activation command; ready for Root execution grant; not executed",
+  "operator": {
+    "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/activate-source-native-restart-v1.py",
+    "sha256": "b87a07b3ad36afccf8fdeb85d1e641d043de5836d7a40d20dff312edded1e042"
+  },
+  "command": {
+    "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/activate-source-native-restart-v1.command.txt",
+    "sha256": "582055a9ecc0b0fbf2a2fbb8369d3fe48f53f9164be26b8808a4ec78f0052850"
+  },
+  "config": {
+    "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/activate-source-native-restart-config-v1.json",
+    "sha256": "8d1aee614df411f9d726af72ea30104760529a8835aeeff7ae950b76590ddcec"
+  },
+  "materialization": {
+    "path": "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/trellis-source-native-config-materialization-v1.json",
+    "sha256": "2898f72550307f50668bbababcd8d3ba630d42bb4b7be3e52184568384e0ce9f"
+  },
+  "identityReceipt": {
+    "path": "/Users/mikewolfd/Work/formspec-stack/thoughts/plans/benefits-scenarios/execution/reports/root/external-service-identities-v1/continuation-execution-result.json",
+    "sha256": "00697ef44c7ec1f0ac0140f7237e9370d4cac3c949fccd08fd54a9bc15d70cbe"
+  },
+  "configReviews": {
+    "code": {
+      "path": "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/trellis-source-native-config-before-code-review-v1.md",
+      "sha256": "75ff1d8a0d3cbd21e139291e9ab9276d421a88e8211e6e25982b5e011bfc62df"
+    },
+    "architecture": {
+      "path": "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/trellis-source-native-config-before-architecture-review-v1.md",
+      "sha256": "984011fc92511d201755350cdafb4f2f0eaedfe45ebd6cab2563d14b21fb7a7e"
+    }
+  },
+  "bounds": {
+    "activationSeconds": 180,
+    "eachReadinessSeconds": 30,
+    "rollbackSeconds": 90,
+    "eachServiceLogBytes": 33554432,
+    "activationPlusRollbackMaximumLogBytes": 67108864,
+    "ownedCleanupSeconds": 3,
+    "oldGroupStopSeconds": 10
+  },
+  "precondition": "unchanged actual original18198 PID74338/PGID74338 and supervisor73745; all15 frozeninputs plus activationconfig pins verified",
+  "activation": "same retained binary/key/DB/S3 env with only TRELLIS_OIDC_CONFIG_FILE\u2192inactivev8 profile; original active files not overwritten",
+  "rollback": "on initial activation failure stop owned newgroup then restore same original binary/environment/profile; preserve data; invalid candidate files do not block original availability; failed cleanup or original drift refuses unsafe launch and retains manual-inspection receipt",
+  "verificationRequired": [
+    "result.json status activated with exact PID/env and new profile/grant hashes",
+    "database-before/after complete snapshots exactly equal; existing schema/migration/event/publication rows retained",
+    "old18088 before/after process snapshots, originalbinary/key/config checks pass",
+    "maintained ready.raw response retained plus ownedlistener exactPID",
+    "then qualified Source maintainedprovider/nativeadapter current-token registry admission and real native append acknowledgement/readback; readiness alone cannotclaimSourceacceptance",
+    "Root captures public sanitized activationreceipt and operatorPID; resident supervision required",
+    "WOS case/exporter grants remainpending actualcase; this Source scopegrant isindependent"
+  ],
+  "sourceAuthority": {
+    "principal": "source-native-producer",
+    "subject": "87af7ce6-4294-4a4b-898b-4ecd486d104f",
+    "scope": "formspec.managed-single-cell",
+    "actions": [
+      "read",
+      "append"
+    ],
+    "actor": {
+      "kind": "service",
+      "subject": "formspec-server"
+    },
+    "payloadActors": [],
+    "noAdminister": true,
+    "noWosCase": true
+  },
+  "executionPerformed": false,
+  "noDataChangesByOperator": "no direct SQLwrites/database restoration/object-store stop/delete/recreation; maintained readiness healthkeyput/get and normal server migration validation still run",
+  "astParsed": true,
+  "operatorReviews": {
+    "code": {
+      "path": "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/trellis-source-native-activation-before-code-review-v1.md",
+      "sha256": "d36a1f951697bb786df9946de249d60214e075c342b0dab3d4a199686e3db134",
+      "verdict": "APPROVE static exact operator"
+    },
+    "architecture": {
+      "path": "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/trellis-source-native-activation-before-architecture-review-v1.md",
+      "sha256": "16476857a64e15c19df56de50ff5f140e73d772245d7be29443ad39683c2d507",
+      "verdict": "APPROVE static exact operator"
+    }
+  }
+}

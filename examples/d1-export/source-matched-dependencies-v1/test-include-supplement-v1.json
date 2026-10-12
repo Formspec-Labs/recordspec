@@ -1,0 +1,81 @@
+{
+  "status": "qualified test-include supplement; previous composition untouched",
+  "priorHandoffSha256": "ca9409aec152e42bf8202d2c9d695281ab52e00f7ba53c9c5b4fef3d7e317ea0",
+  "omission": "Client matched wos_ext test includes a qualified fixture absent from the copied old dependency baseline",
+  "requiredAdditionalFile": {
+    "source": "/private/tmp/trellis-native-provenance-qualified-v1-20261009/trellis/fixtures/conformance/native-provenance-routing.json",
+    "destinationRelative": "trellis/fixtures/conformance/native-provenance-routing.json",
+    "sha256": "c25be87e3598edeb03fa7363a65c24ffa0b8da589eb47542fb193d01e2e0de88",
+    "qualifiedCommit": "eda346c166a71c7b8df55afd8549247456229277",
+    "matchesCommittedBytes": true
+  },
+  "literalIncludeAudit": [
+    {
+      "relative": "trellis/fixtures/conformance/native-provenance-routing.json",
+      "qualifiedSource": "/private/tmp/trellis-native-provenance-qualified-v1-20261009/trellis/fixtures/conformance/native-provenance-routing.json",
+      "sha256": "c25be87e3598edeb03fa7363a65c24ffa0b8da589eb47542fb193d01e2e0de88",
+      "presentInPriorComposition": false,
+      "priorCompositionMatches": false
+    },
+    {
+      "relative": "work-spec/schemas/wos-native-provenance-event.schema.json",
+      "qualifiedSource": "/private/tmp/core-form-pin-zip-inputs-v2-20261009/work-spec/schemas/wos-native-provenance-event.schema.json",
+      "sha256": "18c370ffcc8a1274ba89cfe3a8aca3b1bd452e530b637d3e1349d71fc04c0304",
+      "presentInPriorComposition": true,
+      "priorCompositionMatches": true
+    },
+    {
+      "relative": "work-spec/schemas/record-kind-registry.json",
+      "qualifiedSource": "/private/tmp/core-form-pin-zip-inputs-v2-20261009/work-spec/schemas/record-kind-registry.json",
+      "sha256": "1f3de03f7bfd775ed8fb2c4a27194ac313f27014714a987ec02444c4d5204697",
+      "presentInPriorComposition": true,
+      "priorCompositionMatches": true
+    }
+  ],
+  "requiredTestModule": {
+    "path": "/private/tmp/trellis-native-provenance-qualified-v1-20261009/trellis/crates/trellis-service-client/src/current_token_tests.rs",
+    "sha256": "59759695fb7d8d6fb2d7ca5ec434dceaa52eede1d69fe282b7145f8d8d988421",
+    "priorCompositionMatches": true
+  },
+  "focusedChecks": [
+    {
+      "package": "wos-events",
+      "filter": "native_provenance",
+      "expectedTestsFromSource": 7
+    },
+    {
+      "package": "trellis-service-client",
+      "filter": "native_provenance_tests",
+      "expectedTestsFromSource": 2
+    },
+    {
+      "package": "trellis-service-client",
+      "filter": "current_token_tests",
+      "expectedTestsFromSource": 4
+    }
+  ],
+  "alternativeFullClientSuite": {
+    "package": "trellis-service-client",
+    "expectedTestsFromSource": 11,
+    "priorActualPass": 11,
+    "receiptPath": "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/trellis-oidc-startup-native-qualification-v4.json",
+    "receiptSha256": "3fd63d1f64fb8c97fbafb5bc5c7b86c05429cfefccb98331659b7f1fc183fc1e"
+  },
+  "commandSuffix": [
+    "--lib",
+    "--offline",
+    "--locked",
+    "--jobs",
+    "1",
+    "--target-dir",
+    "/tmp/formspec-exact-source-composition-target-20261009-v1",
+    "<selected filter>",
+    "--",
+    "--test-threads=1"
+  ],
+  "graphRequirement": "Run only against the Root-frozen fresh coherent Source graph after full offline metadata and exact lock delta review; no prior composition installation in place",
+  "freshSourceExecuted": false,
+  "fixtureSynthesized": false,
+  "priorCompositionMutated": false,
+  "cargoExecuted": false
+}

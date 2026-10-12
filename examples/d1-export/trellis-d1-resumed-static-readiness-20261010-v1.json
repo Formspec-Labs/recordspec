@@ -1,0 +1,57 @@
+{
+  "status": "static retained readiness; no live or native operations",
+  "publication": {
+    "receipt": {
+      "path": "/Users/mikewolfd/Work/formspec-stack/thoughts/plans/benefits-scenarios/execution/reports/root/declaration-artifact-publication-v1/actual-publication-result.json",
+      "sha256": "0e8c37439c45a5073c411f70a37418f8b39559dfe1d06413f728f594eb9c01c2"
+    },
+    "definitionHash": "sha256:725b8a5058b87fcf558893970be890a935c08901510382c599dee167c5bfc7a6",
+    "formVersionHash": "sha256:83ee4cc196cc4c756014985ceed26ad059bff23162a87f89ac7fe9d123f15aba",
+    "formId": "form_d1_declaration_20261009_v1",
+    "formVersionId": "version_d1_declaration_20261009_v1",
+    "meaning": "published artifact only; no accepted filing/custody implied"
+  },
+  "trellisRetained": {
+    "profile": {
+      "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/oidc-profile-exporter-v6.json",
+      "sha256": "ad47c7186758c9adfefb9974a863124de48ea3d5cb40259857da594267a8f6f3"
+    },
+    "grants": {
+      "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/current-grants.json",
+      "sha256": "2ee9697269d53fdb94daf48af6d6a586a92b81bbdaf0dd24e95b38c6ce0caae0"
+    },
+    "caseGrantRows": 0,
+    "startupClosure": {
+      "path": "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/trellis-persistent-startup-actual-closure-v1.json",
+      "sha256": "cd38409ab994528cf7eb9c3c147e7d9b1f6acb8c5277346141c35425fe96f76b"
+    },
+    "currentLivenessChecked": false
+  },
+  "commonProbe": {
+    "builtBinaryReceipt": {
+      "path": "/Users/mikewolfd/Work/formspec-stack/thoughts/plans/benefits-scenarios/execution/reports/stack-common/provider-probe-v1/native-attempt1/binary-and-cli-tests.json",
+      "sha256": "4980875f392d4fb532d5c1257943de4da51a1e88d6d30417613872394aaa7bae"
+    },
+    "gatewayClassificationReceipt": {
+      "path": "/Users/mikewolfd/Work/formspec-stack/thoughts/plans/benefits-scenarios/execution/reports/stack-common/provider-probe-v1/native-attempt1/retained-response-classification.json",
+      "sha256": "a6760364363fb1698d651c65d8dcde523e61ea6a9ed8c08998e58c45c532cb94"
+    },
+    "scope": "gateway refusals/backend unknown-service response; no app worker/delivery/Trellis qualification"
+  },
+  "wosOwnerConfirmation": "No new Trellis provider/runtime custody wiring authored or qualified; selected services build_substrate_client remains static bearer; canonical selected Trellis lacks with_token_provider. Fresh case and filing not qualified; no truthful fresh native actor/payload selector supplied.",
+  "nextRequired": [
+    "WOS adopts qualified generic Trellis provider adapter with one canonical Common trait identity; static secret bearer replaced by maintained fixed-profile token provider. Qualify affected composition only in Root-assigned window.",
+    "WOS selects new published Definition and full version pins distinctly and obtains actual accepted fresh filing/case receipt with exact storage tuple; no sample/old case grant.",
+    "Root selects exact current case grants: WOS Read and Append bound to actual native actor/payload selectors; exporter Read and Administer only. Keep empty grants until those facts exist.",
+    "Bounded maintained Common provider\u2192TrellisServiceClient probe verifies exact service identity/scopes and fresh raw030 registry against independent06516ab2228e2ff95fe247780a28436d01f0a77e028ef8f14997912dcaba51f2.",
+    "Actual native append acknowledgements must match persisted events/canonical digests and publication records; retain archive bytes, actual checkpoint and ZIP hash separately.",
+    "Review existing-database restart wrapper; preserve original18088/key/RustFS/Postgres rows and retrieve exact pinned checkpoint with same ZIP bytes.",
+    "Run Integrity thin wrapper only after eligible composed CLI/buildreceipt and actual immutable ZIP+registry pins exist; prior638qualification remains reuseable evidence, not live journey proof."
+  ],
+  "preservation": [
+    "persistent18198/Postgres/RustFS unchanged by this preparation",
+    "no profile/grant or service changes",
+    "no D1-specific platform adapter logic"
+  ],
+  "ownerWindow": "Common owns; no Trellis HTTP/service/native execution until Root grant"
+}

@@ -1,0 +1,42 @@
+{
+  "status": "Root-selected-facts-provider-and-wire-readback-pending",
+  "source": "Root explicit instruction in current chat",
+  "tenantScope": {
+    "tenant": "tenant_test",
+    "workspace": "workspace_test",
+    "environment": "environment_test",
+    "cell": "cell_test"
+  },
+  "caseDisplayId": "456034070",
+  "caseScope": "default_case_01m4h63s3we7h8gkzas67rjz7m",
+  "selectedHumans": [
+    {
+      "name": "Alex",
+      "internalId": "c1805023-180f-4ed1-9464-70a3b8c8d335",
+      "actor": "actor:human:c1805023-180f-4ed1-9464-70a3b8c8d335",
+      "externalSubject": "ec86fe36-2926-4882-ae72-bc165704c18b"
+    },
+    {
+      "name": "Jordan",
+      "internalId": "e3aaf8ad-8d00-4a55-8a0e-b9cd68207c8a",
+      "actor": "actor:human:e3aaf8ad-8d00-4a55-8a0e-b9cd68207c8a",
+      "externalSubject": "e7c41cbf-f297-476e-9c7d-8f7a766f1b54"
+    }
+  ],
+  "pending": [
+    "Common actual dedicated WOS service-account subject readback",
+    "actual provider human mappings",
+    "Common dedicated database URL"
+  ],
+  "notAnActiveGrant": true,
+  "wireShapeConfirmedBy": "WOS owner current-message maintained Core native custody appender",
+  "nativeCustodyAppendActor": {
+    "kind": "service",
+    "subject": "wos-server"
+  },
+  "payloadHumanPointers": [
+    "/actorId",
+    "/record/actorId"
+  ],
+  "distinction": "Existing WOS case_events HTTP path uses user actor with internal user id; Root-selected native custody path uses explicit service actor. Do not grant user append actors implicitly."
+}

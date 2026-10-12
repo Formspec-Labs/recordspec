@@ -1,0 +1,118 @@
+{
+  "status": "INERT external selection proposal; fresh case and actor bindings pending; not a loadable or installed grant file",
+  "activeInputs": {
+    "receivingProfile": {
+      "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/oidc-profile-exporter-v6.json",
+      "sha256": "ad47c7186758c9adfefb9974a863124de48ea3d5cb40259857da594267a8f6f3"
+    },
+    "emptyGrants": {
+      "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/current-grants.json",
+      "sha256": "2ee9697269d53fdb94daf48af6d6a586a92b81bbdaf0dd24e95b38c6ce0caae0"
+    }
+  },
+  "tenantScope": {
+    "tenant": "tenant_test",
+    "workspace": "workspace_test",
+    "environment": "environment_test",
+    "cell": "cell_test"
+  },
+  "verifiedIdentitySelections": [
+    {
+      "principal": "wos-trellis-producer",
+      "issuer": "http://127.0.0.1:18090/realms/formspec-dev",
+      "subject": "4af85e55-7498-43e7-ab7b-c5c08aa05b4f",
+      "clientId": "formspec-wos-trellis-dev",
+      "scopes": [
+        "trellis.access",
+        "trellis.read",
+        "trellis.append"
+      ],
+      "expectedAudiences": [
+        "trellis-api",
+        "formspec-trellis-introspection-dev"
+      ],
+      "receipt": {
+        "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/wos-trellis-client-20261009-v2/provider-identity.private.json",
+        "sha256": "c9aec791d0d16d63b3dc2e90773ae6890ee1c9231cfa3b79fcdfa1241172a431"
+      }
+    },
+    {
+      "principal": "trellis-local-exporter",
+      "issuer": "http://127.0.0.1:18090/realms/formspec-dev",
+      "subject": "e3b2f43f-4656-471d-8be3-b32e9c4d658c",
+      "clientId": "formspec-trellis-exporter-dev",
+      "scopes": [
+        "trellis.access",
+        "trellis.read",
+        "trellis.administer"
+      ],
+      "expectedAudiences": [
+        "trellis-api",
+        "formspec-trellis-introspection-dev"
+      ],
+      "receipt": {
+        "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-exporter-20261009-v1/provider-identity.private.json",
+        "sha256": "0647a70797f0eaa6a512d6810722c44e18762f0dc1b9572b2fe22be423337ddf"
+      }
+    }
+  ],
+  "exactCaseSelection": {
+    "scope": null,
+    "actualCaseReceipt": null,
+    "requiredFacts": [
+      "actual case ID and exact Trellis ledger scope correspondence from WOS",
+      "actual storage tenant/workspace/environment/cell tuple",
+      "accepted filing and native append request receipt/digests",
+      "append actor kind/subject and per-payload JSON pointers/subject allowlists"
+    ]
+  },
+  "proposedGrantRows": [
+    {
+      "principal": "wos-trellis-producer",
+      "scope": null,
+      "action": "read"
+    },
+    {
+      "principal": "wos-trellis-producer",
+      "scope": null,
+      "action": "append",
+      "actors": null,
+      "payloadActors": null
+    },
+    {
+      "principal": "trellis-local-exporter",
+      "scope": null,
+      "action": "read"
+    },
+    {
+      "principal": "trellis-local-exporter",
+      "scope": null,
+      "action": "administer"
+    }
+  ],
+  "sourcePurposeSelection": {
+    "directTrellisRightsSelected": false,
+    "grantRowAdded": false,
+    "observedDeliveryClient": "formspec-full-d1-009-to-wos-dev",
+    "observedPurpose": "Source delivery to WOS; not evidence of Source-to-Trellis identity or rights",
+    "awaiting": "Source runtime call graph and Root selection of direct Source append vs WOS-mediated purpose"
+  },
+  "grantMaterializationRules": [
+    "No null, placeholder, sample or old scope may appear in materialized grant file; reject until actual case receipt exists",
+    "Use maintained exact keys principal/scope/action/actors/payloadActors; action lowercamel read/append/administer",
+    "Only Append rows have actors/payloadActors; exact one row per principal/scope/action",
+    "WOS Append requires nonempty exact actor allowlist; human selectors must reflect actual native payload schema and requiredness, no guessed global pointer",
+    "Exporter has Read/Administer only; WOS has no Administer; Source has no inferred row",
+    "Preserve all active files while reviewing successor; install only in Root-reviewed execution slot after input hash/readback conflict checks",
+    "Current grants are read fresh by server; exact grant-file successor alone can update mapped WOS/exporter authority without restarting/profile changes",
+    "New Source identity would require separate receiving profile successor review and host reload, plus matched external provider configuration"
+  ],
+  "configurationReadiness": {
+    "receivingExistingWosExporterMappingsReady": true,
+    "wosGenericProviderAdapter": "WOS owner now preparing separate static successor using qualified Trellis client and one Common trait identity; native qualification pending",
+    "commonProbe": "existing maintained owner probe built; actual Trellis stage pending case/grants/Root slot",
+    "actualPositiveRegistry": "pending",
+    "actualArchiveRestart": "pending"
+  },
+  "operationsPerformed": false
+}

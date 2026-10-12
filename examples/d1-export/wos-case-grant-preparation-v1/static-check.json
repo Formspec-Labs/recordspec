@@ -1,0 +1,11 @@
+{
+  "status": "static schemas and builder syntax checked; no candidate generated",
+  "builderSyntaxPassed": true,
+  "draft202012SchemasValid": true,
+  "existingSourceGrantDocumentStructureValid": true,
+  "actualFutureStartReceiptSelected": false,
+  "actualFutureActorBindingsSelected": false,
+  "candidateGenerated": false,
+  "activeFilesChanged": false,
+  "builderExecuted": false
+}

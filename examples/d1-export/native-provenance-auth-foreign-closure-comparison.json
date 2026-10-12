@@ -1,0 +1,548 @@
+{
+  "status": "Read-only comparison; no Cargo.",
+  "qualifiedAuthPacketSha256": "39d722dda0a8e7cfd4ecf3987e9c5beb20db8d643d989b1af148382e73cfd47c",
+  "authQualifiedForeignInputs": {
+    "integrity-stack/Cargo.toml": {
+      "qualifiedAuthSha256": "833a346b5adb9ea7c57ce632d4f32d3fdad86ac9584a282d186d4e46752140fe",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/integrity-stack/Cargo.toml"
+    },
+    "integrity-stack/crates/integrity-bundle/Cargo.toml": {
+      "qualifiedAuthSha256": "9bae11cf6b1ff8d31434885dc138589b1f6a07930ceb372fb189b250a3b99711",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/integrity-stack/crates/integrity-bundle/Cargo.toml"
+    },
+    "integrity-stack/crates/integrity-bundle/src/lib.rs": {
+      "qualifiedAuthSha256": "6047f50808c6bf5de093861dfa747a5d6d9e72f0cf5dd999e78ce234d7291467",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/integrity-stack/crates/integrity-bundle/src/lib.rs"
+    },
+    "integrity-stack/crates/integrity-canonical/Cargo.toml": {
+      "qualifiedAuthSha256": "d99aee33226b0c62fdec32d8ef828205fa366ef29bc4e6f4068053123a5f0c93",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/integrity-stack/crates/integrity-canonical/Cargo.toml"
+    },
+    "integrity-stack/crates/integrity-canonical/src/lib.rs": {
+      "qualifiedAuthSha256": "1ac97db5acc2938053567ac48ddfab39bab091c99b11f5029aa69f2ee61bbf68",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/integrity-stack/crates/integrity-canonical/src/lib.rs"
+    },
+    "integrity-stack/crates/integrity-canonical/tests/response_handoff_vectors.rs": {
+      "qualifiedAuthSha256": "799683840e52fe7a55c26044ef45104771a97fb5e79f0d2e4cbc5f8520e41b8a",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/integrity-stack/crates/integrity-canonical/tests/response_handoff_vectors.rs"
+    },
+    "integrity-stack/crates/integrity-canonical/tests/response_signing_vectors.rs": {
+      "qualifiedAuthSha256": "d8b58cbe585de54fd1e07f1ac89c1083fdee35836388c1feb8406a82eb48b6c7",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/integrity-stack/crates/integrity-canonical/tests/response_signing_vectors.rs"
+    },
+    "integrity-stack/crates/integrity-cbor/Cargo.toml": {
+      "qualifiedAuthSha256": "d3c0a95547ad98681fba02ecdb6f8b8f44c23bd3c8f7fdec5972f8fa9816e559",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/integrity-stack/crates/integrity-cbor/Cargo.toml"
+    },
+    "integrity-stack/crates/integrity-cbor/src/lib.rs": {
+      "qualifiedAuthSha256": "e7b15d2d259cfad8e0656e6dc19d67903863829d7d56c3240299565c43bd578b",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/integrity-stack/crates/integrity-cbor/src/lib.rs"
+    },
+    "integrity-stack/crates/integrity-cose/Cargo.toml": {
+      "qualifiedAuthSha256": "7f0b1e5b8fe102bfb606155d6f69cb4f8dd31fa9151d37e81eff9fda75c13eec",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/integrity-stack/crates/integrity-cose/Cargo.toml"
+    },
+    "integrity-stack/crates/integrity-cose/src/default_async_sign.rs": {
+      "qualifiedAuthSha256": "1d678e63d4ec2940b5ed40e1d3c4bc05cb7bf864f69afbf9530c2cf0af04625d",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/integrity-stack/crates/integrity-cose/src/default_async_sign.rs"
+    },
+    "integrity-stack/crates/integrity-cose/src/lib.rs": {
+      "qualifiedAuthSha256": "f086425340d4b71c495b926db53b7dc4bfe33765263e979f526b362379ee1fc9",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/integrity-stack/crates/integrity-cose/src/lib.rs"
+    },
+    "integrity-stack/crates/integrity-cose/tests/async_sign.rs": {
+      "qualifiedAuthSha256": "fa9a99d60c1841ef4d639feaae55115dd377c57a7d0fac602007f21ba9e60ad5",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/integrity-stack/crates/integrity-cose/tests/async_sign.rs"
+    },
+    "integrity-stack/crates/integrity-hpke/Cargo.toml": {
+      "qualifiedAuthSha256": "56ed078b42da5f9b5b5edc6f87ac379399dfe06a1cff4ef6b47c6571ea2eb63b",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/integrity-stack/crates/integrity-hpke/Cargo.toml"
+    },
+    "integrity-stack/crates/integrity-hpke/src/lib.rs": {
+      "qualifiedAuthSha256": "060f48c88ee63b13098c493ff47c5d2372a8d24b4adfa28227da4243f8e405df",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/integrity-stack/crates/integrity-hpke/src/lib.rs"
+    },
+    "integrity-stack/crates/integrity-hpke/tests/append_004_byte_match.rs": {
+      "qualifiedAuthSha256": "00683749fb91514170e92a749a8caf5fc63a0bd64c15a4375142c08c63d256b4",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/integrity-stack/crates/integrity-hpke/tests/append_004_byte_match.rs"
+    },
+    "integrity-stack/crates/integrity-seam/Cargo.toml": {
+      "qualifiedAuthSha256": "b8367ee90342d67f00c04273933934daa764cb893631aab040556c834a70dd61",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/integrity-stack/crates/integrity-seam/Cargo.toml"
+    },
+    "integrity-stack/crates/integrity-seam/src/lib.rs": {
+      "qualifiedAuthSha256": "9ac0113608228cbfcea737757d8466ec056f76ddc5e16c8a046cdff223529656",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/integrity-stack/crates/integrity-seam/src/lib.rs"
+    },
+    "integrity-stack/crates/integrity-seam/src/random.rs": {
+      "qualifiedAuthSha256": "a68517d6306d37b25eec24795045bcce17116b4132132a31db2a41b7bd38c504",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/integrity-stack/crates/integrity-seam/src/random.rs"
+    },
+    "integrity-stack/crates/integrity-seam/src/seam.rs": {
+      "qualifiedAuthSha256": "f8bb051d0acc2b1802bf6001c67509a3d224d4bf076d4367410818bcc54130d6",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/integrity-stack/crates/integrity-seam/src/seam.rs"
+    },
+    "integrity-stack/crates/integrity-seam/tests/seam.rs": {
+      "qualifiedAuthSha256": "db713cf1db124f321c3d164d3cbeb599742eaf5d08dbf804e927b1996a7253ec",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/integrity-stack/crates/integrity-seam/tests/seam.rs"
+    },
+    "integrity-stack/crates/integrity-seam/tests/secure_random.rs": {
+      "qualifiedAuthSha256": "49ec9ad4247eb7e9ed433780f35f87b1fb7abce8a5871c2b5becb7f24fe0be03",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/integrity-stack/crates/integrity-seam/tests/secure_random.rs"
+    },
+    "integrity-stack/tests/fixtures/response-handoff/vectors.json": {
+      "qualifiedAuthSha256": "6e601a6d557ce194ad3d418e05fbf8acc299ad6a84d6f1e3e7959eec94683af5",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/integrity-stack/tests/fixtures/response-handoff/vectors.json"
+    },
+    "integrity-stack/tests/fixtures/response-signing/vectors.json": {
+      "qualifiedAuthSha256": "0f7d19b3094a5632d8bf6b2eaee67b299aef184dc7dc0d9822133a1efa530fc1",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/integrity-stack/tests/fixtures/response-signing/vectors.json"
+    },
+    "stack-common/Cargo.toml": {
+      "qualifiedAuthSha256": "75c0be49752f27e1203b95a5a81716e496fbc5fd9cd109640dae4094bfd8edb1",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/Cargo.toml"
+    },
+    "stack-common/crates/stack-common-auth/Cargo.toml": {
+      "qualifiedAuthSha256": "0f62b967e1fca1d111261e075d7521674e7aefc4375315ebb1ad3b42c0aea0bf",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-auth/Cargo.toml"
+    },
+    "stack-common/crates/stack-common-auth/src/access_token.rs": {
+      "qualifiedAuthSha256": "c346d586ceebddf4fa64c4c112b719fd279ba26dc88eef0ce4e628f1929f84e5",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-auth/src/access_token.rs"
+    },
+    "stack-common/crates/stack-common-auth/src/claims.rs": {
+      "qualifiedAuthSha256": "9e5964c8a0526734949ff310c3277f016ea9df9966056fc69bba7c3dd039bb1a",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-auth/src/claims.rs"
+    },
+    "stack-common/crates/stack-common-auth/src/client_credentials.rs": {
+      "qualifiedAuthSha256": "fa081d85a63e50e35af9ab76e21617db02bde67ccf54a11ba6f19d83bd364b40",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-auth/src/client_credentials.rs"
+    },
+    "stack-common/crates/stack-common-auth/src/jwt.rs": {
+      "qualifiedAuthSha256": "e2b192a2321a665e63dd7533e4afa5b2e8ab151f8015b15798a939f378ea16ff",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-auth/src/jwt.rs"
+    },
+    "stack-common/crates/stack-common-auth/src/lib.rs": {
+      "qualifiedAuthSha256": "fee2b42508ca1e065f979a3e233ce223993a148145ab87d45125b1e3d2d1b19c",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-auth/src/lib.rs"
+    },
+    "stack-common/crates/stack-common-auth/src/oidc/credentials.rs": {
+      "qualifiedAuthSha256": "9173c38f1c9b7d3229c81f228bca948f2557127ac31b2ea407f7f96c83db28c5",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-auth/src/oidc/credentials.rs"
+    },
+    "stack-common/crates/stack-common-auth/src/oidc/introspection.rs": {
+      "qualifiedAuthSha256": "368e1a198a73b89b78ddfcc669ce3e36c610776ee71e91c3fd2244c3e214897e",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-auth/src/oidc/introspection.rs"
+    },
+    "stack-common/crates/stack-common-auth/src/oidc/mod.rs": {
+      "qualifiedAuthSha256": "75969cdf4286223f43994b17ab3e5b111e20ae894f098ac4d6c533fdd147275b",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-auth/src/oidc/mod.rs"
+    },
+    "stack-common/crates/stack-common-auth/src/oidc/transport.rs": {
+      "qualifiedAuthSha256": "2c33b9c43827d64a456266ab3a2cfb95230fabd64cd99dda2ca1511f9efe5207",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-auth/src/oidc/transport.rs"
+    },
+    "stack-common/crates/stack-common-auth/src/oidc/vault.rs": {
+      "qualifiedAuthSha256": "d84d3d126be4d60bf6d726c3b5049ab65862397f73083b3dc6d69b215a8e95fd",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-auth/src/oidc/vault.rs"
+    },
+    "stack-common/crates/stack-common-auth/src/oidc/verifier.rs": {
+      "qualifiedAuthSha256": "d853dc7ca0a3e5772933d82cae6e63a64ed0ce10b27e6ad37aa80aa67d7bffd6",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-auth/src/oidc/verifier.rs"
+    },
+    "stack-common/crates/stack-common-auth/tests/credential_custody.rs": {
+      "qualifiedAuthSha256": "cb4e061674f0ee599a5541b5c1489526504f24d50169d61044cce3536e0e5ab4",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-auth/tests/credential_custody.rs"
+    },
+    "stack-common/crates/stack-common-auth/tests/fixtures/public-test-rsa.pem": {
+      "qualifiedAuthSha256": "b1c649421c2b14239b02939f1028c20d4b98c12fa399994676e7a621bc14d438",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-auth/tests/fixtures/public-test-rsa.pem"
+    },
+    "stack-common/crates/stack-common-auth/tests/jwt.rs": {
+      "qualifiedAuthSha256": "65e3a7307a47c1ea2f5bb60a319fc9c9441bb2c662bc240d1c8f355c9fad6528",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-auth/tests/jwt.rs"
+    },
+    "stack-common/crates/stack-common-auth/tests/oidc.rs": {
+      "qualifiedAuthSha256": "9a6b27333f3c22e5b6c78da8cec34cbba236cfc89cdfe536f05babafffcf07d6",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-auth/tests/oidc.rs"
+    },
+    "stack-common/crates/stack-common-error/Cargo.toml": {
+      "qualifiedAuthSha256": "6c0d809943f7e23bcebb3dcf249ca91b3a1d90833d2c05956ad087410211e824",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-error/Cargo.toml"
+    },
+    "stack-common/crates/stack-common-error/build.rs": {
+      "qualifiedAuthSha256": "15cfad2bec6c9c632b3f7ef599b5dfedde4dfef05b8e22b3c1279a0cb399be85",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-error/build.rs"
+    },
+    "stack-common/crates/stack-common-error/src/lib.rs": {
+      "qualifiedAuthSha256": "26eb537dd2461ff4a17955916e0ce2585b124b2ec1ec4504d1891eb38ebe445c",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-error/src/lib.rs"
+    },
+    "stack-common/crates/stack-common-error/tests/error_code.rs": {
+      "qualifiedAuthSha256": "5752631b326135ea65b7bbe18b071631bfda053ad9ed34d90495b8c06c86ff05",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-error/tests/error_code.rs"
+    },
+    "stack-common/crates/stack-common-error/tests/schema_validation.rs": {
+      "qualifiedAuthSha256": "1f9aaea456b855e30eb2dcdc872e685da84cff6fca52ff0340ea3015e2a194c1",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-error/tests/schema_validation.rs"
+    },
+    "stack-common/crates/stack-common-hash/Cargo.toml": {
+      "qualifiedAuthSha256": "462a0f4c063a8f3cb9bf7493c01a08905ee275a03a06fc996669a8764deae2b8",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-hash/Cargo.toml"
+    },
+    "stack-common/crates/stack-common-hash/src/lib.rs": {
+      "qualifiedAuthSha256": "0247b381e9bee3f21a408d430ab5a4a49be163dbd934a0857679c15216b98b3d",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-hash/src/lib.rs"
+    },
+    "stack-common/crates/stack-common-hash/tests/hash.rs": {
+      "qualifiedAuthSha256": "897980d49bbf300d727ca7895f1de56cd1d313ffb55ad47e7316544f077703dd",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-hash/tests/hash.rs"
+    },
+    "stack-common/crates/stack-common-http/Cargo.toml": {
+      "qualifiedAuthSha256": "cfc1e0192cd94d93dd98df6a6e9877def266fa535025fb9455a4898ad605067f",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-http/Cargo.toml"
+    },
+    "stack-common/crates/stack-common-http/src/idempotency.rs": {
+      "qualifiedAuthSha256": "39848699e3b63fae95b3f87244a5cf5494f5071ae6593dc8ed6a986b2141e110",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-http/src/idempotency.rs"
+    },
+    "stack-common/crates/stack-common-http/src/lib.rs": {
+      "qualifiedAuthSha256": "029ac68d001e8f609522620c48420588031adc9ea8abfcb2661a949c273f91e3",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-http/src/lib.rs"
+    },
+    "stack-common/crates/stack-common-http/src/middleware.rs": {
+      "qualifiedAuthSha256": "aae1e43853d4c0a2ddd192562ab07448e687ccafd16d48898825e7730946d21f",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-http/src/middleware.rs"
+    },
+    "stack-common/crates/stack-common-http/src/problem.rs": {
+      "qualifiedAuthSha256": "58bfe979f5676abfa7c6632eb05ccd7d453315564e1deb9d073624e66230a7fe",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-http/src/problem.rs"
+    },
+    "stack-common/crates/stack-common-http/src/tenant.rs": {
+      "qualifiedAuthSha256": "d98fa888da7a3573f002614e08e618487c36039b6872d7e1ffd99b7d9968e2a9",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-http/src/tenant.rs"
+    },
+    "stack-common/crates/stack-common-http/tests/idempotency.rs": {
+      "qualifiedAuthSha256": "c74301968ddbf1e7e1aa495edefed4ccdd79cdb0543b089d3646ec1247b6b044",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-http/tests/idempotency.rs"
+    },
+    "stack-common/crates/stack-common-http/tests/middleware_builder.rs": {
+      "qualifiedAuthSha256": "19be74e3a6421baaddc488a49ca5124aa986a6436c16acc169111301942d3f09",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-http/tests/middleware_builder.rs"
+    },
+    "stack-common/crates/stack-common-http/tests/tenant.rs": {
+      "qualifiedAuthSha256": "1abf482e01dd8038f99f61f5055b84ca5870c683b703d2b64762d8607a5b127f",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-http/tests/tenant.rs"
+    },
+    "stack-common/crates/stack-common-idempotency/Cargo.toml": {
+      "qualifiedAuthSha256": "43a5cffca0341134387ee96052791082a17f70a4971ebca6b8d01cbed286d43a",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-idempotency/Cargo.toml"
+    },
+    "stack-common/crates/stack-common-idempotency/src/lib.rs": {
+      "qualifiedAuthSha256": "d2c590e612e16889b4adf7ba620c380aacce395b08243c7451686174b5611087",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-idempotency/src/lib.rs"
+    },
+    "stack-common/crates/stack-common-idempotency/tests/replay.rs": {
+      "qualifiedAuthSha256": "cf025e442544af14dd5be416d49a9500894348af0b8e52b96ccb2e08afded0bf",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-idempotency/tests/replay.rs"
+    },
+    "stack-common/crates/stack-common-object-store/Cargo.toml": {
+      "qualifiedAuthSha256": "43a4b7b924c595cb44558313839cf11f9c33fe7bdbaebbfc99f8cd7abee822ef",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-object-store/Cargo.toml"
+    },
+    "stack-common/crates/stack-common-object-store/src/lib.rs": {
+      "qualifiedAuthSha256": "640fcf7617d43af2ccf177d24fa6e75a274b7fab842cad1d1e383f9ab42e640f",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-object-store/src/lib.rs"
+    },
+    "stack-common/crates/stack-common-ops/Cargo.toml": {
+      "qualifiedAuthSha256": "f3bf18f53ec61754b259e16e947d11672299ec5cf6013897badb0a50f7d7448c",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-ops/Cargo.toml"
+    },
+    "stack-common/crates/stack-common-ops/src/lib.rs": {
+      "qualifiedAuthSha256": "e99371ad848c78fc193f6d36f01b447cfcce0401c641411a70b9c2be3b3f1656",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-ops/src/lib.rs"
+    },
+    "stack-common/crates/stack-common-ops/tests/health.rs": {
+      "qualifiedAuthSha256": "4aa64016348e2e4385d58922d78320a207264add29d4de6c64c3a801c216e1ba",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-ops/tests/health.rs"
+    },
+    "stack-common/crates/stack-common-postgres/Cargo.toml": {
+      "qualifiedAuthSha256": "24e7390597a14c9d9d020ba8932766aa0d290e903b9218229f939417950ffad8",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-postgres/Cargo.toml"
+    },
+    "stack-common/crates/stack-common-postgres/src/error.rs": {
+      "qualifiedAuthSha256": "3825dbcf4f0ccacd4677fe331e529fabec86a2c8b6e0e93c7a00686b327ae660",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-postgres/src/error.rs"
+    },
+    "stack-common/crates/stack-common-postgres/src/health.rs": {
+      "qualifiedAuthSha256": "0bff703e73fca3105f68fcd68b606c16183b742ccb2f25813f8245b807cba804",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-postgres/src/health.rs"
+    },
+    "stack-common/crates/stack-common-postgres/src/lib.rs": {
+      "qualifiedAuthSha256": "ca1dfc30981a55d3f4378af554acc53a2808da55416de284d9d660641fa7cde1",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-postgres/src/lib.rs"
+    },
+    "stack-common/crates/stack-common-postgres/src/migrations.rs": {
+      "qualifiedAuthSha256": "51d6e8d90ea6126cb2b204e29f787613c53b253d29e832fd64f9244bf49a81cd",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-postgres/src/migrations.rs"
+    },
+    "stack-common/crates/stack-common-postgres/src/pool.rs": {
+      "qualifiedAuthSha256": "ed036639acea4cfb6f9a216e3d0a5cf4af5d0fa8a92505304b92c7325d04a01a",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-postgres/src/pool.rs"
+    },
+    "stack-common/crates/stack-common-postgres/src/scoped_advisory_lease.rs": {
+      "qualifiedAuthSha256": "ca4bb7605842f93b1b4e91add65b7d7e640498f7d85d05acb98bee4383cd6166",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-postgres/src/scoped_advisory_lease.rs"
+    },
+    "stack-common/crates/stack-common-postgres/src/testing.rs": {
+      "qualifiedAuthSha256": "08a2189d885f4acc05de59f5d04b905bfa6f364233e9db784d65171350ee7436",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-postgres/src/testing.rs"
+    },
+    "stack-common/crates/stack-common-postgres/tests/error.rs": {
+      "qualifiedAuthSha256": "5366bf9e4e2115ceed89fa9f5dec007e44e1773d4a0fe8742eed6ec8d5a55b50",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-postgres/tests/error.rs"
+    },
+    "stack-common/crates/stack-common-postgres/tests/pool_and_health.rs": {
+      "qualifiedAuthSha256": "b7820471bf72eb6c2406c0ae80e19c2ac85eff0aa55e5b105479d4d41613f155",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-postgres/tests/pool_and_health.rs"
+    },
+    "stack-common/crates/stack-common-postgres/tests/scoped_advisory_lease.rs": {
+      "qualifiedAuthSha256": "54bdf50bd2039d1400e6420a83cb4b6a66c9a79cdce599e4155d46c89cabf153",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-postgres/tests/scoped_advisory_lease.rs"
+    },
+    "stack-common/crates/stack-common-typeid/Cargo.toml": {
+      "qualifiedAuthSha256": "f3a86cfb050d482b45610a0919e56feee18d1bcdf9669c2c4113a269d1e25692",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-typeid/Cargo.toml"
+    },
+    "stack-common/crates/stack-common-typeid/src/lib.rs": {
+      "qualifiedAuthSha256": "079d33a671a558fadf5c7b00ab0f0befff9cf65ac087bc41e7149c2d03a180c7",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-typeid/src/lib.rs"
+    },
+    "stack-common/crates/stack-common-typeid/src/reference.rs": {
+      "qualifiedAuthSha256": "4f88e81580694a59f08a413ffa8cf649b0cb7026cedb5ebfac2d7dfd18b94462",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/crates/stack-common-typeid/src/reference.rs"
+    },
+    "stack-common/schemas/error.schema.json": {
+      "qualifiedAuthSha256": "758d974f3c42e191f17a7ac57f3343d06358ae6622b916dc0e7dc1eccf4b8315",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/stack-common/schemas/error.schema.json"
+    },
+    "work-spec/Cargo.toml": {
+      "qualifiedAuthSha256": "dc17d5044a8f07586cb7e705b177a763e550a3bfad6009ee94f29897cac0c427",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/work-spec/Cargo.toml"
+    },
+    "work-spec/crates/wos-events/Cargo.toml": {
+      "qualifiedAuthSha256": "490eaeea01598f79345e58501592049f7809a36455f3abe600a6c19e0923f22c",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/work-spec/crates/wos-events/Cargo.toml"
+    },
+    "work-spec/crates/wos-events/src/custody.rs": {
+      "qualifiedAuthSha256": "026ec9c8c78da56a388acdd89843ebbc3bd972f5558aafd9d426e7c7749e8c02",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/work-spec/crates/wos-events/src/custody.rs"
+    },
+    "work-spec/crates/wos-events/src/lib.rs": {
+      "qualifiedAuthSha256": "695e157fd8c8283985e2bfcc366304323081c632400700d52b0316d297f4c69d",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/work-spec/crates/wos-events/src/lib.rs"
+    },
+    "work-spec/crates/wos-events/src/provenance/audit_tier.rs": {
+      "qualifiedAuthSha256": "2fd65cb1d202615e942e6bce77c6eebb646d2a7f9fe14d022acacce335b94a0c",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/work-spec/crates/wos-events/src/provenance/audit_tier.rs"
+    },
+    "work-spec/crates/wos-events/src/provenance/kind.rs": {
+      "qualifiedAuthSha256": "72f829655d85ecc12b45830304317f945366cf339333dfb70663859d850304c5",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/work-spec/crates/wos-events/src/provenance/kind.rs"
+    },
+    "work-spec/crates/wos-events/src/provenance/log.rs": {
+      "qualifiedAuthSha256": "7104a2a3329639b9c344c1ad44b1cfcea7d7ac626bcb9f31263cd3e8a218123d",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/work-spec/crates/wos-events/src/provenance/log.rs"
+    },
+    "work-spec/crates/wos-events/src/provenance/mod.rs": {
+      "qualifiedAuthSha256": "e3ad2662f6ec5e646bb73b0f21c6ac7bb3e70eecda22437977734604f7966d39",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/work-spec/crates/wos-events/src/provenance/mod.rs"
+    },
+    "work-spec/crates/wos-events/src/provenance/record.rs": {
+      "qualifiedAuthSha256": "d06dec736d6cdb0e9d0760a933fd64dd5dc88c1fe657c2e2fed476629847f9dc",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/work-spec/crates/wos-events/src/provenance/record.rs"
+    },
+    "work-spec/crates/wos-events/src/provenance/snapshot.rs": {
+      "qualifiedAuthSha256": "c9403e3966f11999f73badc057b00c1f586bbb58bde9152d74c1e5088279b8ea",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/work-spec/crates/wos-events/src/provenance/snapshot.rs"
+    },
+    "work-spec/schemas/wos-provenance-log.schema.json": {
+      "qualifiedAuthSha256": "7291e97e1ca2af5e633622c4f92ab552266fc41e10d0e624ae43725bd0d67884",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/work-spec/schemas/wos-provenance-log.schema.json"
+    },
+    "work-spec/specs/profiles/signature.md": {
+      "qualifiedAuthSha256": "0eac59536d59a3655d6624faa3491629a5aff4b4d2a88dfefd83522c071bf047",
+      "authorityPath": "/Users/mikewolfd/Work/formspec-stack/work-spec/specs/profiles/signature.md"
+    }
+  },
+  "comparedSnapshot": "/private/tmp/core-native-provenance-inputs-v1-20261009",
+  "differentFromSnapshot": [
+    "work-spec/Cargo.toml",
+    "work-spec/crates/wos-events/Cargo.toml",
+    "work-spec/crates/wos-events/src/custody.rs",
+    "work-spec/crates/wos-events/src/lib.rs"
+  ],
+  "missingFromSnapshot": [],
+  "currentAuthorityDrift": [],
+  "limits": "Auth foreign pins cover selected auth test dependency closure; Core qualified generic helper/schema intentionally supersedes original work-spec/wos-events baseline.",
+  "privateIntegrityVerifyInputs": {
+    "Cargo.toml": {
+      "qualifiedAuthSha256": "45d626258ddcf5441ebbe2596eef88187b8b965d7766f0a9ef6d069d154257b0",
+      "physicalSnapshotPath": "/private/tmp/core-native-provenance-inputs-v1-20261009/integrity-stack/crates/integrity-verify/Cargo.toml",
+      "snapshotSha256": "1283dd68215dc0c452dc33cbadb30b82d316683432f99b6ab33acc4351164763",
+      "setupOnlyPathTranslation": true
+    },
+    "src/bundle.rs": {
+      "qualifiedAuthSha256": "dbcfb6438f4ea01e8d2bb934a74fff053b50392d88feb5aa78d2ccd052f931bf",
+      "physicalSnapshotPath": "/private/tmp/core-native-provenance-inputs-v1-20261009/integrity-stack/crates/integrity-verify/src/bundle.rs",
+      "snapshotSha256": "dbcfb6438f4ea01e8d2bb934a74fff053b50392d88feb5aa78d2ccd052f931bf",
+      "setupOnlyPathTranslation": false
+    },
+    "src/canonical.rs": {
+      "qualifiedAuthSha256": "cd556dcd73c320b577c75ecad8e2b1d0c9bb26af39d6032db80ea4adc5180aba",
+      "physicalSnapshotPath": "/private/tmp/core-native-provenance-inputs-v1-20261009/integrity-stack/crates/integrity-verify/src/canonical.rs",
+      "snapshotSha256": "cd556dcd73c320b577c75ecad8e2b1d0c9bb26af39d6032db80ea4adc5180aba",
+      "setupOnlyPathTranslation": false
+    },
+    "src/chain.rs": {
+      "qualifiedAuthSha256": "2d7629386d4ddd49a5561c27ee941d120e19b55f5cbd632f6f9a84df7e85543c",
+      "physicalSnapshotPath": "/private/tmp/core-native-provenance-inputs-v1-20261009/integrity-stack/crates/integrity-verify/src/chain.rs",
+      "snapshotSha256": "2d7629386d4ddd49a5561c27ee941d120e19b55f5cbd632f6f9a84df7e85543c",
+      "setupOnlyPathTranslation": false
+    },
+    "src/cose.rs": {
+      "qualifiedAuthSha256": "9b3058f200bc33bece8b7ac91c1b602fecf406929c0910ff1a27298adcd55d12",
+      "physicalSnapshotPath": "/private/tmp/core-native-provenance-inputs-v1-20261009/integrity-stack/crates/integrity-verify/src/cose.rs",
+      "snapshotSha256": "9b3058f200bc33bece8b7ac91c1b602fecf406929c0910ff1a27298adcd55d12",
+      "setupOnlyPathTranslation": false
+    },
+    "src/lib.rs": {
+      "qualifiedAuthSha256": "986c38dec392db18f2de3db0612d6223e2a3f21a32317409d277e3e00483ce1e",
+      "physicalSnapshotPath": "/private/tmp/core-native-provenance-inputs-v1-20261009/integrity-stack/crates/integrity-verify/src/lib.rs",
+      "snapshotSha256": "986c38dec392db18f2de3db0612d6223e2a3f21a32317409d277e3e00483ce1e",
+      "setupOnlyPathTranslation": false
+    },
+    "src/profile.rs": {
+      "qualifiedAuthSha256": "05682589ec024a8faa7fd722b76df5a09270b99fd485c70d36fd26bd47449507",
+      "physicalSnapshotPath": "/private/tmp/core-native-provenance-inputs-v1-20261009/integrity-stack/crates/integrity-verify/src/profile.rs",
+      "snapshotSha256": "05682589ec024a8faa7fd722b76df5a09270b99fd485c70d36fd26bd47449507",
+      "setupOnlyPathTranslation": false
+    },
+    "src/report.rs": {
+      "qualifiedAuthSha256": "5e977771dc06c1de338537c0ade64003e426de18098dd3f0e3536fe784e2288d",
+      "physicalSnapshotPath": "/private/tmp/core-native-provenance-inputs-v1-20261009/integrity-stack/crates/integrity-verify/src/report.rs",
+      "snapshotSha256": "5e977771dc06c1de338537c0ade64003e426de18098dd3f0e3536fe784e2288d",
+      "setupOnlyPathTranslation": false
+    },
+    "src/tests.rs": {
+      "qualifiedAuthSha256": "0b607f566d7ca135968f4503ee3dc94b04a0c34fe709b450473e946f589058fe",
+      "physicalSnapshotPath": "/private/tmp/core-native-provenance-inputs-v1-20261009/integrity-stack/crates/integrity-verify/src/tests.rs",
+      "snapshotSha256": "0b607f566d7ca135968f4503ee3dc94b04a0c34fe709b450473e946f589058fe",
+      "setupOnlyPathTranslation": false
+    },
+    "src/trellis/certificate.rs": {
+      "qualifiedAuthSha256": "5d93c7ab493bc81cf0b63950db56defbde3d52b892912877dcda5864b579efcd",
+      "physicalSnapshotPath": "/private/tmp/core-native-provenance-inputs-v1-20261009/integrity-stack/crates/integrity-verify/src/trellis/certificate.rs",
+      "snapshotSha256": "5d93c7ab493bc81cf0b63950db56defbde3d52b892912877dcda5864b579efcd",
+      "setupOnlyPathTranslation": false
+    },
+    "src/trellis/certificate_proof.rs": {
+      "qualifiedAuthSha256": "daa3a6b74fe68bbf031198caf72fa001383f8f2b2b6943516bb1687fa773ed9f",
+      "physicalSnapshotPath": "/private/tmp/core-native-provenance-inputs-v1-20261009/integrity-stack/crates/integrity-verify/src/trellis/certificate_proof.rs",
+      "snapshotSha256": "daa3a6b74fe68bbf031198caf72fa001383f8f2b2b6943516bb1687fa773ed9f",
+      "setupOnlyPathTranslation": false
+    },
+    "src/trellis/correction.rs": {
+      "qualifiedAuthSha256": "a2f470a654327e47df05acaa7c1a363de46c052466f7f85e3f55637bfec0d5df",
+      "physicalSnapshotPath": "/private/tmp/core-native-provenance-inputs-v1-20261009/integrity-stack/crates/integrity-verify/src/trellis/correction.rs",
+      "snapshotSha256": "a2f470a654327e47df05acaa7c1a363de46c052466f7f85e3f55637bfec0d5df",
+      "setupOnlyPathTranslation": false
+    },
+    "src/trellis/erasure.rs": {
+      "qualifiedAuthSha256": "1457973c4f1ee2e5979b3b8e365365a2a99c113383179fa8b38bdf8626e4ff8c",
+      "physicalSnapshotPath": "/private/tmp/core-native-provenance-inputs-v1-20261009/integrity-stack/crates/integrity-verify/src/trellis/erasure.rs",
+      "snapshotSha256": "1457973c4f1ee2e5979b3b8e365365a2a99c113383179fa8b38bdf8626e4ff8c",
+      "setupOnlyPathTranslation": false
+    },
+    "src/trellis/export.rs": {
+      "qualifiedAuthSha256": "95b42fe6b6c00e3c1bc7da24092d683f80cbfd48f30ce543113c52c73e70d0b6",
+      "physicalSnapshotPath": "/private/tmp/core-native-provenance-inputs-v1-20261009/integrity-stack/crates/integrity-verify/src/trellis/export.rs",
+      "snapshotSha256": "95b42fe6b6c00e3c1bc7da24092d683f80cbfd48f30ce543113c52c73e70d0b6",
+      "setupOnlyPathTranslation": false
+    },
+    "src/trellis/interop_sidecar.rs": {
+      "qualifiedAuthSha256": "98f1299b3150f3a707578a5bdf9748b4515cce8458609cdf825c1d9c6975d376",
+      "physicalSnapshotPath": "/private/tmp/core-native-provenance-inputs-v1-20261009/integrity-stack/crates/integrity-verify/src/trellis/interop_sidecar.rs",
+      "snapshotSha256": "98f1299b3150f3a707578a5bdf9748b4515cce8458609cdf825c1d9c6975d376",
+      "setupOnlyPathTranslation": false
+    },
+    "src/trellis/kinds.rs": {
+      "qualifiedAuthSha256": "3e8d26a51cf775e6090419607c84cf34a795ae1abb78d126efe883f9710458dc",
+      "physicalSnapshotPath": "/private/tmp/core-native-provenance-inputs-v1-20261009/integrity-stack/crates/integrity-verify/src/trellis/kinds.rs",
+      "snapshotSha256": "3e8d26a51cf775e6090419607c84cf34a795ae1abb78d126efe883f9710458dc",
+      "setupOnlyPathTranslation": false
+    },
+    "src/trellis/merkle.rs": {
+      "qualifiedAuthSha256": "586d1d7f6c0178111e982ddb727b5351e09047e0022e63cef6e5d296bfaa3454",
+      "physicalSnapshotPath": "/private/tmp/core-native-provenance-inputs-v1-20261009/integrity-stack/crates/integrity-verify/src/trellis/merkle.rs",
+      "snapshotSha256": "586d1d7f6c0178111e982ddb727b5351e09047e0022e63cef6e5d296bfaa3454",
+      "setupOnlyPathTranslation": false
+    },
+    "src/trellis/mod.rs": {
+      "qualifiedAuthSha256": "c95117210654b5aff0561d8d029331bb8e3581d6794f68a24713b84d55f92cb4",
+      "physicalSnapshotPath": "/private/tmp/core-native-provenance-inputs-v1-20261009/integrity-stack/crates/integrity-verify/src/trellis/mod.rs",
+      "snapshotSha256": "c95117210654b5aff0561d8d029331bb8e3581d6794f68a24713b84d55f92cb4",
+      "setupOnlyPathTranslation": false
+    },
+    "src/trellis/open_clocks.rs": {
+      "qualifiedAuthSha256": "0707d52736a86444b54a6a0c297e1e80209627ab38a1c63f82613977fca0d4ce",
+      "physicalSnapshotPath": "/private/tmp/core-native-provenance-inputs-v1-20261009/integrity-stack/crates/integrity-verify/src/trellis/open_clocks.rs",
+      "snapshotSha256": "0707d52736a86444b54a6a0c297e1e80209627ab38a1c63f82613977fca0d4ce",
+      "setupOnlyPathTranslation": false
+    },
+    "src/trellis/parse.rs": {
+      "qualifiedAuthSha256": "9250c05605597d3df3c8d818672a0e8bca28f27821192d93bf2a37b7bea25c83",
+      "physicalSnapshotPath": "/private/tmp/core-native-provenance-inputs-v1-20261009/integrity-stack/crates/integrity-verify/src/trellis/parse.rs",
+      "snapshotSha256": "9250c05605597d3df3c8d818672a0e8bca28f27821192d93bf2a37b7bea25c83",
+      "setupOnlyPathTranslation": false
+    },
+    "src/trellis/supersession.rs": {
+      "qualifiedAuthSha256": "b11767a50bb3afe5597d0e3ba41fb1bc4e8a307d16d9401deb6312a3a040d61d",
+      "physicalSnapshotPath": "/private/tmp/core-native-provenance-inputs-v1-20261009/integrity-stack/crates/integrity-verify/src/trellis/supersession.rs",
+      "snapshotSha256": "b11767a50bb3afe5597d0e3ba41fb1bc4e8a307d16d9401deb6312a3a040d61d",
+      "setupOnlyPathTranslation": false
+    },
+    "src/trellis/types.rs": {
+      "qualifiedAuthSha256": "dca252beb06c03fa9550221915bb285870d8df7ce7c70c4e08fe9a90c2878c63",
+      "physicalSnapshotPath": "/private/tmp/core-native-provenance-inputs-v1-20261009/integrity-stack/crates/integrity-verify/src/trellis/types.rs",
+      "snapshotSha256": "dca252beb06c03fa9550221915bb285870d8df7ce7c70c4e08fe9a90c2878c63",
+      "setupOnlyPathTranslation": false
+    },
+    "src/trellis/user_attestation.rs": {
+      "qualifiedAuthSha256": "2b650a87f4f3e88da2f201d570eb3fe5f0f564d0490539f0cb777c5372951f68",
+      "physicalSnapshotPath": "/private/tmp/core-native-provenance-inputs-v1-20261009/integrity-stack/crates/integrity-verify/src/trellis/user_attestation.rs",
+      "snapshotSha256": "2b650a87f4f3e88da2f201d570eb3fe5f0f564d0490539f0cb777c5372951f68",
+      "setupOnlyPathTranslation": false
+    },
+    "src/trellis/util.rs": {
+      "qualifiedAuthSha256": "af6772cdd5e1d3722b66d5fc8bb4c3599c803fcc3426ed0b05505659c21c8027",
+      "physicalSnapshotPath": "/private/tmp/core-native-provenance-inputs-v1-20261009/integrity-stack/crates/integrity-verify/src/trellis/util.rs",
+      "snapshotSha256": "af6772cdd5e1d3722b66d5fc8bb4c3599c803fcc3426ed0b05505659c21c8027",
+      "setupOnlyPathTranslation": false
+    },
+    "src/trellis/validator.rs": {
+      "qualifiedAuthSha256": "9edfaab7343ed3d9e030826a7413662ebb64e8bacdccd91f6b6473dbd0430f6d",
+      "physicalSnapshotPath": "/private/tmp/core-native-provenance-inputs-v1-20261009/integrity-stack/crates/integrity-verify/src/trellis/validator.rs",
+      "snapshotSha256": "9edfaab7343ed3d9e030826a7413662ebb64e8bacdccd91f6b6473dbd0430f6d",
+      "setupOnlyPathTranslation": false
+    }
+  },
+  "privateIntegrityNonmanifestByteEquality": true,
+  "decision": "Reuse the existing physical snapshot stack-common/integrity-stack authority; all93 foreign pins exist, 89 match exactly, and4work-spec differences are expected qualified Core helper/custody/workspace changes. All24 nonmanifest private integrity-verify inputs also match the single maintained snapshot source. No newer auth foreign overlay is needed.",
+  "pathRule": "Use maintained relative sibling stack-common-auth/http dependencies in eda346c; normalize old private integrity-verify refs onto the ONE integrity-stack/crates/integrity-verify identity in the coherent physical snapshot. Preserve exact new Core successor/helper source authority for work-spec.",
+  "byRoot": {
+    "integrity-stack": 24,
+    "stack-common": 57,
+    "work-spec": 12
+  }
+}

@@ -1,0 +1,130 @@
+{
+  "status": "STATIC PREPARATION ONLY; no compiler, Cargo metadata, service, DB, or live HTTP action executed.",
+  "sourceRoot": "/private/tmp/core-form-pin-zip-inputs-v2-20261009/trellis",
+  "trellisCommit": "eda346c166a71c7b8df55afd8549247456229277",
+  "qualifiedCoreClosure": {
+    "receipt": "/private/tmp/core-form-pin-zip-inputs-v2-20261009/execution/qualification-receipt.json",
+    "receiptSha256": "e0b1613b0e020cecf4368cfa7a9002723ddd9e69f9567130bb0f5f040d61c66d",
+    "frozenFinalSource": "/private/tmp/core-form-pin-zip-inputs-v2-20261009/frozen-final-source.json",
+    "frozenFinalSourceSha256": "0297b3c02d64c752464d7dfc6f5884100bb136fedc077d96c21fbe87a2de741b"
+  },
+  "reuseTarget": "/private/tmp/core-nested-task-policy-inputs-v3-20261009/target",
+  "buildEnvironment": {
+    "CARGO_TARGET_DIR": "/private/tmp/core-nested-task-policy-inputs-v3-20261009/target",
+    "CARGO_BUILD_JOBS": "1"
+  },
+  "commandsAfterRootWindow": [
+    {
+      "purpose": "Validate same selected source/lock graph before compilation",
+      "argv": [
+        "cargo",
+        "metadata",
+        "--offline",
+        "--locked",
+        "--format-version",
+        "1"
+      ],
+      "cwd": "/private/tmp/core-form-pin-zip-inputs-v2-20261009/trellis"
+    },
+    {
+      "purpose": "Run existing14 current-auth boundary regressions on combined consumer source",
+      "argv": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-j1",
+        "-p",
+        "trellis-server",
+        "--lib",
+        "authorized_append_replay_",
+        "--",
+        "--nocapture"
+      ],
+      "expectedPassed": 14,
+      "cwd": "/private/tmp/core-form-pin-zip-inputs-v2-20261009/trellis"
+    },
+    {
+      "purpose": "Build actual standard host binary",
+      "argv": [
+        "cargo",
+        "build",
+        "--offline",
+        "--locked",
+        "-j1",
+        "-p",
+        "trellis-server",
+        "--bin",
+        "trellis-server"
+      ],
+      "cwd": "/private/tmp/core-form-pin-zip-inputs-v2-20261009/trellis"
+    }
+  ],
+  "executionReceiptRequirements": {
+    "timeoutSecondsPerStage": 600,
+    "maxLogBytes": 33554432,
+    "jobs": 1,
+    "retain": [
+      "Exactargv/envkeys/sourceguards/lockbeforeandafter/stagelogs/executableSHA256/exitstatus",
+      "Private immutable copy of built trellis-server outside shared target before any host launch",
+      "PID/processgroup/starttime and selected bind/configreceipt for newcohort"
+    ],
+    "stopConditions": [
+      "Root window not assigned or anotherowneractive",
+      "Source or lock mismatch outside explicitly reviewed closure",
+      "Unexpected auth selected-test count/failure",
+      "Timeout/logbudget/diskfloor violation"
+    ],
+    "preserveOriginal": "No signal/restart/binaryoverwrite/keymutation/dataaccess against original18088 PID16414; no no-swap guarantee asserted by static preparation."
+  },
+  "hostConfigRequirements": {
+    "TRELLIS_BIND_ADDR": "Root-selected unused loopback socket; not18088; no selected port yet",
+    "TRELLIS_SIGNING_KEY_COSE_PATH": "Root-selected export COSE signing key path and independent publickey/kid/config receipt; no keyselected/generated here",
+    "TRELLIS_TENANT_HEADER_SET": "mixed for both maintained producer header sets, or explicit wos/formspec selected byRoot",
+    "storageChoices": {
+      "memory": {
+        "TRELLIS_STORAGE": "memory",
+        "meaning": "Fresh ephemeral isolated controlleddemo; no persistence guarantee; optional localHS256 remains declared legacy scope behavior."
+      },
+      "durable": {
+        "TRELLIS_DATABASE_URL": "Explicit fresh isolatedPostgresdatabase; startup runs maintainedmigrations",
+        "TRELLIS_JWT_HS256_SECRET": "Required by currentstandard state_from_env unlessexplicitpermissivebypass; value never logged",
+        "meaning": "CurrentstandardCLI uses localHS256 ScopedAllowlistScopeAuthorizer, not externalcurrentauthority."
+      }
+    },
+    "optionalExportStore": {
+      "TRELLIS_ARTIFACT_BUCKET": "Only set for explicitly selected isolatedartifactstore",
+      "TRELLIS_ARTIFACT_PREFIX": "Freshcohortprefix if configured",
+      "TRELLIS_ARTIFACT_ENDPOINT": "Selectedstoreendpoint if needed",
+      "TRELLIS_ARTIFACT_REGION": "Selectedstore region if needed"
+    },
+    "TRELLIS_SIGNING_KEY_VALID_TO_UNIX_SECS": "Optional selectedexportkeyexpiry, notauthclock"
+  },
+  "currentAuthHostGap": {
+    "verifiedSource": "main.rs calls state_from_env; state_from_env only configures LocalJwt or unconfiguredpermissive modes. No externalOIDC envstartupadapter exists.",
+    "availableInjectedAPI": [
+      "TrellisServerState::with_access_token_verifier(Arc<dyn AccessTokenVerifier>)",
+      "TrellisServerState::with_scope_authorizer(Arc<dyn ScopeAuthorizer<Error=StackError>>)"
+    ],
+    "neededForRealCurrentAuthority": [
+      "Hostselects maintainedOidcCurrentAuthority with fixed issuer/audience/JWKS/introspection trust, bounded maintainedHTTPtransport, operationalclock, confidentialclientcredentials.",
+      "Hostauthorizer maps verifiedidentity to exact tenant/workspace/environment/cell, case scope, action and currentactor/humandelegation; rejectmissing/revokedgrant and foreignresult.",
+      "Explicit startup injection must precede router; no localHSfallback."
+    ],
+    "consequence": "Building currentstandardbinary +14controlledtests does not by itself qualify a realexternalOIDCcurrentgrant host. Requires scopedhostadapter design/review/implementation/qualification ifRootselectsthatposture."
+  },
+  "exportLimits": [
+    "Existing export path still passes evidence_members:Vec::new(); WOS owner-approved retained evidence associations/provider needed for requested additional native evidence families.",
+    "WholeZIP genericcustodyverification qualifies fixture integrity; independentagencytrust remainsseparate.",
+    "HTTP auth key/provider, exportCOSE key, andFormspecresponse-signingkeys are distinct authorities.",
+    "No fullD1/adoption/deployment claim."
+  ],
+  "planSourcePins": {
+    "crates/trellis-server/src/main.rs": "341e24ae9069137991e525948cb453a617145c68bae5c83d3fbf7122cb9bb5f3",
+    "crates/trellis-server/src/state.rs": "eecc34672601abc415a48ca7afedb00405f6d759ada028bf264ba4b307e84d58",
+    "crates/trellis-server/src/admission.rs": "4878dd194aba4a4c292409d2e12d1d62c2961b537234273ade34926049d90503",
+    "crates/trellis-server/src/auth_boundary_tests.rs": "0efe45d6d67d7de21b216a7f8d4eb1ea828dcabb446b52d69dcd299a630aaba2",
+    "crates/trellis-server/src/lib.rs": "a7fd089cc1b5254cd656bc7400336f0933387cfe103dd945ca8b8dfbee9ca896",
+    "Cargo.lock": "9efb326b6582efa6892e2ff0dd15d6be5cb246ed682d9a9b21586469c3f4299e"
+  }
+}

@@ -1,0 +1,90 @@
+{
+  "status": "static recovery proposal; oldcontainer/volumes untouched",
+  "binaryCompatibleWithoutEdits": {
+    "answer": "Yes for S3endpoint/pathstyle/SigV4credential configuration; runtimeconditionalcreate/read qualification stillrequired",
+    "adapter": "maintainedS3CompatibleArtifactStore + stack-common object_store0.11AWSclient",
+    "noMinioSpecificBranches": true,
+    "noFilesystemAdapterNeeded": true,
+    "conditionalSupport": "Common uses PutMode::Create with ETagMatch/If-None-Match semantics; RustFSrc1actualsupport mustbechecked, historicalPUT/GET doesnotproveit"
+  },
+  "actualRootInspection": {
+    "privateSource": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-object-store-inspection-20261009-v1/container-before.private.json",
+    "privateSourceSha256": "8480e70524391780d25704b4ebc40d146593f1e0fe081e85a5b7afd525399957",
+    "container": "/formspec-d1-object-store",
+    "image": "sha256:b97262df87e0d9d4b4e925fbaf892c8083e54732f6388e8036b9992fb91930ba",
+    "state": "exited",
+    "exitCode": 255,
+    "finishedAt": "2026-10-07T13:26:33.521639419Z",
+    "API": "http://127.0.0.1:19000",
+    "console": "http://127.0.0.1:19001",
+    "volumes": [
+      "formspec-d1-object-data:/data",
+      "formspec-d1-object-logs:/logs"
+    ],
+    "credentialKeysPresent": [
+      "RUSTFS_ACCESS_KEY",
+      "RUSTFS_SECRET_KEY"
+    ],
+    "credentialValuesPrinted": false
+  },
+  "originalIntent": {
+    "source": "thoughts/plans/benefits-scenarios/execution/evidence/d1/current-runtime.json",
+    "imageTag": "rustfs/rustfs:1.0.0-rc.1-glibc",
+    "bucket": "formspec-d1-artifacts",
+    "historicalReceipt": "authenticated bucketcreate/PUT/GET200 andexactfixturebytes; current availability andconditionalcreate unknown",
+    "preservedArchivesVerifiedNow": [
+      {
+        "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/recovery-20261007/preserved/object-data.tar",
+        "sha256": "fd0572b24a9238ba112767be36ff1f9ddc6c7a01f49b789551f2eedd95481d7e",
+        "bytes": 70144,
+        "historicalOnly": true
+      },
+      {
+        "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/recovery-20261007/preserved/object-logs.tar",
+        "sha256": "37813ce7efee869b3fcc3c1f6e3c3f0426d142defb34e0c771739515545168d5",
+        "bytes": 6144,
+        "historicalOnly": true
+      }
+    ],
+    "limits": "Historicalarchivehashesmatch; no currentvolumebytesorserverhealthreadbackperformed; exit255causeunknown"
+  },
+  "recommendedLeastChange": {
+    "selection": "Rootrestartsamecontainer/image/existingvolumes, useNEWbucket trellis-full-d1-20261009-v1 + fixedprefix trellis",
+    "reason": "Reusesknownserver/image/credentials/loopbackbindings andmaintainedTrellisCLI; isolatesnewobjectsfromoldbucket",
+    "preservationBoundary": "Noexistingobjectoverwrite/delete/retag oroldbucketmigration. RestartchangescontainerstatusandmaywriteRustFSmetadata/logstooldvolumes; Rootmustexplicitlyselectbeforestart. Existinghistoricalarchivesretained.",
+    "needsRootFacts": [
+      "actualrestartreadiness",
+      "selectednewbucketcreationreceipt",
+      "privatecredentialconfigderivedfrominspectwithoutprinting",
+      "conditionalcreate/read/currentbytequalification"
+    ]
+  },
+  "freshIsolatedAlternative": {
+    "selection": "samecachedimageID, distinctnewcontainer+newdata/logvolumes, distinctfreeAPI/consoleports; newbucket",
+    "benefit": "Oldcontainerremainsstoppedandoldvolumesnotmountedormutated",
+    "cost": "Newvolumes/container/port/privateconfigurationandqualification; notnecessaryforprotocolcompatibility",
+    "constraint": "Nevermountoldvolumesread-writeintoalternatecontainer; no copy/delete/restorewithoutRootselection"
+  },
+  "exactCandidateEnvironment": {
+    "TRELLIS_ARTIFACT_BUCKET": "trellis-full-d1-20261009-v1",
+    "TRELLIS_ARTIFACT_PREFIX": "trellis",
+    "TRELLIS_ARTIFACT_ENDPOINT": "http://127.0.0.1:19000",
+    "TRELLIS_ARTIFACT_REGION": "us-east-1",
+    "AWS_REGION": "us-east-1",
+    "AWS_ALLOW_HTTP": "true",
+    "AWS_VIRTUAL_HOSTED_STYLE_REQUEST": "false",
+    "AWS_CONDITIONAL_PUT": "etag",
+    "AWS_ACCESS_KEY_ID": "privatevaluefrominspectRUSTFS_ACCESS_KEY",
+    "AWS_SECRET_ACCESS_KEY": "privatevaluefrominspectRUSTFS_SECRET_KEY"
+  },
+  "bucketCreation": "Trellisbinarydoesnotcreatebuckets; Rootseparateauthorizedoperatorcreatesnewbucketonly",
+  "qualification": [
+    "actualmaintainedS3clientcanputcreate/getundernewbucket/prefix",
+    "samekey/samebytesretryaccepted",
+    "samekey/differentbytesrefused; originalreadunchanged",
+    "acknowledgeactualexport; retaincheckpoint/ref/ZIPhash",
+    "restartnewTrellis18198samePG/key/profile/backend thenretrieveSAMEcheckpoint/ZIPbytes; owningverify_export_zip passes"
+  ],
+  "nextStep": "AfterRootselectsactualrecoveryfacts, preparepinnedprivateartifactconfig+narrowlauncherallowlistandpairedstaticreview; no memory-firstlaunch",
+  "noLiveOperations": true
+}

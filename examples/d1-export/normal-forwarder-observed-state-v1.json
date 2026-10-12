@@ -1,0 +1,20 @@
+{
+  "at": "2026-10-11T02:31:29.821776+00:00",
+  "databaseReadOnly": true,
+  "eventCount": 1,
+  "bundlePublicationCount": 1,
+  "events": [
+    {
+      "sequence": 0,
+      "scope": "formspec.managed-single-cell",
+      "idempotencyKey": "formspec:v1:x_DcykvTnoiorK-O38SaTA58phVygtzfLVFHwBk6kPQ",
+      "canonicalEventHash": "sha256:f830199b464aa5cdd987566f700da890b209d12f55fa38fa47dffac724b52e07",
+      "canonicalBytes": 1312
+    }
+  ],
+  "preservedLogSnapshotPath": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/source-native-activation-38a4960b-c8fb-45f1-94d7-73c053145005/normal-forwarder-observed-log-v1.private.log",
+  "preservedLogSha256": "a215eecc738a229765c8941a6fbc328ac71010cc07a979982522764f502b4f51",
+  "noRequeue": true,
+  "noRestart": true,
+  "noDatabaseWrite": true
+}

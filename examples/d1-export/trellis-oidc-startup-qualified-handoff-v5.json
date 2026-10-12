@@ -1,0 +1,84 @@
+{
+  "status": "qualified private owner commit; window released; not deployed",
+  "ownerCommit": "e9f5af9e7eaa1de3fca38be7018220a604e3d0c6",
+  "privateCheckout": "/private/tmp/trellis-native-provenance-qualified-v1-20261009/trellis",
+  "testsPassed": 42,
+  "binarySha256": "f0a0eb62da9d52c5a5e5a2bac8f60af8b7ff97084cd0de6c5cae63d5256e90c7",
+  "binaryPath": "/private/tmp/trellis-native-provenance-qualified-v1-20261009/execution/trellis-server-oidc-qualified-v4",
+  "binaryProfile": "dev unoptimized; actualserverCLI; no performance claim",
+  "pairedReview": "fullcode/architecture approved exactv4and42tests/build/log/source/binarypins",
+  "artifacts": [
+    {
+      "path": "trellis-oidc-startup-qualified-v4.json",
+      "sha256": "8021af372812eccb144566d36595123f90b42e6e7cfd96692050336cf654f09f"
+    },
+    {
+      "path": "trellis-oidc-startup-qualified-v4.patch",
+      "sha256": "685b85159cbd22fc6af9d86d15b4bde9b055ae827a8c51846bb89c6e0b85c288"
+    },
+    {
+      "path": "trellis-oidc-startup-native-qualification-v4.json",
+      "sha256": "3fd63d1f64fb8c97fbafb5bc5c7b86c05429cfefccb98331659b7f1fc183fc1e"
+    },
+    {
+      "path": "trellis-oidc-startup-after-code-review-v4-final.md",
+      "sha256": "9fccaf2ee0578e0c7e3a33e09b8f7ed60f07525fc9a54dd9822bcccaa61acdaf"
+    },
+    {
+      "path": "trellis-oidc-startup-after-architecture-review-v4-final.md",
+      "sha256": "044defca2eddc02f905eaad834cdee112bcf0fb2e0d566e47a7d7fe3b50d030c"
+    },
+    {
+      "path": "trellis-oidc-startup-owner-commit-v4.json",
+      "sha256": "99e025589f3e7c13b9cb93601cdbff26b81bda554eeaf9f339955f1d07d7c4b2"
+    },
+    {
+      "path": "trellis-oidc-startup-owner-commit-v4.patch",
+      "sha256": "6a30268679475b6e2c09a5401c70eb76635e76b61ad6d039c405723e91a56cb3"
+    },
+    {
+      "path": "trellis-18198-static-operator-preparation-v2.json",
+      "sha256": "a19c9989e726368ed06a120e2b238dcaeded7e8ab93189d4b004ef0cd0aed48b"
+    }
+  ],
+  "commitLockBoundary": "Only inherited sibling typeid\u2192rand_core0.6.4 edge remains unstaged in qualifiedworktree; ownercommit contains ownOIDCclosure23newregistryversions andexact11otherfiles",
+  "operatorPreparation": "Exactstaticv3profile/emptygrants/envloader/readback approvedbybothreviewers; no scriptsrun; database/key/profile/grants/binarypinned; noPythonOAuth",
+  "pending": [
+    "Rootgrantfor18198launch/migrations onlyexistingnewDB",
+    "actualpersistentartifactbackend/volume/bucket/credentialsconfiguration",
+    "fresh0.3.1case exactgrant selection",
+    "maintainedWOSCommonprovider->Trellisclient actual200 qualification",
+    "separateexporteractualprovideridentity/profileandRead+Administergrant",
+    "publickey readback",
+    "sameacknowledgedexportretrievalafterrestart",
+    "actualD1 archive/fullworkflow",
+    "independent agencytrust"
+  ],
+  "noPush": true,
+  "original18088Preserved": true,
+  "windowReleased": true,
+  "followupArtifacts": [
+    {
+      "path": "trellis-18198-static-operator-preparation-v3.json",
+      "sha256": "999654db2a9c7fe81ef7300ca5243631acfba873b0f65a1df432327ea8550108"
+    },
+    {
+      "path": "trellis-18198-static-operator-after-code-review-v2.md",
+      "sha256": "9479eafd492536d33e3ef59f7b32cdfc423ee56fb046bfe3c2c1c117ecfec60a"
+    },
+    {
+      "path": "trellis-18198-static-operator-after-architecture-review-v2.md",
+      "sha256": "f9310314c9e6e91aaf8bd3c55ac217a8c9d2c795bcbad0ef666085844e120534"
+    },
+    {
+      "path": "trellis-full-d1-persistent-artifact-assessment-v1.json",
+      "sha256": "b3dd3ffd9e2078287fefcb4b09334e0eac7845c6f9accd01e656baea1ddf398a"
+    },
+    {
+      "path": "trellis-local-exporter-requirements-v1.json",
+      "sha256": "66f3e322a29cef41b2b654ea5ce378002fabd3407be9cc1b47036b1891dde212"
+    }
+  ],
+  "persistentArtifacts": "MaintainedS3CLI+localMinIOpersistentvolume recipeexists; actualendpoint/credentials/bucketfacts pending. NoTrellisCLIfilesystem/PostgreSQLartifactadapter; SourceLocalFileSystemprimitivepriorart availableforthinwiringifselected.",
+  "exporter": "Selectedseparateformspec-trellis-exporter-dev access/read/administer, noappend; Commonpreparesactualsubject/credential/Rootrecipe; WOSunchanged"
+}

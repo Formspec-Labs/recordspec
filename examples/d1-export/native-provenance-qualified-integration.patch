@@ -1,0 +1,1060 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 17955b7..56f5782 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1320,7 +1320,7 @@ dependencies = [
+ name = "integrity-bundle-fixtures"
+ version = "0.1.0"
+ dependencies = [
+- "jsonschema",
++ "jsonschema 0.45.1",
+  "serde",
+  "serde_json",
+  "toml",
+@@ -1449,7 +1449,34 @@ dependencies = [
+  "num-cmp",
+  "num-traits",
+  "percent-encoding",
+- "referencing",
++ "referencing 0.45.1",
++ "regex",
++ "regex-syntax",
++ "serde",
++ "serde_json",
++ "unicode-general-category",
++ "uuid-simd",
++]
++
++[[package]]
++name = "jsonschema"
++version = "0.46.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "2d87ef9a314ee37b69ef9ab130d3159f04287dda52151b064752842065e0db2e"
++dependencies = [
++ "ahash",
++ "bytecount",
++ "data-encoding",
++ "email_address",
++ "fancy-regex",
++ "fraction",
++ "getrandom 0.3.4",
++ "idna",
++ "itoa",
++ "num-cmp",
++ "num-traits",
++ "percent-encoding",
++ "referencing 0.46.1",
+  "regex",
+  "regex-syntax",
+  "serde",
+@@ -1586,6 +1613,12 @@ version = "2.8.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
+ 
++[[package]]
++name = "micromap"
++version = "0.3.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "c2a86d3146ed3995b5913c414f6664344b9617457320782e64f0bb44afd49d74"
++
+ [[package]]
+ name = "mime"
+ version = "0.3.17"
+@@ -2178,6 +2211,23 @@ dependencies = [
+  "serde_json",
+ ]
+ 
++[[package]]
++name = "referencing"
++version = "0.46.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "aee6970bf1974cd719a1f4e8bc5a8051a33740194b7246430441cff79faff66d"
++dependencies = [
++ "ahash",
++ "fluent-uri",
++ "getrandom 0.3.4",
++ "hashbrown 0.16.1",
++ "itoa",
++ "micromap",
++ "parking_lot",
++ "percent-encoding",
++ "serde_json",
++]
++
+ [[package]]
+ name = "regex"
+ version = "1.12.3"
+@@ -3502,7 +3552,9 @@ dependencies = [
+  "integrity-cbor",
+  "integrity-cose",
+  "integrity-verify",
++ "jsonschema 0.46.1",
+  "proptest",
++ "referencing 0.46.1",
+  "serde",
+  "serde_json",
+  "sha2",
+@@ -4439,6 +4491,7 @@ version = "0.1.0"
+ dependencies = [
+  "base64",
+  "integrity-cbor",
++ "jsonschema 0.46.1",
+  "serde",
+  "serde_json",
+  "serde_json_canonicalizer",
+diff --git a/crates/trellis-admission-wos/src/lib.rs b/crates/trellis-admission-wos/src/lib.rs
+index b8b82a3..0cbea38 100644
+--- a/crates/trellis-admission-wos/src/lib.rs
++++ b/crates/trellis-admission-wos/src/lib.rs
+@@ -20,7 +20,10 @@ use trellis_server_ports::{
+     EventFamilyId, EventTypeSpec, SchemaRef,
+ };
+ use trellis_types::ArtifactType;
+-use wos_events::{ProvenanceKind, ProvenanceRecord, WOS_CANONICAL_EVENT_LITERALS};
++use wos_events::{
++    NativeProvenanceEvent, ProvenanceKind, ProvenanceRecord, WOS_CANONICAL_EVENT_LITERALS,
++    WOS_NATIVE_PROVENANCE_EVENT_LITERAL,
++};
+ 
+ /// URI scheme used in [`AdmittedEvent::schema_ref`] entries emitted by this adapter.
+ pub const WOS_SCHEMA_SCHEME: &str = "wos-events";
+@@ -62,6 +65,8 @@ pub fn wos_event_family(event_type: &str) -> Option<&str> {
+ pub fn wos_event_type_specs() -> Vec<EventTypeSpec> {
+     WOS_CANONICAL_EVENT_LITERALS
+         .iter()
++        .copied()
++        .chain(std::iter::once(WOS_NATIVE_PROVENANCE_EVENT_LITERAL))
+         .map(|event_type| {
+             let family_slice = wos_event_family(event_type).unwrap_or_else(|| {
+                 panic!(
+@@ -70,7 +75,7 @@ pub fn wos_event_type_specs() -> Vec<EventTypeSpec> {
+                 )
+             });
+             EventTypeSpec {
+-                event_type: (*event_type).to_string(),
++                event_type: event_type.to_string(),
+                 event_family: EventFamilyId::new(family_slice)
+                     .expect("wos family slug is non-empty by construction"),
+                 schema_ref: SchemaRef::new(wos_schema_ref(event_type))
+@@ -123,6 +128,13 @@ impl EventAdmissionPolicy for WosEventAdmissionPolicy {
+     type Error = StackError;
+ 
+     async fn admit(&self, event: &AdmissionEvent<'_>) -> Result<AdmittedEvent, Self::Error> {
++        if event.event_type == WOS_NATIVE_PROVENANCE_EVENT_LITERAL {
++            let payload: serde_json::Value = serde_json::from_slice(event.payload)
++                .map_err(|_| StackError::bad_request("invalid native provenance JSON payload"))?;
++            NativeProvenanceEvent::from_json(&payload)
++                .map_err(|_| StackError::bad_request("invalid native provenance payload"))?;
++            return Self::admitted_event_for(event.event_type);
++        }
+         let expected_kind = ProvenanceKind::from_canonical_event_literal(event.event_type)
+             .ok_or_else(|| {
+                 StackError::bad_request(format!(
+@@ -321,4 +333,81 @@ mod tests {
+             );
+         }
+     }
++    fn native_fixture() -> serde_json::Value {
++        serde_json::from_str(include_str!(
++            "../../../fixtures/conformance/native-provenance-routing.json"
++        ))
++        .expect("controlled vector")
++    }
++
++    #[tokio::test]
++    async fn native_provenance_admission_preserves_original_record() {
++        let fixture = native_fixture();
++        let original = fixture["payload"].clone();
++        let bytes = serde_json::to_vec(&original).unwrap();
++        let admitted = WosEventAdmissionPolicy::new()
++            .admit(&AdmissionEvent {
++                scope: b"case-1",
++                event_type: WOS_NATIVE_PROVENANCE_EVENT_LITERAL,
++                payload: &bytes,
++            })
++            .await
++            .unwrap();
++        assert_eq!(admitted.event_family.as_str(), "wos.provenance");
++        assert_eq!(
++            admitted.schema_ref.as_str(),
++            "wos-events://wos.provenance.recorded"
++        );
++        assert_eq!(admitted.direct_submit, DirectSubmitPolicy::ServiceOnly);
++        assert_eq!(
++            NativeProvenanceEvent::from_json(&original)
++                .unwrap()
++                .payload(),
++            &original
++        );
++        let specs = wos_event_type_specs();
++        assert_eq!(specs.len(), WOS_CANONICAL_EVENT_LITERALS.len() + 1);
++        assert_eq!(
++            specs
++                .iter()
++                .filter(|spec| spec.event_type == WOS_NATIVE_PROVENANCE_EVENT_LITERAL)
++                .count(),
++            1
++        );
++    }
++
++    #[tokio::test]
++    async fn native_provenance_admission_refuses_unknown_and_canonical_bypass() {
++        for kind in ["unknownFutureKind", "caseCreated"] {
++            let mut fixture = native_fixture();
++            fixture["payload"]["record"]["recordKind"] = serde_json::json!(kind);
++            let bytes = serde_json::to_vec(&fixture["payload"]).unwrap();
++            assert!(
++                WosEventAdmissionPolicy::new()
++                    .admit(&AdmissionEvent {
++                        scope: b"case-1",
++                        event_type: WOS_NATIVE_PROVENANCE_EVENT_LITERAL,
++                        payload: &bytes,
++                    })
++                    .await
++                    .is_err()
++            );
++        }
++        let mut missing = native_fixture()["payload"].clone();
++        missing["record"]
++            .as_object_mut()
++            .unwrap()
++            .remove("recordKind");
++        let bytes = serde_json::to_vec(&missing).unwrap();
++        assert!(
++            WosEventAdmissionPolicy::new()
++                .admit(&AdmissionEvent {
++                    scope: b"case-1",
++                    event_type: WOS_NATIVE_PROVENANCE_EVENT_LITERAL,
++                    payload: &bytes,
++                })
++                .await
++                .is_err()
++        );
++    }
+ }
+diff --git a/crates/trellis-conformance/Cargo.toml b/crates/trellis-conformance/Cargo.toml
+index 96f99d3..5241d24 100644
+--- a/crates/trellis-conformance/Cargo.toml
++++ b/crates/trellis-conformance/Cargo.toml
+@@ -16,6 +16,8 @@ name = "canonical_cbor_emit"
+ path = "examples/canonical_cbor_emit.rs"
+ 
+ [dev-dependencies]
++jsonschema = { version = "0.46", default-features = false }
++referencing = { version = "0.46", default-features = false }
+ integrity-bundle-fixtures = { path = "../../../integrity-stack/crates/integrity-bundle-fixtures" }
+ integrity-cbor = { path = "../../../integrity-stack/crates/integrity-cbor" }
+ integrity-cose = { path = "../../../integrity-stack/crates/integrity-cose" }
+diff --git a/crates/trellis-conformance/src/lib.rs b/crates/trellis-conformance/src/lib.rs
+index f9ad6d1..54cece5 100644
+--- a/crates/trellis-conformance/src/lib.rs
++++ b/crates/trellis-conformance/src/lib.rs
+@@ -6,6 +6,9 @@
+ #[cfg(test)]
+ mod model_checks;
+ 
++#[cfg(test)]
++mod native_http_schema;
++
+ #[cfg(test)]
+ mod tests {
+     use std::fs;
+diff --git a/crates/trellis-conformance/src/native_http_schema.rs b/crates/trellis-conformance/src/native_http_schema.rs
+new file mode 100644
+index 0000000..24fe706
+--- /dev/null
++++ b/crates/trellis-conformance/src/native_http_schema.rs
+@@ -0,0 +1,61 @@
++//! Offline HTTP-schema validation with the owning native schema resource.
++
++use referencing::{Registry, Resource};
++use serde_json::{Value, json};
++use std::path::Path;
++
++#[test]
++fn native_provenance_http_schema_resolves_owning_resource_offline() {
++    let package = Path::new(env!("CARGO_MANIFEST_DIR"));
++    let manifest: toml::Value = toml::from_str(include_str!("../Cargo.toml")).unwrap();
++    let owner = package.join(
++        manifest["dev-dependencies"]["wos-events"]["path"]
++            .as_str()
++            .unwrap(),
++    );
++    let native_path = owner
++        .parent()
++        .unwrap()
++        .parent()
++        .unwrap()
++        .join("schemas/wos-native-provenance-event.schema.json");
++    let native: Value = serde_json::from_slice(&std::fs::read(native_path).unwrap()).unwrap();
++    let uri = native["$id"].as_str().unwrap().to_owned();
++    let registry = Registry::new()
++        .add(uri, Resource::from_contents(native))
++        .unwrap()
++        .prepare()
++        .unwrap();
++    let http: Value =
++        serde_json::from_str(include_str!("../../../specs/trellis-http-api.schema.json")).unwrap();
++    let validator = jsonschema::options()
++        .with_registry(&registry)
++        .should_validate_formats(true)
++        .build(&http)
++        .unwrap();
++    let fixture: Value = serde_json::from_str(include_str!(
++        "../../../fixtures/conformance/native-provenance-routing.json"
++    ))
++    .unwrap();
++    let mut body = json!({
++        "eventType": fixture["eventType"], "idempotencyKey": "native-schema",
++        "actor": {"kind":"service", "subject":"wos-server"},
++        "payload": fixture["payload"],
++        "computeContext": {"declarationId":"compute:wos-server:publicMetadata", "actor":"wos-server", "sensitivity":"publicMetadata"}
++    });
++    assert!(validator.is_valid(&body));
++    let original = body.clone();
++    for kind in ["unknownFutureKind", "caseCreated"] {
++        body["payload"]["record"]["recordKind"] = json!(kind);
++        assert!(!validator.is_valid(&body));
++    }
++    body = original.clone();
++    body["payload"]["record"]
++        .as_object_mut()
++        .unwrap()
++        .remove("recordKind");
++    assert!(!validator.is_valid(&body));
++    body = original;
++    body["payload"]["record"]["unrecognizedStructuralField"] = json!("refuse");
++    assert!(!validator.is_valid(&body));
++}
+diff --git a/crates/trellis-server/src/composition.rs b/crates/trellis-server/src/composition.rs
+index 78eae37..24df523 100644
+--- a/crates/trellis-server/src/composition.rs
++++ b/crates/trellis-server/src/composition.rs
+@@ -19,7 +19,7 @@ use trellis_server_ports::{
+     EventTypeRegistry, EventTypeSpec, ReviewGateEventTypeRegistry,
+ };
+ use wos_events::ProvenanceKind;
+-use wos_events::WOS_CANONICAL_EVENT_LITERALS;
++use wos_events::{WOS_CANONICAL_EVENT_LITERALS, WOS_NATIVE_PROVENANCE_EVENT_LITERAL};
+ 
+ use crate::export_profile::PolicyClosureArtifact;
+ 
+@@ -222,7 +222,13 @@ pub fn default_admission_policy() -> Arc<dyn EventAdmissionPolicy<Error = StackE
+         .collect::<Vec<_>>();
+     Arc::new(
+         AdmissionRouter::new()
+-            .register_for_literals(wos, WOS_CANONICAL_EVENT_LITERALS.iter().copied())
++            .register_for_literals(
++                wos,
++                WOS_CANONICAL_EVENT_LITERALS
++                    .iter()
++                    .copied()
++                    .chain(std::iter::once(WOS_NATIVE_PROVENANCE_EVENT_LITERAL)),
++            )
+             .register_for_literals(formspec, formspec_literals),
+     )
+ }
+@@ -487,4 +493,26 @@ mod tests {
+             trellis_types::ArtifactType::Event
+         );
+     }
++    #[tokio::test]
++    async fn native_provenance_dispatch_reaches_owning_adapter() {
++        let fixture: serde_json::Value = serde_json::from_str(include_str!(
++            "../../../fixtures/conformance/native-provenance-routing.json"
++        ))
++        .unwrap();
++        let bytes = serde_json::to_vec(&fixture["payload"]).unwrap();
++        let admitted = default_admission_policy()
++            .admit(&AdmissionEvent {
++                scope: b"case-1",
++                event_type: WOS_NATIVE_PROVENANCE_EVENT_LITERAL,
++                payload: &bytes,
++            })
++            .await
++            .expect("generic route registered independently of canonical literals");
++        assert_eq!(admitted.event_type, WOS_NATIVE_PROVENANCE_EVENT_LITERAL);
++        assert!(
++            default_event_type_specs()
++                .iter()
++                .any(|spec| spec.event_type == WOS_NATIVE_PROVENANCE_EVENT_LITERAL)
++        );
++    }
+ }
+diff --git a/crates/trellis-server/src/openapi.rs b/crates/trellis-server/src/openapi.rs
+index f0dbaba..1fb38cf 100644
+--- a/crates/trellis-server/src/openapi.rs
++++ b/crates/trellis-server/src/openapi.rs
+@@ -119,7 +119,7 @@ mod tests {
+ 
+     use serde_json::json;
+     use utoipa::OpenApi as _;
+-    use wos_events::WOS_CANONICAL_EVENT_LITERALS;
++    use wos_events::{WOS_CANONICAL_EVENT_LITERALS, WOS_NATIVE_PROVENANCE_EVENT_LITERAL};
+ 
+     use crate::{FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH, FORMSPEC_RESPONSE_SUBMITTED};
+ 
+@@ -167,6 +167,7 @@ mod tests {
+             let literal = event_type.as_str().expect("event type literal");
+             assert!(
+                 WOS_CANONICAL_EVENT_LITERALS.contains(&literal)
++                    || literal == WOS_NATIVE_PROVENANCE_EVENT_LITERAL
+                     || literal == FORMSPEC_RESPONSE_SUBMITTED
+                     || literal == FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH,
+                 "schema EventType enum must only list admitted server literals"
+diff --git a/crates/trellis-service-client/src/lib.rs b/crates/trellis-service-client/src/lib.rs
+index 3d4723d..841ee46 100644
+--- a/crates/trellis-service-client/src/lib.rs
++++ b/crates/trellis-service-client/src/lib.rs
+@@ -23,8 +23,8 @@
+ //!
+ //! - **WOS provenance** — construct via [`wos_provenance_append_request`]
+ //!   (or the [`SubstrateClientExt::append_wos_provenance`] helper). The JSON
+-//!   body deserializes as `wos_events::ProvenanceRecord` and must agree with
+-//!   the canonical event literal carried in `event_type`.
++//!   Existing canonical payloads agree with their event literal. Remaining
++//!   known native kinds use the owning validated original-record wrapper.
+ //! - **Formspec substrate** — construct via [`SubstrateAppendRequest::new_json`]
+ //!   with Formspec's aggregate envelope (`aggregateType`, `aggregateId`,
+ //!   `payload`). Trellis routes Formspec admission for the response-submitted
+@@ -96,6 +96,7 @@ fn trellis_admitted_event_type_openapi_schema() -> RefOr<Schema> {
+         .copied()
+         .map(str::to_string)
+         .collect();
++    values.push(wos_ext::WOS_NATIVE_PROVENANCE_EVENT_LITERAL.to_string());
+     values.push(FORMSPEC_APPEND_EVENT_TYPE_LITERAL.to_string());
+     values.push(FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH_EVENT_TYPE_LITERAL.to_string());
+     values.sort();
+diff --git a/crates/trellis-service-client/src/wos_ext.rs b/crates/trellis-service-client/src/wos_ext.rs
+index 3c97a3d..23cec4f 100644
+--- a/crates/trellis-service-client/src/wos_ext.rs
++++ b/crates/trellis-service-client/src/wos_ext.rs
+@@ -18,8 +18,9 @@
+ use async_trait::async_trait;
+ use stack_common_error::StackError;
+ use stack_common_http::tenant::TenantScope;
+-use wos_events::ProvenanceRecord;
+ pub use wos_events::WOS_CANONICAL_EVENT_LITERALS;
++pub use wos_events::WOS_NATIVE_PROVENANCE_EVENT_LITERAL;
++use wos_events::{NativeProvenanceEvent, ProvenanceRecord};
+ 
+ use crate::{
+     AppendActor, ComputeContext, SubstrateAppendRequest, SubstrateAppendResult, SubstrateClient,
+@@ -27,12 +28,11 @@ use crate::{
+ 
+ /// Builds a typed WOS provenance append request from a [`ProvenanceRecord`].
+ ///
+-/// Validates that the record carries (or resolves to) a canonical event literal
+-/// and serializes the JSON payload deterministically.
++/// Preserves existing canonical routes. Other known kinds use the shared native
++/// record validator and retain their original fields inside `record`.
+ ///
+ /// # Errors
+-/// Returns an error when the record kind has no Trellis event literal or the
+-/// record cannot serialize to JSON.
++/// Returns an error when native record validation or JSON serialization fails.
+ pub fn wos_provenance_append_request(
+     scope: impl Into<String>,
+     tenant_scope: TenantScope,
+@@ -41,6 +41,19 @@ pub fn wos_provenance_append_request(
+     record: ProvenanceRecord,
+     compute_context: ComputeContext,
+ ) -> Result<SubstrateAppendRequest, StackError> {
++    if record.record_kind.canonical_event_literal().is_none() {
++        let native = NativeProvenanceEvent::from_record(&record)
++            .map_err(|_| StackError::bad_request("invalid native provenance record"))?;
++        return SubstrateAppendRequest::new_json(
++            scope,
++            tenant_scope,
++            WOS_NATIVE_PROVENANCE_EVENT_LITERAL,
++            idempotency_key,
++            actor,
++            native.payload().clone(),
++            compute_context,
++        );
++    }
+     let event_type = record
+         .event
+         .clone()
+@@ -108,3 +121,58 @@ pub trait SubstrateClientExt: SubstrateClient {
+ }
+ 
+ impl<T> SubstrateClientExt for T where T: SubstrateClient + ?Sized {}
++
++#[cfg(test)]
++mod native_provenance_tests {
++    use super::*;
++    fn tenant() -> TenantScope {
++        TenantScope {
++            tenant: "tenant".into(),
++            workspace: "workspace".into(),
++            environment: "test".into(),
++            cell: "cell".into(),
++        }
++    }
++    #[test]
++    fn native_provenance_client_preserves_original_record() {
++        let fixture: serde_json::Value = serde_json::from_str(include_str!(
++            "../../../fixtures/conformance/native-provenance-routing.json"
++        ))
++        .unwrap();
++        let record: ProvenanceRecord = serde_json::from_value(fixture["payload"]["record"].clone()).unwrap();
++        // This helper accepts a typed record. Its original JSON follows the
++        // maintained serializer, which omits empty optional collections.
++        let original = serde_json::to_value(&record).unwrap();
++        let request = wos_provenance_append_request(
++            "case-1",
++            tenant(),
++            "native-client",
++            AppendActor::service("wos-server"),
++            record,
++            ComputeContext::no_delegated_compute("wos-server"),
++        )
++        .unwrap();
++        assert_eq!(request.event_type, WOS_NATIVE_PROVENANCE_EVENT_LITERAL);
++        assert_eq!(request.payload["record"], original);
++        assert_eq!(request.payload["record"]["event"], "original-entry-trigger");
++    }
++    #[test]
++    fn native_provenance_client_keeps_all_canonical_routes_exact() {
++        for literal in WOS_CANONICAL_EVENT_LITERALS {
++            let kind = wos_events::ProvenanceKind::from_canonical_event_literal(literal).unwrap();
++            let record = ProvenanceRecord::blank(kind);
++            let original = serde_json::to_value(&record).unwrap();
++            let request = wos_provenance_append_request(
++                "case-1",
++                tenant(),
++                "canonical-client",
++                AppendActor::service("wos-server"),
++                record,
++                ComputeContext::no_delegated_compute("wos-server"),
++            )
++            .unwrap();
++            assert_eq!(&request.event_type, literal);
++            assert_eq!(request.payload, original);
++        }
++    }
++}
+diff --git a/crates/trellis-verify-wos/src/lib.rs b/crates/trellis-verify-wos/src/lib.rs
+index b711b4e..da72d8c 100644
+--- a/crates/trellis-verify-wos/src/lib.rs
++++ b/crates/trellis-verify-wos/src/lib.rs
+@@ -18,6 +18,7 @@ mod certificate_resolver;
+ mod clock_semantics;
+ mod event_types;
+ mod findings;
++mod native_provenance;
+ mod policy_closure;
+ mod records;
+ mod rescission;
+diff --git a/crates/trellis-verify-wos/src/native_provenance.rs b/crates/trellis-verify-wos/src/native_provenance.rs
+new file mode 100644
+index 0000000..af8808d
+--- /dev/null
++++ b/crates/trellis-verify-wos/src/native_provenance.rs
+@@ -0,0 +1,284 @@
++// Rust guideline compliant 2026-02-21
++//! Offline checks for original native WOS provenance records.
++
++#![forbid(unsafe_code)]
++
++use integrity_verify::trellis::{DomainEvent, DomainFinding, Severity};
++use wos_events::{NativeProvenanceEvent, WOS_NATIVE_PROVENANCE_EVENT_LITERAL};
++
++/// Validates only the generic route using the same WOS-owned ingress rules.
++pub(crate) fn validate_native_provenance(events: &[DomainEvent]) -> Vec<DomainFinding> {
++    let mut findings = Vec::new();
++    for event in events {
++        if event.event_type != WOS_NATIVE_PROVENANCE_EVENT_LITERAL {
++            continue;
++        }
++        let (kind, message) = match event.payload.as_deref() {
++            None => (
++                "native_provenance_payload_unavailable",
++                "generic native provenance payload is unavailable for offline validation",
++            ),
++            Some(payload) if NativeProvenanceEvent::from_dcbor_slice(payload).is_err() => (
++                "native_provenance_invalid",
++                "generic native provenance payload fails WOS-owned shape or kind validation",
++            ),
++            Some(_) => continue,
++        };
++        // Do not include original record values or schema error details in reports.
++        findings.push(DomainFinding::new(
++            kind,
++            Some(event.canonical_event_hash),
++            Severity::Failure,
++            message,
++        ));
++    }
++    findings
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::{WosRecordValidator, WosVerificationReport};
++    use ciborium::Value as Cbor;
++    use integrity_verify::trellis::{
++        RecordValidator, RelyingPartyResult, TrellisTimestamp, VerdictState,
++    };
++    use serde_json::{Value, json};
++    use wos_events::{ProvenanceKind, ProvenanceRecord, WOS_CANONICAL_EVENT_LITERALS};
++
++    fn payload(kind: ProvenanceKind) -> Value {
++        let mut record = ProvenanceRecord::blank(kind);
++        record.timestamp = "2026-10-09T12:00:00Z".into();
++        record.audit_layer = Some("facts".into());
++        record.definition_version = Some("0.3.0".into());
++        // Preserve an original triggering event, including absence of a canonical literal.
++        if kind.canonical_event_literal().is_none() {
++            record.event = Some("original-trigger".into());
++        }
++        record.data = Some(
++            json!({"nested": [null, true, 42, {"recordKind": "signatureAffirmation"}],
++            "text": "Original full text", "unknownApplicationKey": "retained"}),
++        );
++        json!({"record": record})
++    }
++
++    fn encoded(value: &Value) -> Vec<u8> {
++        let mut bytes = Vec::new();
++        ciborium::into_writer(value, &mut bytes).unwrap();
++        bytes
++    }
++
++    fn encoded_cbor(value: &Cbor) -> Vec<u8> {
++        let mut bytes = Vec::new();
++        ciborium::into_writer(value, &mut bytes).unwrap();
++        bytes
++    }
++
++    fn event(hash: u8, payload: Option<Vec<u8>>) -> DomainEvent {
++        DomainEvent {
++            event_type: WOS_NATIVE_PROVENANCE_EVENT_LITERAL.into(),
++            payload,
++            canonical_event_hash: [hash; 32],
++            authored_at: TrellisTimestamp {
++                seconds: 1,
++                nanos: 0,
++            },
++        }
++    }
++
++    fn assert_invalid(bytes: Vec<u8>) {
++        let findings = WosRecordValidator.validate_events(&[event(3, Some(bytes))]);
++        assert_eq!(findings.len(), 1, "{findings:?}");
++        assert_eq!(findings[0].kind, "native_provenance_invalid");
++        assert_eq!(findings[0].severity, Severity::Failure);
++        assert_eq!(findings[0].event_hash, Some([3; 32]));
++    }
++
++    #[test]
++    fn original_on_entry_and_notice_records_validate_without_specialized_promotion() {
++        for kind in [ProvenanceKind::OnEntry, ProvenanceKind::NoticeSent] {
++            let original = payload(kind);
++            let bytes = encoded(&original);
++            let validated = NativeProvenanceEvent::from_dcbor_slice(&bytes).unwrap();
++            assert_eq!(validated.record(), &original["record"]);
++            let events = vec![event(1, Some(bytes))];
++            let before = events.clone();
++            assert!(WosRecordValidator.validate_events(&events).is_empty());
++            assert_eq!(events, before);
++        }
++    }
++
++    #[test]
++    fn unavailable_payload_blocks_domain_admissibility() {
++        let findings = WosRecordValidator.validate_events(&[event(2, None)]);
++        assert_eq!(findings.len(), 1);
++        assert_eq!(findings[0].kind, "native_provenance_payload_unavailable");
++        assert_eq!(findings[0].event_hash, Some([2; 32]));
++        let mut substrate = integrity_verify::trellis::VerificationReport::default();
++        substrate.structure_verified = true;
++        substrate.integrity_verified = true;
++        let verdict = WosVerificationReport {
++            trellis: substrate,
++            wos_findings: findings,
++        }
++        .verdict();
++        assert_eq!(verdict.cryptographic_integrity, VerdictState::Pass);
++        assert_eq!(verdict.domain_admissibility, VerdictState::Fail);
++        assert_eq!(verdict.relying_party_result, RelyingPartyResult::Invalid);
++    }
++
++    #[test]
++    fn malformed_wrapper_discriminator_and_original_fields_refuse() {
++        let valid = payload(ProvenanceKind::OnEntry);
++        let mut cases = vec![Value::Null, json!({}), json!({"record": null})];
++        let mut extra_wrapper = valid.clone();
++        extra_wrapper["extra"] = json!(true);
++        cases.push(extra_wrapper);
++        for field in [
++            "recordKind",
++            "id",
++            "timestamp",
++            "auditLayer",
++            "definitionVersion",
++        ] {
++            let mut missing = valid.clone();
++            missing["record"].as_object_mut().unwrap().remove(field);
++            cases.push(missing);
++        }
++        for (field, value) in [
++            ("recordKind", json!("futureUnknownKind")),
++            ("recordKind", json!(42)),
++            ("id", json!("")),
++            ("id", json!("invalid")),
++            ("timestamp", json!("not-a-time")),
++            ("actorId", json!({"wrong": "type"})),
++            ("inputs", json!("not-an-array")),
++            ("unrecognizedStructuralField", json!("must not disappear")),
++        ] {
++            let mut invalid = valid.clone();
++            invalid["record"][field] = value;
++            cases.push(invalid);
++        }
++        for value in cases {
++            assert_invalid(encoded(&value));
++        }
++    }
++
++    #[test]
++    fn every_existing_canonical_kind_refuses_generic_bypass() {
++        assert_eq!(WOS_CANONICAL_EVENT_LITERALS.len(), 28);
++        for literal in WOS_CANONICAL_EVENT_LITERALS {
++            let kind = ProvenanceKind::from_canonical_event_literal(literal).unwrap();
++            assert_invalid(encoded(&payload(kind)));
++        }
++    }
++
++    #[test]
++    fn invalid_cbor_and_ambiguous_maps_refuse_before_json_view() {
++        let valid = payload(ProvenanceKind::OnEntry);
++        let bytes = encoded(&valid);
++        assert_invalid(vec![0xff]);
++        let mut trailing = bytes.clone();
++        trailing.push(0);
++        assert_invalid(trailing);
++        let decoded: Cbor = ciborium::from_reader(bytes.as_slice()).unwrap();
++        let Cbor::Map(wrapper) = decoded else {
++            panic!("test wrapper must be a map")
++        };
++        assert_invalid(encoded_cbor(&Cbor::Map(vec![
++            wrapper[0].clone(),
++            wrapper[0].clone(),
++        ])));
++        let Cbor::Map(record) = &wrapper[0].1 else {
++            panic!("test record must be a map")
++        };
++        let kind = record
++            .iter()
++            .find(|(key, _)| key.as_text() == Some("recordKind"))
++            .unwrap()
++            .clone();
++        let mut duplicated = record.clone();
++        duplicated.push(kind);
++        assert_invalid(encoded_cbor(&Cbor::Map(vec![(
++            Cbor::Text("record".into()),
++            Cbor::Map(duplicated),
++        )])));
++        for invalid in [
++            Cbor::Tag(0, Box::new(Cbor::Text("2026-10-09T12:00:00Z".into()))),
++            Cbor::Bytes(b"record".to_vec()),
++            Cbor::Map(vec![(Cbor::Integer(1.into()), Cbor::Null)]),
++        ] {
++            assert_invalid(encoded_cbor(&Cbor::Map(vec![(
++                Cbor::Text("record".into()),
++                invalid,
++            )])));
++        }
++        // These would become valid JSON values through the inspection bridge;
++        // the strict owner byte helper must reject them before that conversion.
++        for (field, replacement) in [
++            (
++                "timestamp",
++                Cbor::Tag(0, Box::new(Cbor::Text("2026-10-09T12:00:00Z".into()))),
++            ),
++            ("data", Cbor::Bytes(b"application bytes".to_vec())),
++        ] {
++            let mut unsupported = record.clone();
++            unsupported
++                .iter_mut()
++                .find(|(key, _)| key.as_text() == Some(field))
++                .unwrap()
++                .1 = replacement;
++            assert_invalid(encoded_cbor(&Cbor::Map(vec![(
++                Cbor::Text("record".into()),
++                Cbor::Map(unsupported),
++            )])));
++        }
++        let mut too_deep = Cbor::Null;
++        for _ in 0..130 {
++            too_deep = Cbor::Array(vec![too_deep]);
++        }
++        let mut deep_record = record.clone();
++        deep_record
++            .iter_mut()
++            .find(|(key, _)| key.as_text() == Some("data"))
++            .unwrap()
++            .1 = too_deep;
++        assert_invalid(encoded_cbor(&Cbor::Map(vec![(
++            Cbor::Text("record".into()),
++            Cbor::Map(deep_record),
++        )])));
++        let mut nested = record.clone();
++        let data = nested
++            .iter_mut()
++            .find(|(key, _)| key.as_text() == Some("data"))
++            .unwrap();
++        data.1 = Cbor::Map(vec![
++            (Cbor::Text("duplicate".into()), Cbor::Null),
++            (Cbor::Text("duplicate".into()), Cbor::Bool(true)),
++        ]);
++        assert_invalid(encoded_cbor(&Cbor::Map(vec![(
++            Cbor::Text("record".into()),
++            Cbor::Map(nested),
++        )])));
++    }
++
++    #[test]
++    fn mixed_events_keep_existing_routes_and_identify_only_invalid_generic_record() {
++        let valid = event(1, Some(encoded(&payload(ProvenanceKind::OnEntry))));
++        let mut canonical = event(2, None);
++        canonical.event_type = "wos.kernel.state_transition".into();
++        let mut unrelated = event(3, Some(vec![0xff]));
++        unrelated.event_type = "other.event".into();
++        let invalid = event(
++            4,
++            Some(encoded(
++                &json!({"record": {"recordKind": "futureUnknownKind"}}),
++            )),
++        );
++        let findings = WosRecordValidator.validate_events(&[valid, canonical, unrelated, invalid]);
++        assert_eq!(findings.len(), 1, "{findings:?}");
++        assert_eq!(findings[0].event_hash, Some([4; 32]));
++        assert_eq!(findings[0].kind, "native_provenance_invalid");
++        assert!(!findings[0].message.contains("futureUnknownKind"));
++    }
++}
+diff --git a/crates/trellis-verify-wos/src/validator.rs b/crates/trellis-verify-wos/src/validator.rs
+index abab33a..105b76e 100644
+--- a/crates/trellis-verify-wos/src/validator.rs
++++ b/crates/trellis-verify-wos/src/validator.rs
+@@ -22,6 +22,7 @@ impl RecordValidator for WosRecordValidator {
+     fn validate_events(&self, events: &[DomainEvent]) -> Vec<DomainFinding> {
+         let mut findings = crate::rescission::validate_rescission_terminality(events);
+         findings.extend(crate::clock_semantics::validate_clock_semantics(events));
++        findings.extend(crate::native_provenance::validate_native_provenance(events));
+         findings
+     }
+ 
+diff --git a/fixtures/conformance/native-provenance-routing.json b/fixtures/conformance/native-provenance-routing.json
+new file mode 100644
+index 0000000..411c415
+--- /dev/null
++++ b/fixtures/conformance/native-provenance-routing.json
+@@ -0,0 +1,31 @@
++{
++  "authority": "Controlled conformance input; not actual D1 history or custody qualification.",
++  "eventType": "wos.provenance.recorded",
++  "payload": {
++    "record": {
++      "id": "default_prov_01h455vb4pex5vsknk084sn02q",
++      "recordKind": "onEntry",
++      "timestamp": "2026-10-09T12:00:00Z",
++      "auditLayer": "facts",
++      "definitionVersion": "1.0.0",
++      "event": "original-entry-trigger",
++      "data": {
++        "nested": [
++          "preserve",
++          null,
++          {
++            "value": 7
++          }
++        ]
++      },
++      "inputs": [],
++      "outputs": [],
++      "transitionTags": []
++    }
++  },
++  "expected": {
++    "family": "wos.provenance",
++    "schemaRef": "wos-events://wos.provenance.recorded",
++    "directSubmit": "serviceOnly"
++  }
++}
+diff --git a/scripts/check-http-api-schema.py b/scripts/check-http-api-schema.py
+index c2d8e61..570830c 100644
+--- a/scripts/check-http-api-schema.py
++++ b/scripts/check-http-api-schema.py
+@@ -11,6 +11,7 @@ import json
+ import re
+ import subprocess
+ import sys
++import tomllib
+ from pathlib import Path
+ 
+ 
+@@ -20,10 +21,13 @@ SERVER_PATH = ROOT / "crates" / "trellis-server" / "src" / "lib.rs"
+ # TWREF-086: Axum `.route(` calls live in `http.rs`; `lib.rs` keeps admission/constants.
+ HTTP_ROUTER_PATH = ROOT / "crates" / "trellis-server" / "src" / "http.rs"
+ CLIENT_PATH = ROOT / "crates" / "trellis-service-client" / "src" / "lib.rs"
+-# Sibling `work-spec/` at stack root (TWREF-017): substrate literals authored once in kind.rs.
+-WOS_EVENTS_KIND_PATH = (
+-    ROOT.parent / "work-spec" / "crates" / "wos-events" / "src" / "provenance" / "kind.rs"
+-)
++# Resolve the owning source through the SAME maintained path dependency as admission.
++_ADMISSION_MANIFEST = ROOT / "crates" / "trellis-admission-wos" / "Cargo.toml"
++_ADMISSION_DEPENDENCIES = tomllib.loads(_ADMISSION_MANIFEST.read_text())["dependencies"]
++_WOS_PACKAGE = (_ADMISSION_MANIFEST.parent / _ADMISSION_DEPENDENCIES["wos-events"]["path"]).resolve()
++WOS_EVENTS_KIND_PATH = _WOS_PACKAGE / "src" / "provenance" / "kind.rs"
++WOS_EVENTS_NATIVE_PATH = _WOS_PACKAGE / "src" / "native_provenance.rs"
++WOS_NATIVE_SCHEMA_PATH = _WOS_PACKAGE.parents[1] / "schemas" / "wos-native-provenance-event.schema.json"
+ 
+ EXPECTED_OPERATIONS = {
+     "appendEvent": ("POST", "/v1/scopes/{scope}/events"),
+@@ -150,9 +154,11 @@ def parse_wos_event_types(_server_source: str) -> list[str]:
+             "wos-events canonical literal table not found at "
+             f"{WOS_EVENTS_KIND_PATH} (expected stack checkout with sibling work-spec/)"
+         )
+-    return parse_substrate_event_literals_from_kind_rs(
++    canonical = parse_substrate_event_literals_from_kind_rs(
+         WOS_EVENTS_KIND_PATH.read_text(encoding="utf-8")
+     )
++    generic = parse_const_str(WOS_EVENTS_NATIVE_PATH.read_text(encoding="utf-8"), "WOS_NATIVE_PROVENANCE_EVENT_LITERAL")
++    return canonical + [generic]
+ 
+ 
+ def normalize_axum_path(path: str) -> str:
+@@ -250,6 +256,16 @@ def check_defs(schema: dict, server_source: str, client_source: str, errors: lis
+     if not defs:
+         return
+ 
++    native_schema = read_json(WOS_NATIVE_SCHEMA_PATH)
++    native_uri = native_schema.get("$id")
++    native_rules = defs["SubstrateAppendBody"].get("allOf", [])
++    native_refs = [rule.get("then", {}).get("properties", {}).get("payload", {}).get("$ref")
++                   for rule in native_rules
++                   if rule.get("if", {}).get("properties", {}).get("eventType", {}).get("const")
++                   == parse_const_str(WOS_EVENTS_NATIVE_PATH.read_text(encoding="utf-8"), "WOS_NATIVE_PROVENANCE_EVENT_LITERAL")]
++    if native_refs != [native_uri] or not isinstance(native_uri, str):
++        errors.append("native provenance payload must reference the owning canonical schema URI exactly once")
++
+     expected_events = expected_admitted_event_types(server_source, client_source)
+     schema_events = defs["EventType"].get("enum")
+     # Ordering is not normative: macro table order may differ from schema enum order.
+diff --git a/specs/trellis-http-api.schema.json b/specs/trellis-http-api.schema.json
+index f4f3a42..22a88d3 100644
+--- a/specs/trellis-http-api.schema.json
++++ b/specs/trellis-http-api.schema.json
+@@ -286,12 +286,13 @@
+         "wos.kernel.instance_migrated",
+         "wos.kernel.migration_pin_changed",
+         "substrate.append.response_submitted",
+-        "substrate.append.response_action_session_op_batch"
++        "substrate.append.response_action_session_op_batch",
++        "wos.provenance.recorded"
+       ]
+     },
+     "EventTypeRegistry": {
+       "type": "object",
+-      "description": "JSON registry returned by GET /v1/scopes/{scope}/registries/event-types. The event literals mirror trellis-server WOS_EVENT_TYPES and wos-events ProvenanceKind::canonical_event_literal().",
++      "description": "JSON registry returned by GET /v1/scopes/{scope}/registries/event-types. Admission adapters own catalog literals, including canonical WOS events and validated native provenance custody.",
+       "required": [
+         "registryVersion",
+         "eventTypes"
+@@ -420,7 +421,7 @@
+         },
+         "payload": {
+           "type": "object",
+-          "description": "Typed WOS provenance payload. The server admits only payloads whose WOS event field and record kind agree with eventType."
++          "description": "Owning adapter payload. Canonical WOS routes retain their original record shape; wos.provenance.recorded requires the shared native wrapper schema."
+         },
+         "computeContext": {
+           "allOf": [
+@@ -440,7 +441,28 @@
+           "$ref": "#/$defs/ClientAttestation"
+         }
+       },
+-      "additionalProperties": false
++      "additionalProperties": false,
++      "allOf": [
++        {
++          "if": {
++            "properties": {
++              "eventType": {
++                "const": "wos.provenance.recorded"
++              }
++            },
++            "required": [
++              "eventType"
++            ]
++          },
++          "then": {
++            "properties": {
++              "payload": {
++                "$ref": "https://wos-spec.org/schemas/wos-native-provenance-event.schema.json"
++              }
++            }
++          }
++        }
++      ]
+     },
+     "SubstrateAppendResult": {
+       "type": "object",
+@@ -495,7 +517,11 @@
+         },
+         "artifactType": {
+           "type": "string",
+-          "enum": ["event", "checkpoint", "manifest"]
++          "enum": [
++            "event",
++            "checkpoint",
++            "manifest"
++          ]
+         },
+         "eventType": {
+           "$ref": "#/$defs/EventType"
+diff --git a/specs/trellis-requirements-matrix.md b/specs/trellis-requirements-matrix.md
+index 154cd18..aa23275 100644
+--- a/specs/trellis-requirements-matrix.md
++++ b/specs/trellis-requirements-matrix.md
+@@ -612,3 +612,7 @@ Prior-draft conflicts resolved in favor of product-vision invariants, per the au
+ - `specs/trellis-operational-companion.md` — Trellis Operational Companion.
+ - `specs/cross-reference-map.md` — per-row upstream-destination index for rows dropped to Formspec Respondent Ledger or WOS.
+ - Legacy (non-normative): `thoughts/archive/drafts/unified-ledger-requirements-matrix.md`, `thoughts/archive/drafts/unified-ledger-companion-requirements-matrix.md`, `specs/archive/core/unified-ledger-requirements-matrix.md`, `specs/archive/core/unified-ledger-companion-requirements-matrix.md`. Citations in the `Legacy` column of this matrix are resolved against the `specs/archive/core/` versions.
++
++## Native provenance binding conformance
++
++The WOS-owned native custody rule is specified in `wos-trellis-verification.md` WOS-TV-028. Its controlled positive vector is `fixtures/conformance/native-provenance-routing.json`; adapter and offline tests cover the unknown-kind/canonical-bypass/strict-CBOR negatives. These checks preserve Core's semantic boundary and do not qualify actual D1 history. The generic event must appear in both admission dispatch and catalog metadata.
+diff --git a/specs/wos-trellis-verification.md b/specs/wos-trellis-verification.md
+index 16be23e..f416024 100644
+--- a/specs/wos-trellis-verification.md
++++ b/specs/wos-trellis-verification.md
+@@ -48,6 +48,7 @@ The WOS validator owns the following event-type literals:
+ 
+ | Literal | Meaning |
+ |---|---|
++| `wos.provenance.recorded` | Custody of a validated original native record without a canonical event mapping; no specialized signature, intake or decision meaning. |
+ | `wos.kernel.signature_affirmation` | Signature provenance event. |
+ | `wos.kernel.signature_admission_failed` | Failed signature-admission provenance event. |
+ | `wos.kernel.intake_accepted` | Intake-acceptance provenance event. |
+@@ -240,3 +241,15 @@ The Rust implementation lives in `crates/trellis-verify-wos`. It depends on
+ `integrity-verify::trellis` and composes through the Core domain-validator seam.
+ It MUST not introduce a dependency from the integrity verifier back to WOS
+ runtime crates.
++
++## Native provenance custody
++
++`wos.provenance.recorded` MUST carry exactly `{ "record": <original native JSON record> }`, validated by the owning `wos-events::NativeProvenanceEvent` schema/helper. An explicit recognized `recordKind` without a canonical event mapping is required. Existing canonical kinds MUST retain their existing route and MUST NOT use this generic route. Original identifiers, timestamp text, actor, triggering event, and permitted application data remain unchanged.
++
++The verifier MUST use the shared strict wrapped-payload CBOR decoder before JSON conversion. It MUST refuse missing payload, ambiguous map keys, unsupported CBOR types/tags, unknown or canonical kinds, malformed fields, and unknown structural fields. Original archive bytes remain the cryptographic authority. This event proves custody of its record; it does not establish specialized business semantics or output authorization.
++
++| ID | Requirement |
++|---|---|
++| WOS-TV-028 | A generic native provenance event MUST pass the shared strict owning validator. Missing payload yields `native_provenance_payload_unavailable`; invalid payload yields `native_provenance_invalid`. Both are blocking domain failures. |
++
++Offline JSON Schema validators for the HTTP API must register the exact owning native schema resource under `https://wos-spec.org/schemas/wos-native-provenance-event.schema.json`. A repository-relative HTTP `$ref` is insufficient because the HTTP schema has an absolute `$id`. The conformance test registers this resource explicitly, validates the positive native wrapper, and refuses unknown/canonical/missing kind and unknown structural fields without network retrieval.

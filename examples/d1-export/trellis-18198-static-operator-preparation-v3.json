@@ -1,0 +1,68 @@
+{
+  "status": "static prepared; no launch; deny-all grants until fresh-case selection",
+  "privateDirectory": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1",
+  "bind": "127.0.0.1:18198",
+  "databaseCreated": true,
+  "databaseMigrationsAppliedAccordingToRootReceipt": false,
+  "startupWillApplyMaintainedMigrations": true,
+  "profileFile": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/oidc-profile.json",
+  "profileSha256": "c8de0c4bfba003b93c2ef28a937a3e8bef1f21c3d12f26685af7a294c196e057",
+  "grantsFile": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/current-grants.json",
+  "grantsSha256": "2ee9697269d53fdb94daf48af6d6a586a92b81bbdaf0dd24e95b38c6ce0caae0",
+  "actualCallerSubject": "4af85e55-7498-43e7-ab7b-c5c08aa05b4f",
+  "internalPrincipal": "wos-trellis-producer",
+  "selectedKeyPath": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/oidc-reviewer-lineage-20261007-v1/trellis-local-memory-signing-v1.cose_key",
+  "raw030ExpectedSha256": "06516ab2228e2ff95fe247780a28436d01f0a77e028ef8f14997912dcaba51f2",
+  "binaryPath": "/private/tmp/trellis-native-provenance-qualified-v1-20261009/execution/trellis-server-oidc-qualified-v4",
+  "binarySha256": "f0a0eb62da9d52c5a5e5a2bac8f60af8b7ff97084cd0de6c5cae63d5256e90c7",
+  "pending": [
+    "Root fresh0.3.1case exactscope",
+    "explicit exactcase/read/append actor+human grants",
+    "freeze final profile/grants before relying on them",
+    "Root authorized operator launch",
+    "maintained WOS currenttoken qualification",
+    "HTTP publickey registry readback",
+    "independent agencytrust andactualD1 export qualification"
+  ],
+  "callerNoAdminister": "Current WOS caller has read+append; head publication still requires administer and is not granted",
+  "noLiveCallsExecuted": true,
+  "operatorScripts": [
+    {
+      "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/start-trellis-reviewed-v4.py",
+      "sha256": "7ff5649223ccf0c9b98a885f3c34156c294e0ea1dc3115791ab6c258fd624a23",
+      "executed": false
+    },
+    {
+      "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/readback-trellis-reviewed-v4.py",
+      "sha256": "11e54cf65d79ee11d9dcb13bcc4baf4ff6328043c692d796923fc2931f638bf0",
+      "executed": false
+    }
+  ],
+  "currentProviderQualification": {
+    "requiredPath": "maintained Common OidcClientCredentials injected via TrellisServiceClient::with_token_provider by WOS caller composition",
+    "pendingOwner": "WOS executable maintained caller probe/entrypoint requested",
+    "initialEmptyGrantResponse": "403 is expected but does not independently prove positive admission",
+    "afterFreshCaseGrant": "maintained TrellisServiceClient::signing_key_registry returns200 and exact raw030 digest",
+    "readbackScript": "Secondary read-only HTTP instrumentation; token must come from maintained provider on stdin; no OAuth/token acquisition implemented"
+  },
+  "artifactStoreSelection": "Default in-memory artifact store unless Root supplies maintained artifact backend; PostgreSQL event persistence is separate from export artifact retention",
+  "neededDecision": "WOS selected caller has no administer OAuth scope. Head publication requires explicit separate exporter identity/profile/grant or separately authorized caller scope; no implicit elevation.",
+  "launchRecipe": {
+    "script": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/start-trellis-reviewed-v4.py",
+    "args": [
+      "--expected-grants-sha256",
+      "2ee9697269d53fdb94daf48af6d6a586a92b81bbdaf0dd24e95b38c6ce0caae0",
+      "--allow-deny-all-startup",
+      "--execute"
+    ],
+    "authorization": "Prepared only; Root future explicit launch grant required",
+    "behavior": "Executes retained actual binary with narrow environment, existingDB URL, selected retainedCOSE, strictOIDC profile; maintained migrations on existingnewDB only"
+  },
+  "privateDatabaseConfigSha256": "d15d5c863b4920cfc4b91c6ac72fbd08dbd7cb7cc81362531cf324928f01a983",
+  "selectedRetainedKeyFileSha256": "62644accd6ef7af276945418ee794ce6428ac63a0a79f78180addd372b053608",
+  "operatorCorrections": [
+    "Explicit refusals survive python -O",
+    "Pin private database config file, selected key path/bytes and URL host/port/database/username",
+    "Disable environment proxies and redirects for HTTP bearer instrumentation"
+  ]
+}

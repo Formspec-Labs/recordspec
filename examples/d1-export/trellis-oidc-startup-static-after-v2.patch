@@ -1,0 +1,1829 @@
+diff --git a/crates/trellis-server/Cargo.toml b/crates/trellis-server/Cargo.toml
+index 437b5cc..6422064 100644
+--- a/crates/trellis-server/Cargo.toml
++++ b/crates/trellis-server/Cargo.toml
+@@ -24,7 +24,7 @@ serde = { version = "1", features = ["derive"] }
+ serde_json = "1"
+ sqlx = { version = "0.8", features = ["postgres", "runtime-tokio-rustls"] }
+ sha2 = "0.10"
+-stack-common-auth = { path = "../../../stack-common/crates/stack-common-auth" }
++stack-common-auth = { path = "../../../stack-common/crates/stack-common-auth", features = ["oidc"] }
+ stack-common-error = { path = "../../../stack-common/crates/stack-common-error" }
+ stack-common-http = { path = "../../../stack-common/crates/stack-common-http" }
+ stack-common-idempotency = { path = "../../../stack-common/crates/stack-common-idempotency", default-features = false, features = ["replay"] }
+@@ -52,3 +52,6 @@ integrity-bundle = { path = "../../../integrity-stack/crates/integrity-bundle" }
+ integrity-seam = { path = "../../../integrity-stack/crates/integrity-seam" }
+ tower = { version = "0.5", features = ["util"] }
+ wos-events = { path = "../../../work-spec/crates/wos-events" }
++
++[target.'cfg(unix)'.dependencies]
++rustix = { version = "1", features = ["fs", "process"] }
+diff --git a/crates/trellis-server/src/admission.rs b/crates/trellis-server/src/admission.rs
+index 76a6a33..50e9253 100644
+--- a/crates/trellis-server/src/admission.rs
++++ b/crates/trellis-server/src/admission.rs
+@@ -10,8 +10,11 @@
+ //! producer-specific admission vocabulary.
+ 
+ use async_trait::async_trait;
++#[cfg(test)]
+ use axum::http::StatusCode;
+-use stack_common_error::{ErrorCode, StackError};
++use stack_common_error::StackError;
++#[cfg(test)]
++use stack_common_error::ErrorCode;
+ use trellis_server_ports::{AuthorizedScope, ScopeAuthorization, ScopeAuthorizer};
+ 
+ #[derive(Debug, Clone, Copy)]
+@@ -30,9 +33,11 @@ impl ScopeAuthorizer for AllowAllScopeAuthorizer {
+ }
+ 
+ /// Enforces [`ScopeAuthorization::jwt_scopes`] against the URL path scope (production-like TWREF-022).
++#[cfg(test)]
+ #[derive(Debug, Clone, Copy)]
+ pub(crate) struct ScopedAllowlistScopeAuthorizer;
+ 
++#[cfg(test)]
+ #[async_trait]
+ impl ScopeAuthorizer for ScopedAllowlistScopeAuthorizer {
+     type Error = StackError;
+diff --git a/crates/trellis-server/src/lib.rs b/crates/trellis-server/src/lib.rs
+index 01d905a..4fc29ae 100644
+--- a/crates/trellis-server/src/lib.rs
++++ b/crates/trellis-server/src/lib.rs
+@@ -22,9 +22,8 @@
+ //! **Governance overlay (TWREF-064):** `wos-server` may restrict which WOS literals it emits
+ //! over HTTP before calling Trellis, while Trellis admits the union of WOS registry
+ //! literals plus Formspec append dialect subjects to admission policy. Bearer
+-//! credentials targeting Trellis are the substrate trust root: durable non-permissive
+-//! startups require HS256 JWTs whose `scopes` claim authorizes the URL scope (TWREF-022);
+-//! dev/demo may use `TRELLIS_STORAGE=memory` or `TRELLIS_PERMISSIVE_SCOPE_AUTH=1` for allow-all scope checks.
++//! CLI startup requires `TRELLIS_OIDC_CONFIG_FILE` and current provider verification
++//! plus exact resource grants (TWREF-022). Programmatic test/dev composition remains explicit.
+ //!
+ //! **Case scope versus Trellis URL scope (TWREF-005):** Admission here keys off `event_type` and payload shape for the
+ //! HTTP `{scope}` segment plus tenant headers. It does not fetch WOS case relationship rows; product servers must map
+@@ -40,6 +39,7 @@ mod composition;
+ mod event_repository;
+ mod export_profile;
+ mod auth;
++mod oidc_startup;
+ mod http;
+ pub mod openapi;
+ mod scope_startup;
+@@ -1086,7 +1086,7 @@ mod tests {
+         let err = router(state).expect_err("router must reject misleading posture");
+         let msg = err.to_string();
+         assert!(
+-            msg.contains("scoped ScopeAuthorizer") && msg.contains("TWREF-022"),
++            msg.contains("ScopeAuthorizer with explicit grants") && msg.contains("TWREF-022"),
+             "{msg}"
+         );
+     }
+@@ -1099,7 +1099,7 @@ mod tests {
+         let err = router(state).expect_err("router must reject missing jwt verifier");
+         let msg = err.to_string();
+         assert!(
+-            msg.contains("jwt_verifier") && msg.contains("TWREF-022"),
++            msg.contains("injected access-token verifier") && msg.contains("TWREF-022"),
+             "{msg}"
+         );
+     }
+@@ -2806,6 +2806,10 @@ mod tests {
+             self.inner.admit(event).await
+         }
+     }
++    mod oidc_startup_tests {
++        include!("oidc_startup_tests.rs");
++    }
++
+     mod auth_boundary_tests {
+         include!("auth_boundary_tests.rs");
+     }
+diff --git a/crates/trellis-server/src/state.rs b/crates/trellis-server/src/state.rs
+index 399e940..336f904 100644
+--- a/crates/trellis-server/src/state.rs
++++ b/crates/trellis-server/src/state.rs
+@@ -9,7 +9,7 @@ use async_trait::async_trait;
+ use axum::http::header::AUTHORIZATION;
+ use axum::http::{HeaderMap, StatusCode};
+ use axum::response::Response;
+-use stack_common_auth::{AccessTokenVerifier, JwtConfig, JwtVerifier, VerifiedAccessIdentity};
++use stack_common_auth::{AccessTokenVerifier, JwtVerifier, VerifiedAccessIdentity};
+ use stack_common_error::{ErrorCode, StackError};
+ use stack_common_http::idempotency::{
+     HttpIdempotencyState, IdempotencyCall, IdempotencyDecision, IdempotencyDriverError,
+@@ -17,8 +17,8 @@ use stack_common_http::idempotency::{
+ };
+ use stack_common_http::problem_response;
+ use stack_common_http::tenant::{
+-    HeaderConfig, TenantHeaderConfigProvider, TenantScope, extract_tenant,
+-    extract_tenant_multi_producer,
++    extract_tenant, extract_tenant_multi_producer, HeaderConfig, TenantHeaderConfigProvider,
++    TenantScope,
+ };
+ use stack_common_idempotency::{
+     HttpReplayStore, InMemoryHttpReplayStore, ReplayOutcome, StoredResponse,
+@@ -29,14 +29,14 @@ use trellis_server_ports::{
+     ArtifactStore, EventAdmissionPolicy, S3CompatibleArtifactStore, S3ObjectConfig, ScopeAuthorizer,
+ };
+ 
+-use crate::admission::{AllowAllScopeAuthorizer, ScopedAllowlistScopeAuthorizer};
++use crate::admission::AllowAllScopeAuthorizer;
+ use crate::append::{AppendRunner, DefaultAppendRunner};
+ use crate::artifacts::{BundleIndex, BundleIndexPort, InMemoryArtifactStore, ScopeLocks};
+-use crate::composition::{EventTypeCatalog, default_admission_policy};
++use crate::composition::{default_admission_policy, EventTypeCatalog};
+ use crate::event_repository::{
+     EventRepository, InMemoryEventRepository, PostgresBundleIndex, PostgresEventRepository,
+ };
+-use crate::scope_startup::TrellisScopeAuthorizerStartupInputs;
++use crate::oidc_startup::StartupAuth;
+ use crate::{ServerSigningKey, TenantHeaderMode, TrellisClaims};
+ 
+ pub(crate) type ProfileExportVerifier = dyn Fn(&[u8]) -> bool + Send + Sync;
+@@ -235,14 +235,13 @@ impl TrellisServerState {
+         if self.scope_authorizer_allow_all {
+             return Err(StackError::bad_request(
+                 "trellis-server refuses to build router: production_like_scope_posture requires \
+-                 a scoped ScopeAuthorizer (JWT scopes allowlist), not AllowAll—set \
+-                 TRELLIS_PERMISSIVE_SCOPE_AUTH=1 for explicit dev bypass (TWREF-022).",
++                 a ScopeAuthorizer with explicit grants (TWREF-022).",
+             ));
+         }
+         if matches!(&self.authentication, Authentication::Unconfigured) {
+             return Err(StackError::bad_request(
+                 "trellis-server refuses to build router: production_like_scope_posture requires \
+-                 TRELLIS_JWT_HS256_SECRET / jwt_verifier or injected access_token_verifier (TWREF-022).",
++                 an injected access-token verifier (TWREF-022).",
+             ));
+         }
+         Ok(())
+@@ -401,11 +400,10 @@ fn header_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+ ///
+ /// Always required:
+ /// - `TRELLIS_SIGNING_KEY_COSE_PATH`
++/// - `TRELLIS_OIDC_CONFIG_FILE` (strict current provider and exact resource grants)
+ ///
+ /// Optional:
+ /// - `TRELLIS_STORAGE=memory` (in-memory repository; skips `TRELLIS_DATABASE_URL`)
+-/// - `TRELLIS_PERMISSIVE_SCOPE_AUTH=1` (durable storage: keep `AllowAllScopeAuthorizer`; optional JWT)
+-/// - `TRELLIS_JWT_HS256_SECRET` (**required** for durable storage unless `TRELLIS_PERMISSIVE_SCOPE_AUTH=1`; optional otherwise)
+ /// - `TRELLIS_TENANT_HEADER_SET=wos|formspec|mixed`
+ /// - `TRELLIS_SIGNING_KEY_VALID_TO_UNIX_SECS`
+ /// - `TRELLIS_ARTIFACT_BUCKET`
+@@ -414,10 +412,12 @@ fn header_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+ /// - `TRELLIS_ARTIFACT_REGION`
+ ///
+ /// # Errors
+-/// Returns an error when config is missing or backend setup fails.
++/// Returns an error when OIDC configuration is missing or invalid, legacy auth
++/// environment settings are supplied, or signing-key/backend setup fails.
+ pub async fn state_from_env() -> Result<TrellisServerState, StackError> {
+-    let scope_inputs = TrellisScopeAuthorizerStartupInputs::from_env();
+-    let trellis_storage_is_memory = scope_inputs.storage_is_memory;
++    // Qualify required authentication before reading signing keys or opening storage.
++    let authentication = StartupAuth::from_env()?;
++    let trellis_storage_is_memory = matches!(env::var("TRELLIS_STORAGE").as_deref(), Ok("memory"));
+ 
+     let signing_key_path = env::var("TRELLIS_SIGNING_KEY_COSE_PATH")
+         .map_err(|_| StackError::bad_request("TRELLIS_SIGNING_KEY_COSE_PATH is required"))?;
+@@ -473,47 +473,7 @@ pub async fn state_from_env() -> Result<TrellisServerState, StackError> {
+         state = state.with_artifact_store(artifact_store);
+     }
+ 
+-    let jwt_secret = env::var("TRELLIS_JWT_HS256_SECRET")
+-        .ok()
+-        .map(|value| value.trim().to_string())
+-        .filter(|value| !value.is_empty());
+-
+-    if trellis_storage_is_memory || scope_inputs.permissive_scope_auth {
+-        if let Some(secret) = jwt_secret {
+-            state = state.with_jwt_verifier(JwtVerifier::from_hs256(
+-                trellis_jwt_config(),
+-                secret.as_bytes(),
+-            ));
+-        }
+-        return Ok(state);
+-    }
+-
+-    let Some(secret) = jwt_secret else {
+-        return Err(StackError::bad_request(
+-            "TRELLIS_JWT_HS256_SECRET is required when using durable storage without \
+-             TRELLIS_PERMISSIVE_SCOPE_AUTH=1 (TWREF-022). For dev/demo only, set \
+-             TRELLIS_PERMISSIVE_SCOPE_AUTH=1 to keep AllowAll scope authorization.",
+-        ));
+-    };
+-
+-    state = state
+-        .with_jwt_verifier(JwtVerifier::from_hs256(
+-            trellis_jwt_config(),
+-            secret.as_bytes(),
+-        ))
+-        .with_scope_authorizer(Arc::new(ScopedAllowlistScopeAuthorizer));
+-    Ok(state.with_production_like_scope_posture(true))
+-}
+-
+-#[must_use]
+-fn trellis_jwt_config() -> JwtConfig {
+-    JwtConfig {
+-        algorithm: jsonwebtoken::Algorithm::HS256,
+-        validate_exp: true,
+-        validate_iss: None,
+-        validate_aud: None,
+-        leeway_secs: 30,
+-    }
++    Ok(authentication.apply(state))
+ }
+ 
+ fn artifact_store_from_env() -> Option<Arc<dyn ArtifactStore<Error = StackError>>> {
+diff --git a/crates/trellis-service-client/Cargo.toml b/crates/trellis-service-client/Cargo.toml
+index 674bd2c..8998de3 100644
+--- a/crates/trellis-service-client/Cargo.toml
++++ b/crates/trellis-service-client/Cargo.toml
+@@ -10,6 +10,7 @@ async-trait = "0.1"
+ reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+ serde = { version = "1", features = ["derive"] }
+ serde_json = "1"
++stack-common-auth = { path = "../../../stack-common/crates/stack-common-auth" }
+ stack-common-error = { path = "../../../stack-common/crates/stack-common-error", default-features = false }
+ stack-common-http = { path = "../../../stack-common/crates/stack-common-http" }
+ trellis-types = { path = "../trellis-types" }
+diff --git a/crates/trellis-service-client/src/lib.rs b/crates/trellis-service-client/src/lib.rs
+index 841ee46..e4dd864 100644
+--- a/crates/trellis-service-client/src/lib.rs
++++ b/crates/trellis-service-client/src/lib.rs
+@@ -60,9 +60,11 @@
+ 
+ mod wos_ext;
+ 
+-pub use wos_ext::{SubstrateClientExt, WosProvenanceAppend, wos_provenance_append_request};
++pub use wos_ext::{wos_provenance_append_request, SubstrateClientExt, WosProvenanceAppend};
+ 
+-use std::time::Duration;
++use std::{fmt, sync::Arc, time::Duration};
++
++use stack_common_auth::client_credentials::ClientCredentialsTokenProvider;
+ 
+ use async_trait::async_trait;
+ use serde::{Deserialize, Serialize};
+@@ -70,9 +72,9 @@ use stack_common_error::StackError;
+ use stack_common_http::idempotency::IDEMPOTENCY_KEY_HEADER;
+ use stack_common_http::tenant::{HeaderConfig, TenantScope};
+ use trellis_types::ArtifactType;
+-use utoipa::ToSchema;
+ use utoipa::openapi::schema::{ObjectBuilder, SchemaType, Type};
+ use utoipa::openapi::{RefOr, Schema};
++use utoipa::ToSchema;
+ 
+ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
+ 
+@@ -476,7 +478,7 @@ pub trait SubstrateClient: Send + Sync {
+ }
+ 
+ /// Configures the concrete HTTP client.
+-#[derive(Clone, Debug, PartialEq, Eq)]
++#[derive(Clone, PartialEq, Eq)]
+ pub struct TrellisServiceClientConfig {
+     pub endpoint: String,
+     pub service_bearer_token: Option<String>,
+@@ -484,6 +486,20 @@ pub struct TrellisServiceClientConfig {
+     pub timeout: Duration,
+ }
+ 
++impl fmt::Debug for TrellisServiceClientConfig {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.debug_struct("TrellisServiceClientConfig")
++            .field("endpoint", &self.endpoint)
++            .field(
++                "service_bearer_token",
++                &self.service_bearer_token.as_ref().map(|_| "[REDACTED]"),
++            )
++            .field("tenant_headers", &self.tenant_headers)
++            .field("timeout", &self.timeout)
++            .finish()
++    }
++}
++
+ impl TrellisServiceClientConfig {
+     #[must_use]
+     pub fn new(endpoint: impl Into<String>, tenant_headers: HeaderConfig) -> Self {
+@@ -509,10 +525,23 @@ impl TrellisServiceClientConfig {
+ }
+ 
+ /// Reqwest-backed Trellis service client.
+-#[derive(Clone, Debug)]
++#[derive(Clone)]
+ pub struct TrellisServiceClient {
+     config: TrellisServiceClientConfig,
+     http: reqwest::Client,
++    token_provider: Option<Arc<dyn ClientCredentialsTokenProvider>>,
++}
++
++impl fmt::Debug for TrellisServiceClient {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.debug_struct("TrellisServiceClient")
++            .field("config", &self.config)
++            .field(
++                "token_provider",
++                &self.token_provider.as_ref().map(|_| "[configured]"),
++            )
++            .finish_non_exhaustive()
++    }
+ }
+ 
+ impl TrellisServiceClient {
+@@ -525,11 +554,36 @@ impl TrellisServiceClient {
+         validate_endpoint(&config.endpoint)?;
+         let http = reqwest::Client::builder()
+             .timeout(config.timeout)
++            .redirect(reqwest::redirect::Policy::none())
+             .build()
+             .map_err(|error| {
+                 StackError::internal(format!("failed to construct Trellis HTTP client: {error}"))
+             })?;
+-        Ok(Self { config, http })
++        Ok(Self {
++            config,
++            http,
++            token_provider: None,
++        })
++    }
++
++    /// Selects current workload tokens from a maintained injected provider.
++    ///
++    /// The provider owns issuer, audience, scopes, credentials and renewal. This
++    /// client acquires once per request and never caches or falls back to a token.
++    ///
++    /// # Errors
++    /// Refuses any simultaneous configured static bearer token.
++    pub fn with_token_provider(
++        mut self,
++        provider: Arc<dyn ClientCredentialsTokenProvider>,
++    ) -> Result<Self, StackError> {
++        if self.config.service_bearer_token.is_some() {
++            return Err(StackError::bad_request(
++                "Trellis static bearer and current token provider are mutually exclusive",
++            ));
++        }
++        self.token_provider = Some(provider);
++        Ok(self)
+     }
+ 
+     fn url(&self, path: &str) -> String {
+@@ -540,12 +594,12 @@ impl TrellisServiceClient {
+         )
+     }
+ 
+-    fn request(
++    async fn request(
+         &self,
+         method: reqwest::Method,
+         path: &str,
+         tenant_scope: &TenantScope,
+-    ) -> reqwest::RequestBuilder {
++    ) -> Result<reqwest::RequestBuilder, StackError> {
+         let mut request = self
+             .http
+             .request(method, self.url(path))
+@@ -562,10 +616,16 @@ impl TrellisServiceClient {
+                 tenant_scope.environment.as_str(),
+             )
+             .header(self.config.tenant_headers.cell, tenant_scope.cell.as_str());
+-        if let Some(token) = &self.config.service_bearer_token {
++        if let Some(provider) = &self.token_provider {
++            let token = provider
++                .access_token()
++                .await
++                .map_err(|_| StackError::unavailable("Trellis service token acquisition failed"))?;
++            request = request.bearer_auth(token.expose_secret());
++        } else if let Some(token) = &self.config.service_bearer_token {
+             request = request.bearer_auth(token);
+         }
+-        request
++        Ok(request)
+     }
+ }
+ 
+@@ -579,6 +639,7 @@ impl SubstrateClient for TrellisServiceClient {
+         let path = format!("/v1/scopes/{}/events", encode_path_segment(&request.scope));
+         let response = self
+             .request(reqwest::Method::POST, &path, &request.tenant_scope)
++            .await?
+             .header(IDEMPOTENCY_KEY_HEADER, request.idempotency_key.as_str())
+             .json(&request.body())
+             .send()
+@@ -670,6 +731,7 @@ impl SubstrateClient for TrellisServiceClient {
+                 ),
+                 tenant_scope,
+             )
++            .await?
+             .send()
+             .await
+             .map_err(|error| {
+@@ -700,6 +762,7 @@ impl TrellisServiceClient {
+     ) -> Result<Vec<u8>, StackError> {
+         let response = self
+             .request(reqwest::Method::GET, path, tenant_scope)
++            .await?
+             .send()
+             .await
+             .map_err(|error| {
+@@ -783,6 +846,10 @@ mod tests {
+ 
+     use super::*;
+ 
++    mod current_token_tests {
++        include!("current_token_tests.rs");
++    }
++
+     #[tokio::test]
+     async fn append_wos_provenance_posts_shared_wire_shape() {
+         let endpoint = test_server(|request| {
+@@ -867,11 +934,9 @@ mod tests {
+             },
+         };
+ 
+-        assert!(
+-            result
+-                .validate_for_event_append("case_123", "wos.kernel.case_created")
+-                .is_err()
+-        );
++        assert!(result
++            .validate_for_event_append("case_123", "wos.kernel.case_created")
++            .is_err());
+     }
+ 
+     #[test]
+diff --git a/crates/trellis-server/OIDC_STARTUP.md b/crates/trellis-server/OIDC_STARTUP.md
+new file mode 100644
+index 0000000..c59b38e
+--- /dev/null
++++ b/crates/trellis-server/OIDC_STARTUP.md
+@@ -0,0 +1,109 @@
++# Current OIDC startup
++
++The CLI requires `TRELLIS_OIDC_CONFIG_FILE` before it reads signing keys or opens
++storage. It refuses `TRELLIS_JWT_HS256_SECRET` and
++`TRELLIS_PERMISSIVE_SCOPE_AUTH`, including empty values. Programmatic verifier
++and authorizer injection remains available for tests and host composition.
++
++The profile, introspection secret, and current grants must be regular files owned
++by the server user, with no group or other permissions (for example, `0600`).
++The server checks the opened file descriptor, refuses final-component symlinks,
++and bounds each read to 1 MiB. This custody policy currently supports Unix only.
++Keep parent directories under operator control. Replace grants atomically with a
++complete private file; partial or invalid files deny requests with HTTP 503.
++
++The following example contains public placeholders. Obtain the actual provider
++subject and actor identities independently before selecting grants.
++
++```json
++{
++  "issuer": "https://identity.example/realms/deployment",
++  "audience": "trellis-api",
++  "requiredScopes": ["trellis.access"],
++  "allowedClients": ["producer-client"],
++  "profile": "keycloak",
++  "allowDevelopmentLoopbackHttp": false,
++  "introspectionEndpoint": "https://identity.example/realms/deployment/protocol/openid-connect/token/introspect",
++  "introspectionClientId": "trellis-introspection",
++  "introspectionClientSecretFile": "introspection.secret",
++  "grantsFile": "current-grants.json",
++  "tenantScope": {
++    "tenant": "tenant-a", "workspace": "workspace-a",
++    "environment": "prod", "cell": "cell-a"
++  },
++  "identities": [{
++    "issuer": "https://identity.example/realms/deployment",
++    "subject": "provider-selected-subject",
++    "clientId": "producer-client",
++    "principal": "stable-internal-producer"
++  }],
++  "actionScopes": {
++    "read": "trellis.read", "append": "trellis.append",
++    "administer": "trellis.administer"
++  }
++}
++```
++
++Supported claim profiles are `keycloak`, `oktaCustomAuthorizationServer`, and
++`rfc9068`. HTTPS is required unless development literal-loopback HTTP is selected.
++Relative secret and grant paths resolve against the profile directory. Configure
++the dedicated introspection client using the provider's audience requirements;
++Keycloak may require that client's ID in the access token audience as well as
++`trellis-api`. The maintained verifier checks signature, issuer, audience, client,
++lifetime, base scopes, and current introspection before resource authorization.
++
++The grant file repeats the exact deployment tuple:
++
++```json
++{
++  "tenantScope": {
++    "tenant": "tenant-a", "workspace": "workspace-a",
++    "environment": "prod", "cell": "cell-a"
++  },
++  "grants": [{
++    "principal": "stable-internal-producer",
++    "scope": "operator-selected-case",
++    "action": "append",
++    "actors": [{"kind": "service", "subject": "producer-actor"}],
++    "payloadActors": [{
++      "pointer": "/record/actorId", "required": true,
++      "subjects": ["operator-selected-human"]
++    }]
++  }, {
++    "principal": "stable-internal-producer",
++    "scope": "operator-selected-case", "action": "read"
++  }]
++}
++```
++
++Each request must match the fixed deployment tuple, mapped principal, exact scope,
++and action-specific OAuth scope. Append also requires an exact actor kind and
++subject. Payload selectors are JSON pointers relative to the event payload;
++the producer owner selects paths for its data shape. Required selectors must
++contain allowed text subjects. Optional selectors may be absent; present values
++must still match. Compute disclosures do not grant delegation.
++
++The closed deserialization types reject unknown or duplicate fields. Validation
++rejects duplicate rows, unknown principals, ambiguous actors or selectors, and
++actor rules on actions other than append. Read and administer use separate rows;
++head publication requires both. Missing grants return HTTP 403. The server
++reloads and validates the entire grant file for every authorization, including
++idempotent retries. It does not cache positive grants.
++
++Bind one dedicated database permanently to this profile's deployment tuple.
++Changing the tuple while reusing stored scopes is unsupported. The operator must
++maintain this association; startup does not persist or verify a database binding.
++The grant file is operator authority for this deployment, not proof of canonical
++rights or legal delegation. Case creation does not automatically register grants.
++
++Outbound callers can inject the maintained
++`ClientCredentialsTokenProvider` with
++`TrellisServiceClient::with_token_provider`. The caller owns provider, credentials,
++audience, scopes, and renewal. The client acquires once per request, refuses a
++simultaneous static bearer, sends no request after acquisition failure, and
++refuses redirects. Debug output redacts configured bearer values.
++
++Verification includes actual CLI refusal tests, maintained RS256/discovery/JWKS/
++introspection protocol fixtures, current-grant and unchanged-retry negatives,
++and all five outbound client operations. Test execution and host startup require
++the separately allocated build and runtime window.
+diff --git a/crates/trellis-server/src/oidc_startup.rs b/crates/trellis-server/src/oidc_startup.rs
+new file mode 100644
+index 0000000..d7c5da8
+--- /dev/null
++++ b/crates/trellis-server/src/oidc_startup.rs
+@@ -0,0 +1,511 @@
++//! Composes current provider verification and exact deployment resource grants.
++// Rust guideline compliant 2026-02-21
++
++use std::{
++    collections::BTreeSet,
++    fs::File,
++    io::Read,
++    path::{Path, PathBuf},
++    sync::Arc,
++};
++
++use async_trait::async_trait;
++use axum::http::StatusCode;
++use serde::Deserialize;
++use stack_common_auth::{
++    oidc::{
++        AccessTokenProfile, OidcAccessTokenVerifier, OidcCurrentAuthority, OidcDependencies,
++        OidcTrust, ReqwestAuthHttpClient, StaticClientSecret, SystemAuthClock, TransportPolicy,
++    },
++    AccessTokenVerifier,
++};
++use stack_common_error::{ErrorCode, StackError};
++use stack_common_http::tenant::TenantScope;
++use trellis_server_ports::{AuthorizedScope, ScopeAction, ScopeAuthorization, ScopeAuthorizer};
++
++use crate::TrellisServerState;
++
++// Operator profiles and grants are small. Bound reads, including files growing after metadata.
++const MAX_FILE_BYTES: u64 = 1024 * 1024;
++
++pub(crate) struct StartupAuth {
++    verifier: Arc<dyn AccessTokenVerifier>,
++    authorizer: Arc<dyn ScopeAuthorizer<Error = StackError>>,
++}
++
++impl StartupAuth {
++    pub(crate) fn from_env() -> Result<Self, StackError> {
++        let path = std::env::var_os("TRELLIS_OIDC_CONFIG_FILE")
++            .filter(|value| !value.is_empty())
++            .ok_or_else(|| StackError::bad_request("TRELLIS_OIDC_CONFIG_FILE is required"))?;
++        if std::env::var_os("TRELLIS_JWT_HS256_SECRET").is_some()
++            || std::env::var_os("TRELLIS_PERMISSIVE_SCOPE_AUTH").is_some()
++        {
++            return Err(StackError::bad_request(
++                "OIDC startup refuses legacy authentication settings",
++            ));
++        }
++        Self::load(
++            Path::new(&path),
++            OidcDependencies {
++                http: Arc::new(ReqwestAuthHttpClient::new().map_err(|_| invalid())?),
++                clock: Arc::new(SystemAuthClock),
++            },
++        )
++    }
++
++    pub(crate) fn load(path: &Path, dependencies: OidcDependencies) -> Result<Self, StackError> {
++        let profile: Profile =
++            serde_json::from_slice(&read_private(path)?).map_err(|_| invalid())?;
++        profile.validate()?;
++        let parent = path.parent().unwrap_or_else(|| Path::new("."));
++        let secret = String::from_utf8(read_private(
++            &parent.join(&profile.introspection_client_secret_file),
++        )?)
++        .map_err(|_| invalid())?;
++        let credentials = StaticClientSecret::new(
++            profile.introspection_client_id.clone(),
++            secret.trim_end_matches(['\r', '\n']).to_owned(),
++        )
++        .map_err(|_| invalid())?;
++        let verifier = OidcAccessTokenVerifier::new(
++            OidcTrust {
++                issuer: profile.issuer.clone(),
++                audience: profile.audience.clone(),
++                required_scopes: profile.required_scopes.iter().cloned().collect(),
++                allowed_clients: profile.allowed_clients.iter().cloned().collect(),
++                profile: match profile.profile {
++                    ClaimProfile::Keycloak => AccessTokenProfile::Keycloak,
++                    ClaimProfile::OktaCustomAuthorizationServer => {
++                        AccessTokenProfile::OktaCustomAuthorizationServer
++                    }
++                    ClaimProfile::Rfc9068 => AccessTokenProfile::Rfc9068,
++                },
++                transport: if profile.allow_development_loopback_http {
++                    TransportPolicy::DevelopmentLiteralLoopback
++                } else {
++                    TransportPolicy::HttpsOnly
++                },
++            },
++            dependencies,
++        )
++        .map_err(|_| invalid())?;
++        let verifier = OidcCurrentAuthority::new(
++            verifier,
++            profile.introspection_endpoint.clone(),
++            profile.introspection_client_id.clone(),
++            Arc::new(credentials),
++        )
++        .map_err(|_| invalid())?;
++        let authorizer = CurrentGrants {
++            path: parent.join(&profile.grants_file),
++            profile,
++        };
++        authorizer.load_grants()?;
++        Ok(Self {
++            verifier: Arc::new(verifier),
++            authorizer: Arc::new(authorizer),
++        })
++    }
++
++    pub(crate) fn apply(self, state: TrellisServerState) -> TrellisServerState {
++        state
++            .with_access_token_verifier(self.verifier)
++            .with_scope_authorizer(self.authorizer)
++            .with_production_like_scope_posture(true)
++    }
++}
++
++#[derive(Deserialize)]
++#[serde(rename_all = "camelCase", deny_unknown_fields)]
++struct Profile {
++    issuer: String,
++    audience: String,
++    required_scopes: Vec<String>,
++    allowed_clients: Vec<String>,
++    profile: ClaimProfile,
++    #[serde(default)]
++    allow_development_loopback_http: bool,
++    introspection_endpoint: String,
++    introspection_client_id: String,
++    introspection_client_secret_file: PathBuf,
++    grants_file: PathBuf,
++    tenant_scope: Deployment,
++    identities: Vec<Identity>,
++    action_scopes: ActionScopes,
++}
++
++#[derive(Clone, Copy, Deserialize)]
++#[serde(rename_all = "camelCase")]
++enum ClaimProfile {
++    Keycloak,
++    OktaCustomAuthorizationServer,
++    Rfc9068,
++}
++
++#[derive(Clone, PartialEq, Eq, Deserialize)]
++#[serde(rename_all = "camelCase", deny_unknown_fields)]
++struct Deployment {
++    tenant: String,
++    workspace: String,
++    environment: String,
++    cell: String,
++}
++
++impl Deployment {
++    fn tuple(&self) -> TenantScope {
++        TenantScope {
++            tenant: self.tenant.clone(),
++            workspace: self.workspace.clone(),
++            environment: self.environment.clone(),
++            cell: self.cell.clone(),
++        }
++    }
++    fn validate(&self) -> Result<(), StackError> {
++        for value in [&self.tenant, &self.workspace, &self.environment, &self.cell] {
++            nonempty(value)?;
++        }
++        Ok(())
++    }
++}
++
++#[derive(Deserialize)]
++#[serde(rename_all = "camelCase", deny_unknown_fields)]
++struct Identity {
++    issuer: String,
++    subject: String,
++    client_id: String,
++    principal: String,
++}
++
++#[derive(Deserialize)]
++#[serde(rename_all = "camelCase", deny_unknown_fields)]
++struct ActionScopes {
++    read: String,
++    append: String,
++    administer: String,
++}
++
++impl Profile {
++    fn validate(&self) -> Result<(), StackError> {
++        self.tenant_scope.validate()?;
++        unique_nonempty(&self.required_scopes)?;
++        unique_nonempty(&self.allowed_clients)?;
++        for value in [
++            &self.issuer,
++            &self.audience,
++            &self.introspection_endpoint,
++            &self.introspection_client_id,
++            &self.action_scopes.read,
++            &self.action_scopes.append,
++            &self.action_scopes.administer,
++        ] {
++            nonempty(value)?;
++        }
++        for value in self.required_scopes.iter().chain([
++            &self.action_scopes.read,
++            &self.action_scopes.append,
++            &self.action_scopes.administer,
++        ]) {
++            if value
++                .bytes()
++                .any(|byte| !(0x21..=0x7e).contains(&byte) || matches!(byte, b'\"' | b'\\'))
++            {
++                return Err(invalid());
++            }
++        }
++        if self.introspection_client_secret_file.as_os_str().is_empty()
++            || self.grants_file.as_os_str().is_empty()
++            || self.identities.is_empty()
++        {
++            return Err(invalid());
++        }
++        let mut identities = BTreeSet::new();
++        for identity in &self.identities {
++            for value in [&identity.subject, &identity.client_id, &identity.principal] {
++                nonempty(value)?;
++            }
++            if identity.issuer != self.issuer
++                || !self.allowed_clients.contains(&identity.client_id)
++                || !identities.insert((&identity.issuer, &identity.subject, &identity.client_id))
++            {
++                return Err(invalid());
++            }
++        }
++        Ok(())
++    }
++}
++
++#[derive(Deserialize)]
++#[serde(rename_all = "camelCase", deny_unknown_fields)]
++struct GrantFile {
++    tenant_scope: Deployment,
++    grants: Vec<Grant>,
++}
++
++#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
++#[serde(rename_all = "camelCase")]
++enum Action {
++    Read,
++    Append,
++    Administer,
++}
++
++impl Action {
++    fn port(self) -> ScopeAction {
++        match self {
++            Self::Read => ScopeAction::Read,
++            Self::Append => ScopeAction::Append,
++            Self::Administer => ScopeAction::Administer,
++        }
++    }
++}
++
++#[derive(Deserialize)]
++#[serde(rename_all = "camelCase", deny_unknown_fields)]
++struct Grant {
++    principal: String,
++    scope: String,
++    action: Action,
++    #[serde(default)]
++    actors: Vec<Actor>,
++    #[serde(default)]
++    payload_actors: Vec<PayloadActor>,
++}
++
++#[derive(Deserialize)]
++#[serde(rename_all = "camelCase", deny_unknown_fields)]
++struct Actor {
++    kind: String,
++    subject: String,
++}
++
++#[derive(Deserialize)]
++#[serde(rename_all = "camelCase", deny_unknown_fields)]
++struct PayloadActor {
++    pointer: String,
++    required: bool,
++    subjects: Vec<String>,
++}
++
++struct CurrentGrants {
++    path: PathBuf,
++    profile: Profile,
++}
++
++impl CurrentGrants {
++    fn load_grants(&self) -> Result<GrantFile, StackError> {
++        let file: GrantFile =
++            serde_json::from_slice(&read_private(&self.path)?).map_err(|_| invalid())?;
++        self.validate_current(&file)?;
++        Ok(file)
++    }
++
++    fn validate_current(&self, file: &GrantFile) -> Result<(), StackError> {
++        if file.tenant_scope != self.profile.tenant_scope {
++            return Err(invalid());
++        }
++        let mut rows = BTreeSet::new();
++        for grant in &file.grants {
++            nonempty(&grant.scope)?;
++            crate::http::validate_scope(&grant.scope).map_err(|_| invalid())?;
++            if !self
++                .profile
++                .identities
++                .iter()
++                .any(|identity| identity.principal == grant.principal)
++                || !rows.insert((&grant.principal, &grant.scope, grant.action))
++            {
++                return Err(invalid());
++            }
++            if grant.action != Action::Append {
++                if !grant.actors.is_empty() || !grant.payload_actors.is_empty() {
++                    return Err(invalid());
++                }
++                continue;
++            }
++            if grant.actors.is_empty() {
++                return Err(invalid());
++            }
++            let mut actors = BTreeSet::new();
++            for actor in &grant.actors {
++                nonempty(&actor.kind)?;
++                nonempty(&actor.subject)?;
++                if !actors.insert((&actor.kind, &actor.subject)) {
++                    return Err(invalid());
++                }
++            }
++            let mut pointers = BTreeSet::new();
++            for actor in &grant.payload_actors {
++                validate_pointer(&actor.pointer)?;
++                unique_nonempty(&actor.subjects)?;
++                if !pointers.insert(&actor.pointer) {
++                    return Err(invalid());
++                }
++            }
++        }
++        Ok(())
++    }
++}
++
++#[async_trait]
++impl ScopeAuthorizer for CurrentGrants {
++    type Error = StackError;
++    async fn authorize(
++        &self,
++        request: &ScopeAuthorization<'_>,
++    ) -> Result<AuthorizedScope, StackError> {
++        let identity = request.identity.ok_or_else(denied)?;
++        if request.tenant_scope != &self.profile.tenant_scope.tuple() {
++            return Err(denied());
++        }
++        let principal = self
++            .profile
++            .identities
++            .iter()
++            .find(|binding| {
++                binding.issuer == identity.issuer
++                    && binding.subject == identity.subject
++                    && Some(binding.client_id.as_str()) == identity.client_id.as_deref()
++            })
++            .ok_or_else(denied)?;
++        let required_scope = match request.action {
++            ScopeAction::Read => &self.profile.action_scopes.read,
++            ScopeAction::Append => &self.profile.action_scopes.append,
++            ScopeAction::Administer => &self.profile.action_scopes.administer,
++        };
++        if !identity.scopes.contains(required_scope) {
++            return Err(denied());
++        }
++        let scope = std::str::from_utf8(request.scope).map_err(|_| denied())?;
++        // File reads never block the async worker. No admitted grants survive this request.
++        let path = self.path.clone();
++        let bytes = tokio::task::spawn_blocking(move || read_private(&path))
++            .await
++            .map_err(|_| StackError::unavailable("current resource authority unavailable"))?
++            .map_err(|_| StackError::unavailable("current resource authority unavailable"))?;
++        // Validate the complete current file before selecting a grant.
++        let file: GrantFile = serde_json::from_slice(&bytes)
++            .map_err(|_| StackError::unavailable("current resource authority unavailable"))?;
++        self.validate_current(&file)
++            .map_err(|_| StackError::unavailable("current resource authority unavailable"))?;
++        let grant = file
++            .grants
++            .iter()
++            .find(|grant| {
++                grant.principal == principal.principal
++                    && grant.scope == scope
++                    && grant.action.port() == request.action
++            })
++            .ok_or_else(denied)?;
++        if request.action == ScopeAction::Append {
++            let body = request.append_body.ok_or_else(denied)?;
++            if !grant
++                .actors
++                .iter()
++                .any(|actor| actor.kind == body.actor.kind && actor.subject == body.actor.subject)
++            {
++                return Err(denied());
++            }
++            for actor in &grant.payload_actors {
++                match body.payload.pointer(&actor.pointer) {
++                    None if !actor.required => {}
++                    Some(value)
++                        if value.as_str().is_some_and(|subject| {
++                            actor.subjects.iter().any(|allowed| allowed == subject)
++                        }) => {}
++                    _ => return Err(denied()),
++                }
++            }
++        }
++        Ok(AuthorizedScope {
++            principal: principal.principal.clone(),
++            tenant_scope: request.tenant_scope.clone(),
++            scope: request.scope.to_vec(),
++            action: request.action,
++        })
++    }
++}
++
++#[cfg(unix)]
++fn read_private(path: &Path) -> Result<Vec<u8>, StackError> {
++    use rustix::fs::{open, Mode, OFlags};
++    use std::os::unix::fs::{MetadataExt, PermissionsExt};
++    // Open first without following a final symlink. NONBLOCK prevents FIFO/device stalls
++    // before the opened descriptor is checked; only regular files proceed to reading.
++    let descriptor = open(
++        path,
++        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
++        Mode::empty(),
++    )
++    .map_err(|_| invalid())?;
++    let file = File::from(descriptor);
++    let metadata = file.metadata().map_err(|_| invalid())?;
++    if !metadata.is_file()
++        || metadata.permissions().mode() & 0o077 != 0
++        || metadata.uid() != rustix::process::geteuid().as_raw()
++    {
++        return Err(invalid());
++    }
++    let mut bytes = Vec::new();
++    file.take(MAX_FILE_BYTES + 1)
++        .read_to_end(&mut bytes)
++        .map_err(|_| invalid())?;
++    if bytes.len() as u64 > MAX_FILE_BYTES {
++        return Err(invalid());
++    }
++    Ok(bytes)
++}
++
++#[cfg(not(unix))]
++fn read_private(_path: &Path) -> Result<Vec<u8>, StackError> {
++    // This adapter requires an implemented private-file ownership check on its platform.
++    Err(invalid())
++}
++
++fn nonempty(value: &str) -> Result<(), StackError> {
++    if value.trim().is_empty() || value.len() > 2048 || value.chars().any(char::is_control) {
++        Err(invalid())
++    } else {
++        Ok(())
++    }
++}
++
++fn unique_nonempty(values: &[String]) -> Result<(), StackError> {
++    if values.is_empty() {
++        return Err(invalid());
++    }
++    let mut seen = BTreeSet::new();
++    for value in values {
++        nonempty(value)?;
++        if !seen.insert(value) {
++            return Err(invalid());
++        }
++    }
++    Ok(())
++}
++
++fn validate_pointer(pointer: &str) -> Result<(), StackError> {
++    nonempty(pointer)?;
++    if !pointer.starts_with('/') {
++        return Err(invalid());
++    }
++    let mut bytes = pointer.bytes();
++    while let Some(byte) = bytes.next() {
++        if byte == b'~' && !matches!(bytes.next(), Some(b'0' | b'1')) {
++            return Err(invalid());
++        }
++    }
++    Ok(())
++}
++
++fn invalid() -> StackError {
++    StackError::bad_request("invalid Trellis OIDC configuration or current grants")
++}
++fn denied() -> StackError {
++    StackError::new(
++        ErrorCode::new("INFRA-4030").expect("static error code is valid"),
++        StatusCode::FORBIDDEN,
++        "current Trellis resource grant required",
++    )
++}
+diff --git a/crates/trellis-server/src/oidc_startup_tests.rs b/crates/trellis-server/src/oidc_startup_tests.rs
+new file mode 100644
+index 0000000..307bda2
+--- /dev/null
++++ b/crates/trellis-server/src/oidc_startup_tests.rs
+@@ -0,0 +1,480 @@
++// Actual maintained OIDC protocol and current resource-authority tests.
++// Rust guideline compliant 2026-02-21
++use super::*;
++use crate::oidc_startup::StartupAuth;
++use serde_json::{json, Value};
++use stack_common_auth::{
++    oidc::{AuthClock, AuthHttpClient, AuthHttpRequest, AuthHttpResponse, OidcDependencies},
++    AccessTokenError,
++};
++use std::{
++    path::{Path, PathBuf},
++    sync::atomic::AtomicBool,
++};
++
++const ISSUER: &str = "https://issuer.example/realms/dev";
++// Maintained stack-common public test fixture; never a deployment signing key.
++const MODULUS: &str = "yRE6rHuNR0QbHO3H3Kt2pOKGVhQqGZXInOduQNxXzuKlvQTLUTv4l4sggh5_CYYi_cvI-SXVT9kPWSKXxJXBXd_4LkvcPuUakBoAkfh-eiFVMh2VrUyWyj3MFl0HTVF9KwRXLAcwkREiS3npThHRyIxuy0ZMeZfxVL5arMhw1SRELB8HoGfG_AtH89BIE9jDBHZ9dLelK9a184zAf8LwoPLxvJb3Il5nncqPcSfKDDodMFBIMc4lQzDKL5gvmiXLXB1AGLm8KBjfE8s3L5xqi-yUod-j8MtvIj812dkS4QMiRVN_by2h3ZY8LYVGrqZXZTcgn2ujn8uKjXLZVD5TdQ";
++
++struct Clock;
++impl AuthClock for Clock {
++    fn unix_seconds(&self) -> i64 {
++        10000
++    }
++}
++
++struct ProtocolHttp {
++    active: AtomicBool,
++    introspections: AtomicUsize,
++}
++impl ProtocolHttp {
++    fn new() -> Self {
++        Self {
++            active: AtomicBool::new(true),
++            introspections: AtomicUsize::new(0),
++        }
++    }
++}
++
++#[async_trait]
++impl AuthHttpClient for ProtocolHttp {
++    async fn send(&self, request: AuthHttpRequest) -> Result<AuthHttpResponse, AccessTokenError> {
++        let value = if request.url == format!("{ISSUER}/.well-known/openid-configuration") {
++            json!({"issuer":ISSUER,"authorization_endpoint":format!("{ISSUER}/authorize"),
++                "token_endpoint":format!("{ISSUER}/token"),"jwks_uri":format!("{ISSUER}/keys"),
++                "response_types_supported":["code"],"subject_types_supported":["public"],
++                "id_token_signing_alg_values_supported":["RS256"]})
++        } else if request.url == format!("{ISSUER}/keys") {
++            json!({"keys":[{"kty":"RSA","n":MODULUS,"e":"AQAB","kid":"one","alg":"RS256","use":"sig","key_ops":["verify"]}]})
++        } else if request.url == format!("{ISSUER}/introspect") {
++            assert_eq!(request.method, axum::http::Method::POST);
++            assert!(request
++                .headers
++                .contains_key(axum::http::header::AUTHORIZATION));
++            self.introspections.fetch_add(1, Ordering::SeqCst);
++            json!({"active":self.active.load(Ordering::SeqCst),"iss":ISSUER,"sub":"external-producer",
++                "client_id":"trellis-producer","exp":10600,"token_type":"Bearer",
++                "aud":["trellis-api","trellis-introspection"],"scope":"trellis.access trellis.read trellis.append trellis.administer"})
++        } else {
++            return Err(AccessTokenError::unavailable());
++        };
++        let mut headers = axum::http::HeaderMap::new();
++        headers.insert(
++            axum::http::header::CONTENT_TYPE,
++            axum::http::HeaderValue::from_static("application/json"),
++        );
++        Ok(AuthHttpResponse {
++            status: StatusCode::OK,
++            headers,
++            body: serde_json::to_vec(&value).unwrap(),
++        })
++    }
++}
++
++fn claims() -> Value {
++    json!({"iss":ISSUER,"aud":["trellis-api","trellis-introspection"],"sub":"external-producer",
++        "iat":10000,"exp":10600,"typ":"Bearer","azp":"trellis-producer",
++        "scope":"trellis.access trellis.read trellis.append trellis.administer","jti":"test-token"})
++}
++
++fn sign(claims: &Value) -> String {
++    let mut header = jsonwebtoken::Header::new(Algorithm::RS256);
++    header.kid = Some("one".into());
++    header.typ = Some("JWT".into());
++    jsonwebtoken::encode(
++        &header,
++        claims,
++        &jsonwebtoken::EncodingKey::from_rsa_pem(include_bytes!(
++            "../../../../stack-common/crates/stack-common-auth/tests/fixtures/public-test-rsa.pem"
++        ))
++        .unwrap(),
++    )
++    .unwrap()
++}
++
++struct Files {
++    root: PathBuf,
++    profile: Value,
++    grants: Value,
++}
++impl Files {
++    fn new() -> Self {
++        let serial = SystemTime::now()
++            .duration_since(UNIX_EPOCH)
++            .unwrap()
++            .as_nanos();
++        let root =
++            std::env::temp_dir().join(format!("trellis-oidc-{}-{serial}", std::process::id()));
++        fs::create_dir(&root).unwrap();
++        let tenant = json!({"tenant":"tenant-a","workspace":"workspace-a","environment":"prod","cell":"cell-a"});
++        let profile = json!({"issuer":ISSUER,"audience":"trellis-api","requiredScopes":["trellis.access"],
++            "allowedClients":["trellis-producer"],"profile":"keycloak","introspectionEndpoint":format!("{ISSUER}/introspect"),
++            "introspectionClientId":"trellis-introspection","introspectionClientSecretFile":"client.secret","grantsFile":"grants.json",
++            "tenantScope":tenant,"identities":[{"issuer":ISSUER,"subject":"external-producer","clientId":"trellis-producer","principal":"internal-producer"}],
++            "actionScopes":{"read":"trellis.read","append":"trellis.append","administer":"trellis.administer"}});
++        let grants = json!({"tenantScope":tenant,"grants":[
++            {"principal":"internal-producer","scope":"case_123","action":"append","actors":[{"kind":"service","subject":"wos-server"}],
++                "payloadActors":[{"pointer":"/actorId","required":false,"subjects":["selected-human"]}]},
++            {"principal":"internal-producer","scope":"case_123","action":"read"},
++            {"principal":"internal-producer","scope":"case_123","action":"administer"}]});
++        let file = Self {
++            root,
++            profile,
++            grants,
++        };
++        file.write("client.secret", b"public-test-only-client-secret");
++        file.save();
++        file
++    }
++    fn write(&self, name: &str, bytes: &[u8]) {
++        let path = self.root.join(name);
++        fs::write(&path, bytes).unwrap();
++        #[cfg(unix)]
++        {
++            use std::os::unix::fs::PermissionsExt;
++            fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
++        }
++    }
++    fn save(&self) {
++        self.write("profile.json", &serde_json::to_vec(&self.profile).unwrap());
++        self.write("grants.json", &serde_json::to_vec(&self.grants).unwrap());
++    }
++    fn load(&self, http: Arc<ProtocolHttp>) -> Result<StartupAuth, stack_common_error::StackError> {
++        StartupAuth::load(
++            &self.root.join("profile.json"),
++            OidcDependencies {
++                http,
++                clock: Arc::new(Clock),
++            },
++        )
++    }
++    fn app(&self, http: Arc<ProtocolHttp>) -> axum::Router {
++        router(self.load(http).unwrap().apply(test_state())).unwrap()
++    }
++}
++impl Drop for Files {
++    fn drop(&mut self) {
++        fs::remove_dir_all(&self.root).unwrap();
++    }
++}
++
++#[tokio::test]
++async fn oidc_startup_changed_actor_kind_grant_blocks_the_same_cached_body() {
++    let mut files = Files::new();
++    let app = files.app(Arc::new(ProtocolHttp::new()));
++    let token = sign(&claims());
++    let body = append_body("oidc-kind-retry");
++    assert_eq!(
++        app.clone()
++            .oneshot(request(body.clone(), &token))
++            .await
++            .unwrap()
++            .status(),
++        StatusCode::CREATED
++    );
++    files.grants["grants"][0]["actors"][0]["kind"] = json!("human");
++    files.save();
++    assert_eq!(
++        app.oneshot(request(body, &token)).await.unwrap().status(),
++        StatusCode::FORBIDDEN
++    );
++}
++
++#[tokio::test]
++async fn oidc_startup_required_payload_selector_refuses_missing_nontext_and_foreign_human() {
++    let mut files = Files::new();
++    files.grants["grants"][0]["payloadActors"][0]["required"] = json!(true);
++    files.save();
++    let app = files.app(Arc::new(ProtocolHttp::new()));
++    let token = sign(&claims());
++    for actor in [None, Some(json!(42)), Some(json!("foreign-human"))] {
++        let mut body: Value = serde_json::from_slice(&append_body("oidc-required-human")).unwrap();
++        if let Some(actor) = actor {
++            body["payload"]["actorId"] = actor;
++        }
++        assert_eq!(
++            app.clone()
++                .oneshot(request(serde_json::to_vec(&body).unwrap(), &token))
++                .await
++                .unwrap()
++                .status(),
++            StatusCode::FORBIDDEN
++        );
++    }
++}
++
++#[tokio::test]
++async fn oidc_startup_head_requires_current_read_and_administer_grants() {
++    let mut files = Files::new();
++    let app = files.app(Arc::new(ProtocolHttp::new()));
++    let token = sign(&claims());
++    assert_eq!(
++        app.clone()
++            .oneshot(request(append_body("oidc-head"), &token))
++            .await
++            .unwrap()
++            .status(),
++        StatusCode::CREATED
++    );
++    let head = || {
++        let mut request = get_request("/v1/scopes/case_123/bundles/head");
++        request
++            .headers_mut()
++            .insert("authorization", format!("Bearer {token}").parse().unwrap());
++        request
++    };
++    assert_eq!(
++        app.clone().oneshot(head()).await.unwrap().status(),
++        StatusCode::OK
++    );
++    files.grants["grants"]
++        .as_array_mut()
++        .unwrap()
++        .retain(|grant| grant["action"] != "administer");
++    files.save();
++    assert_eq!(
++        app.oneshot(head()).await.unwrap().status(),
++        StatusCode::FORBIDDEN
++    );
++}
++
++fn request(body: Vec<u8>, token: &str) -> Request<Body> {
++    post_request_bearer("/v1/scopes/case_123/events", body, token)
++}
++
++#[tokio::test]
++async fn oidc_startup_real_protocol_rechecks_token_and_current_case_grant_before_replay() {
++    let mut files = Files::new();
++    let http = Arc::new(ProtocolHttp::new());
++    let app = files.app(http.clone());
++    let token = sign(&claims());
++    let body = append_body("oidc-retry");
++    assert_eq!(
++        app.clone()
++            .oneshot(request(body.clone(), &token))
++            .await
++            .unwrap()
++            .status(),
++        StatusCode::CREATED
++    );
++    files.grants["grants"] = json!([]);
++    files.save();
++    assert_eq!(
++        app.clone()
++            .oneshot(request(body.clone(), &token))
++            .await
++            .unwrap()
++            .status(),
++        StatusCode::FORBIDDEN
++    );
++    http.active.store(false, Ordering::SeqCst);
++    assert_eq!(
++        app.oneshot(request(body, &token)).await.unwrap().status(),
++        StatusCode::UNAUTHORIZED
++    );
++    assert_eq!(http.introspections.load(Ordering::SeqCst), 3);
++}
++
++#[tokio::test]
++async fn oidc_startup_protocol_refuses_wrong_issuer_audience_client_or_base_scope() {
++    let files = Files::new();
++    let app = files.app(Arc::new(ProtocolHttp::new()));
++    for (field, value) in [
++        ("iss", json!("https://foreign.example")),
++        ("aud", json!(["other-api"])),
++        ("azp", json!("foreign-client")),
++        ("scope", json!("trellis.read")),
++        ("exp", json!(9999)),
++    ] {
++        let mut wrong = claims();
++        wrong[field] = value;
++        assert_eq!(
++            app.clone()
++                .oneshot(request(append_body("oidc-token-reject"), &sign(&wrong)))
++                .await
++                .unwrap()
++                .status(),
++            StatusCode::UNAUTHORIZED
++        );
++    }
++}
++
++#[tokio::test]
++async fn oidc_startup_action_scope_is_required_beyond_base_oauth_access() {
++    let files = Files::new();
++    let app = files.app(Arc::new(ProtocolHttp::new()));
++    let mut token = claims();
++    token["scope"] = json!("trellis.access trellis.read");
++    assert_eq!(
++        app.oneshot(request(append_body("oidc-action-scope"), &sign(&token)))
++            .await
++            .unwrap()
++            .status(),
++        StatusCode::FORBIDDEN
++    );
++}
++
++#[tokio::test]
++async fn oidc_startup_refuses_foreign_tenant_component_scope_and_actor_kind() {
++    let files = Files::new();
++    let app = files.app(Arc::new(ProtocolHttp::new()));
++    let token = sign(&claims());
++    for name in [
++        "x-wos-tenant-id",
++        "x-wos-workspace-id",
++        "x-wos-environment-id",
++        "x-wos-cell-id",
++    ] {
++        let mut foreign = request(append_body("oidc-foreign-tuple"), &token);
++        foreign
++            .headers_mut()
++            .insert(name, axum::http::HeaderValue::from_static("foreign"));
++        assert_eq!(
++            app.clone().oneshot(foreign).await.unwrap().status(),
++            StatusCode::FORBIDDEN
++        );
++    }
++    let mut foreign = request(append_body("oidc-foreign-case"), &token);
++    *foreign.uri_mut() = "/v1/scopes/foreign_case/events".parse().unwrap();
++    assert_eq!(
++        app.clone().oneshot(foreign).await.unwrap().status(),
++        StatusCode::FORBIDDEN
++    );
++    let mut body: Value = serde_json::from_slice(&append_body("oidc-wrong-kind")).unwrap();
++    body["actor"]["kind"] = json!("human");
++    assert_eq!(
++        app.oneshot(request(serde_json::to_vec(&body).unwrap(), &token))
++            .await
++            .unwrap()
++            .status(),
++        StatusCode::FORBIDDEN
++    );
++}
++
++#[tokio::test]
++async fn oidc_startup_revoked_payload_delegation_blocks_unchanged_cached_retry() {
++    let mut files = Files::new();
++    let app = files.app(Arc::new(ProtocolHttp::new()));
++    let token = sign(&claims());
++    let mut body: Value = serde_json::from_slice(&append_body("oidc-delegation-retry")).unwrap();
++    body["payload"]["actorId"] = json!("selected-human");
++    let body = serde_json::to_vec(&body).unwrap();
++    assert_eq!(
++        app.clone()
++            .oneshot(request(body.clone(), &token))
++            .await
++            .unwrap()
++            .status(),
++        StatusCode::CREATED
++    );
++    files.grants["grants"][0]["payloadActors"][0]["subjects"] = json!(["different-human"]);
++    files.save();
++    assert_eq!(
++        app.oneshot(request(body, &token)).await.unwrap().status(),
++        StatusCode::FORBIDDEN
++    );
++}
++
++#[test]
++fn oidc_startup_closed_profile_and_current_grant_validation_refuse_ambiguous_authority() {
++    let mut files = Files::new();
++    let original = files.grants.clone();
++    for mutation in 0..7 {
++        files.grants = original.clone();
++        match mutation {
++            0 => files.grants["tenantScope"]["workspace"] = json!("foreign"),
++            1 => files.grants["grants"][0]["principal"] = json!("unmapped"),
++            2 => {
++                let row = files.grants["grants"][0].clone();
++                files.grants["grants"].as_array_mut().unwrap().push(row);
++            }
++            3 => files.grants["grants"][0]["payloadActors"][0]["pointer"] = json!("/bad~escape"),
++            4 => {
++                files.grants["grants"][1]["actors"] =
++                    json!([{"kind":"service","subject":"wos-server"}])
++            }
++            5 => {
++                files.grants["grants"][0]["payloadActors"][0]["subjects"] =
++                    json!(["duplicate", "duplicate"])
++            }
++            _ => files.grants["unknown"] = json!(true),
++        }
++        files.save();
++        assert!(files.load(Arc::new(ProtocolHttp::new())).is_err());
++    }
++    files.grants = original;
++    let duplicate = files.profile["identities"][0].clone();
++    files.profile["identities"]
++        .as_array_mut()
++        .unwrap()
++        .push(duplicate);
++    files.save();
++    assert!(files.load(Arc::new(ProtocolHttp::new())).is_err());
++}
++
++#[tokio::test]
++async fn oidc_startup_unavailable_or_invalid_current_grants_fail_closed_after_admission() {
++    let files = Files::new();
++    let app = files.app(Arc::new(ProtocolHttp::new()));
++    let token = sign(&claims());
++    files.write("grants.json", b"{invalid");
++    assert_eq!(
++        app.clone()
++            .oneshot(request(append_body("oidc-invalid-grants"), &token))
++            .await
++            .unwrap()
++            .status(),
++        StatusCode::SERVICE_UNAVAILABLE
++    );
++    fs::remove_file(files.root.join("grants.json")).unwrap();
++    assert_eq!(
++        app.oneshot(request(append_body("oidc-missing-grants"), &token))
++            .await
++            .unwrap()
++            .status(),
++        StatusCode::SERVICE_UNAVAILABLE
++    );
++}
++
++#[test]
++fn oidc_startup_rejects_duplicate_fields_in_profile_and_grants() {
++    let files = Files::new();
++    let grants = serde_json::to_string(&files.grants).unwrap();
++    let duplicate = grants.replacen(
++        "{",
++        &format!("{{\"tenantScope\":{},", files.grants["tenantScope"]),
++        1,
++    );
++    files.write("grants.json", duplicate.as_bytes());
++    assert!(files.load(Arc::new(ProtocolHttp::new())).is_err());
++    files.save();
++    let profile = serde_json::to_string(&files.profile).unwrap();
++    let duplicate = profile.replacen(
++        "{",
++        &format!("{{\"issuer\":{},", files.profile["issuer"]),
++        1,
++    );
++    files.write("profile.json", duplicate.as_bytes());
++    assert!(files.load(Arc::new(ProtocolHttp::new())).is_err());
++}
++
++#[cfg(unix)]
++#[test]
++fn oidc_startup_private_files_reject_shared_permissions_and_symlinks() {
++    use std::os::unix::{fs::symlink, fs::PermissionsExt};
++    let files = Files::new();
++    fs::set_permissions(
++        files.root.join("client.secret"),
++        fs::Permissions::from_mode(0o644),
++    )
++    .unwrap();
++    assert!(files.load(Arc::new(ProtocolHttp::new())).is_err());
++    files.write("client.secret", b"public-test-only-client-secret");
++    fs::rename(
++        files.root.join("grants.json"),
++        files.root.join("other.json"),
++    )
++    .unwrap();
++    symlink(Path::new("other.json"), files.root.join("grants.json")).unwrap();
++    assert!(files.load(Arc::new(ProtocolHttp::new())).is_err());
++}
+diff --git a/crates/trellis-server/tests/oidc_cli_startup.rs b/crates/trellis-server/tests/oidc_cli_startup.rs
+new file mode 100644
+index 0000000..c4c5384
+--- /dev/null
++++ b/crates/trellis-server/tests/oidc_cli_startup.rs
+@@ -0,0 +1,31 @@
++//! Exercises the actual CLI's fail-closed authentication selection.
++// Rust guideline compliant 2026-02-21
++
++use std::process::Command;
++
++fn cli() -> Command {
++    let mut command = Command::new(env!("CARGO_BIN_EXE_trellis-server"));
++    command.env_clear().env("TRELLIS_STORAGE", "memory");
++    command
++}
++
++#[test]
++fn oidc_cli_requires_profile_before_signing_key_or_storage() {
++    let output = cli().output().unwrap();
++    assert!(!output.status.success());
++    let error = String::from_utf8_lossy(&output.stderr);
++    assert!(error.contains("TRELLIS_OIDC_CONFIG_FILE"), "{error}");
++    assert!(!error.contains("TRELLIS_SIGNING_KEY_COSE_PATH"));
++}
++
++#[test]
++fn oidc_cli_legacy_flags_cannot_supply_missing_current_authority() {
++    let output = cli()
++        .env("TRELLIS_PERMISSIVE_SCOPE_AUTH", "1")
++        .env("TRELLIS_JWT_HS256_SECRET", "public-test-only-legacy-secret")
++        .output()
++        .unwrap();
++    assert!(!output.status.success());
++    let error = String::from_utf8_lossy(&output.stderr);
++    assert!(error.contains("TRELLIS_OIDC_CONFIG_FILE"), "{error}");
++}
+diff --git a/crates/trellis-service-client/src/current_token_tests.rs b/crates/trellis-service-client/src/current_token_tests.rs
+new file mode 100644
+index 0000000..7a520c8
+--- /dev/null
++++ b/crates/trellis-service-client/src/current_token_tests.rs
+@@ -0,0 +1,211 @@
++// Checks current-token acquisition at every public HTTP operation.
++// Rust guideline compliant 2026-02-21
++
++use super::*;
++use stack_common_auth::client_credentials::{ServiceAccessToken, TokenAcquisitionError};
++use std::sync::atomic::{AtomicUsize, Ordering};
++
++struct Tokens {
++    calls: AtomicUsize,
++    fail_after: usize,
++}
++
++#[async_trait]
++impl ClientCredentialsTokenProvider for Tokens {
++    async fn access_token(&self) -> Result<ServiceAccessToken, TokenAcquisitionError> {
++        let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
++        if call > self.fail_after {
++            return Err(TokenAcquisitionError::unavailable());
++        }
++        ServiceAccessToken::new(format!("public-test-token-{call}"), i64::MAX)
++    }
++}
++
++fn tokens(fail_after: usize) -> Arc<Tokens> {
++    Arc::new(Tokens {
++        calls: AtomicUsize::new(0),
++        fail_after,
++    })
++}
++
++fn client(endpoint: String, provider: Arc<Tokens>) -> TrellisServiceClient {
++    TrellisServiceClient::new(TrellisServiceClientConfig::new(
++        endpoint,
++        HeaderConfig::wos(),
++    ))
++    .unwrap()
++    .with_token_provider(provider)
++    .unwrap()
++}
++
++fn append() -> SubstrateAppendRequest {
++    SubstrateAppendRequest::new_json(
++        "case_123",
++        tenant_scope(),
++        "example.event",
++        "test-idempotency-key",
++        AppendActor::service("producer"),
++        serde_json::json!({}),
++        ComputeContext::no_delegated_compute("producer"),
++    )
++    .unwrap()
++}
++
++#[tokio::test]
++async fn all_five_operations_acquire_changed_current_tokens_once_each() {
++    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
++    let endpoint = format!("http://{}", listener.local_addr().unwrap());
++    let server = thread::spawn(move || {
++        let paths = [
++            "POST /v1/scopes/case_123/events ",
++            "GET /v1/scopes/case_123/bundles/head ",
++            "GET /v1/scopes/case_123/bundles/checkpoint-1 ",
++            "GET /v1/scopes/case_123/registries/signing-keys ",
++            "GET /v1/scopes/case_123/registries/event-types ",
++        ];
++        for (index, path) in paths.into_iter().enumerate() {
++            let (mut stream, _) = listener.accept().unwrap();
++            stream
++                .set_read_timeout(Some(Duration::from_secs(3)))
++                .unwrap();
++            let mut bytes = Vec::new();
++            loop {
++                let mut buffer = [0; 4096];
++                let count = stream.read(&mut buffer).unwrap();
++                assert_ne!(count, 0);
++                bytes.extend_from_slice(&buffer[..count]);
++                if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
++                    let headers = String::from_utf8_lossy(&bytes[..end]).to_lowercase();
++                    let length: usize = headers
++                        .lines()
++                        .find_map(|line| {
++                            line.strip_prefix("content-length: ")
++                                .map(|value| value.parse().unwrap())
++                        })
++                        .unwrap_or(0);
++                    if bytes.len() >= end + 4 + length {
++                        break;
++                    }
++                }
++            }
++            let request = String::from_utf8(bytes).unwrap();
++            assert!(request.starts_with(path), "{request}");
++            assert!(request.contains(&format!(
++                "authorization: Bearer public-test-token-{}\r\n",
++                index + 1
++            )));
++            let body = match index {
++                0 => {
++                    r#"{"eventId":"evt_1","sequence":1,"canonicalEventHash":"sha256:abc","checkpointRef":"trellis://case_123/checkpoints/cp_1","bundleRef":"s3://bucket/bundle.zip","verificationReceipt":{"verified":true,"artifactType":"event","eventType":"example.event"}}"#
++                }
++                4 => r#"{"eventTypes":[]}"#,
++                _ => "test-bytes",
++            };
++            // Close each connection so the fixture reads one complete request per socket.
++            let wire =
++                response("application/json", body).replacen("\r\n", "\r\nconnection: close\r\n", 1);
++            stream.write_all(wire.as_bytes()).unwrap();
++        }
++    });
++    let provider = tokens(usize::MAX);
++    let client = client(endpoint, provider.clone());
++    client.append_event(append()).await.unwrap();
++    assert_eq!(
++        client
++            .head_bundle("case_123", &tenant_scope())
++            .await
++            .unwrap(),
++        b"test-bytes"
++    );
++    client
++        .bundle("case_123", "checkpoint-1", &tenant_scope())
++        .await
++        .unwrap();
++    client
++        .signing_key_registry("case_123", &tenant_scope())
++        .await
++        .unwrap();
++    assert_eq!(
++        client
++            .event_type_registry("case_123", &tenant_scope())
++            .await
++            .unwrap(),
++        serde_json::json!({"eventTypes":[]})
++    );
++    assert_eq!(provider.calls.load(Ordering::SeqCst), 5);
++    server.join().unwrap();
++}
++
++#[tokio::test]
++async fn failed_provider_and_invalid_input_send_zero_http_and_never_reuse_prior_token() {
++    let provider = tokens(1);
++    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
++    let endpoint = format!("http://{}", listener.local_addr().unwrap());
++    let server = thread::spawn(move || {
++        let (mut stream, _) = listener.accept().unwrap();
++        let mut buffer = [0; 4096];
++        let count = stream.read(&mut buffer).unwrap();
++        let request = String::from_utf8_lossy(&buffer[..count]);
++        assert!(request.contains("authorization: Bearer public-test-token-1\r\n"));
++        let wire =
++            response("application/zip", "first").replacen("\r\n", "\r\nconnection: close\r\n", 1);
++        stream.write_all(wire.as_bytes()).unwrap();
++        listener
++    });
++    let failing = client(endpoint, provider.clone());
++    failing
++        .head_bundle("case_123", &tenant_scope())
++        .await
++        .unwrap();
++    let listener = server.join().unwrap();
++    listener.set_nonblocking(true).unwrap();
++    assert!(failing.head_bundle("", &tenant_scope()).await.is_err());
++    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
++    assert!(failing
++        .head_bundle("case_123", &tenant_scope())
++        .await
++        .is_err());
++    assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
++    assert_eq!(
++        listener.accept().unwrap_err().kind(),
++        std::io::ErrorKind::WouldBlock
++    );
++}
++
++#[test]
++fn provider_rejects_every_static_bearer_and_debug_redacts_credentials() {
++    for bearer in ["", " ", "private-static-bearer"] {
++        let config = TrellisServiceClientConfig::new("http://127.0.0.1:1", HeaderConfig::wos())
++            .with_service_bearer_token(bearer);
++        let config_debug = format!("{config:?}");
++        assert!(config_debug.contains("[REDACTED]"));
++        let client = TrellisServiceClient::new(config).unwrap();
++        assert!(!format!("{client:?}").contains("private-static-bearer"));
++        assert!(client.with_token_provider(tokens(usize::MAX)).is_err());
++    }
++    let provider = tokens(usize::MAX);
++    let client = client("http://127.0.0.1:1".into(), provider.clone());
++    assert!(format!("{client:?}").contains("[configured]"));
++    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
++}
++
++#[tokio::test]
++async fn redirects_fail_without_forwarding_credentials_or_acquiring_again() {
++    let target = TcpListener::bind("127.0.0.1:0").unwrap();
++    target.set_nonblocking(true).unwrap();
++    let target_url = format!("http://{}/redirected", target.local_addr().unwrap());
++    let endpoint = test_server(move |request| {
++        assert!(request.contains("authorization: Bearer public-test-token-1\r\n"));
++        format!("HTTP/1.1 302 Found\r\nlocation: {target_url}\r\ncontent-length: 0\r\n\r\n")
++    });
++    let provider = tokens(usize::MAX);
++    assert!(client(endpoint, provider.clone())
++        .head_bundle("case_123", &tenant_scope())
++        .await
++        .is_err());
++    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
++    assert_eq!(
++        target.accept().unwrap_err().kind(),
++        std::io::ErrorKind::WouldBlock
++    );
++}

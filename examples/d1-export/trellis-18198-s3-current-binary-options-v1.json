@@ -1,0 +1,113 @@
+{
+  "status": "static exact currentbinary settings; waiting Root actualMinIO facts",
+  "binarySha256": "f0a0eb62da9d52c5a5e5a2bac8f60af8b7ff97084cd0de6c5cae63d5256e90c7",
+  "selection": "Environment variables only; no S3 command-line flags",
+  "settings": [
+    {
+      "name": "TRELLIS_ARTIFACT_BUCKET",
+      "required": "yes for persistentartifacts",
+      "behavior": "NonblankselectsS3; unset/blank retains defaultinmemorystore"
+    },
+    {
+      "name": "TRELLIS_ARTIFACT_PREFIX",
+      "required": "pinexplicitly",
+      "default": "trellis",
+      "behavior": "prependedtoescapedobjectkey; fixedcohortprefixmustremainstableacrossrestart"
+    },
+    {
+      "name": "TRELLIS_ARTIFACT_ENDPOINT",
+      "required": "yes for localMinIO",
+      "behavior": "http://127.0.0.1:ACTUAL_S3_API_PORT; omit bucket suffix for pathstyle; overridebuilderAWS_ENDPOINT"
+    },
+    {
+      "name": "TRELLIS_ARTIFACT_REGION",
+      "required": "pinexplicitly",
+      "example": "us-east-1",
+      "behavior": "overridesbuilderenvironmentregion"
+    },
+    {
+      "name": "AWS_ACCESS_KEY_ID",
+      "required": "actual private selectedlocalcredentials",
+      "behavior": "readinsideobject_storebuilder; no log/argv exposure"
+    },
+    {
+      "name": "AWS_SECRET_ACCESS_KEY",
+      "required": "actual private selectedlocalcredentials",
+      "behavior": "readinsideobject_storebuilder; no log/argv exposure"
+    },
+    {
+      "name": "AWS_ALLOW_HTTP",
+      "required": "true onlywhenRootselectslocalplainHTTPendpoint",
+      "default": "false (HTTPSonly)"
+    },
+    {
+      "name": "AWS_VIRTUAL_HOSTED_STYLE_REQUEST",
+      "required": "pinfalseforlocalMinIOpathstyle",
+      "default": "false (pathstyle)",
+      "behavior": "AWS_S3_FORCE_PATH_STYLE isnotthismaintainedbuildersselector"
+    },
+    {
+      "name": "AWS_CONDITIONAL_PUT",
+      "required": "optionalexplicitetag pin",
+      "default": "CommonhelpersselectETagMatchwhenunset",
+      "value": "etag",
+      "behavior": "create-if-absent supportrequired forimmutablebundlewrites"
+    }
+  ],
+  "bucketBehavior": {
+    "createsBucket": false,
+    "requiresExistingBucket": true,
+    "checkedInInit": "ops/managed-single-cell dockercompose minio-init uses mc mb --ignore-existing; notcalledbyTrellisbinary",
+    "minimumRuntimeRights": "GetObject/PutObject underselectedprefix; noDelete/BucketCreate needed byTrellis",
+    "startupIsNotQualification": "S3clientbuiltlazilyandobjectoperationsdeferred; actualbucket/credential/conditionalwrite/readmustbechecked"
+  },
+  "tls": "HTTPSdefault; keepcertificateverificationenabled. LocalHTTP requires explicitAWS_ALLOW_HTTP=true. No TLSskiprecommended. EndpointmustbeactualS3API, notMinIOconsole.",
+  "uri": "storedartifacts use s3://selectedbucket/selectedprefix/escapedkey; PGbundleindex storesartifactref, persistentS3bytes mustsurviverestart",
+  "credentialSearch": {
+    "knownPrivateCredentialConfigPath": null,
+    "checkedMissing": [
+      "/Users/mikewolfd/Work/formspec-stack/ops/managed-single-cell/.env",
+      "/Users/mikewolfd/Work/formspec-stack/formspec-server/ops/managed-single-cell/.env"
+    ],
+    "boundedSelectedLocalDemoConfigSearch": "NoMINIO_ROOT_USER/PASSWORD orAWS_ACCESS_KEY_ID/SECRET_ACCESS_KEY settings found insmallconfigfilesdepth<=2 excludingsource/input/vendorcopies; no valuesprinted",
+    "sampleIsNotCredential": "ops/managed-single-cell/.env.example is publictemplate, notactualprivateconfiguration",
+    "nextAuthority": "Rootactualcontainer/volume/endpointmetadataandprivatecredentialcapture"
+  },
+  "RootFactsNeeded": [
+    "containeridentity+image",
+    "actualS3APIhostport and scheme",
+    "persistentvolumeidentity/mount",
+    "existingorRootprovisionedbucketname",
+    "exactimmutablecohortprefix",
+    "privatecredentialfilewithcurrentaccess/secret",
+    "regionandpathstyle",
+    "conditionalcreate/readqualificationreceipts"
+  ],
+  "successorPlan": [
+    "AfterRootfactselectionwriteprivateartifactconfig0600",
+    "PinconfigdigestplusDB/key/profile/grants/binary",
+    "AddonlyexplicitS3/AWSallowlisttonarrowlauncher; refusemissingbucket/credential orunexpectedendpoint",
+    "Pairedstaticreviewsuccessor",
+    "Rootlivegrant starts18198 once withpersistentbackend andemptygrants",
+    "Do notlaunchmemoryfirstthenchangesamecohortbackend"
+  ],
+  "noLiveActions": true,
+  "evidence": [
+    {
+      "path": "/private/tmp/trellis-native-provenance-qualified-v1-20261009/trellis/crates/trellis-server/src/state.rs",
+      "sha256": "440872a0ddbb9fb7ee663ded420db48fbd79c3516045a9d4f410cbec023e534c"
+    },
+    {
+      "path": "/private/tmp/trellis-native-provenance-qualified-v1-20261009/trellis/crates/trellis-server-ports/src/lib.rs",
+      "sha256": "9044bbb611e496df7a1b46d00779d9d339e289253b15e9412ee1bea2f1bc8a21"
+    },
+    {
+      "path": "/private/tmp/trellis-native-provenance-qualified-v1-20261009/stack-common/crates/stack-common-object-store/src/lib.rs",
+      "sha256": "640fcf7617d43af2ccf177d24fa6e75a274b7fab842cad1d1e383f9ab42e640f"
+    },
+    {
+      "path": "/Users/mikewolfd/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/object_store-0.11.2/src/aws/builder.rs",
+      "sha256": "5c3249b5522801a5461b8e4187efdf364b77120003b3118f7199dc3576a0975c"
+    }
+  ]
+}

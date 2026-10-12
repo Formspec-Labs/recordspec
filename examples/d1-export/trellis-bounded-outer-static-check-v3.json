@@ -1,0 +1,17 @@
+{
+  "operatorExecuted": false,
+  "databaseConnected": false,
+  "originalGuardRejectsSelected": true,
+  "successorGuardCases": {
+    "selectedExactQuery": true,
+    "queryAbsent": false,
+    "duplicateSslmode": false,
+    "targetOverride": false,
+    "differentSslmode": false,
+    "differentHost": false
+  },
+  "wrapperSha256": "11429bab85631f43c7ec86acdd6c39de579a9cda50ebb368bb4d1f15148c1958",
+  "astParsed": true,
+  "assertNodes": 0,
+  "delta": "one guard predicate: reject all query options -> allow exact sslmode=disable only"
+}

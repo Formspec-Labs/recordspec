@@ -1,0 +1,14 @@
+{
+  "status": "PASS static Python schema definitions and operation checks only.",
+  "candidate": "/Users/mikewolfd/Work/formspec-stack/.trellis-native-provenance-v2",
+  "packetSha256": "c2cadd4c74e35891258d979c071a6749c5ad3cbce957d3687380c0cabc696e86",
+  "errors": [],
+  "helperPath": "/private/tmp/core-native-provenance-v1-20261009/work-spec/crates/wos-events/src/native_provenance.rs",
+  "schemaPath": "/private/tmp/core-native-provenance-v1-20261009/work-spec/schemas/wos-native-provenance-event.schema.json",
+  "notExecuted": [
+    "Cargo",
+    "Rust conformance test",
+    "OpenAPI emitter",
+    "native runtime custody window"
+  ]
+}

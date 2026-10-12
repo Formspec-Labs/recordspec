@@ -1,0 +1,46 @@
+{
+  "status": "Root-selected localdemo exporter preparation; noprovideroperations",
+  "clientId": "formspec-trellis-exporter-dev",
+  "issuer": "http://127.0.0.1:18090/realms/formspec-dev",
+  "profile": "keycloak",
+  "audiences": [
+    "trellis-api",
+    "formspec-trellis-introspection-dev"
+  ],
+  "scopes": [
+    "trellis.access",
+    "trellis.read",
+    "trellis.administer"
+  ],
+  "forbiddenScope": "trellis.append",
+  "clientAuthentication": "client_secret_basic",
+  "flow": "serviceaccount/clientcredentials only; interactive/directaccess/standardflowsdisabled",
+  "subject": "PENDING actualproviderreadback; donotguess",
+  "stableInternalPrincipal": "trellis-local-exporter",
+  "privateDirectory": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-exporter-20261009-v1",
+  "credentialFile": "client.secret",
+  "identityReceipt": "provider-identity.private.json",
+  "TrellisProfileUpdateAfterCapture": "Appendallowedclient + exactissuer/subject/clientId mappingtoprincipal; retainWOSidentityandread/appendscopesunchanged; refreezeprofileandlauncherpin",
+  "freshCaseGrantsAfterCreation": [
+    "exactprincipal trellis-local-exporter + actualnewcase + read",
+    "exactprincipal trellis-local-exporter + actualnewcase + administer"
+  ],
+  "noGrantFields": [
+    "noappendgrant",
+    "noactorsorpayloadActorsonnonappendrows",
+    "nowildcard",
+    "noold456reuse"
+  ],
+  "providerPrimitive": "maintainedOidcClientCredentials + ClientCredentialsTokenProvider",
+  "clientPrimitive": "qualifiedTrellisServiceClient::with_token_provider",
+  "existingExporterCLI": "none; maintainedcallercomposition/probe stillrequired",
+  "checks": [
+    "actualRS256issuer/audience/client/subject/lifetime/baseandactionscopes",
+    "currentintrospectionactivematches",
+    "registryread200raw030match",
+    "headpublicationwithcurrentRead+Administer",
+    "appendattempt403evenvalidexportertoken",
+    "tokenacquisitionfailurezeroHTTP/noexpiredfallback"
+  ],
+  "preparedFor": "Common owner exactprovideridentityprofileandRootoperatorrecipeonly; no livecalls"
+}

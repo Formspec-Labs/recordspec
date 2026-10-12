@@ -1,0 +1,53 @@
+{
+  "status": "PREPARATION_AND_ENCODER_UNIT_GREEN",
+  "sourcePins": {
+    "crates/trellis-admission-formspec/Cargo.toml": "e7d05e2feca5c5798bbb89b4e1851d9d0954f7a64bd7bdece902d07e640c4145",
+    "crates/trellis-admission-formspec/src/lib.rs": "cc3b30e5dd63d0bfa2169980d464e10b06e150bb553f7a5dc118af3636f6412e",
+    "crates/trellis-admission-formspec/src/accepted_attachment.rs": "d216335fac1b1667dc5c3fe3ac17dc7eebdda7b5925be28875f6376b0989f687",
+    "crates/trellis-admission-formspec/tests/accepted_attachment.rs": "40cce2e35468a12e703c7604e3331e1f3ada6918b9a978982a2fcfdf87e269ba",
+    "crates/trellis-verify-wos/Cargo.toml": "59133ca55a4991e90f9739f371f185bf0cf43e20e3ad93936df2df148693532b",
+    "crates/trellis-verify-wos/src/lib.rs": "6c2fd52a621f7dd494979ad4420b03e9765ba1d66135d28d08132371f909fc84",
+    "crates/trellis-verify-wos/src/signature_encoder.rs": "1ac48dd38b7ebe3a783a5bfb68b951a7e4a0cdfb8ddb73d3339873fc43549c49",
+    "Cargo.lock": "17e4ff89e562b3c26abb0986228f98f853116d7be94a5ed2c42b02c1e292318a"
+  },
+  "tests": {
+    "acceptedAttachment": 12,
+    "admissionLibrary": 9,
+    "verifyWosLibrary": 63,
+    "signatureEncoderIncluded": 6,
+    "command": "cargo test --offline --locked -p trellis-admission-formspec -p trellis-verify-wos --lib --test accepted_attachment -- --test-threads=1"
+  },
+  "reviews": {
+    "code": {
+      "agent": "accepted_attachment_code",
+      "model": "gpt-6.1-sol",
+      "reasoningEffort": "medium",
+      "verdict": "APPROVE",
+      "mode": "static",
+      "finding": "No remaining actionable findings; chained replacement coverage warning resolved."
+    },
+    "architecture": {
+      "agent": "accepted_attachment_architecture",
+      "model": "gpt-6.1-sol",
+      "reasoningEffort": "medium",
+      "verdict": "APPROVE",
+      "mode": "static",
+      "finding": "Approved bounded preparation; trusted committed prefix and selected Source policy documented."
+    }
+  },
+  "nativeOperation": {
+    "jobs": 1,
+    "deadlineSeconds": 170,
+    "cleanupSeconds": 10,
+    "ownedProcessGroupAbsent": true,
+    "locksReleased": true
+  },
+  "remainingRequiredInput": "Maintained protector output containing actual KeyBag and payload decoding metadata.",
+  "limitations": [
+    "No genuine accepted Source operation or protected carriage exercised.",
+    "No attachment event authored, signed, appended, or exported.",
+    "Ordinary append route deliberately refuses the new operation.",
+    "Signature encoder copied exactly; isolated export materializer was not adopted.",
+    "No HTTP activation, encryption relationship, portable decryption or full export acceptance claim."
+  ]
+}

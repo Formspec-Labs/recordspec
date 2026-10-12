@@ -1,0 +1,8 @@
+{
+  "commit": "e9f5af9e7eaa1de3fca38be7018220a604e3d0c6",
+  "qualifiedSourceReceiptSha256": "8021af372812eccb144566d36595123f90b42e6e7cfd96692050336cf654f09f",
+  "committedLockSha256": "6b50eec765c72fe6e876eedc6c315367a207be2b3488d13790644d3006000d97",
+  "qualifiedLockSha256": "7e813eb1e5bcf408bb8c9f9a1e153748392c6f1415247bbe739a00bc79096e5c",
+  "onlyUncommittedDifference": "inherited stack-common-typeid -> rand_core0.6.4 edge retained in worktree for qualified sibling closure; excluded from owner commit",
+  "pushed": false
+}

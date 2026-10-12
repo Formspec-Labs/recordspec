@@ -1,0 +1,26 @@
+{
+  "status": "Owning read-only source/evidence check PASS; paired successor result reviews pending.",
+  "snapshot": "/private/tmp/core-form-pin-zip-inputs-v2-20261009",
+  "qualificationReceiptSha256": "e0b1613b0e020cecf4368cfa7a9002723ddd9e69f9567130bb0f5f040d61c66d",
+  "frozenSourceSha256": "0297b3c02d64c752464d7dfc6f5884100bb136fedc077d96c21fbe87a2de741b",
+  "guardedFilesVerified": 7869,
+  "retainedExecutableHashesVerified": 7,
+  "consumerNonmanifestSourceMatchesQualifiedCommit": true,
+  "authServerSourceMatchesQualifiedCommit": true,
+  "privateCommit": "eda346c166a71c7b8df55afd8549247456229277",
+  "testCounts": {
+    "coreAffectedLibraries": 557,
+    "trellisAdmission": 11,
+    "trellisClient": 7,
+    "trellisVerifier": 63,
+    "total": 638
+  },
+  "wholeZip": "Actual router-produced ZIP passed owning verify_export_zip structure/integrity/relying-party checks; mutated payload with original signature/other members refused; original bytes unchanged",
+  "lockDeltaFromPrivateCommit": "Only existing foreign stack-common-typeid -> rand_core0.6.4 edge; zero package/version changes.",
+  "scopeLimits": [
+    "No trellis-server/auth14 rerun in this successor; prior auth evidence remains separate.",
+    "Embedded registry verifies fixture integrity; independent agency trust remains outside fixture.",
+    "No full D1 or live adoption claim."
+  ],
+  "noCargoRunByThisAudit": true
+}

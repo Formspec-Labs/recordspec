@@ -1,0 +1,19 @@
+{
+  "status": "Private local commit complete; shared source not adopted.",
+  "privateRepo": "/private/tmp/trellis-native-provenance-qualified-v1-20261009/trellis",
+  "commit": "eda346c166a71c7b8df55afd8549247456229277",
+  "parent": "3d59b235a0b3d12c1596529dc9fb1385284f17df",
+  "portableIntegrationPatchSha256": "ba0b696302c60df7d2e2b9ac0e8fb697e1d4b5d1d7f5bf799550ecb661deb79b",
+  "qualifiedConsumerPacketSha256": "8982b06ef40dbdd2d5e33ce5f1840566224f2d8ea139d326a6f5224bd7066079",
+  "privateIntegrationReceiptSha256": "92d060d3f21d92ccd78b7248f30bd0bf69ed0d30fd3ffb79cbe4cdffe81dca1c",
+  "afterCodeReviewSha256": "916ab841aaab7e04744fc75f8b9b221ea29f623aeef382d0d3b08fffc69d1d9c",
+  "afterArchitectureReviewSha256": "21a132337bee99e58a3ac9d3438f9f4db4762fa7e7966a61d715e21cdb193fca",
+  "boundedPrivateIntegrationReviews": "Both independent reviewers approved source/lock integration; no Cargo.",
+  "qualifiedCoreSiblingCommit": "2f712020b9255168395e814c5209f493c585af16",
+  "nativeQualification": "401 checks in coherent Core snapshot; qualified consumer files match; combined auth+generic private commit not compiled.",
+  "remainingGates": [
+    "Actual fullwindow ZIP through owning verify_export_zip and tamper refusal.",
+    "Combined auth/generic graph native qualification before activation.",
+    "Shared adoption and live deployment remain separate."
+  ]
+}

@@ -1,0 +1,113 @@
+{
+  "status": "separate matched existing dependency composition; not adopted or compiled",
+  "cause": "Qualified current-token/native client lib.rs was paired with canonical-only wos_ext.rs and older wos-events; E0425 is in wos_ext, not trellis-types",
+  "compositionRoot": "/private/tmp/trellis-source-matched-dependencies-v1-20261010",
+  "packagePaths": {
+    "trellis-service-client": "/private/tmp/trellis-source-matched-dependencies-v1-20261010/trellis/crates/trellis-service-client",
+    "trellis-types": "/private/tmp/trellis-source-matched-dependencies-v1-20261010/trellis/crates/trellis-types",
+    "wos-events": "/private/tmp/trellis-source-matched-dependencies-v1-20261010/work-spec/crates/wos-events"
+  },
+  "authoritativeOwnerCommits": {
+    "trellisNative": "eda346c166a71c7b8df55afd8549247456229277",
+    "trellisCurrentToken": "e9f5af9e7eaa1de3fca38be7018220a604e3d0c6",
+    "coreNative": "2f712020b9255168395e814c5209f493c585af16",
+    "coreQualified638Successor": "dcfd13b3766f54193fdf44c2fe38bb51021ad60c"
+  },
+  "exactSevenFileDelta": [
+    {
+      "path": "trellis/crates/trellis-service-client/src/wos_ext.rs",
+      "originalSha256": "091a20df79cc63359b0de7405eaf18637f6d285d8ebfda89d4afcacc37d4e063",
+      "matchedSha256": "7e57ce296cdae460a221f554a45c69df6b80f16ead764c060090b0f3a9a03bb6",
+      "qualifiedSource": "/private/tmp/trellis-native-provenance-qualified-v1-20261009/trellis/crates/trellis-service-client/src/wos_ext.rs"
+    },
+    {
+      "path": "work-spec/crates/wos-events/Cargo.toml",
+      "originalSha256": "490eaeea01598f79345e58501592049f7809a36455f3abe600a6c19e0923f22c",
+      "matchedSha256": "32200013d80b2648d735aa25c12aab96e1605dab3366d02b4de501c9a2f325d0",
+      "qualifiedSource": "/private/tmp/core-form-pin-zip-inputs-v2-20261009/work-spec/crates/wos-events/Cargo.toml"
+    },
+    {
+      "path": "work-spec/crates/wos-events/src/lib.rs",
+      "originalSha256": "695e157fd8c8283985e2bfcc366304323081c632400700d52b0316d297f4c69d",
+      "matchedSha256": "dd05c4049dad3397ddf734a9b9ae729d297fe96db97df2eea64a81720dd19f33",
+      "qualifiedSource": "/private/tmp/core-form-pin-zip-inputs-v2-20261009/work-spec/crates/wos-events/src/lib.rs"
+    },
+    {
+      "path": "work-spec/crates/wos-events/src/custody.rs",
+      "originalSha256": "026ec9c8c78da56a388acdd89843ebbc3bd972f5558aafd9d426e7c7749e8c02",
+      "matchedSha256": "aa0b000c99c5a22e4ff51e20b7e7bdcdb8afc6384e7c3ee9dcff1f43788f548b",
+      "qualifiedSource": "/private/tmp/core-form-pin-zip-inputs-v2-20261009/work-spec/crates/wos-events/src/custody.rs"
+    },
+    {
+      "path": "work-spec/crates/wos-events/src/native_provenance.rs",
+      "originalSha256": null,
+      "matchedSha256": "09423218a6ff828275c3c319939b6079dc92632403d5ab25befe84c8c1f3940d",
+      "qualifiedSource": "/private/tmp/core-form-pin-zip-inputs-v2-20261009/work-spec/crates/wos-events/src/native_provenance.rs"
+    },
+    {
+      "path": "work-spec/crates/wos-events/src/native_provenance/tests.rs",
+      "originalSha256": null,
+      "matchedSha256": "22410eabf117f86870b6c653c715493aea9fe279de00e9b596aba0b8639bf73a",
+      "qualifiedSource": "/private/tmp/core-form-pin-zip-inputs-v2-20261009/work-spec/crates/wos-events/src/native_provenance/tests.rs"
+    },
+    {
+      "path": "work-spec/schemas/wos-native-provenance-event.schema.json",
+      "originalSha256": null,
+      "matchedSha256": "18c370ffcc8a1274ba89cfe3a8aca3b1bd452e530b637d3e1349d71fc04c0304",
+      "qualifiedSource": "/private/tmp/core-form-pin-zip-inputs-v2-20261009/work-spec/schemas/wos-native-provenance-event.schema.json"
+    }
+  ],
+  "preservedAdapterPins": {
+    "trellis/crates/trellis-service-client/src/lib.rs": "13391c903ffc076bb6f23f979c8d87f79c0c1f81ed5bd6040bd6a53e8b09095e",
+    "trellis/crates/trellis-service-client/Cargo.toml": "d25b4d39ec0c051f6bf804c46e498bfe6c45f5a83f4dbee17a1107b1a33e288c"
+  },
+  "typesCrateByteIdenticalToSourceAndQualified": true,
+  "commonTypeidAndIntegrityCborPackageByteIdenticalToQualified": true,
+  "patch": {
+    "path": "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/source-matched-dependencies-v1/matched-existing-source.patch",
+    "sha256": "2d394f987db2b3dcced91b57a1f31fa950adbf40a3f5cacc78f3b39b0054f7b5"
+  },
+  "compositionReceipt": {
+    "path": "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/source-matched-dependencies-v1/composition.json",
+    "sha256": "dd9dffe42d1f57a39fa46dfda63bfb2e25372332783cef32d388d3bdb26e5ebe"
+  },
+  "existingQualificationReferences": {
+    "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/native-provenance-qualified-consumer-handoff.json": "39993ac9e2132d0cd586bde0b34026e1674fa158731f802b02c0e5a516301f2f",
+    "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/native-provenance-consumer-after-code-review.md": "916ab841aaab7e04744fc75f8b9b221ea29f623aeef382d0d3b08fffc69d1d9c",
+    "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/native-provenance-consumer-after-architecture-review.md": "21a132337bee99e58a3ac9d3438f9f4db4762fa7e7966a61d715e21cdb193fca",
+    "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/native-provenance-consumer-whole-zip-result-check.json": "57dd846fb924721599a7a2abfc46a04c3877c142991e47e3485633cd9c4e5f1d",
+    "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/trellis-oidc-startup-qualified-handoff-v5.json": "30212bc2847b0217a2a80e4ef53139de948c445ea17bf4496654595a2ee8ffc2",
+    "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/trellis-oidc-startup-after-code-review-v4-final.md": "9fccaf2ee0578e0c7e3a33e09b8f7ed60f07525fc9a54dd9822bcccaa61acdaf",
+    "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/trellis-oidc-startup-after-architecture-review-v4-final.md": "044defca2eddc02f905eaad834cdee112bcf0fb2e0d566e47a7d7fe3b50d030c",
+    "/Users/mikewolfd/Work/formspec-stack/thoughts/plans/benefits-scenarios/execution/reports/work-spec/full-d1/native-provenance-core-qualified-handoff-v1.json": "b1fbad2fa5c31f6b58019e91871cc55eb3691c9531e5dac7e541e8ebc3c7a445",
+    "/Users/mikewolfd/Work/formspec-stack/thoughts/plans/benefits-scenarios/execution/reports/work-spec/full-d1/form-pin-zip-qualified-handoff-v2.json": "4f6d0130f93bccb7ff821847986b4439cca9bef57d49e7486000f5810a6c9c6f"
+  },
+  "lockRequirement": {
+    "sourceLockPreservedSha256": "b25ce51234b15db43881826fdf5c59a4e3820e8bf03147f92dfa287a8b943e3d",
+    "sourceHasJsonschema": "0.45.1",
+    "qualifiedOwnerRequiresJsonschema": "0.46",
+    "qualifiedAdditionalRegistryIdentities": [
+      "jsonschema0.46.1",
+      "referencing0.46.1",
+      "micromap0.3.0"
+    ],
+    "policy": "Fresh Source cut must use explicit bounded offline resolution and review exact lock delta; preserve existing versions and unrelated edges; do not copy qualified lock wholesale"
+  },
+  "requiredNeutralChecks": [
+    "Freeze fresh Source host cut and every dependency/lock input; preserve original failed attempt receipts",
+    "Full offline locked metadata must resolve one physical wos-events and one physical stack-common-auth; include transitive and test paths, not no-deps metadata only",
+    "Point all selected callers/test server to the new matched siblings; avoid mixed old/new trellis-client/types/wos-events package identities",
+    "Use existing /tmp/formspec-exact-source-composition-target-20261009-v1; jobs1; existing operator time/output/cleanup bounds; stop first failure",
+    "Rerun originally blocked Source filtered image HTTP adapter tests, then the already selected Source controls/build; no prior unrun control counts as PASS",
+    "Focused existing wos-events native_provenance tests plus client native_provenance_client preservation/canonical-route tests and current-token client controls if caller closure changed",
+    "No real OIDC/Source/WOS/Trellis/model/application calls; neutral tests only; compare source/lock pins and owned process cleanup before release"
+  ],
+  "newGenericFixRequired": false,
+  "newNativeProvenanceSemantics": false,
+  "cargoExecuted": false,
+  "newCompilationOrTestsPassed": false,
+  "sourceFrozenSiblingsMutated": false,
+  "sourceHostCutCreated": false,
+  "live18198Changed": false,
+  "remainingOwnedPreparationProcesses": []
+}

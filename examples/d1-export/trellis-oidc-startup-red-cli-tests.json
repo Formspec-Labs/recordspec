@@ -1,0 +1,19 @@
+{
+  "status": "RED source prepared, unexecuted; baseline eda346c CLI checks signing key before OIDC, so both tests should fail their OIDC error assertion.",
+  "baseline": "eda346c166a71c7b8df55afd8549247456229277",
+  "testSha256": "1a9bc79370e8a0fabc90a8e256ac7649ddff590e1bdb32addcdd6fed3e7e28dd",
+  "nativeRequired": true,
+  "command": [
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-j1",
+    "-p",
+    "trellis-server",
+    "--test",
+    "oidc_cli_startup",
+    "--",
+    "--nocapture"
+  ]
+}

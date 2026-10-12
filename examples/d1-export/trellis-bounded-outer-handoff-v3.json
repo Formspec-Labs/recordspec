@@ -1,0 +1,103 @@
+{
+  "status": "paired static APPROVE startup-only correction; ready for Root assigned live window; startup not executed",
+  "executed": false,
+  "wrapper": {
+    "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/run-trellis-bounded-v2.py",
+    "sha256": "11429bab85631f43c7ec86acdd6c39de579a9cda50ebb368bb4d1f15148c1958"
+  },
+  "command": {
+    "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/run-trellis-bounded-v2-start-only.command.txt",
+    "sha256": "87d5003ce53bfc8e19ed0f6c81cdac3636cf2f03b4838ee4c3a4aa041194c879"
+  },
+  "launcher": {
+    "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/start-trellis-persistent-reviewed-v6.py",
+    "sha256": "98101f0ae2426167679897b264929571a3f0b985a58fb7d48030c076fef1bf54"
+  },
+  "oidcProfile": {
+    "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/oidc-profile-exporter-v6.json",
+    "sha256": "ad47c7186758c9adfefb9974a863124de48ea3d5cb40259857da594267a8f6f3"
+  },
+  "originalOidcProfilePreserved": {
+    "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/oidc-profile.json",
+    "sha256": "c8de0c4bfba003b93c2ef28a937a3e8bef1f21c3d12f26685af7a294c196e057"
+  },
+  "exporterIdentitySource": {
+    "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-exporter-20261009-v1/provider-identity.private.json",
+    "sha256": "0647a70797f0eaa6a512d6810722c44e18762f0dc1b9572b2fe22be423337ddf"
+  },
+  "currentGrants": {
+    "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/current-grants.json",
+    "sha256": "2ee9697269d53fdb94daf48af6d6a586a92b81bbdaf0dd24e95b38c6ce0caae0"
+  },
+  "staticCheck": {
+    "path": "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/trellis-bounded-outer-static-check-v3.json",
+    "sha256": "7355c2a22d60401604b57f4a39ab4066f8753a5435b938ac84bde6d578b4cccc"
+  },
+  "bounds": {
+    "recoverySeconds": 300,
+    "recoveryCombinedOutputBytes": 33554432,
+    "startupSeconds": 180,
+    "readinessSeconds": 30,
+    "persistentCombinedServiceLogBytes": 33554432,
+    "cleanupSeconds": 2
+  },
+  "executionOwner": "Root assigned live window only",
+  "receiptBehavior": "UUID private outputDirectory printed into bootstrap log; startup-result.json or failure.json; bounded stream logs retained; wrapper remains resident after successful startup",
+  "stopBehavior": "SIGTERM operatorPid; only owned new Trellis group killed; RustFS container/bucket/objects and DB partial state retained",
+  "receivingProfileDelta": {
+    "allowedClient": "formspec-trellis-exporter-dev",
+    "subject": "e3b2f43f-4656-471d-8be3-b32e9c4d658c",
+    "principal": "trellis-local-exporter",
+    "caseGrantsAdded": 0
+  },
+  "readinessSideEffect": "maintained Trellis probe PUT/GET trellis/__healthz__/artifact-roundtrip in dedicated new bucket; DB list_scope only",
+  "verifiedByFutureOperator": [
+    "new18198 actual PID/argv/exact real environment and all startup file pins",
+    "old18088 PID16414 argv/exact real environment/binary/config unchanged; memory rows not independently read back",
+    "new PostgreSQL before no public tables; after only events/publications empty plus migration versions1\u20134"
+  ],
+  "limits": [
+    "No live operations executed in preparation",
+    "Provider token/current grants/authenticated registry retrieval still pending",
+    "Archive acknowledgement/restart/pinned retrieval/owning ZIP verification remain separate",
+    "Empty initial grants intentionally deny all case actions",
+    "Resident supervisor required; reaching service log cap stops its owned service group",
+    "First startup only; nonempty database refuses; inspect retained partial DB before retry",
+    "Prior failure happened before structured startup try; bootstrap log and recovery supervisor receipt retain that failure; no startup-result.json was produced"
+  ],
+  "startupMode": "start only; no recovery repetition",
+  "reusePassingRecovery": {
+    "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/rustfs-recovery-96abbe2b6f3a49d89b10c601d7d438ba/qualification.json",
+    "sha256": "c8ea70d60d88f569dd2e0b35c08d689864e8b37208e8a31906926a00a468d819"
+  },
+  "recoverySupervisor": {
+    "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/bounded-recover-start-104da943-b251-4943-85b8-f8157ab711de/recovery-supervisor.json",
+    "sha256": "fe407321913d72f95b7ba076213f3aabf6a42a017d31f0bd6f2ddb2ac914a762"
+  },
+  "preservedFailedAttempt": {
+    "outputDirectory": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/bounded-recover-start-104da943-b251-4943-85b8-f8157ab711de",
+    "bootstrapLog": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/outer-bootstrap-c98b7bdb-791a-44ac-87f3-e0ea4cc7a0cb.private.log",
+    "rootObserved": "failed database selection guard before DB connection or new18198 launch",
+    "diagnosis": "pinned database URL contains exact sslmode=disable; outerv1 incorrectly refused all query strings",
+    "correction": "exact query string sslmode=disable only, all host/port/db/user and private profile pins preserved",
+    "oldWrapperPreserved": {
+      "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/run-trellis-bounded-v1.py",
+      "sha256": "f59c9d2d1b07b3b536d6bae3b31643fdbb08bf16a27fbce5ebf4900a46b35ed0"
+    }
+  },
+  "actualRecoveryExecutedByRoot": true,
+  "actualStartupExecutedByRoot": false,
+  "thisCorrectionPreparationExecutedOperator": false,
+  "reviews": {
+    "code": {
+      "path": "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/trellis-bounded-outer-after-code-review-v3.md",
+      "sha256": "fadbb35af201ed95c90a56facddfc7b930031281b2b5a4fd9abe6611b31b4a37",
+      "verdict": "APPROVE static readiness only"
+    },
+    "architecture": {
+      "path": "/Users/mikewolfd/Work/formspec-stack/trellis/examples/d1-export/trellis-bounded-outer-after-architecture-review-v2.md",
+      "sha256": "507a1cae1689ace5d209b3db2df3df3452790d8ce08a10e640e11cae6e7ca083",
+      "verdict": "APPROVE static readiness only"
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "status": "staticchecksPASS",
+  "sourcePacketSha256": "8f72c95c721026fd245bb7f272709c63ce582145fb26e8b29e7595e3a8e757af",
+  "all3FilePinsMatch": true,
+  "scripts": [
+    {
+      "path": "recover-rustfs-reviewed-v1.py",
+      "syntax": "pass",
+      "assertNodes": 0,
+      "executed": false
+    },
+    {
+      "path": "start-trellis-persistent-reviewed-v5.py",
+      "syntax": "pass",
+      "assertNodes": 0,
+      "executed": false
+    }
+  ],
+  "DockerS3Calls": 0
+}

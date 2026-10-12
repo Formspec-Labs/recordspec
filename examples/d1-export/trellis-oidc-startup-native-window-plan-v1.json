@@ -1,0 +1,60 @@
+{
+  "status": "prepared-not-authorized-to-run",
+  "sourceReceipt": "trellis-oidc-startup-static-after-v1.json",
+  "sourceReceiptSha256": "922f71f20ed33b8d39124340d112ba15292acb5ffa2b2f4664fc6d841fc79b71",
+  "execution": "Root serial allocation only; never use original18088 or shared source",
+  "bounds": {
+    "jobs": 1,
+    "secondsPerStage": 600,
+    "logBytesPerStage": 33554432
+  },
+  "stages": [
+    {
+      "name": "parent CLI RED",
+      "input": "qualified parent eda346c plus preserved trellis-oidc-startup-red-cli-tests.patch in isolated coherent closure",
+      "command": "cargo test --offline --locked -j1 -p trellis-server --test oidc_cli_startup -- --nocapture",
+      "expected": "exact two CLI assertions fail because parent lacks required OIDC profile selection"
+    },
+    {
+      "name": "lock preparation",
+      "command": "cargo metadata --offline --format-version 1",
+      "requirements": [
+        "Run only in isolated GREEN closure",
+        "Retain before/after lock diff and dependency package/version receipt",
+        "Review optional OIDC feature dependencies and rustix fs/process edge; preserve unrelated rand_core baseline separately"
+      ]
+    },
+    {
+      "name": "strict startup unit protocol and authority",
+      "command": "cargo test --offline --locked -j1 -p trellis-server --lib oidc_startup_ -- --nocapture"
+    },
+    {
+      "name": "actual CLI GREEN",
+      "command": "cargo test --offline --locked -j1 -p trellis-server --test oidc_cli_startup -- --nocapture"
+    },
+    {
+      "name": "existing auth regressions",
+      "command": "cargo test --offline --locked -j1 -p trellis-server --lib authorized_append_replay_ -- --nocapture",
+      "expected": "14 pass; compare retained earlier auth fixture names"
+    },
+    {
+      "name": "full client suite",
+      "command": "cargo test --offline --locked -j1 -p trellis-service-client -- --nocapture"
+    },
+    {
+      "name": "actual server binary",
+      "command": "cargo build --offline --locked -j1 -p trellis-server --bin trellis-server",
+      "requirements": [
+        "Copy resulting binary outside shared target",
+        "Record hash/size, source closure and final lock hash"
+      ]
+    }
+  ],
+  "notIncluded": [
+    "provider changes",
+    "database changes",
+    "starting service18198",
+    "original18088 changes",
+    "actual D1 export or trust assertion"
+  ]
+}

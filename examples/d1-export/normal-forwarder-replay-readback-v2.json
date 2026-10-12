@@ -1,0 +1,32 @@
+{
+  "at": "2026-10-11T03:09:34.286299+00:00",
+  "databaseReadOnly": true,
+  "eventCount": 1,
+  "bundlePublicationCount": 1,
+  "events": [
+    {
+      "scope": "formspec.managed-single-cell",
+      "sequence": 0,
+      "idempotencyKey": "formspec:v1:x_DcykvTnoiorK-O38SaTA58phVygtzfLVFHwBk6kPQ",
+      "canonicalEventHash": "sha256:f830199b464aa5cdd987566f700da890b209d12f55fa38fa47dffac724b52e07",
+      "canonicalBytes": 1312
+    }
+  ],
+  "originalIdempotencyKeyRowCount": 1,
+  "originalEventUnchanged": true,
+  "bundles": [
+    {
+      "scope": "formspec.managed-single-cell",
+      "sealVersion": 1,
+      "checkpointDigest": "sha256:8f0fa277518097d758567526d2b1717072966ffbf3d562c4de069b7968e0fa49",
+      "exportAttemptId": "sha256:d269560e7a150bf5b4fb97d6f90bc63222a1d85da09fdedb501819fb9b5a52a2",
+      "artifactRef": "s3://trellis-full-d1-20261009-v1/trellis/formspec.managed-single-cell/bundles/d269560e7a150bf5b4fb97d6f90bc63222a1d85da09fdedb501819fb9b5a52a2.zip"
+    }
+  ],
+  "previousSnapshot": "normal-forwarder-observed-state-v1.json",
+  "noRequeue": true,
+  "noRestart": true,
+  "noDatabaseWrite": true,
+  "originalBundleMetadataUnchanged": true,
+  "bundleComparisonSnapshot": "normal-forwarder-existing-export-v1.json"
+}

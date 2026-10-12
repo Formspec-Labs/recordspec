@@ -1,0 +1,39 @@
+{
+  "status": "materialized inactive successors from actual signed identity readback; not loaded or activated",
+  "identityReceipt": {
+    "path": "/Users/mikewolfd/Work/formspec-stack/thoughts/plans/benefits-scenarios/execution/reports/root/external-service-identities-v1/continuation-execution-result.json",
+    "sha256": "00697ef44c7ec1f0ac0140f7237e9370d4cac3c949fccd08fd54a9bc15d70cbe"
+  },
+  "files": {
+    "oidc-profile-source-native-v8.json": {
+      "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/oidc-profile-source-native-v8.json",
+      "sha256": "55589b8ee357064b9eb648411253d5cacb27b559e2e8017fe4593f8ccc3492bf"
+    },
+    "current-grants-source-native-v8.json": {
+      "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/current-grants-source-native-v8.json",
+      "sha256": "ec5b8c592da9bc620d41b7c3c85836c8c4fa071f8045585539e19be9ae531cd9"
+    },
+    "source-trellis-service-v1.json": {
+      "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/source-trellis-service-v1.json",
+      "sha256": "4e35471efa4b36742a30c4af131bebaf1458ca84415ab4f49256b4ccd9026e02"
+    }
+  },
+  "selectedSourceSubject": "87af7ce6-4294-4a4b-898b-4ecd486d104f",
+  "scope": "formspec.managed-single-cell",
+  "actor": {
+    "kind": "service",
+    "subject": "formspec-server"
+  },
+  "payloadActors": [],
+  "caseGrantsAdded": 0,
+  "administerGrantsAdded": 0,
+  "wosExporterMappingsPreserved": true,
+  "activeFilesChanged": false,
+  "httpOrNativeExecuted": false,
+  "remaining": [
+    "focused static config review",
+    "Source adapter dependency adoption and native qualification",
+    "Root reviewed reload with existing DB preserved; original first-start launcher is ineligible for nonempty DB",
+    "actual current-token Source append and archive readback qualification"
+  ]
+}

@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Local structural check matching CurrentGrants fields; semantic checks stay in maintained Rust and builder",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "tenantScope",
+    "grants"
+  ],
+  "properties": {
+    "tenantScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tenant",
+        "workspace",
+        "environment",
+        "cell"
+      ],
+      "properties": {
+        "tenant": {
+          "type": "string",
+          "pattern": ".*\\S.*"
+        },
+        "workspace": {
+          "type": "string",
+          "pattern": ".*\\S.*"
+        },
+        "environment": {
+          "type": "string",
+          "pattern": ".*\\S.*"
+        },
+        "cell": {
+          "type": "string",
+          "pattern": ".*\\S.*"
+        }
+      }
+    },
+    "grants": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "principal",
+          "scope",
+          "action"
+        ],
+        "properties": {
+          "principal": {
+            "type": "string",
+            "pattern": ".*\\S.*"
+          },
+          "scope": {
+            "type": "string",
+            "pattern": "^(?=[\\x00-\\x7f]*$)(?=.*\\S)[^/]*$"
+          },
+          "action": {
+            "enum": [
+              "read",
+              "append",
+              "administer"
+            ]
+          },
+          "actors": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "subject"
+              ],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "pattern": ".*\\S.*"
+                },
+                "subject": {
+                  "type": "string",
+                  "pattern": ".*\\S.*"
+                }
+              }
+            }
+          },
+          "payloadActors": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "pointer",
+                "required",
+                "subjects"
+              ],
+              "properties": {
+                "pointer": {
+                  "type": "string"
+                },
+                "required": {
+                  "type": "boolean"
+                },
+                "subjects": {
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "pattern": ".*\\S.*"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "action": {
+                  "const": "append"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "actors"
+              ],
+              "properties": {
+                "actors": {
+                  "minItems": 1
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "actors": {
+                  "maxItems": 0
+                },
+                "payloadActors": {
+                  "maxItems": 0
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

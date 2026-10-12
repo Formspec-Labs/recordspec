@@ -1,0 +1,99 @@
+{
+  "status": "Source identity and grants activated; no application append qualification",
+  "operatorSha256": "45d849a3c90810e2b7bf342aff019914598ec0491b9b3455616030c5e7c9d0be",
+  "commandSha256": "1e1c6d254bfe6df07a76c9ffa96e85f6ab43050fc2c54232c76c379c1e78590d",
+  "configSha256": "8d1aee614df411f9d726af72ea30104760529a8835aeeff7ae950b76590ddcec",
+  "privateOutputDirectory": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/source-native-activation-38a4960b-c8fb-45f1-94d7-73c053145005",
+  "result": {
+    "status": "activated",
+    "operatorPid": 15442,
+    "pid": 16071,
+    "pgid": 16071,
+    "outputDirectory": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/source-native-activation-38a4960b-c8fb-45f1-94d7-73c053145005",
+    "newProfileSha256": "55589b8ee357064b9eb648411253d5cacb27b559e2e8017fe4593f8ccc3492bf",
+    "newGrantsSha256": "ec5b8c592da9bc620d41b7c3c85836c8c4fa071f8045585539e19be9ae531cd9",
+    "databaseRowsPreserved": true,
+    "old18088Preserved": true,
+    "positiveSourceAppendQualified": false,
+    "perServiceLogLimitBytes": 33554432,
+    "maximumActivationPlusRollbackLogBytes": 67108864,
+    "readinessArtifactProbeWrite": true
+  },
+  "verification": {
+    "all15PinsPreserved": true,
+    "completeDatabaseRowsPreserved": true,
+    "rowCounts": {
+      "trellis_bundle_publications": 0,
+      "trellis_events": 0,
+      "trellis_schema_migrations": 4
+    },
+    "serviceArgvAndEnvironmentMatchActivationReceipt": true,
+    "activeProfileIsSelectedV8": true,
+    "supervisorIsExactV2": true,
+    "listeners": {
+      "18198": "16071",
+      "18088": "16414"
+    },
+    "historical18088ProcessPreserved": true,
+    "oldServiceGroupEmpty": true,
+    "oldSupervisorGroupEmpty": true,
+    "remainingOwnedProcesses": [
+      {
+        "pid": 15442,
+        "ppid": 1,
+        "pgid": 15442,
+        "state": "Ss",
+        "executable": "/Users/mikewolfd/.pyenv/versions/3.12.9/bin/python3"
+      },
+      {
+        "pid": 16071,
+        "ppid": 15442,
+        "pgid": 16071,
+        "state": "Ss",
+        "executable": "/private/tmp/trellis-native-provenance-qualified-v1-20261009/execution/trellis-server-oidc-qualified-v4"
+      },
+      {
+        "pid": 16414,
+        "ppid": 1,
+        "pgid": 16414,
+        "state": "Ss",
+        "executable": "/Users/mikewolfd/Work/formspec-stack/.cargo-target/debug/trellis-server"
+      }
+    ],
+    "remainingOwnedTransientProcesses": []
+  },
+  "actualMutations": {
+    "originalSupervisorTermSent": true,
+    "verifiedOriginalServiceGroupForceStop": true,
+    "originalSupervisorRemoved": true,
+    "replacementLaunched": true,
+    "readinessArtifactProbeWrite": true,
+    "applicationAppendPerformed": false,
+    "databaseRowsChanged": false,
+    "dataRestoredOrDeleted": false,
+    "rollbackPerformed": false
+  },
+  "evidence": {
+    "result.json": "ae9b0a1002c55d6d6ddef55d5dd95b9c712c08ed32a6bc02d7796fbb60e0fd8f",
+    "verified-force-stop.json": "db1d940b98905e7a6a5b706f5a9fb6ab5e0ed6a89d4ad8697768bdf2c90b446d",
+    "activation-started.json": "f2a7b02ffdae5cf0e7298ab20d1d058493fe987e51ef2d961ce524145304c579",
+    "activation-process.private.json": "0ca5195e005809bc618147c4cfc682e915c323cda92a5d70d97d44ceadd2835d",
+    "activation-ready.raw.json": "88e6e2d81b00405c964f4c2dc37d756cd5da9f91f505bda84ced13f03693ee4e",
+    "database-before.private.json": "eef93e13149ada2228b8d58cb3ca37148ed04a5d0654c10b0b0a37285fb15bb5",
+    "database-after.private.json": "eef93e13149ada2228b8d58cb3ca37148ed04a5d0654c10b0b0a37285fb15bb5",
+    "old18088-before.private.json": "c514d798552fc0c4b7d6c42c102331f41b438885326373e9064c9f1e023cc974",
+    "old18088-after.private.json": "c514d798552fc0c4b7d6c42c102331f41b438885326373e9064c9f1e023cc974",
+    "closure-diagnostic.json": "d0261ea964d7a310b07943d52cb2ac3455b198e0216070a3d72643ab70a32fff"
+  },
+  "residentProcesses": {
+    "supervisorPid": 15442,
+    "supervisorPgid": 15442,
+    "servicePid": 16071,
+    "servicePgid": 16071,
+    "servicePort": 18198
+  },
+  "remainingOwnedTransientProcesses": [],
+  "executionWindowReleased": true,
+  "sourceAppendQualified": false,
+  "archiveQualified": false
+}

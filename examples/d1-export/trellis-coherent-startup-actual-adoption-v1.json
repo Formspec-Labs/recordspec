@@ -1,0 +1,24 @@
+{
+  "status": "actual coherent normal startup and original protected registry read verified",
+  "receipt": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/coherent-startup-activation-1be3fe86-0c0f-4391-89fc-92c633871f88/owner-actual-closure-v2.json",
+  "receiptSha256": "10c25e17970e1ff702c8da4960e7fe1f4ad54586f47208c39d34418923d66e74",
+  "servicePid": 33967,
+  "operatorPid": 33947,
+  "normalBinarySha256": "18447cf8a6f68380f56f974bb3b8b069e19c796f7a1d9be2b12445865c5cd26e",
+  "oldApplicationRowCounts": {
+    "events": 1,
+    "publications": 1
+  },
+  "migration5Added": true,
+  "completionPairAbsent": true,
+  "fourCurrentGrantsPreserved": true,
+  "oldRegistryBytesPreserved": true,
+  "registrySha256": "06516ab2228e2ff95fe247780a28436d01f0a77e028ef8f14997912dcaba51f2",
+  "old18088Preserved": true,
+  "restorePerformed": false,
+  "limits": [
+    "no new grants or completion configuration selected",
+    "no actual Source/WOS application append or certificate qualification",
+    "backup full archive decoded; restoration not rehearsed"
+  ]
+}

@@ -1,0 +1,59 @@
+{
+  "status": "static parameterized exact-case preparation; actual reservation and actor evidence pending",
+  "activeReceivingProfile": {
+    "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/oidc-profile-source-native-v8.json",
+    "sha256": "55589b8ee357064b9eb648411253d5cacb27b559e2e8017fe4593f8ccc3492bf"
+  },
+  "activeGrants": {
+    "path": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/current-grants-source-native-v8.json",
+    "sha256": "ec5b8c592da9bc620d41b7c3c85836c8c4fa071f8045585539e19be9ae531cd9"
+  },
+  "identity": {
+    "principal": "wos-trellis-producer",
+    "issuer": "http://127.0.0.1:18090/realms/formspec-dev",
+    "subject": "4af85e55-7498-43e7-ab7b-c5c08aa05b4f",
+    "clientId": "formspec-wos-trellis-dev",
+    "audience": "trellis-api",
+    "scopes": [
+      "trellis.access",
+      "trellis.read",
+      "trellis.append"
+    ]
+  },
+  "resourceSelection": "raw case TypeID derived only from retained native Start caseLedgerId URN",
+  "addedActions": [
+    "read",
+    "append"
+  ],
+  "administerAdded": false,
+  "restartRequired": false,
+  "existingUpdatePath": "atomic local whole-grants-file replacement; maintained CurrentGrants fresh read per request",
+  "sourceRowsPreserved": true,
+  "actualCaseId": null,
+  "actualActors": null,
+  "actualPayloadActorRules": null,
+  "callerSourcePins": {
+    "/private/tmp/trellis-native-provenance-qualified-v1-20261009/trellis/crates/trellis-server/src/oidc_startup.rs": "71dd47b97397db3c413fae946d426a9216fdb875a9d72f083550b910d368ea63",
+    "/private/tmp/trellis-native-provenance-qualified-v1-20261009/trellis/crates/trellis-service-client/src/wos_ext.rs": "7e57ce296cdae460a221f554a45c69df6b80f16ead764c060090b0f3a9a03bb6",
+    "/tmp/wos-current-trellis-provider-v1-20261010/workspec-server/crates/wos-server/src/services/mod.rs": "75bfc0c255d8775492e07339c7da376dcf26e5feef25f60ea20542592022e8ce",
+    "/tmp/wos-current-trellis-provider-v1-20261010/workspec-server/crates/wos-server/src/http/case_events.rs": "d2a4c9e3023b0a8dce0b47ec52dfe94c5649d513e519271088222e483ec9ff0a",
+    "/tmp/wos-current-trellis-provider-v1-20261010/workspec-server/crates/wos-server-ports/src/intake.rs": "d7188f4f3c597eb00cecdf8ffda41d97bd47afb8ab138eef6ca844aa5bc70ce6",
+    "/tmp/wos-current-trellis-provider-v1-20261010/work-spec/crates/wos-runtime/src/runtime/custody_trellis.rs": "fa176f423798224ea349e4e072508027d64ef40b0543e04fa5495f1fc674dee4"
+  },
+  "artifactPins": {
+    "grants.schema.json": "178a1668d6b5ee7384e4d1acbfc7f60edf8a4d7d2d3d180c307833c253255329",
+    "static-check.json": "7360c0c88edfd0fa81811137b657f21dc2838d8c07b0f5cbc56c5cf476283b07",
+    "operation.md": "4b651202158c75368c15bbb31b22c921cf545501e7ac25bcf4f771a5426f68dd",
+    "selection.schema.json": "57acb7c2ad10b0869b80b88bbf376e6e81a323d4cdfe13710087f50f7c5cdad7",
+    "prepare.py": "7b2d1758fb8f89da453f43c448b594368959bd568a5f10f7ac0805584c0eee91"
+  },
+  "validationLimits": [
+    "Static builder syntax and Draft202012 schema checks passed",
+    "Existing Source grant document passes structural validation",
+    "Builder has not been executed; no candidate or actual binding generated",
+    "Native custody actor is caller-supplied; test service actor is not selected",
+    "Actual candidate and concrete installation command require retained Start evidence, caller bindings and separate Root review"
+  ],
+  "liveOperationsPerformed": false,
+  "activeFilesChanged": false
+}

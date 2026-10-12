@@ -1,0 +1,37 @@
+# Exact WOS authority for the next D1 reservation
+
+The next grant change needs no Trellis restart. The active v8 profile already maps the WOS service identity. `CurrentGrants::authorize` reads and validates the complete grants file for every request (`oidc_startup.rs:383–399`). Replace that one file atomically after the actual native Start response and caller bindings are retained and selected. Keep the current profile, service, database, signing key and object store.
+
+Receiving inputs are the active v8 profile SHA `55589b8ee357064b9eb648411253d5cacb27b559e2e8017fe4593f8ccc3492bf` and grants SHA `ec5b8c592da9bc620d41b7c3c85836c8c4fa071f8045585539e19be9ae531cd9`. They are under the private `trellis-full-d1-20261009-v1` directory. The profile maps issuer `http://127.0.0.1:18090/realms/formspec-dev`, subject `4af85e55-7498-43e7-ab7b-c5c08aa05b4f`, and client `formspec-wos-trellis-dev` to principal `wos-trellis-producer`. Trellis requires audience `trellis-api`, base scope `trellis.access`, action scope `trellis.read` for Read and `trellis.append` for Append. The intended endpoint is `http://127.0.0.1:18198`, with WOS tenant headers and the exact tuple `tenant_test/workspace_test/environment_test/cell_test`. Root must select the qualified WOS endpoint and private OAuth profile pins separately.
+
+## Resource and actor checks
+
+Native `POST /application-cases/start` returns `ApplicationCaseReceipt` with `caseLedgerId`, `caseReference`, `draftRef` and `status`. The case ledger value is `urn:wos:<raw case TypeID>`. Select the exact raw case ID after removing that prefix. Start persists the reservation and does not invoke the configured Trellis client. A Start receipt therefore supplies the resource ID, but does not establish Trellis append success or select every later append actor.
+
+The qualified WOS client uses `HeaderConfig::wos()` and its maintained current-token provider (`services/mod.rs:572–593`). Direct case-event writes use `case_ledger_id` as the Trellis scope and `AppendActor::user(CommandActor::internal_user())` (`http/case_events.rs:582–588`). That transport actor is kind `user` with subject `auth.user.id`; it differs from the canonical `actor:human:...` reference retained in the record's `actorId` (`services/mod.rs:43–75`). Canonical direct records place that value at `/actorId` relative to the Trellis payload. Native records place an optional value at `/record/actorId`; selectors must follow the actual selected route and requiredness.
+
+The maintained `TrellisCustodyAppender` uses the exact `input.case_id` and its caller-supplied actor (`runtime/custody_trellis.rs:109–124`). Its tests use `service/wos-runtime`; those test values do not select production authority. The inspected WOS configured client has a direct case-event production caller. A separate native custody invocation must retain its actual actor selection before this operation admits that actor. No service actor or delegated-human pointer is defaulted here.
+
+Add exactly two rows for principal `wos-trellis-producer` and the evidenced case resource: Read and Append. Append includes only evidenced exact actor kind/subject pairs and explicitly selected payload rules. Preserve both existing Source rows byte-for-byte in meaning. Add no exporter, unrelated-case or Administer row. Schema validity alone cannot establish that an asserted actor is the intended caller; Root must review the retained bindings.
+
+## Parameterized preparation
+
+`selection.schema.json` describes future inputs: either pinned successful Start HTTP status or the owning committed reservation readback, pinned native response, expected selected draft, pinned actor subjects, explicit payload rules, and qualified caller input hashes. Every subject is read from retained evidence through a JSON pointer. No case ID argument or sample ID exists.
+
+`prepare.py --selection <Root-frozen selection JSON> --output-directory <private inactive output directory>` writes only an inactive candidate and preparation receipt. The output directory must be a new direct child of the retained private base named `wos-case-grant-prepared-*`. The builder refuses changed profile/grant pins, existing WOS grants, changed caller/evidence hashes, duplicate JSON keys, missing native Start fields, a different draft, non-200 Start status, duplicate actors/selectors, or invalid schema. It derives the case scope from the actual response. It preserves all existing rows and adds only Read/Append. It has no install flag, credential read, HTTP, process, database or server operation.
+
+The structural grants schema follows the maintained closed field shapes; the builder adds selection checks. The maintained Rust validator remains receiving authority. Both schemas pass Draft 2020-12 schema checks, the existing Source document passes structural validation, and the builder parses. No future reservation or candidate has been generated or tested.
+
+## Bounded installation after evidence and review
+
+Reuse the reviewed whole-file configuration replacement discipline. Root freezes the actual selection, candidate bytes/hash and exact operation before assigning a serialized execution window. Retain the original grants bytes privately. Revalidate the active process/profile/key/binary/identity and all unaffected input pins; use the reviewed bounded read-only database helper for a complete before snapshot. Conflicting target hash or process identity stops the operation before mutation.
+
+Stage the reviewed complete candidate as an owner-only regular file in the same private directory, using exclusive creation and mode 0600. Recheck the current target hash against the frozen baseline immediately before a single atomic `os.replace` of the selected grants path; fsync the file and parent directory and read back the complete bytes/hash. Use the same bounded configuration-only rollback discipline: if verification fails and the target still equals this operation's candidate hash, atomically restore the retained original grants; otherwise preserve the conflict and stop. Never restore database rows or delete object evidence.
+
+Compare the complete after database snapshot, exact active service/profile/key/binary and historical host identities against before, preserving the active Source grant. Use the reviewed 180-second operation bound, bounded file reads and private receipts. No readiness artifact write, application append, archive creation, restart or new API belongs to installation. The change affects subsequent authorization reads; requests admitted earlier are not retroactively revoked. Report the actual replacement/rollback outcome and release the window.
+
+This is a parameterized preparation and installation procedure. The prior reviews establish the file replacement discipline; they do not approve the future case-specific candidate. The concrete installation command and candidate pins remain pending actual Start evidence, qualified caller bindings and Root review.
+
+## Committed reservation input alternative
+
+`committedReservation` replaces `startStatus` when the original HTTP capture is absent. It pins the complete owning readback receipt, verifies its private row hash, decodes the exact persisted PostgreSQL bytea outcome, and checks case, display reference, draft and source binding against the selected native receipt. It does not claim an observed HTTP status. The three affected checks cover accepted committed evidence, changed outcome refusal and changed-row refusal. Actor and scope selection remain required.

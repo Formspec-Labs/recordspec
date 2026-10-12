@@ -1,0 +1,452 @@
+{
+  "status": "native qualification passed; private; not deployed",
+  "sourceReceipt": "trellis-oidc-startup-qualified-v4.json",
+  "sourceReceiptSha256": "8021af372812eccb144566d36595123f90b42e6e7cfd96692050336cf654f09f",
+  "baseCommit": "eda346c166a71c7b8df55afd8549247456229277",
+  "counts": {
+    "startup": 12,
+    "actualCLI": 3,
+    "authRegressions": 14,
+    "routerPosture": 2,
+    "serviceClient": 11,
+    "total": 42
+  },
+  "red": "Two exact preserved CLI tests failed because parent required signing key instead of OIDC config",
+  "fixtureFix": "Test-only AtomicUsizesequence avoids parallel temporary-directory collisions; no production changes from static v3",
+  "lock": {
+    "added": [
+      [
+        "base64",
+        "0.13.1",
+        "registry+https://github.com/rust-lang/crates.io-index"
+      ],
+      [
+        "bs58",
+        "0.5.1",
+        "registry+https://github.com/rust-lang/crates.io-index"
+      ],
+      [
+        "darling",
+        "0.23.0",
+        "registry+https://github.com/rust-lang/crates.io-index"
+      ],
+      [
+        "darling_core",
+        "0.23.0",
+        "registry+https://github.com/rust-lang/crates.io-index"
+      ],
+      [
+        "darling_macro",
+        "0.23.0",
+        "registry+https://github.com/rust-lang/crates.io-index"
+      ],
+      [
+        "ecdsa",
+        "0.16.9",
+        "registry+https://github.com/rust-lang/crates.io-index"
+      ],
+      [
+        "hashbrown",
+        "0.12.3",
+        "registry+https://github.com/rust-lang/crates.io-index"
+      ],
+      [
+        "http",
+        "0.2.12",
+        "registry+https://github.com/rust-lang/crates.io-index"
+      ],
+      [
+        "ident_case",
+        "1.0.1",
+        "registry+https://github.com/rust-lang/crates.io-index"
+      ],
+      [
+        "indexmap",
+        "1.9.3",
+        "registry+https://github.com/rust-lang/crates.io-index"
+      ],
+      [
+        "itertools",
+        "0.10.5",
+        "registry+https://github.com/rust-lang/crates.io-index"
+      ],
+      [
+        "oauth2",
+        "4.4.2",
+        "registry+https://github.com/rust-lang/crates.io-index"
+      ],
+      [
+        "openidconnect",
+        "3.5.0",
+        "registry+https://github.com/rust-lang/crates.io-index"
+      ],
+      [
+        "ordered-float",
+        "2.10.1",
+        "registry+https://github.com/rust-lang/crates.io-index"
+      ],
+      [
+        "p384",
+        "0.13.1",
+        "registry+https://github.com/rust-lang/crates.io-index"
+      ],
+      [
+        "rfc6979",
+        "0.4.0",
+        "registry+https://github.com/rust-lang/crates.io-index"
+      ],
+      [
+        "schemars",
+        "0.9.0",
+        "registry+https://github.com/rust-lang/crates.io-index"
+      ],
+      [
+        "schemars",
+        "1.2.2",
+        "registry+https://github.com/rust-lang/crates.io-index"
+      ],
+      [
+        "serde-value",
+        "0.7.0",
+        "registry+https://github.com/rust-lang/crates.io-index"
+      ],
+      [
+        "serde_plain",
+        "1.0.2",
+        "registry+https://github.com/rust-lang/crates.io-index"
+      ],
+      [
+        "serde_with",
+        "3.20.0",
+        "registry+https://github.com/rust-lang/crates.io-index"
+      ],
+      [
+        "serde_with_macros",
+        "3.20.0",
+        "registry+https://github.com/rust-lang/crates.io-index"
+      ],
+      [
+        "strsim",
+        "0.11.1",
+        "registry+https://github.com/rust-lang/crates.io-index"
+      ]
+    ],
+    "removed": [],
+    "changedExistingVersions": [],
+    "finalSha256": "7e813eb1e5bcf408bb8c9f9a1e153748392c6f1415247bbe739a00bc79096e5c",
+    "separateBaselineEdge": "stack-common-typeid -> rand_core0.6.4 already present in reused qualified closure"
+  },
+  "foreignSourceGuard": {
+    "files": 5739,
+    "mismatches": [],
+    "manifestSha256": "de24062bd15892ee6b60239acf853aa79c38e61b65aa9de6a6d9b9a5a1ab4992"
+  },
+  "binary": {
+    "path": "/private/tmp/trellis-native-provenance-qualified-v1-20261009/execution/trellis-server-oidc-qualified-v4",
+    "profile": "dev unoptimized + debuginfo; actual trellis-server CLI",
+    "sha256": "f0a0eb62da9d52c5a5e5a2bac8f60af8b7ff97084cd0de6c5cae63d5256e90c7",
+    "bytes": 61776720
+  },
+  "receipts": [
+    {
+      "stage": "cli-red",
+      "argv": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-j1",
+        "-p",
+        "trellis-server",
+        "--test",
+        "oidc_cli_startup",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/private/tmp/trellis-native-provenance-qualified-v1-20261009/red-trellis-v2",
+      "target": "/private/tmp/core-nested-task-policy-inputs-v3-20261009/target",
+      "status": "failed",
+      "pid": 63563,
+      "pgid": 63563,
+      "exitCode": 101,
+      "elapsedSeconds": 0.51,
+      "stopReason": null,
+      "groupClear": true,
+      "logBytes": 357,
+      "logSha256": "c1288d42020c14d771045f2f3ac8744c9ada6e7a05b02464dd4b05815a9b2825",
+      "testResults": []
+    },
+    {
+      "stage": "cli-red-2",
+      "argv": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-j1",
+        "-p",
+        "trellis-server",
+        "--test",
+        "oidc_cli_startup",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/private/tmp/trellis-native-provenance-qualified-v1-20261009/red-inputs/trellis",
+      "target": "/private/tmp/core-nested-task-policy-inputs-v3-20261009/target",
+      "status": "failed",
+      "pid": 63718,
+      "pgid": 63718,
+      "exitCode": 101,
+      "elapsedSeconds": 16.71,
+      "stopReason": null,
+      "groupClear": true,
+      "logBytes": 5802,
+      "logSha256": "6c211e39f95786bbeb117e122ae7e54ae10e7197ae89393a3627add71b91cff9",
+      "testResults": [
+        "test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.87s"
+      ]
+    },
+    {
+      "stage": "green-lock",
+      "argv": [
+        "cargo",
+        "metadata",
+        "--offline",
+        "--format-version",
+        "1"
+      ],
+      "cwd": "/private/tmp/trellis-native-provenance-qualified-v1-20261009/trellis",
+      "target": "/private/tmp/core-nested-task-policy-inputs-v3-20261009/target",
+      "status": "passed",
+      "pid": 64965,
+      "pgid": 64965,
+      "exitCode": 0,
+      "elapsedSeconds": 0.51,
+      "stopReason": null,
+      "groupClear": true,
+      "logBytes": 2335102,
+      "logSha256": "4351c1901463bbee84ba4ce837a56c645064c6b078407067d6486371de6363f5",
+      "testResults": []
+    },
+    {
+      "stage": "oidc-green-1",
+      "argv": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-j1",
+        "-p",
+        "trellis-server",
+        "--lib",
+        "oidc_startup_",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/private/tmp/trellis-native-provenance-qualified-v1-20261009/trellis/../trellis",
+      "target": "/private/tmp/core-nested-task-policy-inputs-v3-20261009/target",
+      "status": "failed",
+      "pid": 65150,
+      "pgid": 65150,
+      "exitCode": 101,
+      "elapsedSeconds": 49.13,
+      "stopReason": null,
+      "groupClear": true,
+      "logBytes": 9036,
+      "logSha256": "40f104415f272bf29c7acb26337e4cc1b80aa943731ee8e24fbda78f6bb5d29a",
+      "testResults": [
+        "test result: FAILED. 10 passed; 2 failed; 0 ignored; 0 measured; 104 filtered out; finished in 0.06s"
+      ]
+    },
+    {
+      "stage": "oidc-green-2",
+      "argv": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-j1",
+        "-p",
+        "trellis-server",
+        "--lib",
+        "oidc_startup_",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/private/tmp/trellis-native-provenance-qualified-v1-20261009/trellis/../trellis",
+      "target": "/private/tmp/core-nested-task-policy-inputs-v3-20261009/target",
+      "status": "passed",
+      "pid": 66819,
+      "pgid": 66819,
+      "exitCode": 0,
+      "elapsedSeconds": 4.07,
+      "stopReason": null,
+      "groupClear": true,
+      "logBytes": 1778,
+      "logSha256": "cefaaeb660ed4daa0ad1e8177a0c5bc64e26c78a63d80629d52cec533760b5f1",
+      "testResults": [
+        "test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 104 filtered out; finished in 0.05s"
+      ]
+    },
+    {
+      "stage": "cli-green",
+      "argv": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-j1",
+        "-p",
+        "trellis-server",
+        "--test",
+        "oidc_cli_startup",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/private/tmp/trellis-native-provenance-qualified-v1-20261009/trellis",
+      "target": "/private/tmp/core-nested-task-policy-inputs-v3-20261009/target",
+      "status": "passed",
+      "pid": 66923,
+      "pgid": 66923,
+      "exitCode": 0,
+      "elapsedSeconds": 5.55,
+      "stopReason": null,
+      "groupClear": true,
+      "logBytes": 688,
+      "logSha256": "9d1301340d94e32b29cad529ef51a3f25fe7c08c8252030ccdb860a54cdc9935",
+      "testResults": [
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.90s"
+      ]
+    },
+    {
+      "stage": "auth-regressions",
+      "argv": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-j1",
+        "-p",
+        "trellis-server",
+        "--lib",
+        "authorized_append_replay_",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/private/tmp/trellis-native-provenance-qualified-v1-20261009/trellis",
+      "target": "/private/tmp/core-nested-task-policy-inputs-v3-20261009/target",
+      "status": "passed",
+      "pid": 67666,
+      "pgid": 67666,
+      "exitCode": 0,
+      "elapsedSeconds": 1.02,
+      "stopReason": null,
+      "groupClear": true,
+      "logBytes": 1721,
+      "logSha256": "07458673e408132862eb8eefd54a0e8b79d650adacdff6c72fbdd79ac9267c08",
+      "testResults": [
+        "test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 102 filtered out; finished in 0.06s"
+      ]
+    },
+    {
+      "stage": "router-posture",
+      "argv": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-j1",
+        "-p",
+        "trellis-server",
+        "--lib",
+        "given_production_like_posture_",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/private/tmp/trellis-native-provenance-qualified-v1-20261009/trellis",
+      "target": "/private/tmp/core-nested-task-policy-inputs-v3-20261009/target",
+      "status": "passed",
+      "pid": 67779,
+      "pgid": 67779,
+      "exitCode": 0,
+      "elapsedSeconds": 0.51,
+      "stopReason": null,
+      "groupClear": true,
+      "logBytes": 522,
+      "logSha256": "d0c6745118775d5e999367da83c6907ee9bc6e1e5ffff67ab4864e3e519bee40",
+      "testResults": [
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 114 filtered out; finished in 0.00s"
+      ]
+    },
+    {
+      "stage": "client-suite",
+      "argv": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-j1",
+        "-p",
+        "trellis-service-client",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/private/tmp/trellis-native-provenance-qualified-v1-20261009/trellis",
+      "target": "/private/tmp/core-nested-task-policy-inputs-v3-20261009/target",
+      "status": "passed",
+      "pid": 67799,
+      "pgid": 67799,
+      "exitCode": 0,
+      "elapsedSeconds": 25.29,
+      "stopReason": null,
+      "groupClear": true,
+      "logBytes": 4068,
+      "logSha256": "12022bfe6c9d1d732d9cd28d84f3ca76900dddb5c424abda933c84ab1c722f9b",
+      "testResults": [
+        "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      ]
+    },
+    {
+      "stage": "server-build",
+      "argv": [
+        "cargo",
+        "build",
+        "--offline",
+        "--locked",
+        "-j1",
+        "-p",
+        "trellis-server",
+        "--bin",
+        "trellis-server"
+      ],
+      "cwd": "/private/tmp/trellis-native-provenance-qualified-v1-20261009/trellis",
+      "target": "/private/tmp/core-nested-task-policy-inputs-v3-20261009/target",
+      "status": "passed",
+      "pid": 68483,
+      "pgid": 68483,
+      "exitCode": 0,
+      "elapsedSeconds": 0.51,
+      "stopReason": null,
+      "groupClear": true,
+      "logBytes": 72,
+      "logSha256": "f0788aa36d1c86b6ccdfb7f4042a5574102d82061c046422a2d42e008a1e4710",
+      "testResults": []
+    }
+  ],
+  "preservedFailures": [
+    "preparation-failed-1.json archivepipe setup",
+    "cli-red sibling layout collision",
+    "cli-red-2 intended2assertionfails",
+    "oidc-green-1 parallelfixturecollision2fails"
+  ],
+  "noActions": [
+    "provider mutation",
+    "database mutation/startup",
+    "service18198 startup",
+    "original18088 change",
+    "D1 export"
+  ],
+  "futureCohort": "Root requires fresh0.3.1case aftercompleteconfigfreeze; previous456facts retainedhistorical, notretagged",
+  "review": "pairedv4finaldelta certificates pending"
+}

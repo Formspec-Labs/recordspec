@@ -1,0 +1,74 @@
+{
+  "status": "static maintained-storage assessment; no service or storage calls",
+  "verifiedMaintainedCLIPath": {
+    "adapter": "trellis_server_ports::S3CompatibleArtifactStore",
+    "startup": "trellis-server/src/state.rs artifact_store_from_env",
+    "environment": [
+      "TRELLIS_ARTIFACT_BUCKET",
+      "TRELLIS_ARTIFACT_PREFIX",
+      "TRELLIS_ARTIFACT_ENDPOINT",
+      "TRELLIS_ARTIFACT_REGION",
+      "AWS_ACCESS_KEY_ID",
+      "AWS_SECRET_ACCESS_KEY",
+      "AWS_REGION",
+      "AWS_ALLOW_HTTP"
+    ],
+    "configurationCandidate": {
+      "TRELLIS_ARTIFACT_BUCKET": "trellis-full-d1-20261009-v1",
+      "TRELLIS_ARTIFACT_PREFIX": "trellis",
+      "TRELLIS_ARTIFACT_ENDPOINT": "http://127.0.0.1:9000",
+      "TRELLIS_ARTIFACT_REGION": "us-east-1",
+      "AWS_REGION": "us-east-1",
+      "AWS_ALLOW_HTTP": "true",
+      "credentialSource": "Root-selected private existing local object-store credentials; not yet supplied/verified"
+    },
+    "endpointStatus": "9000 is checked-in managed-single-cell MinIO port; actual live instance not inspected",
+    "durability": "checked-in MinIO service mounts persistent named minio-data volume; actual selectedcohortvolume/bucket/credentials stillmustbecaptured",
+    "immutableSemantics": "existing shared conditional create: same-key/same-bytes retry accepted, different bytes refused; existinggetreadsoriginalref"
+  },
+  "filesystemPriorArt": {
+    "maintainedPrimitive": "object_store0.11::local::LocalFileSystem",
+    "siblingUsage": "formspec-server/src/composition.rs configured_attachment_store LocalFilesystem branch",
+    "TrellisInjection": "S3CompatibleArtifactStore::from_object_store_for_test can inject an ObjectStore through public DI, preserves common immutable/read helpers",
+    "exactGap": "No maintained Trellis CLI filesystem or PostgreSQL artifact adapter/config selection exists. Current qualified binary cannot select LocalFileSystem from env. Using the sibling primitive requires a thin startup selection change and qualification; no bespoke filesystem/SQL artifact engine needed."
+  },
+  "recommendation": "Use already-maintained S3-compatible CLI path with Root-selected local MinIO persistent volume/bucket/credentials if available. Otherwise choose thin LocalFileSystem startup composition using maintained object_store; do not claim current memory artifacts durable.",
+  "missingOperationalFacts": [
+    "actual local persistent S3 endpoint and retainedvolume identity",
+    "private credentials source",
+    "bucket creation/read/write/conditional-create receipts",
+    "Root-selected immutable prefix",
+    "pinned artifact config added to narrow launcher environment"
+  ],
+  "acceptance": [
+    "Publish/acknowledge one export and retain checkpoint/ref/ZIPdigest/bytes",
+    "Restart onlynewTrellis18198 withsamePG/profile/key/artifactconfig underRootslot",
+    "Fetch pinned originalcheckpoint throughmaintainedclient (Readgrant)",
+    "OriginalZIPbytes/digestmatch; owningverify_export_zip passes",
+    "Same-keyidenticalimmutablewriteaccepted; changedbytesrefused; originalreadunchanged"
+  ],
+  "notProof": [
+    "PGeventpersistence alone",
+    "newexportrebuiltafterrestart",
+    "historicalobject-store-probe.json write/read withoutcurrentendpoint/volume",
+    "in-memory objectstore tests"
+  ],
+  "evidence": [
+    {
+      "path": "/private/tmp/trellis-native-provenance-qualified-v1-20261009/trellis/crates/trellis-server/src/state.rs",
+      "sha256": "440872a0ddbb9fb7ee663ded420db48fbd79c3516045a9d4f410cbec023e534c"
+    },
+    {
+      "path": "/private/tmp/trellis-native-provenance-qualified-v1-20261009/trellis/crates/trellis-server-ports/src/lib.rs",
+      "sha256": "9044bbb611e496df7a1b46d00779d9d339e289253b15e9412ee1bea2f1bc8a21"
+    },
+    {
+      "path": "/private/tmp/trellis-native-provenance-qualified-v1-20261009/stack-common/crates/stack-common-object-store/src/lib.rs",
+      "sha256": "640fcf7617d43af2ccf177d24fa6e75a274b7fab842cad1d1e383f9ab42e640f"
+    },
+    {
+      "path": "/private/tmp/trellis-native-provenance-qualified-v1-20261009/formspec-server/crates/formspec-server/src/composition.rs",
+      "sha256": "b4bc0563c05fd7696d292e9db7128adae6b1ac6e08a20b6b48e6351eb89edf67"
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "status": "pairedstaticapproved; noDockerS3orstartupcallsrun",
+  "selected": "RootauthorizedexistingtaskRustFSrestart/sameimage+volumes/newbucketprefix; executionwindowstillrequired",
+  "proposalSha256": "8f72c95c721026fd245bb7f272709c63ce582145fb26e8b29e7595e3a8e757af",
+  "artifacts": [
+    {
+      "path": "trellis-rustfs-recovery-persistent-startup-proposal-v1.json",
+      "sha256": "8f72c95c721026fd245bb7f272709c63ce582145fb26e8b29e7595e3a8e757af"
+    },
+    {
+      "path": "trellis-rustfs-recovery-static-check-v1.json",
+      "sha256": "45b8d877f026fc073de4ebbd5c51ac1e494964a8cf45562d813793b1b2324009"
+    },
+    {
+      "path": "trellis-rustfs-recovery-before-code-review-v1.md",
+      "sha256": "e31cf76e0126d8cd9895469f551b29cf0d448d8f3a5019ea74e81713c79c2963"
+    },
+    {
+      "path": "trellis-rustfs-recovery-before-architecture-review-v1.md",
+      "sha256": "80af1a7f1f5e60f00867e773d77d5cff71202376fc74d4483561b772ee62da1d"
+    }
+  ],
+  "requiredExecutionBounds": {
+    "externalRunnerOverallSeconds": 300,
+    "externalOutputLogBytes": 33554432,
+    "scriptDockerOutputCheck": "postcapture1MiB; notstreamingmemorycap",
+    "perCallBounds": "Docker30s/S3connect2s/read5s/SDK1attempt/readiness20attempts1ssleep"
+  },
+  "python": "/Users/mikewolfd/.pyenv/versions/3.12.9/bin/python3",
+  "recoveryScript": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/recover-rustfs-reviewed-v1.py",
+  "recoveryArgs": [
+    "--execute"
+  ],
+  "successfulRecoveryReceipt": "privateUUIDsubdirectoryqualification.json returnedbyoperator; retainfailureoutputsandtransition",
+  "persistentStartupScript": "/Users/mikewolfd/Library/Application Support/Formspec Stack/local-demos/trellis-full-d1-20261009-v1/start-trellis-persistent-reviewed-v5.py",
+  "startupPrerequisite": "actualpassingSDKqualificationreceipt+itsdigest; exactartifact/DB/key/profile/grants/binarypins; initialemptygrantsrequireexplicitallow-deny-all-startup",
+  "preservation": "OperatorhasnoDelete/objectoverwriteonoldbucket/volume/containerrecreation orautostopcleanup; onlynewbucketandisolatedUUIDkeywritten. StartingselectedoldcontainerchangesstoppedstatebyRootauthorization.",
+  "providerSemantics": "Bothidenticalandconflictingconditionalretriesmustraw412andoriginalexactGET. Identicaladapteracceptanceisbytecomparison, notproviderwriteacknowledgement. ActualmaintainedRustpathstillmustbequalified.",
+  "pending": [
+    "Rootexecutionwindow",
+    "actualRustFShealth/newbucket/conditionalproviderresults",
+    "actual18198persistentstartup/migrations",
+    "freshcase/currenttoken/exactgrants/exporter",
+    "actualacknowledgedZIP\u2192restart\u2192SAMEcheckpoint/bytehash/owningverify_export_zip"
+  ],
+  "credentialValuesLogged": false
+}

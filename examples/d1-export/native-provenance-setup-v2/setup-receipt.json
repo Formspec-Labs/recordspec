@@ -1,0 +1,62 @@
+{
+  "commands": [
+    {
+      "argv": [
+        "cargo",
+        "update",
+        "--offline",
+        "-p",
+        "jsonschema@0.46.8",
+        "--precise",
+        "0.46.1"
+      ],
+      "exitCode": 0
+    },
+    {
+      "argv": [
+        "cargo",
+        "update",
+        "--offline",
+        "-p",
+        "referencing@0.46.8",
+        "--precise",
+        "0.46.1"
+      ],
+      "exitCode": 0
+    },
+    {
+      "argv": [
+        "cargo",
+        "metadata",
+        "--offline",
+        "--locked",
+        "--format-version",
+        "1"
+      ],
+      "exitCode": 0
+    }
+  ],
+  "behavioralTestsRun": false,
+  "addedPackages": [
+    [
+      "jsonschema",
+      "registry+https://github.com/rust-lang/crates.io-index",
+      "0.46.1"
+    ],
+    [
+      "micromap",
+      "registry+https://github.com/rust-lang/crates.io-index",
+      "0.3.0"
+    ],
+    [
+      "referencing",
+      "registry+https://github.com/rust-lang/crates.io-index",
+      "0.46.1"
+    ]
+  ],
+  "removedPackages": [],
+  "startingLockSha256": "34de175327773ca900c0fb4552ef0adfc0105f3fb336fd9e54d53adda7c00b1b",
+  "resolvedLockSha256": "2aaa63aafcc7c12c11e80f9e9047c3797371f9097c66a3c9587baca2f755a2f1",
+  "policy": "Retain original0.45.1 branch; choose newhelper jsonschema/referencing0.46.1 matchingCoreowner lock. No broadupdate. Metadata only, finalindependentreview/nativequalificationpending.",
+  "startingLockRestored": true
+}

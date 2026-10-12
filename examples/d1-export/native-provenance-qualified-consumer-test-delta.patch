@@ -1,0 +1,35 @@
+--- a/crates/trellis-service-client/src/wos_ext.rs
++++ b/crates/trellis-service-client/src/wos_ext.rs
+@@ -139,8 +139,10 @@
+             "../../../fixtures/conformance/native-provenance-routing.json"
+         ))
+         .unwrap();
+-        let original = &fixture["payload"]["record"];
+-        let record: ProvenanceRecord = serde_json::from_value(original.clone()).unwrap();
++        let record: ProvenanceRecord = serde_json::from_value(fixture["payload"]["record"].clone()).unwrap();
++        // This helper accepts a typed record. Its original JSON follows the
++        // maintained serializer, which omits empty optional collections.
++        let original = serde_json::to_value(&record).unwrap();
+         let request = wos_provenance_append_request(
+             "case-1",
+             tenant(),
+@@ -151,7 +153,7 @@
+         )
+         .unwrap();
+         assert_eq!(request.event_type, WOS_NATIVE_PROVENANCE_EVENT_LITERAL);
+-        assert_eq!(&request.payload["record"], original);
++        assert_eq!(request.payload["record"], original);
+         assert_eq!(request.payload["record"]["event"], "original-entry-trigger");
+     }
+     #[test]
+--- a/fixtures/conformance/native-provenance-routing.json
++++ b/fixtures/conformance/native-provenance-routing.json
+@@ -3,7 +3,7 @@
+   "eventType": "wos.provenance.recorded",
+   "payload": {
+     "record": {
+-      "id": "prov_01h455vb4pex5vsknk084sn02q",
++      "id": "default_prov_01h455vb4pex5vsknk084sn02q",
+       "recordKind": "onEntry",
+       "timestamp": "2026-10-09T12:00:00Z",
+       "auditLayer": "facts",
