@@ -156,38 +156,74 @@ pub(crate) async fn evidence_members(
     let mut bodies = std::collections::BTreeSet::new();
     let mut aggregate = 0usize;
     for event in events {
-        let Some(profile) =
-            trellis_cddl::parse_external_attachment_profile(event.canonical_event()).map_err(
-                |error| StackError::conflict(format!("retained native profile invalid: {error}")),
-            )?
-        else {
+        let profile = trellis_cddl::parse_external_attachment_profile(event.canonical_event())
+            .map_err(|error| {
+                StackError::conflict(format!("retained native profile invalid: {error}"))
+            })?;
+        let (content_hash, bytes) = if let Some(profile) = &profile {
+            let bytes = state
+                .repository
+                .external_attachment_body(scope, &profile.content_hash)
+                .await?
+                .ok_or_else(|| {
+                    StackError::conflict("retained protected attachment body missing")
+                })?;
+            if bytes.len() as u64
+                != profile
+                    .original_byte_length
+                    .checked_add(16)
+                    .ok_or_else(|| StackError::conflict("attachment length overflow"))?
+            {
+                return Err(StackError::conflict(
+                    "retained native attachment length differs",
+                ));
+            }
+            (profile.content_hash, bytes)
+        } else if crate::event_summary(event)?.event_type == crate::completion::COMPLETION_EVENT {
+            let bytes = crate::completion::certificate_html(event)?;
+            let value =
+                decode_cbor_value(event.canonical_event()).map_err(crate::cbor_bad_request)?;
+            let extensions = integrity_cbor::map_lookup_map(
+                value
+                    .as_map()
+                    .ok_or_else(|| StackError::conflict("certificate map absent"))?,
+                "extensions",
+            )
+            .map_err(crate::cbor_bad_request)?;
+            let binding = integrity_cbor::map_lookup_map(extensions, ATTACHMENT_BINDING_EXTENSION)
+                .map_err(crate::cbor_bad_request)?;
+            let key = integrity_cbor::map_lookup_text(binding, "attachment_id")
+                .map_err(crate::cbor_bad_request)?;
+            if state
+                .artifact_store
+                .get(&trellis_server_ports::ArtifactRef::new(key))
+                .await?
+                .as_deref()
+                != Some(bytes.as_slice())
+            {
+                return Err(StackError::unavailable(
+                    "retained certificate artifact missing or changed",
+                ));
+            }
+            (crate::event_summary(event)?.content_hash, bytes)
+        } else {
             continue;
         };
-        let bytes = state
-            .repository
-            .external_attachment_body(scope, &profile.content_hash)
-            .await?
-            .ok_or_else(|| StackError::conflict("retained protected attachment body missing"))?;
         aggregate = aggregate
             .checked_add(bytes.len())
             .ok_or_else(|| StackError::conflict("attachment export size overflow"))?;
         if aggregate > 16 * 1024 * 1024
             || events.len() > 256
             || integrity_cbor::domain_separated_sha256(trellis_types::CONTENT_DOMAIN, &bytes)
-                != profile.content_hash
-            || bytes.len() as u64
-                != profile
-                    .original_byte_length
-                    .checked_add(16)
-                    .ok_or_else(|| StackError::conflict("attachment length overflow"))?
+                != content_hash
         {
             return Err(StackError::conflict(
                 "retained attachment body identity or export bound mismatch",
             ));
         }
-        if bodies.insert(profile.content_hash) {
+        if bodies.insert(content_hash) {
             members.push(ExportEvidenceMember::Payload {
-                content_hash: profile.content_hash,
+                content_hash,
                 bytes,
             });
         }

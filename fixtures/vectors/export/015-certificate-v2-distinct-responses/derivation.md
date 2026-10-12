@@ -1,0 +1,9 @@
+# V2 certificate with distinct response digests
+
+The maintained Rust test `completion_binds_two_distinct_signed_responses_in_one_certificate` generated these retained bytes with `TRELLIS_COMPLETION_V2_VECTOR_DIR` explicitly set to a new private output directory. It appends two controlled WOS signature affirmations through the normal server coordinator, with distinct signing-act, Source-signature, ceremony and response identifiers. Their response digests are respectively 32 bytes of `cc` and `dd`.
+
+The server creates one v2 certificate from the retained prefix. Indexed signer rows carry the respective digests, exact principals and timestamps; the aggregate response field is absent. The test independently verifies the full archive with the maintained WOS resolver, retains the certificate HTML from its bound committed event, and rebuilds the certificate append through `trellis_core::append_event`, requiring identical canonical and signed event bytes. Fixture inputs retain the generated timestamps, making replay from these committed bytes deterministic.
+
+The append fixture pins the authored preimage, canonical event, COSE signature, append head, certificate payload and HTML. The export fixture pins the actual ZIP and every member used to reconstruct it. `065-certificates-of-completion.cbor` is absent because its registered scope remains v1. Core fixture key `issuer-001` is public development material; this controlled test uses it for ledger and fixture operator signing. It establishes no agency or real operator authority. Default operator trust is explicitly unchecked; external registry selection remains independent.
+
+These are byte/protocol fixtures. They do not establish acceptance, custody or signature verification of actual Source response bytes, complete business-case evidence, current disclosure permission, or full D1 completion. Those remain owning product qualification gates.

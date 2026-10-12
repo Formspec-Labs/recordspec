@@ -1,0 +1,17 @@
+id = "export/015-certificate-v2-distinct-responses"
+op = "export"
+status = "active"
+description = "Rust-authored two-signing-event v2 certificate archive retains exact HTML, one combined attachment catalog, and no optional v1 certificate catalog."
+
+[coverage]
+tr_core = ["TR-CORE-018", "TR-CORE-021", "TR-CORE-062", "TR-CORE-063", "TR-CORE-183"]
+
+[inputs]
+ledger_state = "input-ledger-state.cbor"
+
+[expected]
+zip = "expected-export.zip"
+zip_sha256 = "6b6e4107ec21b53d15f42bbdf5ac418f1801519d7616112f981e3c918d7a1ea8"
+
+[derivation]
+document = "derivation.md"

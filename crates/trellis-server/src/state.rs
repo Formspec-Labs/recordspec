@@ -9,7 +9,9 @@ use async_trait::async_trait;
 use axum::http::header::AUTHORIZATION;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use stack_common_auth::{AccessTokenVerifier, JwtConfig, JwtVerifier, VerifiedAccessIdentity};
+#[cfg(test)]
+use stack_common_auth::JwtVerifier;
+use stack_common_auth::{AccessTokenVerifier, VerifiedAccessIdentity};
 use stack_common_error::{ErrorCode, StackError};
 use stack_common_http::idempotency::{
     HttpIdempotencyState, IdempotencyCall, IdempotencyClaim, IdempotencyDecision,
@@ -31,15 +33,17 @@ use trellis_server_ports::{
     ArtifactStore, EventAdmissionPolicy, S3CompatibleArtifactStore, S3ObjectConfig, ScopeAuthorizer,
 };
 
-use crate::admission::{AllowAllScopeAuthorizer, ScopedAllowlistScopeAuthorizer};
+#[cfg(test)]
+use crate::TrellisClaims;
+use crate::admission::AllowAllScopeAuthorizer;
 use crate::append::{AppendRunner, DefaultAppendRunner};
 use crate::artifacts::{BundleIndex, BundleIndexPort, InMemoryArtifactStore, ScopeLocks};
 use crate::composition::{EventTypeCatalog, default_admission_policy};
 use crate::event_repository::{
     EventRepository, InMemoryEventRepository, PostgresBundleIndex, PostgresEventRepository,
 };
-use crate::scope_startup::TrellisScopeAuthorizerStartupInputs;
-use crate::{ServerSigningKey, TenantHeaderMode, TrellisClaims};
+use crate::oidc_startup::StartupAuth;
+use crate::{ServerSigningKey, TenantHeaderMode};
 
 pub(crate) type ProfileExportVerifier = dyn Fn(&[u8]) -> bool + Send + Sync;
 
@@ -47,12 +51,14 @@ pub(crate) type ProfileExportVerifier = dyn Fn(&[u8]) -> bool + Send + Sync;
 #[derive(Clone)]
 enum Authentication {
     Unconfigured,
+    #[cfg(test)]
     LocalJwt(Arc<JwtVerifier<TrellisClaims>>),
     External(Arc<dyn AccessTokenVerifier>),
 }
 
 pub(crate) enum AuthenticatedRequest {
     Anonymous,
+    #[cfg(test)]
     LocalJwt(TrellisClaims),
     External(VerifiedAccessIdentity),
 }
@@ -61,6 +67,7 @@ impl AuthenticatedRequest {
     pub(crate) fn actor<'a>(&'a self, fallback: &'a str) -> &'a str {
         match self {
             Self::Anonymous => fallback,
+            #[cfg(test)]
             Self::LocalJwt(claims) => &claims.base.sub,
             Self::External(identity) => &identity.subject,
         }
@@ -75,6 +82,7 @@ impl AuthenticatedRequest {
 
     pub(crate) fn legacy_scopes(&self) -> Option<&[String]> {
         match self {
+            #[cfg(test)]
             Self::LocalJwt(claims) => Some(&claims.scopes),
             _ => None,
         }
@@ -84,6 +92,10 @@ impl AuthenticatedRequest {
 /// Cloneable Axum state for the Trellis service.
 #[derive(Clone)]
 pub struct TrellisServerState {
+    pub(crate) completion: Option<(
+        Arc<dyn crate::CompletionSelector>,
+        Arc<dyn crate::CompletionSigner>,
+    )>,
     pub(crate) external_attachment_recipients:
         Option<Arc<dyn crate::ExternalAttachmentRecipientSelector>>,
     pub(crate) external_attachment_random: Arc<dyn integrity_seam::SecureRandom>,
@@ -97,7 +109,7 @@ pub struct TrellisServerState {
     pub(crate) bundles: Arc<dyn BundleIndexPort>,
     pub(crate) scope_locks: Arc<ScopeLocks>,
     authentication: Authentication,
-    /// True when [`state_from_env`] used durable storage without `TRELLIS_PERMISSIVE_SCOPE_AUTH=1`.
+    /// True when startup selected current provider verification and exact resource grants.
     production_like_scope_posture: bool,
     /// True while the built-in [`AllowAllScopeAuthorizer`] from [`Self::new`] is still installed.
     scope_authorizer_allow_all: bool,
@@ -126,6 +138,7 @@ impl TrellisServerState {
         tenant_header_mode: TenantHeaderMode,
     ) -> Self {
         Self {
+            completion: None,
             external_attachment_recipients: None,
             external_attachment_random: Arc::new(integrity_seam::OsSecureRandom),
             repository,
@@ -144,6 +157,41 @@ impl TrellisServerState {
             event_type_catalog: Arc::new(EventTypeCatalog::default_stack()),
             profile_export_verifier: Arc::new(crate::composition::wos_profile_export_verified),
         }
+    }
+
+    /// Selects product completion/disclosure checks and a separate operator signer.
+    #[must_use]
+    pub fn with_completion(
+        mut self,
+        selector: Arc<dyn crate::CompletionSelector>,
+        signer: Arc<dyn crate::CompletionSigner>,
+    ) -> Self {
+        self.completion = Some((selector, signer));
+        self
+    }
+
+    pub(crate) async fn reserve_completion_request(
+        &self,
+        tenant: &TenantScope,
+        principal: &str,
+        scope: &str,
+        request: &trellis_service_client::CompletionRequest,
+    ) -> Result<(), StackError> {
+        let partition = serde_json::to_string(&(principal, tenant, scope, "completion"))
+            .map_err(|_| StackError::internal("completion replay partition failed"))?;
+        let body = serde_json::to_vec(request)
+            .map_err(|_| StackError::bad_request("completion trigger invalid"))?;
+        // Retain only the fingerprint. Never cache a completion locator: every
+        // replay must recheck selected case and field disclosure permissions.
+        self.replay_store
+            .check_or_record(
+                &NativeReplayScope(partition),
+                "",
+                &request.idempotency_key,
+                &hex::encode(integrity_cbor::sha256_bytes(&body)),
+            )
+            .await?;
+        Ok(())
     }
 
     /// Selects trusted recipient lookup for the closed protected transport.
@@ -198,6 +246,7 @@ impl TrellisServerState {
         self
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn with_jwt_verifier(mut self, verifier: JwtVerifier<TrellisClaims>) -> Self {
         self.authentication = Authentication::LocalJwt(Arc::new(verifier));
@@ -252,14 +301,13 @@ impl TrellisServerState {
         if self.scope_authorizer_allow_all {
             return Err(StackError::bad_request(
                 "trellis-server refuses to build router: production_like_scope_posture requires \
-                 a scoped ScopeAuthorizer (JWT scopes allowlist), not AllowAll—set \
-                 TRELLIS_PERMISSIVE_SCOPE_AUTH=1 for explicit dev bypass (TWREF-022).",
+                 an explicit resource ScopeAuthorizer rather than AllowAll.",
             ));
         }
         if matches!(&self.authentication, Authentication::Unconfigured) {
             return Err(StackError::bad_request(
                 "trellis-server refuses to build router: production_like_scope_posture requires \
-                 TRELLIS_JWT_HS256_SECRET / jwt_verifier or injected access_token_verifier (TWREF-022).",
+                 an injected access-token verifier.",
             ));
         }
         Ok(())
@@ -291,6 +339,7 @@ impl TrellisServerState {
             })?;
         match &self.authentication {
             Authentication::Unconfigured => unreachable!("unconfigured mode returned above"),
+            #[cfg(test)]
             Authentication::LocalJwt(verifier) => {
                 verifier.verify(token).map(AuthenticatedRequest::LocalJwt)
             }
@@ -491,12 +540,12 @@ fn header_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 ///
 /// Always required:
 /// - `TRELLIS_SIGNING_KEY_COSE_PATH`
+/// - `TRELLIS_OIDC_CONFIG_FILE` (strict current provider and exact resource grants)
 ///
 /// Optional:
 /// - `TRELLIS_STORAGE=memory` (in-memory repository; skips `TRELLIS_DATABASE_URL`)
-/// - `TRELLIS_PERMISSIVE_SCOPE_AUTH=1` (durable storage: keep `AllowAllScopeAuthorizer`; optional JWT)
-/// - `TRELLIS_JWT_HS256_SECRET` (**required** for durable storage unless `TRELLIS_PERMISSIVE_SCOPE_AUTH=1`; optional otherwise)
 /// - `TRELLIS_TENANT_HEADER_SET=wos|formspec|mixed`
+/// - `TRELLIS_WOS_COMPLETION_CONFIG_FILE` and `TRELLIS_COMPLETION_OPERATOR_CONFIG_FILE` (paired)
 /// - `TRELLIS_SIGNING_KEY_VALID_TO_UNIX_SECS`
 /// - `TRELLIS_ARTIFACT_BUCKET`
 /// - `TRELLIS_ARTIFACT_PREFIX`
@@ -504,10 +553,14 @@ fn header_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 /// - `TRELLIS_ARTIFACT_REGION`
 ///
 /// # Errors
-/// Returns an error when config is missing or backend setup fails.
+/// Returns an error when OIDC configuration is missing or invalid, legacy auth
+/// environment settings are supplied, or signing-key/backend setup fails.
 pub async fn state_from_env() -> Result<TrellisServerState, StackError> {
-    let scope_inputs = TrellisScopeAuthorizerStartupInputs::from_env();
-    let trellis_storage_is_memory = scope_inputs.storage_is_memory;
+    // Qualify required authentication before reading signing keys or opening storage.
+    let authentication = StartupAuth::from_env()?;
+    let completion =
+        crate::completion_startup::StartupCompletion::from_env(authentication.tenant_scope())?;
+    let trellis_storage_is_memory = matches!(env::var("TRELLIS_STORAGE").as_deref(), Ok("memory"));
 
     let signing_key_path = env::var("TRELLIS_SIGNING_KEY_COSE_PATH")
         .map_err(|_| StackError::bad_request("TRELLIS_SIGNING_KEY_COSE_PATH is required"))?;
@@ -563,47 +616,11 @@ pub async fn state_from_env() -> Result<TrellisServerState, StackError> {
         state = state.with_artifact_store(artifact_store);
     }
 
-    let jwt_secret = env::var("TRELLIS_JWT_HS256_SECRET")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
-
-    if trellis_storage_is_memory || scope_inputs.permissive_scope_auth {
-        if let Some(secret) = jwt_secret {
-            state = state.with_jwt_verifier(JwtVerifier::from_hs256(
-                trellis_jwt_config(),
-                secret.as_bytes(),
-            ));
-        }
-        return Ok(state);
-    }
-
-    let Some(secret) = jwt_secret else {
-        return Err(StackError::bad_request(
-            "TRELLIS_JWT_HS256_SECRET is required when using durable storage without \
-             TRELLIS_PERMISSIVE_SCOPE_AUTH=1 (TWREF-022). For dev/demo only, set \
-             TRELLIS_PERMISSIVE_SCOPE_AUTH=1 to keep AllowAll scope authorization.",
-        ));
-    };
-
-    state = state
-        .with_jwt_verifier(JwtVerifier::from_hs256(
-            trellis_jwt_config(),
-            secret.as_bytes(),
-        ))
-        .with_scope_authorizer(Arc::new(ScopedAllowlistScopeAuthorizer));
-    Ok(state.with_production_like_scope_posture(true))
-}
-
-#[must_use]
-fn trellis_jwt_config() -> JwtConfig {
-    JwtConfig {
-        algorithm: jsonwebtoken::Algorithm::HS256,
-        validate_exp: true,
-        validate_iss: None,
-        validate_aud: None,
-        leeway_secs: 30,
-    }
+    let state = authentication.apply(state);
+    Ok(match completion {
+        Some(completion) => completion.apply(state),
+        None => state,
+    })
 }
 
 fn artifact_store_from_env() -> Option<Arc<dyn ArtifactStore<Error = StackError>>> {

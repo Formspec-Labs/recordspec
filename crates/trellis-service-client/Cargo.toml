@@ -15,6 +15,7 @@ stack-common-auth = { path = "../../../stack-common/crates/stack-common-auth" }
 stack-common-error = { path = "../../../stack-common/crates/stack-common-error", default-features = false }
 stack-common-http = { path = "../../../stack-common/crates/stack-common-http" }
 trellis-types = { path = "../trellis-types" }
+tokio = { version = "1", features = ["time"] }
 utoipa = "5"
 wos-events = { path = "../../../work-spec/crates/wos-events" }
 

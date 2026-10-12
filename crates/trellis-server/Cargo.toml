@@ -22,13 +22,13 @@ hkdf = "0.12"
 http = "1"
 integrity-bundle = { path = "../../../integrity-stack/crates/integrity-bundle" }
 integrity-cbor = { path = "../../../integrity-stack/crates/integrity-cbor", features = ["json"] }
+integrity-cose = { path = "../../../integrity-stack/crates/integrity-cose" }
 integrity-verify = { path = "../../../integrity-stack/crates/integrity-verify" }
-jsonwebtoken = "9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sqlx = { version = "0.8", features = ["postgres", "runtime-tokio-rustls"] }
 sha2 = "0.10"
-stack-common-auth = { path = "../../../stack-common/crates/stack-common-auth" }
+stack-common-auth = { path = "../../../stack-common/crates/stack-common-auth", features = ["oidc"] }
 stack-common-error = { path = "../../../stack-common/crates/stack-common-error" }
 stack-common-http = { path = "../../../stack-common/crates/stack-common-http" }
 stack-common-idempotency = { path = "../../../stack-common/crates/stack-common-idempotency", default-features = false, features = ["replay"] }
@@ -52,7 +52,11 @@ utoipa = "5"
 wos-events = { path = "../../../work-spec/crates/wos-events" }
 
 [dev-dependencies]
+jsonwebtoken = "9"
 tempfile = "3"
 integrity-seam = { path = "../../../integrity-stack/crates/integrity-seam" }
 tower = { version = "0.5", features = ["util"] }
 wos-events = { path = "../../../work-spec/crates/wos-events" }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["fs", "process"] }

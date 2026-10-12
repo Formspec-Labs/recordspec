@@ -188,6 +188,7 @@ impl<'a> AppendCoordinator<'a> {
             idempotency_key: command.idempotency_key.as_bytes(),
             content,
             authored_at: now_timestamp()?,
+            extensions: Value::Null,
         })?;
         let mut capture = CapturingLedgerStore::default();
         let artifacts =
@@ -297,10 +298,10 @@ pub fn port_compute_context(body: &SubstrateAppendBody) -> ComputeContext {
 }
 
 #[derive(Clone, Debug)]
-struct EventContent {
-    payload_bytes: Vec<u8>,
-    content_hash: [u8; 32],
-    nonce: [u8; 12],
+pub(crate) struct EventContent {
+    pub(crate) payload_bytes: Vec<u8>,
+    pub(crate) content_hash: [u8; 32],
+    pub(crate) nonce: [u8; 12],
 }
 
 impl EventContent {
@@ -321,7 +322,7 @@ impl EventContent {
     }
 }
 
-fn derive_payload_inline_nonce(
+pub(crate) fn derive_payload_inline_nonce(
     idempotency_key: &[u8],
     payload_bytes: &[u8],
 ) -> Result<[u8; 12], StackError> {
@@ -340,17 +341,20 @@ fn derive_payload_inline_nonce(
     Ok(nonce)
 }
 
-struct AuthoredEventInput<'a> {
-    scope: &'a [u8],
-    sequence: u64,
-    prev_hash: Option<[u8; 32]>,
-    event_type: &'a str,
-    idempotency_key: &'a [u8],
-    content: EventContent,
-    authored_at: TrellisTimestamp,
+pub(crate) struct AuthoredEventInput<'a> {
+    pub(crate) scope: &'a [u8],
+    pub(crate) sequence: u64,
+    pub(crate) prev_hash: Option<[u8; 32]>,
+    pub(crate) event_type: &'a str,
+    pub(crate) idempotency_key: &'a [u8],
+    pub(crate) content: EventContent,
+    pub(crate) authored_at: TrellisTimestamp,
+    pub(crate) extensions: Value,
 }
 
-fn build_authored_event(input: AuthoredEventInput<'_>) -> Result<AuthoredEvent, StackError> {
+pub(crate) fn build_authored_event(
+    input: AuthoredEventInput<'_>,
+) -> Result<AuthoredEvent, StackError> {
     let header = crate::text_map(vec![
         (
             "event_type",
@@ -397,7 +401,7 @@ fn build_authored_event(input: AuthoredEventInput<'_>) -> Result<AuthoredEvent, 
             "idempotency_key",
             Value::Bytes(input.idempotency_key.to_vec()),
         ),
-        ("extensions", Value::Null),
+        ("extensions", input.extensions),
     ])?;
     let bytes = crate::encode_value(&authored)?;
     Ok(AuthoredEvent::new(bytes))

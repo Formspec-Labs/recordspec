@@ -336,6 +336,7 @@ Registered extension identifiers:
 | `EventPayload.extensions` | `trellis.evidence-attachment-binding.v1` | 1 | Evidence attachment-binding record from ADR 0072 / Formspec Respondent Ledger §6.9. `PayloadExternal` names the attachment ciphertext bytes; this extension carries the binding metadata. Reject-if-unknown-at-version. |
 | `EventPayload.extensions` | `trellis.payload-protection-profile.v1` | 1 | Core profile identifier with closed text value `"trellis.external-attachment-suite1.v1"`; explicitly selects native external attachment encryption/open rules in §9.4.1. Reject-if-unknown-at-version; no implicit selection for previously retained external records. |
 | `EventPayload.extensions` | `trellis.certificate-of-completion.v1` | 1 | Certificate-of-completion record per ADR 0007: binds a presentation artifact (PDF or HTML) to the underlying signing chain via ADR 0072 attachment lineage and `signing_events` digests. Payload shape `CertificateOfCompletionPayload` (ADR 0007 §"Wire shape"). Verifier obligations in §19 step 6c. Reject-if-unknown-at-version. |
+| `EventPayload.extensions` | `trellis.certificate-of-completion.v2` | 1 | Completion certificate per ADR 0016. Preserves ADR 0007 outer shape; every `chain_summary.signer_display[i].response_ref` is a required 32-byte digest bound to `signing_events[i]`, with no aggregate response_ref. Explicit version decode, unique signing-event hashes and every-row proof/principal/timestamp verification are required. Reject-if-unknown-at-version. |
 | `EventPayload.extensions` | `trellis.user-content-attestation.v1` | 1 | User-content attestation primitive per ADR 0010: one user (non-operator; Companion §6.4) attesting to one in-chain content event with a declared `signing_intent` URI (RFC 3986; semantics owned by WOS Signature Profile §1.3 / PLN-0380). Binds the host event by hash + position (`attested_event_hash` + `attested_event_position`), the attestor's identity-attestation event (`identity_attestation_ref`), and the attestation timestamp (`attested_at`, exact equality with envelope `authored_at`). Payload shape `UserContentAttestationPayload` (§28). Verifier obligations in §19 step 6d under domain tag `trellis-user-content-attestation-v1` (§9.8). Reject-if-unknown-at-version. |
 | `EventPayload.extensions` | `trellis.supersedes-chain-id.v1` | 1 | Cross-chain supersession linkage per stack ADR 0066: payload shape `SupersedesChainIdPayload` (§28) carries `chain_id` and `checkpoint_hash` for the superseded chain (hash-anchored; verifier resolves linkage at bundle composition time). Map key in `EventPayload.extensions` is this registered identifier. Reject-if-unknown-at-version. Traceability: TR-CORE-169. |
 | `EventPayload.extensions` | `trellis.rkaf-finding.v1` | 1 | `rkaf:Finding` (PKAF ADR-0093) anchoring binding per ADR 0012. Payload shape `RkafFindingPayload` (ADR 0012 §"Wire shape"); records one PKAF Finding (detection by a BVR / lint rule / validator) as an in-chain event extension. The host event's `trellis-event-v1` COSE_Sign1 + Merkle inclusion IS the anchor (no Finding-specific signature; no new domain-separation tag — ADR 0012 §"Decision" R3). Verifier obligations in §19 step 6f under the closed-taxonomy snapshot keyed by the payload's `pkaf_version`. PKAF §4.6 anchor type URI `urn:rkaf:anchor:trellis/1`; URN-form wire-canonical anchor IRI shape per ADR 0012 §"Anchor IRI resolution". Reject-if-unknown-at-version. Traceability: TR-CORE-178. |
@@ -1997,7 +1998,27 @@ VERIFY(E) -> VerificationReport
    `erasure_evidence_catalog_digest_mismatch`. The catalog is performance
    convenience for auditor UX; exporters who omit it are conformant.
 
-6c. Certificate-of-completion processing. For each event e whose
+6c. Certificate-of-completion processing. V1 keeps its registered interpretation below.
+   V2 (`trellis.certificate-of-completion.v2`, ADR 0016) uses the same outer
+   payload, attachment, timestamp and operator-attestation rules, with a required
+   per-row `signer_display[i].response_ref` instead of aggregate `response_ref`.
+   V2 MUST reject missing/null row digests, duplicate signing-event hashes,
+   aggregate response_ref, or ambiguous v1/v2 dispatch. For EVERY indexed
+   signing event, the selected consumer resolver MUST return a readable response
+   proof and principal; its digest, principal and exact event timestamp MUST
+   match that row. Missing or unrecognized proof fails `signing_event_unresolved`;
+   malformed digest fails `malformed_response_digest`; wrong digest fails
+   `response_ref_mismatch`. A matching row cannot compensate for another row's
+   failure. External operator trust MUST allow the exact certificate event
+   purpose. V2 does not emit the optional registered v1 065 catalog.
+   V2 supports only covered_claims tags `signer_count`, `principal_ref`,
+   `signed_at`, and `response_ref`, with meanings defined in ADR 0016.
+   Unknown tags fail `certificate_covered_claim_unknown`; empty or recognized
+   tags do not weaken mandatory checks. Status and impact strings outside the
+   enumerated literals fail `certificate_enum_extension_unknown` while the
+   normative extension registries remain empty.
+
+   For registered v1, process each event e whose
    EventPayload.extensions carries `trellis.certificate-of-completion.v1`
    (§6.7; payload shape ADR 0007 §"Wire shape"): the verifier MUST execute
    the **8-step certificate-of-completion checklist** defined normatively

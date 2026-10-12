@@ -1,17 +1,17 @@
 // Rust guideline compliant 2026-02-21
-//! Deployment-volatile scope-authorizer policies.
+//! Explicit programmatic scope-authorizer fixtures.
 //!
-//! Concrete event admission adapters live in `trellis-admission-wos` and
-//! `trellis-admission-formspec`; they are wired through `crate::composition`,
-//! the only Trellis-side module that imports them. After DI-001/DI-002 this
-//! file only carries the scope authorizers (`AllowAllScopeAuthorizer`,
-//! `ScopedAllowlistScopeAuthorizer`) — they remain here because their
-//! posture depends on JWT verifier wiring in `state.rs` rather than on
-//! producer-specific admission vocabulary.
+//! Normal startup installs current deployment grants from `oidc_startup`.
+//! The allow-all adapter supports explicit in-memory host composition; router
+//! validation refuses it with external authentication or production posture.
+//! The JWT scope adapter exists only for isolated unit-test fixtures.
 
 use async_trait::async_trait;
+#[cfg(test)]
 use axum::http::StatusCode;
-use stack_common_error::{ErrorCode, StackError};
+#[cfg(test)]
+use stack_common_error::ErrorCode;
+use stack_common_error::StackError;
 use trellis_server_ports::{AuthorizedScope, ScopeAuthorization, ScopeAuthorizer};
 
 #[derive(Debug, Clone, Copy)]
@@ -29,10 +29,12 @@ impl ScopeAuthorizer for AllowAllScopeAuthorizer {
     }
 }
 
-/// Enforces [`ScopeAuthorization::jwt_scopes`] against the URL path scope (production-like TWREF-022).
+/// Checks fixture JWT scopes against the requested scope.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ScopedAllowlistScopeAuthorizer;
 
+#[cfg(test)]
 #[async_trait]
 impl ScopeAuthorizer for ScopedAllowlistScopeAuthorizer {
     type Error = StackError;
@@ -68,7 +70,7 @@ impl ScopeAuthorizer for ScopedAllowlistScopeAuthorizer {
     }
 }
 
-// Legacy/dev modes preserve their declared scope posture, not external identity grants.
+// Explicit fixtures return the requested scope; normal startup resolves current grants.
 fn legacy_permit(request: &ScopeAuthorization<'_>) -> AuthorizedScope {
     AuthorizedScope {
         principal: request.actor.to_string(),

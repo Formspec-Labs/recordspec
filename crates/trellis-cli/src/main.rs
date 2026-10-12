@@ -1,5 +1,5 @@
 // Rust guideline compliant 2026-02-21
-//! Fixture-oriented CLI for Trellis smoke checks and export verification.
+//! Trellis smoke checks, manual completion and exact certificate extraction.
 
 #![forbid(unsafe_code)]
 
@@ -39,7 +39,7 @@ fn main() {
 }
 
 fn usage_top_level() -> String {
-    "usage: trellis-cli <append-001|append-002|verify-001|verify-002|verify-export <bundle.zip>>\n\
+    "usage: trellis-cli <seal-completion|certificate|append-001|append-002|verify-001|verify-002|verify-export <bundle.zip> [--certificate-authorities <registry.json>]>\n\
      \n\
      Fixture commands mirror a small smoke subset of the Trellis append corpus.\n\
      `verify-export` verifies a Trellis/WOS export ZIP through trellis-verify-wos.\n\
@@ -62,6 +62,8 @@ fn dispatch_command(args: &[String], command: &str) -> Result<(), String> {
         "verify-001" => verify_fixture_command(&FIXTURE_001),
         "verify-002" => verify_fixture_command(&FIXTURE_002),
         "verify-export" => verify_export_command(args),
+        "seal-completion" => seal_completion_command(args),
+        "certificate" => certificate_command(args),
         _ => Err(format!("unknown command `{command}`")),
     }
 }
@@ -108,7 +110,24 @@ fn verify_export_command(args: &[String]) -> Result<(), String> {
         .ok_or_else(|| "usage: trellis-cli verify-export <bundle.zip>".to_string())?;
     let bytes = fs::read(path)
         .map_err(|error| format!("failed to read export bundle `{path}`: {error}"))?;
-    let report = trellis_verify_wos::verify_export_zip(&bytes);
+    let report = match args.get(3).map(String::as_str) {
+        None => trellis_verify_wos::verify_export_zip(&bytes),
+        Some("--certificate-authorities") if args.len() == 5 => {
+            let registry_bytes = fs::read(&args[4]).map_err(|e| format!("failed to read external certificate authority registry: {e}"))?;
+            let registry = trellis_verify_wos::certificate_authorities_from_json(&registry_bytes)?;
+            trellis_verify_wos::verify_export_zip_with_certificate_authorities(&bytes, &registry)
+        }
+        _ => return Err("usage: trellis-cli verify-export <bundle.zip> [--certificate-authorities <registry.json>]".into()),
+    };
+    for certificate in &report.trellis.certificates_of_completion {
+        println!(
+            "certificate={} operator_authority={:?} failures={:?}",
+            certificate.certificate_id, certificate.attestation_authority, certificate.failures
+        );
+    }
+    for warning in &report.trellis.warnings {
+        println!("warning={warning:?}");
+    }
     let trellis_failures = report.trellis.event_failures.len()
         + report.trellis.checkpoint_failures.len()
         + report.trellis.proof_failures.len();
@@ -132,6 +151,131 @@ fn verify_export_command(args: &[String]) -> Result<(), String> {
             "export verification failed with {failures} failure finding(s)"
         ))
     }
+}
+
+fn seal_completion_command(args: &[String]) -> Result<(), String> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct ClientConfig {
+        endpoint: String,
+        tenant: stack_common_http::tenant::TenantScope,
+        bearer_token_file: String,
+        caller_bearer_token_file: Option<String>,
+    }
+    if args.len() != 5 {
+        return Err(
+            "usage: trellis-cli seal-completion <client-config.json> <scope> <request.json>".into(),
+        );
+    }
+    let config: ClientConfig = serde_json::from_slice(&read_bounded(&args[2], 32 * 1024)?)
+        .map_err(|_| "invalid completion client configuration")?;
+    let request: trellis_service_client::CompletionRequest =
+        serde_json::from_slice(&read_bounded(&args[4], 32 * 1024)?)
+            .map_err(|_| "invalid closed completion request")?;
+    request.validate().map_err(|e| e.to_string())?;
+    // A single manual call uses a token independently acquired by the caller.
+    // The server verifies current identity/permissions; no CLI key or closure claim is accepted.
+    let token_bytes = read_bounded(&config.bearer_token_file, 16 * 1024)?;
+    let token = std::str::from_utf8(&token_bytes)
+        .map_err(|_| "invalid bearer token file")?
+        .trim();
+    let caller_authorization = config
+        .caller_bearer_token_file
+        .as_ref()
+        .map(|path| {
+            let bytes = read_bounded(path, 8 * 1024)?;
+            let token = std::str::from_utf8(&bytes)
+                .map_err(|_| "invalid caller bearer token file")?
+                .trim();
+            let authorization = format!("Bearer {token}");
+            trellis_service_client::validate_completion_caller_authorization(&authorization)
+                .map_err(|_| "invalid caller bearer token file")?;
+            Ok::<_, String>(authorization)
+        })
+        .transpose()?;
+    let client = trellis_service_client::TrellisServiceClient::new(
+        trellis_service_client::TrellisServiceClientConfig::new(
+            config.endpoint,
+            stack_common_http::tenant::HeaderConfig::wos(),
+        )
+        .with_service_bearer_token(token),
+    )
+    .map_err(|_| "completion HTTP client configuration failed")?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| "completion runtime unavailable")?;
+    let result = runtime
+        .block_on(async {
+            if let Some(authorization) = caller_authorization.as_deref() {
+                client
+                    .seal_completion_with_caller_authorization(
+                        &args[3],
+                        &config.tenant,
+                        &request,
+                        authorization,
+                    )
+                    .await
+            } else {
+                client
+                    .seal_completion(&args[3], &config.tenant, &request)
+                    .await
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&result).map_err(|_| "completion receipt encoding failed")?
+    );
+    Ok(())
+}
+
+fn certificate_command(args: &[String]) -> Result<(), String> {
+    if !matches!(args.len(), 7 | 9)
+        || args[3] != "--certificate-id"
+        || args[5] != "--out"
+        || (args.len() == 9 && args[7] != "--certificate-authorities")
+    {
+        return Err("usage: trellis-cli certificate <bundle.zip> --certificate-id <id> --out <certificate.html> [--certificate-authorities <registry.json>]".into());
+    }
+    let zip = read_bounded(&args[2], 16 * 1024 * 1024)?;
+    let registry = if args.len() == 9 {
+        Some(trellis_verify_wos::certificate_authorities_from_json(
+            &read_bounded(&args[8], 32 * 1024)?,
+        )?)
+    } else {
+        None
+    };
+    let certificate =
+        trellis_verify_wos::certificate_html_from_export(&zip, &args[4], registry.as_ref())?;
+    use std::io::Write;
+    let mut output = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&args[6])
+        .map_err(|_| "certificate output must be a new writable file")?;
+    output
+        .write_all(&certificate.bytes)
+        .map_err(|_| "certificate output write failed")?;
+    println!(
+        "retained_html_bytes={} operator_authority={:?}",
+        certificate.bytes.len(),
+        certificate.operator_authority
+    );
+    Ok(())
+}
+
+fn read_bounded(path: &str, maximum: usize) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let file = fs::File::open(path).map_err(|_| "requested input file is unavailable")?;
+    let mut bytes = Vec::new();
+    file.take(maximum as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "requested input file is unreadable")?;
+    if bytes.len() > maximum {
+        return Err("requested input file exceeds limit".into());
+    }
+    Ok(bytes)
 }
 
 fn fixture_inputs(fixture: &FixtureCase) -> Result<(Vec<u8>, Vec<u8>), String> {

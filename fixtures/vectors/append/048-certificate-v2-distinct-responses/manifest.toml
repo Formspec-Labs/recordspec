@@ -1,0 +1,22 @@
+id = "append/048-certificate-v2-distinct-responses"
+op = "append"
+status = "active"
+description = "One v2 certificate binds two distinct retained WOS signing-event response digests, with mandatory per-row response_ref and no aggregate response_ref."
+
+[coverage]
+tr_core = ["TR-CORE-018", "TR-CORE-021", "TR-CORE-030", "TR-CORE-031", "TR-CORE-183"]
+
+[inputs]
+signing_key = "../../_keys/issuer-001.cose_key"
+authored_event = "input-author-event-hash-preimage.cbor"
+certificate_payload = "input-certificate-payload.cbor"
+presentation_artifact = "presentation-artifact.bin"
+
+[expected]
+author_event_hash = "author-event-hash.bin"
+canonical_event = "expected-event-payload.cbor"
+signed_event = "expected-event.cbor"
+append_head = "expected-append-head.cbor"
+
+[derivation]
+document = "derivation.md"

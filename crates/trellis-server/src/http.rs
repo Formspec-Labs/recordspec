@@ -55,6 +55,10 @@ pub fn router(state: TrellisServerState) -> Result<Router, StackError> {
         .route("/openapi.json", get(crate::openapi::openapi_json))
         .route("/v1/scopes/{scope}/events", append)
         .route(
+            "/v1/scopes/{scope}/completion",
+            post(seal_completion).layer(axum::extract::DefaultBodyLimit::max(32 * 1024)),
+        )
+        .route(
             "/v1/scopes/{scope}/accepted-attachments",
             accepted_attachments,
         )
@@ -78,6 +82,36 @@ pub fn router(state: TrellisServerState) -> Result<Router, StackError> {
         )
         .with_state(state)
         .layer(http_layer))
+}
+
+#[utoipa::path(post, path="/v1/scopes/{scope}/completion",
+    params(("scope"=String,Path,description="Authorized ledger scope"), ("idempotency-key"=String,Header,description="Must match closed request")),
+    request_body=trellis_service_client::CompletionRequest,
+    responses((status=201,description="Certificate and archive retained",body=SubstrateAppendResult),(status=400,description="Closed trigger refused"),(status=401,description="Current authentication refused"),(status=403,description="Current permission refused"),(status=409,description="Snapshot or replay conflict"),(status=503,description="Composition not selected or dependency unavailable")),tag="events")]
+pub(crate) async fn seal_completion(
+    State(state): State<TrellisServerState>,
+    Path(scope): Path<String>,
+    tenant: TenantScope,
+    headers: HeaderMap,
+    Json(request): Json<trellis_service_client::CompletionRequest>,
+) -> Result<(StatusCode, Json<SubstrateAppendResult>), StackError> {
+    // Authenticate before revealing configuration availability.
+    state.authenticate(&headers).await?;
+    let (selector, signer) = state
+        .completion
+        .as_ref()
+        .ok_or_else(|| StackError::unavailable("completion composition is not selected"))?;
+    let result = crate::seal_completion(
+        &state,
+        &headers,
+        &tenant,
+        &scope,
+        &request,
+        Some(selector.as_ref()),
+        signer.as_ref(),
+    )
+    .await?;
+    Ok((StatusCode::CREATED, Json(result)))
 }
 
 #[utoipa::path(

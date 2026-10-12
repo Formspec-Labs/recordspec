@@ -169,6 +169,10 @@ pub(super) fn validate_prefix(events: &[StoredEvent]) -> Result<(), StackError> 
                 "native export prefix includes unmarked external payload",
             ));
         }
+        if crate::event_summary(event)?.event_type == crate::completion::COMPLETION_EVENT {
+            crate::completion::certificate_html(event)?;
+            continue;
+        }
         if let Some(Value::Map(extensions)) =
             trellis_types::map_lookup_optional_value(root, "extensions")
         {
@@ -272,7 +276,7 @@ pub(super) async fn lock_scope(
     Ok(())
 }
 
-type EventRow = (
+pub(super) type EventRow = (
     Vec<u8>,
     i64,
     Vec<u8>,
@@ -280,7 +284,7 @@ type EventRow = (
     Option<Vec<u8>>,
     Option<Vec<u8>>,
 );
-fn event_from_row(
+pub(super) fn event_from_row(
     (scope, sequence, canonical, signed, key, hash): EventRow,
 ) -> Result<StoredEvent, StackError> {
     let sequence =

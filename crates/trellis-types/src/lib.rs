@@ -8,14 +8,16 @@
 
 #![forbid(unsafe_code)]
 
+pub mod completion_selection;
+
 pub use integrity_cbor::{
-    CborHelperError, Value, canonicalize_cbor_value, decode_cbor_value, domain_separated_sha256,
+    canonicalize_cbor_value, decode_cbor_value, domain_separated_preimage, domain_separated_sha256,
     encode_bstr, encode_canonical_cbor_value, encode_cbor_negative_int, encode_cbor_value,
     encode_tstr, encode_uint, map_lookup_array, map_lookup_bool, map_lookup_bytes,
     map_lookup_fixed_bytes, map_lookup_integer_label_bytes, map_lookup_integer_label_value,
     map_lookup_map, map_lookup_optional_bytes, map_lookup_optional_fixed_bytes,
     map_lookup_optional_map, map_lookup_optional_text, map_lookup_optional_value, map_lookup_text,
-    map_lookup_u64, map_lookup_value, sha256_bytes,
+    map_lookup_u64, map_lookup_value, sha256_bytes, CborHelperError, Value,
 };
 
 /// Domain tag for `author_event_hash`.
@@ -340,8 +342,8 @@ pub fn checkpoint_digest(scope: &[u8], payload_bytes: &[u8]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::{
-        ArtifactType, ArtifactTypeError, encode_cose_artifact_type_label,
-        encode_cose_suite_id_label, encode_uint,
+        encode_cose_artifact_type_label, encode_cose_suite_id_label, encode_uint, ArtifactType,
+        ArtifactTypeError,
     };
 
     #[test]

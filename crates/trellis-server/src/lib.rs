@@ -23,8 +23,7 @@
 //! over HTTP before calling Trellis, while Trellis admits the union of WOS registry
 //! literals plus Formspec append dialect subjects to admission policy. Bearer
 //! credentials targeting Trellis are the substrate trust root: durable non-permissive
-//! startups require HS256 JWTs whose `scopes` claim authorizes the URL scope (TWREF-022);
-//! dev/demo may use `TRELLIS_STORAGE=memory` or `TRELLIS_PERMISSIVE_SCOPE_AUTH=1` for allow-all scope checks.
+//! startups require current OIDC authority and exact deployment resource grants.
 //!
 //! **Case scope versus Trellis URL scope (TWREF-005):** Admission here keys off `event_type` and payload shape for the
 //! HTTP `{scope}` segment plus tenant headers. It does not fetch WOS case relationship rows; product servers must map
@@ -37,7 +36,13 @@ mod admission;
 mod append;
 mod artifacts;
 mod auth;
+mod completion;
 mod composition;
+pub use completion::{
+    CompletionAttestor, CompletionCallerContext, CompletionRecord, CompletionRequest,
+    CompletionSelector, CompletionSigner, CompletionSignerLabel, CoseCompletionSigner,
+    SelectedCompletion, WosCompletionSelector, completion_record_bindings, seal_completion,
+};
 mod event_repository;
 mod external_attachment;
 mod external_transport;
@@ -45,10 +50,11 @@ pub use external_attachment::{
     ExternalAttachmentRecipientPolicy, append_prepared_external_attachment,
 };
 pub use external_transport::{ExternalAttachmentRecipient, ExternalAttachmentRecipientSelector};
+mod completion_startup;
 mod export_profile;
 mod http;
+mod oidc_startup;
 pub mod openapi;
-mod scope_startup;
 mod state;
 
 #[doc(inline)]
@@ -60,8 +66,6 @@ use artifacts::{BundleIdentity, BundleRecord};
 pub use event_repository::{
     EventRepository, ExternalAttachmentFactory, InMemoryEventRepository, PostgresEventRepository,
 };
-#[doc(inline)]
-pub use scope_startup::TrellisScopeAuthorizerStartupInputs;
 
 #[doc(inline)]
 pub use openapi::TrellisServerOpenApi;
@@ -80,7 +84,9 @@ use integrity_cbor::{
     CborHelperError, Value, domain_separated_sha256, encode_canonical_cbor_value, map_lookup_bytes,
     map_lookup_fixed_bytes, map_lookup_map,
 };
+#[cfg(test)]
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use stack_common_auth::{BaseClaims, Claims};
 use stack_common_error::StackError;
 use trellis_cddl::canonical_event_hash_preimage;
@@ -115,7 +121,8 @@ pub enum TenantHeaderMode {
     MultiProducer,
 }
 
-/// Server-owned JWT claims for optional service auth.
+/// Local JWT claims used by isolated unit-test fixtures.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrellisClaims {
@@ -125,6 +132,7 @@ pub struct TrellisClaims {
     pub scopes: Vec<String>,
 }
 
+#[cfg(test)]
 impl Claims for TrellisClaims {
     fn base(&self) -> &BaseClaims {
         &self.base
@@ -192,7 +200,7 @@ impl ServerSigningKey {
 /// Returns true when the export ZIP passes the same independent verifier used in conformance.
 #[must_use]
 pub(crate) fn export_bundle_cryptographically_verified(zip_bytes: &[u8]) -> bool {
-    let report = integrity_verify::trellis::verify_export_zip(zip_bytes);
+    let report = composition::substrate_export_report(zip_bytes);
     #[cfg(test)]
     if !report.structure_verified || !report.integrity_verified {
         eprintln!(
@@ -342,6 +350,13 @@ pub(crate) fn signature_evidence_members(
     events: &[&StoredEvent],
 ) -> Result<Vec<trellis_export_writer::ExportEvidenceMember>, StackError> {
     composition::signature_evidence_members(scope, events)
+}
+
+pub(crate) fn completion_signing_facts(
+    events: &[StoredEvent],
+    selected: &[[u8; 32]],
+) -> Result<Vec<completion::SigningFact>, StackError> {
+    composition::completion_signing_facts(events, selected)
 }
 
 /// Checks fixed published bytes against their exact repository prefix.
@@ -818,6 +833,12 @@ fn hex_digit(value: u8) -> char {
 
 #[cfg(test)]
 mod tests {
+    mod completion_tests {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/completion_tests.rs"
+        ));
+    }
     mod external_attachment_tests {
         include!("external_attachment_tests.rs");
     }
@@ -1287,43 +1308,11 @@ mod tests {
     }
 
     #[test]
-    fn given_memory_storage_when_production_like_scope_posture_evaluated_then_false() {
-        let inputs = TrellisScopeAuthorizerStartupInputs {
-            storage_is_memory: true,
-            permissive_scope_auth: false,
-        };
-        assert!(!inputs.production_like_scope_posture());
-    }
-
-    #[test]
-    fn given_durable_storage_with_permissive_when_production_like_scope_posture_evaluated_then_false()
-     {
-        let inputs = TrellisScopeAuthorizerStartupInputs {
-            storage_is_memory: false,
-            permissive_scope_auth: true,
-        };
-        assert!(!inputs.production_like_scope_posture());
-    }
-
-    #[test]
-    fn given_durable_storage_without_permissive_when_production_like_scope_posture_evaluated_then_true()
-     {
-        let inputs = TrellisScopeAuthorizerStartupInputs {
-            storage_is_memory: false,
-            permissive_scope_auth: false,
-        };
-        assert!(inputs.production_like_scope_posture());
-    }
-
-    #[test]
     fn given_production_like_posture_when_router_builds_with_allow_all_then_err() {
         let state = test_state().with_production_like_scope_posture(true);
         let err = router(state).expect_err("router must reject misleading posture");
         let msg = err.to_string();
-        assert!(
-            msg.contains("scoped ScopeAuthorizer") && msg.contains("TWREF-022"),
-            "{msg}"
-        );
+        assert!(msg.contains("explicit resource ScopeAuthorizer"), "{msg}");
     }
 
     #[test]
@@ -1333,10 +1322,7 @@ mod tests {
             .with_production_like_scope_posture(true);
         let err = router(state).expect_err("router must reject missing jwt verifier");
         let msg = err.to_string();
-        assert!(
-            msg.contains("jwt_verifier") && msg.contains("TWREF-022"),
-            "{msg}"
-        );
+        assert!(msg.contains("injected access-token verifier"), "{msg}");
     }
 
     const TEST_JWT_SECRET: &[u8] = b"trellis-test-jwt-secret";
@@ -3060,6 +3046,10 @@ mod tests {
             self.inner.admit(event).await
         }
     }
+    mod oidc_startup_tests {
+        include!("oidc_startup_tests.rs");
+    }
+
     mod auth_boundary_tests {
         include!("auth_boundary_tests.rs");
     }

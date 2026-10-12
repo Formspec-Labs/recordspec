@@ -1918,3 +1918,7 @@ Operational traceability rows:
 ---
 
 *End of Trellis Operational Companion v1.0.0.*
+
+### Certificate v2 operator inputs (ADR 0016)
+
+For `trellis.certificate-of-completion.v2`, operators MUST obtain the complete formal signing set from the owning product and retain the exact response digest for every signer row. Operators MUST NOT replace those digests with an initial/latest response, a case hash, null, or a caller-selected subset. All permitted original signed text and bytes travel through their selected disclosure path. External operator trust MUST explicitly allow the v2 purpose. The v1 attestation signing preimage and existing disclosure/attachment rules remain unchanged.

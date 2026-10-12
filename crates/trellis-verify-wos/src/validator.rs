@@ -40,3 +40,27 @@ impl RecordValidator for WosRecordValidator {
         &WOS_FORMSPEC_RESOLVER
     }
 }
+
+/// WOS checks with an explicitly selected external operator trust registry.
+pub(crate) struct TrustedWosRecordValidator<'a>(
+    pub(crate) &'a integrity_verify::trellis::CertificateAuthorityRegistry,
+);
+impl RecordValidator for TrustedWosRecordValidator<'_> {
+    fn certificate_authority_registry(
+        &self,
+    ) -> Option<&integrity_verify::trellis::CertificateAuthorityRegistry> {
+        Some(self.0)
+    }
+    fn admits_identity_attestation_event_type(&self, event_type: &str) -> bool {
+        WosRecordValidator.admits_identity_attestation_event_type(event_type)
+    }
+    fn validate_events(&self, events: &[DomainEvent]) -> Vec<DomainFinding> {
+        WosRecordValidator.validate_events(events)
+    }
+    fn validate_export(&self, export: DomainExport<'_>) -> Vec<DomainFinding> {
+        WosRecordValidator.validate_export(export)
+    }
+    fn response_proof_resolver(&self) -> &dyn ResponseProofResolver {
+        WosRecordValidator.response_proof_resolver()
+    }
+}

@@ -129,6 +129,53 @@ pub(crate) fn signature_evidence_members(
 }
 
 const POLICY_VALID_FROM: &str = "2026-05-16T00:00:00Z";
+
+/// Resolves consumer-owned signing facts through the maintained readable adapter.
+pub(crate) fn completion_signing_facts(
+    events: &[trellis_types::StoredEvent],
+    selected: &[[u8; 32]],
+) -> Result<Vec<crate::completion::SigningFact>, StackError> {
+    use integrity_cbor::{decode_cbor_value, map_lookup_bytes, map_lookup_map, map_lookup_text};
+    use integrity_verify::trellis::certificate_proof::ResponseProofResolver;
+    let invalid = || StackError::conflict("completion signing evidence unreadable or unqualified");
+    let first = events.first().ok_or_else(invalid)?;
+    signature_evidence_members(first.scope(), &events.iter().collect::<Vec<_>>())?;
+    let resolver = trellis_verify_wos::WosFormspecResolver::new();
+    selected
+        .iter()
+        .map(|hash| {
+            let event = events
+                .iter()
+                .find(|event| event.canonical_event_hash() == Some(hash))
+                .ok_or_else(invalid)?;
+            if crate::event_summary(event)?.event_type != wos_signature_affirmation_event_type() {
+                return Err(invalid());
+            }
+            let value =
+                decode_cbor_value(event.canonical_event()).map_err(crate::cbor_bad_request)?;
+            let reference = map_lookup_map(value.as_map().ok_or_else(invalid)?, "payload_ref")
+                .map_err(crate::cbor_bad_request)?;
+            if map_lookup_text(reference, "ref_type").map_err(crate::cbor_bad_request)? != "inline"
+            {
+                return Err(invalid());
+            }
+            let payload =
+                map_lookup_bytes(reference, "ciphertext").map_err(crate::cbor_bad_request)?;
+            Ok(crate::completion::SigningFact {
+                principal: resolver
+                    .resolve_principal_ref(&payload)
+                    .filter(|v| !v.trim().is_empty())
+                    .ok_or_else(invalid)?,
+                response_hash: resolver
+                    .resolve(&payload)
+                    .map_err(|_| invalid())?
+                    .ok_or_else(invalid)?
+                    .response_hash,
+                authored_at: crate::event_timestamp(event)?,
+            })
+        })
+        .collect()
+}
 const POLICY_VERSION: &str = "2026-05-16";
 const FORMSPEC_RESPONSE_SCHEMA: &[u8] =
     include_bytes!("../../../../formspec/schemas/response.schema.json");
@@ -208,6 +255,14 @@ pub(crate) fn default_signature_policy_artifacts() -> Vec<PolicyClosureArtifact>
             WOS_PROVENANCE_SCHEMA,
         ),
     ]
+}
+
+/// Verifies substrate bytes using the product-owned signing-proof resolver.
+///
+/// V2 certificates require every indexed response proof; generic no-op resolution
+/// cannot establish that binding. Domain parsing stays at this composition boundary.
+pub(crate) fn substrate_export_report(zip: &[u8]) -> integrity_verify::trellis::VerificationReport {
+    trellis_verify_wos::verify_export_zip(zip).trellis
 }
 
 /// Returns true when a profile-bearing export passes WOS/Formspec verification.
@@ -335,6 +390,7 @@ pub fn default_event_type_specs() -> Vec<EventTypeSpec> {
     specs.push(
         trellis_admission_formspec::accepted_attachment::accepted_attachment_event_type_spec(),
     );
+    specs.push(crate::completion::event_type_spec());
     specs
 }
 

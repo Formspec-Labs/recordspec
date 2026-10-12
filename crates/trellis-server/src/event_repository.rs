@@ -122,6 +122,13 @@ pub(crate) fn qualify_native_prefix(events: &[StoredEvent]) -> Result<(), StackE
 /// Durable event repository used by the service composition root.
 #[async_trait]
 pub trait EventRepository: Send + Sync {
+    /// Commits a typed completion event against its exact serialized scope prefix.
+    ///
+    /// # Errors
+    /// Refuses unsupported stores, stale prefixes, changed retries or certificate ID collisions.
+    async fn append_completion_event(&self, _event: StoredEvent) -> Result<(), StackError> {
+        Err(StackError::unavailable("completion append is unsupported"))
+    }
     /// Lists committed events for `scope` in ascending sequence order.
     ///
     /// # Errors
@@ -215,6 +222,23 @@ impl InMemoryEventRepository {
 
 #[async_trait]
 impl EventRepository for InMemoryEventRepository {
+    async fn append_completion_event(&self, event: StoredEvent) -> Result<(), StackError> {
+        let mut state = self.state.lock().await;
+        let events = state.events.entry(event.scope().to_vec()).or_default();
+        if let Some(prior) = events
+            .iter()
+            .find(|e| e.idempotency_key() == event.idempotency_key())
+        {
+            return if same_event_bytes(prior, &event) {
+                Ok(())
+            } else {
+                Err(StackError::conflict("completion retry bytes changed"))
+            };
+        }
+        crate::completion::validate_commit(events, &event)?;
+        events.push(event);
+        Ok(())
+    }
     async fn external_attachment_compute(
         &self,
         scope: &[u8],
@@ -289,6 +313,37 @@ impl PostgresEventRepository {
 
 #[async_trait]
 impl EventRepository for PostgresEventRepository {
+    async fn append_completion_event(&self, event: StoredEvent) -> Result<(), StackError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|_| StackError::unavailable("completion transaction unavailable"))?;
+        external_repository::lock_scope(&mut tx, event.scope()).await?;
+        let rows=sqlx::query_as::<_,external_repository::EventRow>("SELECT scope,sequence,canonical_event,signed_event,idempotency_key,canonical_event_hash FROM trellis_events WHERE scope=$1 ORDER BY sequence LIMIT 257")
+            .bind(event.scope()).fetch_all(&mut *tx).await.map_err(|_|StackError::unavailable("completion prefix unavailable"))?;
+        let events = rows
+            .into_iter()
+            .map(external_repository::event_from_row)
+            .collect::<Result<Vec<_>, _>>()?;
+        if let Some(prior) = events
+            .iter()
+            .find(|e| e.idempotency_key() == event.idempotency_key())
+        {
+            if !same_event_bytes(prior, &event) {
+                return Err(StackError::conflict("completion retry bytes changed"));
+            }
+        } else {
+            crate::completion::validate_commit(&events, &event)?;
+            trellis_store_postgres_async::append_event_in_tx(&mut tx, &event)
+                .await
+                .map_err(map_postgres_append_error)?;
+        }
+        tx.commit()
+            .await
+            .map_err(|_| StackError::unavailable("completion commit unavailable"))?;
+        Ok(())
+    }
     async fn external_attachment_compute(
         &self,
         scope: &[u8],

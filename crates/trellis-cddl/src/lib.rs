@@ -19,6 +19,71 @@ use trellis_types::{
     map_lookup_fixed_bytes, map_lookup_integer_label_bytes, map_lookup_u64,
 };
 
+/// Builds the shared certificate operator-attestation signing preimage.
+///
+/// Companion A.5 and ADR0007 reuse the transition domain with certificate ID
+/// as `transition_id` and exact completion timestamp as `effective_at`.
+///
+/// # Errors
+/// Refuses empty or oversized IDs, invalid nanoseconds, or unknown authority classes.
+pub fn certificate_attestation_preimage(
+    certificate_id: &str,
+    completed_at_seconds: u64,
+    completed_at_nanos: u32,
+    authority_class: &str,
+) -> Result<Vec<u8>, CddlError> {
+    if certificate_id.trim().is_empty()
+        || certificate_id.len() > 1024
+        || completed_at_nanos >= 1_000_000_000
+        || !matches!(authority_class, "prior" | "new")
+    {
+        return Err(CddlError::new(
+            "certificate attestation identity, timestamp or class invalid",
+        ));
+    }
+    let component = trellis_types::encode_canonical_cbor_value(&Value::Array(vec![
+        Value::Text(certificate_id.to_owned()),
+        Value::Array(vec![
+            Value::Integer(completed_at_seconds.into()),
+            Value::Integer(completed_at_nanos.into()),
+        ]),
+        Value::Text(authority_class.to_owned()),
+    ]))?;
+    Ok(trellis_types::domain_separated_preimage(
+        "trellis-transition-attestation-v1",
+        &component,
+    )?)
+}
+
+#[cfg(test)]
+mod certificate_attestation_tests {
+    use super::*;
+    #[test]
+    fn certificate_attestation_matches_authored_030_preimage() {
+        let component = include_bytes!(
+            "../../../fixtures/vectors/append/030-certificate-of-completion-html-template/input-attestation-preimage-00-new.cbor"
+        );
+        let actual = certificate_attestation_preimage(
+            "urn:trellis:certificate:test:030",
+            1_776_899_500,
+            0,
+            "new",
+        )
+        .unwrap();
+        assert_eq!(
+            actual,
+            trellis_types::domain_separated_preimage(
+                "trellis-transition-attestation-v1",
+                component
+            )
+            .unwrap()
+        );
+        assert!(certificate_attestation_preimage("", 0, 0, "new").is_err());
+        assert!(certificate_attestation_preimage("id", 0, 1_000_000_000, "new").is_err());
+        assert!(certificate_attestation_preimage("id", 0, 0, "operator").is_err());
+    }
+}
+
 /// The authored-event fields needed by the Phase-1 append scaffold.
 ///
 /// `idempotency_key` is the Core §6.1 / §17.2 wire-contract identity. Its
