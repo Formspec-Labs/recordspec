@@ -291,6 +291,44 @@ impl S3CompatibleArtifactStore {
         }
     }
 
+    /// Reads an exact artifact within byte and total elapsed-time limits.
+    ///
+    /// Uses the existing configured store and refuses objects outside its prefix.
+    /// The bound covers retained bytes; backend chunk buffers remain backend-owned.
+    ///
+    /// # Errors
+    /// Refuses wrong bucket/prefix, missing objects, overflow, truncation or timeout.
+    ///
+    /// # Panics
+    /// Requires a Tokio runtime with time enabled.
+    pub async fn get_bounded(
+        &self,
+        artifact_ref: &ArtifactRef,
+        max_bytes: usize,
+        read_budget: std::time::Duration,
+    ) -> Result<Vec<u8>, StackError> {
+        let location =
+            stack_common_object_store::parse_s3_object_uri(&self.config, &artifact_ref.uri)?;
+        let prefix = self.prefix.trim_matches('/');
+        if !prefix.is_empty()
+            && !location
+                .strip_prefix(prefix)
+                .is_some_and(|rest| rest.starts_with('/'))
+        {
+            return Err(StackError::bad_request(
+                "artifact lies outside selected prefix",
+            ));
+        }
+        let store = self.object_store()?;
+        stack_common_object_store::read_object_bytes_bounded(
+            store.as_ref(),
+            &location,
+            max_bytes,
+            read_budget,
+        )
+        .await
+    }
+
     fn location_for_key(&self, key: &str) -> Result<String, StackError> {
         let key_segments = key
             .split('/')
@@ -1065,6 +1103,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bounded_artifact_read_preserves_exact_bytes_and_refuses_size_overflow() {
+        let backend = Arc::new(object_store::memory::InMemory::new());
+        let store = S3CompatibleArtifactStore::from_object_store_for_test(
+            S3ObjectConfig {
+                bucket: "proof-bundles".into(),
+                endpoint: None,
+                region: None,
+            },
+            "pfx/",
+            backend,
+        );
+        let artifact = store
+            .put_immutable("case/bundles/exact.zip", b"sealed bytes")
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .get_bounded(&artifact, 12, std::time::Duration::from_secs(1))
+                .await
+                .unwrap(),
+            b"sealed bytes"
+        );
+        assert!(store
+            .get_bounded(&artifact, 11, std::time::Duration::from_secs(1))
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn bounded_artifact_read_refuses_wrong_bucket_prefix_and_invalid_limits() {
+        let backend = Arc::new(object_store::memory::InMemory::new());
+        let store = S3CompatibleArtifactStore::from_object_store_for_test(
+            S3ObjectConfig {
+                bucket: "proof-bundles".into(),
+                endpoint: None,
+                region: None,
+            },
+            "pfx/",
+            backend,
+        );
+        for uri in [
+            "s3://other/pfx/a",
+            "s3://proof-bundles/pfx-other/a",
+            "s3://proof-bundles/pfx",
+        ] {
+            let error = store
+                .get_bounded(
+                    &ArtifactRef::new(uri),
+                    12,
+                    std::time::Duration::from_secs(1),
+                )
+                .await
+                .expect_err("wrong selection");
+            assert_eq!(error.code().as_str(), "INFRA-4000");
+        }
+        let artifact = store.put("case/a", b"bytes").await.unwrap();
+        assert!(store
+            .get_bounded(&artifact, 0, std::time::Duration::from_secs(1))
+            .await
+            .is_err());
+        assert!(store
+            .get_bounded(&artifact, 12, std::time::Duration::ZERO)
+            .await
+            .is_err());
+        assert!(store
+            .get_bounded(
+                &ArtifactRef::new("s3://proof-bundles/pfx/missing"),
+                12,
+                std::time::Duration::from_secs(1)
+            )
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
     async fn given_repeated_puts_when_s3_artifact_store_then_reuses_object_store_client() {
         use object_store::memory::InMemory;
 
@@ -1158,14 +1271,12 @@ mod tests {
         runtime.record_event(event(b"case-1", 1));
         runtime.record_event(event(b"case-2", 0));
 
-        assert!(
-            runtime
-                .watermark("case-view", b"case-1", 0)
-                .await
-                .expect_err("unregistered projection")
-                .to_string()
-                .contains("not registered")
-        );
+        assert!(runtime
+            .watermark("case-view", b"case-1", 0)
+            .await
+            .expect_err("unregistered projection")
+            .to_string()
+            .contains("not registered"));
 
         runtime
             .register(ProjectionRegistration {
@@ -1232,13 +1343,11 @@ mod tests {
             .await
             .expect("bind v2");
 
-        assert!(
-            binder
-                .resolve(b"case-1", "wos.kernel.case_created", 1)
-                .await
-                .expect("resolve")
-                .is_none()
-        );
+        assert!(binder
+            .resolve(b"case-1", "wos.kernel.case_created", 1)
+            .await
+            .expect("resolve")
+            .is_none());
         assert_eq!(
             binder
                 .resolve(b"case-1", "wos.kernel.case_created", 4)

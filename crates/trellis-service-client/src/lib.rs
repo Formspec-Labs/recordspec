@@ -23,8 +23,8 @@
 //!
 //! - **WOS provenance** — construct via [`wos_provenance_append_request`]
 //!   (or the [`SubstrateClientExt::append_wos_provenance`] helper). The JSON
-//!   body deserializes as `wos_events::ProvenanceRecord` and must agree with
-//!   the canonical event literal carried in `event_type`.
+//!   Existing canonical payloads agree with their event literal. Remaining
+//!   known native kinds use the owning validated original-record wrapper.
 //! - **Formspec substrate** — construct via [`SubstrateAppendRequest::new_json`]
 //!   with Formspec's aggregate envelope (`aggregateType`, `aggregateId`,
 //!   `payload`). Trellis routes Formspec admission for the response-submitted
@@ -338,6 +338,29 @@ where
 }
 
 impl AcceptedAttachmentAppendBody {
+    /// Encodes bounded original bytes using the maintained attachment wire format.
+    /// # Errors
+    /// Refuses invalid actor, descriptor, key, or original byte bounds.
+    pub fn from_original_bytes(
+        idempotency_key: String,
+        actor: AppendActor,
+        descriptor: serde_json::Value,
+        bytes: &[u8],
+    ) -> Result<Self, StackError> {
+        if bytes.is_empty() || bytes.len() > ACCEPTED_ATTACHMENT_ORIGINAL_BYTES_LIMIT {
+            return Err(StackError::bad_request(
+                "attachment original bytes exceed bound",
+            ));
+        }
+        let body = Self {
+            idempotency_key,
+            actor,
+            descriptor,
+            original_bytes: STANDARD.encode(bytes),
+        };
+        body.validate()?;
+        Ok(body)
+    }
     /// Validates bounded attachment transport fields before sending original bytes.
     ///
     /// # Errors
@@ -1028,13 +1051,59 @@ impl SubstrateClient for TrellisServiceClient {
 }
 
 impl TrellisServiceClient {
+    /// Downloads a pinned ZIP while bounding accumulated response bytes.
+    ///
+    /// Uses the existing service credentials, tenant headers, and request timeout.
+    /// Checks every chunk before growing the output, including chunked responses.
+    /// This qualifies media type and size; callers must verify ZIP evidence separately.
+    ///
+    /// # Errors
+    /// Refuses invalid selectors, a zero limit, failed HTTP responses, non-ZIP
+    /// media types, oversized bodies, allocation failure, and interrupted reads.
+    pub async fn bundle_bounded(
+        &self,
+        scope: &str,
+        checkpoint_digest: &str,
+        tenant_scope: &TenantScope,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, StackError> {
+        validate_scope(scope)?;
+        validate_required("checkpoint_digest", checkpoint_digest)?;
+        if max_bytes == 0 {
+            return Err(StackError::bad_request(
+                "bundle byte limit must be positive",
+            ));
+        }
+        self.bytes_get_inner(
+            &format!(
+                "/v1/scopes/{}/bundles/{}",
+                encode_path_segment(scope),
+                encode_path_segment(checkpoint_digest)
+            ),
+            tenant_scope,
+            "pinned bundle",
+            Some(max_bytes),
+        )
+        .await
+    }
+
     async fn bytes_get(
         &self,
         path: &str,
         tenant_scope: &TenantScope,
         label: &str,
     ) -> Result<Vec<u8>, StackError> {
-        let response = self
+        self.bytes_get_inner(path, tenant_scope, label, None).await
+    }
+
+    async fn bytes_get_inner(
+        &self,
+        path: &str,
+        tenant_scope: &TenantScope,
+        label: &str,
+        max_bytes: Option<usize>,
+    ) -> Result<Vec<u8>, StackError> {
+        let mut response = self
             .request(reqwest::Method::GET, path, tenant_scope)
             .await?
             .send()
@@ -1047,6 +1116,47 @@ impl TrellisServiceClient {
                 "trellis {label} returned HTTP {}",
                 response.status()
             )));
+        }
+        if let Some(limit) = max_bytes {
+            let mut types = response
+                .headers()
+                .get_all(reqwest::header::CONTENT_TYPE)
+                .iter();
+            let media_type = types.next().and_then(|value| value.to_str().ok());
+            if types.next().is_some()
+                || !media_type.is_some_and(|value| {
+                    value
+                        .split(';')
+                        .next()
+                        .unwrap_or_default()
+                        .trim()
+                        .eq_ignore_ascii_case("application/zip")
+                })
+            {
+                return Err(StackError::unavailable("trellis bundle media type refused"));
+            }
+            let refused = || StackError::unavailable("trellis bundle byte limit exceeded");
+            if response
+                .content_length()
+                .is_some_and(|length| length > limit as u64)
+            {
+                return Err(refused());
+            }
+            let mut bytes = Vec::new();
+            while let Some(chunk) = response
+                .chunk()
+                .await
+                .map_err(|_| StackError::unavailable("trellis bundle response read failed"))?
+            {
+                if chunk.len() > limit - bytes.len() {
+                    return Err(refused());
+                }
+                bytes
+                    .try_reserve_exact(chunk.len())
+                    .map_err(|_| StackError::unavailable("trellis bundle allocation refused"))?;
+                bytes.extend_from_slice(&chunk);
+            }
+            return Ok(bytes);
         }
         response
             .bytes()
@@ -1354,6 +1464,126 @@ mod tests {
     fn path_segments_are_percent_encoded() {
         assert_eq!(encode_path_segment("case:123"), "case%3A123");
         assert_eq!(encode_path_segment("case_123"), "case_123");
+    }
+
+    #[test]
+    fn original_attachment_constructor_preserves_bytes_and_rejects_invalid_inputs() {
+        let descriptor = serde_json::json!({"original": "descriptor"});
+        let body = AcceptedAttachmentAppendBody::from_original_bytes(
+            "bounded-original".into(),
+            AppendActor::service("producer"),
+            descriptor.clone(),
+            &[0, 255, 17],
+        )
+        .expect("bounded original");
+        assert_eq!(body.descriptor, descriptor);
+        assert_eq!(STANDARD.decode(body.original_bytes).unwrap(), [0, 255, 17]);
+        for bytes in [
+            Vec::new(),
+            vec![0; ACCEPTED_ATTACHMENT_ORIGINAL_BYTES_LIMIT + 1],
+        ] {
+            assert!(AcceptedAttachmentAppendBody::from_original_bytes(
+                "bounded-original".into(),
+                AppendActor::service("producer"),
+                descriptor.clone(),
+                &bytes,
+            )
+            .is_err());
+        }
+        assert!(AcceptedAttachmentAppendBody::from_original_bytes(
+            "bounded-original".into(),
+            AppendActor::user("person"),
+            descriptor,
+            &[1],
+        )
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn bounded_bundle_exact_limit_preserves_bytes_and_pinned_path() {
+        let endpoint = test_server(|request| {
+            assert!(request.starts_with("GET /v1/scopes/case_123/bundles/sha256%3Aabc "));
+            response("application/zip", "zip-bytes")
+        });
+        let client = TrellisServiceClient::new(TrellisServiceClientConfig::new(
+            endpoint,
+            HeaderConfig::wos(),
+        ))
+        .unwrap();
+        assert_eq!(
+            client
+                .bundle_bounded("case_123", "sha256:abc", &tenant_scope(), 9)
+                .await
+                .unwrap(),
+            b"zip-bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn bounded_bundle_refuses_declared_oversize_and_wrong_media_type() {
+        for (mime, limit) in [("application/zip", 8), ("text/html", 64)] {
+            let endpoint = test_server(move |_| response(mime, "zip-bytes"));
+            let client = TrellisServiceClient::new(TrellisServiceClientConfig::new(
+                endpoint,
+                HeaderConfig::wos(),
+            ))
+            .unwrap();
+            assert!(client
+                .bundle_bounded("case_123", "sha256:abc", &tenant_scope(), limit)
+                .await
+                .is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn bounded_bundle_checks_chunked_body_without_content_length() {
+        for limit in [8, 9] {
+            let endpoint = test_server(|_| {
+                "HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n4\r\nzip-\r\n5\r\nbytes\r\n0\r\n\r\n".to_string()
+            });
+            let client = TrellisServiceClient::new(TrellisServiceClientConfig::new(
+                endpoint,
+                HeaderConfig::wos(),
+            ))
+            .unwrap();
+            let result = client
+                .bundle_bounded("case_123", "sha256:abc", &tenant_scope(), limit)
+                .await;
+            if limit == 9 {
+                assert_eq!(result.unwrap(), b"zip-bytes");
+            } else {
+                assert!(result.is_err());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn bounded_bundle_refuses_missing_duplicate_media_type_and_truncated_body() {
+        for raw in [
+            "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nzip",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Type: application/zip\r\nContent-Length: 3\r\n\r\nzip",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Length: 9\r\n\r\nzip",
+        ] {
+            let endpoint = test_server(move |_| raw.to_owned());
+            let client = TrellisServiceClient::new(TrellisServiceClientConfig::new(endpoint, HeaderConfig::wos())).unwrap();
+            assert!(client.bundle_bounded("case_123", "sha256:abc", &tenant_scope(), 9).await.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn bounded_bundle_zero_limit_refuses_before_network() {
+        let client = TrellisServiceClient::new(TrellisServiceClientConfig::new(
+            "http://127.0.0.1:1",
+            HeaderConfig::wos(),
+        ))
+        .unwrap();
+        let error = client
+            .bundle_bounded("case_123", "sha256:abc", &tenant_scope(), 0)
+            .await
+            .expect_err("invalid limit");
+        assert!(error
+            .to_string()
+            .contains("bundle byte limit must be positive"));
     }
 
     fn tenant_scope() -> TenantScope {
