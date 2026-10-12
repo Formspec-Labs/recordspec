@@ -286,12 +286,13 @@
         "wos.kernel.instance_migrated",
         "wos.kernel.migration_pin_changed",
         "substrate.append.response_submitted",
-        "substrate.append.response_action_session_op_batch"
+        "substrate.append.response_action_session_op_batch",
+        "wos.provenance.recorded"
       ]
     },
     "EventTypeRegistry": {
       "type": "object",
-      "description": "JSON registry returned by GET /v1/scopes/{scope}/registries/event-types. The event literals mirror trellis-server WOS_EVENT_TYPES and wos-events ProvenanceKind::canonical_event_literal().",
+      "description": "JSON registry returned by GET /v1/scopes/{scope}/registries/event-types. Admission adapters own catalog literals, including canonical WOS events and validated native provenance custody.",
       "required": [
         "registryVersion",
         "eventTypes"
@@ -420,7 +421,7 @@
         },
         "payload": {
           "type": "object",
-          "description": "Typed WOS provenance payload. The server admits only payloads whose WOS event field and record kind agree with eventType."
+          "description": "Owning adapter payload. Canonical WOS routes retain their original record shape; wos.provenance.recorded requires the shared native wrapper schema."
         },
         "computeContext": {
           "allOf": [
@@ -440,7 +441,28 @@
           "$ref": "#/$defs/ClientAttestation"
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "eventType": {
+                "const": "wos.provenance.recorded"
+              }
+            },
+            "required": [
+              "eventType"
+            ]
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "https://wos-spec.org/schemas/wos-native-provenance-event.schema.json"
+              }
+            }
+          }
+        }
+      ]
     },
     "SubstrateAppendResult": {
       "type": "object",
@@ -495,7 +517,11 @@
         },
         "artifactType": {
           "type": "string",
-          "enum": ["event", "checkpoint", "manifest"]
+          "enum": [
+            "event",
+            "checkpoint",
+            "manifest"
+          ]
         },
         "eventType": {
           "$ref": "#/$defs/EventType"

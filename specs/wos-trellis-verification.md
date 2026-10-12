@@ -48,6 +48,7 @@ The WOS validator owns the following event-type literals:
 
 | Literal | Meaning |
 |---|---|
+| `wos.provenance.recorded` | Custody of a validated original native record without a canonical event mapping; no specialized signature, intake or decision meaning. |
 | `wos.kernel.signature_affirmation` | Signature provenance event. |
 | `wos.kernel.signature_admission_failed` | Failed signature-admission provenance event. |
 | `wos.kernel.intake_accepted` | Intake-acceptance provenance event. |
@@ -240,3 +241,15 @@ The Rust implementation lives in `crates/trellis-verify-wos`. It depends on
 `integrity-verify::trellis` and composes through the Core domain-validator seam.
 It MUST not introduce a dependency from the integrity verifier back to WOS
 runtime crates.
+
+## Native provenance custody
+
+`wos.provenance.recorded` MUST carry exactly `{ "record": <original native JSON record> }`, validated by the owning `wos-events::NativeProvenanceEvent` schema/helper. An explicit recognized `recordKind` without a canonical event mapping is required. Existing canonical kinds MUST retain their existing route and MUST NOT use this generic route. Original identifiers, timestamp text, actor, triggering event, and permitted application data remain unchanged.
+
+The verifier MUST use the shared strict wrapped-payload CBOR decoder before JSON conversion. It MUST refuse missing payload, ambiguous map keys, unsupported CBOR types/tags, unknown or canonical kinds, malformed fields, and unknown structural fields. Original archive bytes remain the cryptographic authority. This event proves custody of its record; it does not establish specialized business semantics or output authorization.
+
+| ID | Requirement |
+|---|---|
+| WOS-TV-028 | A generic native provenance event MUST pass the shared strict owning validator. Missing payload yields `native_provenance_payload_unavailable`; invalid payload yields `native_provenance_invalid`. Both are blocking domain failures. |
+
+Offline JSON Schema validators for the HTTP API must register the exact owning native schema resource under `https://wos-spec.org/schemas/wos-native-provenance-event.schema.json`. A repository-relative HTTP `$ref` is insufficient because the HTTP schema has an absolute `$id`. The conformance test registers this resource explicitly, validates the positive native wrapper, and refuses unknown/canonical/missing kind and unknown structural fields without network retrieval.

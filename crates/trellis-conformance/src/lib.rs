@@ -7,6 +7,9 @@
 mod model_checks;
 
 #[cfg(test)]
+mod native_http_schema;
+
+#[cfg(test)]
 mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};

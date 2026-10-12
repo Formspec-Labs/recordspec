@@ -20,6 +20,7 @@ mod clock_semantics;
 mod completion_selection;
 mod event_types;
 mod findings;
+mod native_provenance;
 mod policy_closure;
 mod records;
 mod rescission;

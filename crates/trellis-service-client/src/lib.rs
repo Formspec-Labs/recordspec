@@ -105,6 +105,7 @@ fn trellis_admitted_event_type_openapi_schema() -> RefOr<Schema> {
         .copied()
         .map(str::to_string)
         .collect();
+    values.push(wos_ext::WOS_NATIVE_PROVENANCE_EVENT_LITERAL.to_string());
     values.push(FORMSPEC_APPEND_EVENT_TYPE_LITERAL.to_string());
     values.push(FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH_EVENT_TYPE_LITERAL.to_string());
     values.sort();

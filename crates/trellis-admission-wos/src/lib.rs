@@ -20,7 +20,10 @@ use trellis_server_ports::{
     EventFamilyId, EventTypeSpec, SchemaRef,
 };
 use trellis_types::ArtifactType;
-use wos_events::{ProvenanceKind, ProvenanceRecord, WOS_CANONICAL_EVENT_LITERALS};
+use wos_events::{
+    NativeProvenanceEvent, ProvenanceKind, ProvenanceRecord, WOS_CANONICAL_EVENT_LITERALS,
+    WOS_NATIVE_PROVENANCE_EVENT_LITERAL,
+};
 
 /// URI scheme used in [`AdmittedEvent::schema_ref`] entries emitted by this adapter.
 pub const WOS_SCHEMA_SCHEME: &str = "wos-events";
@@ -62,6 +65,8 @@ pub fn wos_event_family(event_type: &str) -> Option<&str> {
 pub fn wos_event_type_specs() -> Vec<EventTypeSpec> {
     WOS_CANONICAL_EVENT_LITERALS
         .iter()
+        .copied()
+        .chain(std::iter::once(WOS_NATIVE_PROVENANCE_EVENT_LITERAL))
         .map(|event_type| {
             let family_slice = wos_event_family(event_type).unwrap_or_else(|| {
                 panic!(
@@ -70,7 +75,7 @@ pub fn wos_event_type_specs() -> Vec<EventTypeSpec> {
                 )
             });
             EventTypeSpec {
-                event_type: (*event_type).to_string(),
+                event_type: event_type.to_string(),
                 event_family: EventFamilyId::new(family_slice)
                     .expect("wos family slug is non-empty by construction"),
                 schema_ref: SchemaRef::new(wos_schema_ref(event_type))
@@ -123,6 +128,13 @@ impl EventAdmissionPolicy for WosEventAdmissionPolicy {
     type Error = StackError;
 
     async fn admit(&self, event: &AdmissionEvent<'_>) -> Result<AdmittedEvent, Self::Error> {
+        if event.event_type == WOS_NATIVE_PROVENANCE_EVENT_LITERAL {
+            let payload: serde_json::Value = serde_json::from_slice(event.payload)
+                .map_err(|_| StackError::bad_request("invalid native provenance JSON payload"))?;
+            NativeProvenanceEvent::from_json(&payload)
+                .map_err(|_| StackError::bad_request("invalid native provenance payload"))?;
+            return Self::admitted_event_for(event.event_type);
+        }
         let expected_kind = ProvenanceKind::from_canonical_event_literal(event.event_type)
             .ok_or_else(|| {
                 StackError::bad_request(format!(
@@ -320,5 +332,82 @@ mod tests {
                 "WOS literal `{literal}` must resolve through ProvenanceKind"
             );
         }
+    }
+    fn native_fixture() -> serde_json::Value {
+        serde_json::from_str(include_str!(
+            "../../../fixtures/conformance/native-provenance-routing.json"
+        ))
+        .expect("controlled vector")
+    }
+
+    #[tokio::test]
+    async fn native_provenance_admission_preserves_original_record() {
+        let fixture = native_fixture();
+        let original = fixture["payload"].clone();
+        let bytes = serde_json::to_vec(&original).unwrap();
+        let admitted = WosEventAdmissionPolicy::new()
+            .admit(&AdmissionEvent {
+                scope: b"case-1",
+                event_type: WOS_NATIVE_PROVENANCE_EVENT_LITERAL,
+                payload: &bytes,
+            })
+            .await
+            .unwrap();
+        assert_eq!(admitted.event_family.as_str(), "wos.provenance");
+        assert_eq!(
+            admitted.schema_ref.as_str(),
+            "wos-events://wos.provenance.recorded"
+        );
+        assert_eq!(admitted.direct_submit, DirectSubmitPolicy::ServiceOnly);
+        assert_eq!(
+            NativeProvenanceEvent::from_json(&original)
+                .unwrap()
+                .payload(),
+            &original
+        );
+        let specs = wos_event_type_specs();
+        assert_eq!(specs.len(), WOS_CANONICAL_EVENT_LITERALS.len() + 1);
+        assert_eq!(
+            specs
+                .iter()
+                .filter(|spec| spec.event_type == WOS_NATIVE_PROVENANCE_EVENT_LITERAL)
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn native_provenance_admission_refuses_unknown_and_canonical_bypass() {
+        for kind in ["unknownFutureKind", "caseCreated"] {
+            let mut fixture = native_fixture();
+            fixture["payload"]["record"]["recordKind"] = serde_json::json!(kind);
+            let bytes = serde_json::to_vec(&fixture["payload"]).unwrap();
+            assert!(
+                WosEventAdmissionPolicy::new()
+                    .admit(&AdmissionEvent {
+                        scope: b"case-1",
+                        event_type: WOS_NATIVE_PROVENANCE_EVENT_LITERAL,
+                        payload: &bytes,
+                    })
+                    .await
+                    .is_err()
+            );
+        }
+        let mut missing = native_fixture()["payload"].clone();
+        missing["record"]
+            .as_object_mut()
+            .unwrap()
+            .remove("recordKind");
+        let bytes = serde_json::to_vec(&missing).unwrap();
+        assert!(
+            WosEventAdmissionPolicy::new()
+                .admit(&AdmissionEvent {
+                    scope: b"case-1",
+                    event_type: WOS_NATIVE_PROVENANCE_EVENT_LITERAL,
+                    payload: &bytes,
+                })
+                .await
+                .is_err()
+        );
     }
 }

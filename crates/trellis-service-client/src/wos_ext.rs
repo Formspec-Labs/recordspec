@@ -18,8 +18,8 @@
 use async_trait::async_trait;
 use stack_common_error::StackError;
 use stack_common_http::tenant::TenantScope;
-use wos_events::ProvenanceRecord;
-pub use wos_events::WOS_CANONICAL_EVENT_LITERALS;
+use wos_events::{NativeProvenanceEvent, ProvenanceRecord};
+pub use wos_events::{WOS_CANONICAL_EVENT_LITERALS, WOS_NATIVE_PROVENANCE_EVENT_LITERAL};
 
 use crate::{
     AppendActor, ComputeContext, SubstrateAppendRequest, SubstrateAppendResult, SubstrateClient,
@@ -27,12 +27,11 @@ use crate::{
 
 /// Builds a typed WOS provenance append request from a [`ProvenanceRecord`].
 ///
-/// Validates that the record carries (or resolves to) a canonical event literal
-/// and serializes the JSON payload deterministically.
+/// Preserves existing canonical routes. Other known kinds use the shared native
+/// record validator and retain their original fields inside `record`.
 ///
 /// # Errors
-/// Returns an error when the record kind has no Trellis event literal or the
-/// record cannot serialize to JSON.
+/// Returns an error when native record validation or JSON serialization fails.
 pub fn wos_provenance_append_request(
     scope: impl Into<String>,
     tenant_scope: TenantScope,
@@ -41,6 +40,19 @@ pub fn wos_provenance_append_request(
     record: ProvenanceRecord,
     compute_context: ComputeContext,
 ) -> Result<SubstrateAppendRequest, StackError> {
+    if record.record_kind.canonical_event_literal().is_none() {
+        let native = NativeProvenanceEvent::from_record(&record)
+            .map_err(|_| StackError::bad_request("invalid native provenance record"))?;
+        return SubstrateAppendRequest::new_json(
+            scope,
+            tenant_scope,
+            WOS_NATIVE_PROVENANCE_EVENT_LITERAL,
+            idempotency_key,
+            actor,
+            native.payload().clone(),
+            compute_context,
+        );
+    }
     let event_type = record
         .event
         .clone()
@@ -108,3 +120,59 @@ pub trait SubstrateClientExt: SubstrateClient {
 }
 
 impl<T> SubstrateClientExt for T where T: SubstrateClient + ?Sized {}
+
+#[cfg(test)]
+mod native_provenance_tests {
+    use super::*;
+    fn tenant() -> TenantScope {
+        TenantScope {
+            tenant: "tenant".into(),
+            workspace: "workspace".into(),
+            environment: "test".into(),
+            cell: "cell".into(),
+        }
+    }
+    #[test]
+    fn native_provenance_client_preserves_original_record() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/conformance/native-provenance-routing.json"
+        ))
+        .unwrap();
+        let record: ProvenanceRecord =
+            serde_json::from_value(fixture["payload"]["record"].clone()).unwrap();
+        // This helper accepts a typed record. Its original JSON follows the
+        // maintained serializer, which omits empty optional collections.
+        let original = serde_json::to_value(&record).unwrap();
+        let request = wos_provenance_append_request(
+            "case-1",
+            tenant(),
+            "native-client",
+            AppendActor::service("wos-server"),
+            record,
+            ComputeContext::no_delegated_compute("wos-server"),
+        )
+        .unwrap();
+        assert_eq!(request.event_type, WOS_NATIVE_PROVENANCE_EVENT_LITERAL);
+        assert_eq!(request.payload["record"], original);
+        assert_eq!(request.payload["record"]["event"], "original-entry-trigger");
+    }
+    #[test]
+    fn native_provenance_client_keeps_all_canonical_routes_exact() {
+        for literal in WOS_CANONICAL_EVENT_LITERALS {
+            let kind = wos_events::ProvenanceKind::from_canonical_event_literal(literal).unwrap();
+            let record = ProvenanceRecord::blank(kind);
+            let original = serde_json::to_value(&record).unwrap();
+            let request = wos_provenance_append_request(
+                "case-1",
+                tenant(),
+                "canonical-client",
+                AppendActor::service("wos-server"),
+                record,
+                ComputeContext::no_delegated_compute("wos-server"),
+            )
+            .unwrap();
+            assert_eq!(&request.event_type, literal);
+            assert_eq!(request.payload, original);
+        }
+    }
+}

@@ -125,7 +125,7 @@ mod tests {
 
     use serde_json::json;
     use utoipa::OpenApi as _;
-    use wos_events::WOS_CANONICAL_EVENT_LITERALS;
+    use wos_events::{WOS_CANONICAL_EVENT_LITERALS, WOS_NATIVE_PROVENANCE_EVENT_LITERAL};
 
     use crate::{FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH, FORMSPEC_RESPONSE_SUBMITTED};
 
@@ -173,6 +173,7 @@ mod tests {
             let literal = event_type.as_str().expect("event type literal");
             assert!(
                 WOS_CANONICAL_EVENT_LITERALS.contains(&literal)
+                    || literal == WOS_NATIVE_PROVENANCE_EVENT_LITERAL
                     || literal == FORMSPEC_RESPONSE_SUBMITTED
                     || literal == FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH,
                 "schema EventType enum must only list admitted server literals"

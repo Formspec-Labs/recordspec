@@ -22,6 +22,7 @@ impl RecordValidator for WosRecordValidator {
     fn validate_events(&self, events: &[DomainEvent]) -> Vec<DomainFinding> {
         let mut findings = crate::rescission::validate_rescission_terminality(events);
         findings.extend(crate::clock_semantics::validate_clock_semantics(events));
+        findings.extend(crate::native_provenance::validate_native_provenance(events));
         findings
     }
 

@@ -19,7 +19,7 @@ use trellis_server_ports::{
     EventTypeRegistry, EventTypeSpec, ReviewGateEventTypeRegistry,
 };
 use wos_events::ProvenanceKind;
-use wos_events::WOS_CANONICAL_EVENT_LITERALS;
+use wos_events::{WOS_CANONICAL_EVENT_LITERALS, WOS_NATIVE_PROVENANCE_EVENT_LITERAL};
 
 use crate::export_profile::PolicyClosureArtifact;
 
@@ -373,7 +373,13 @@ pub fn default_admission_policy() -> Arc<dyn EventAdmissionPolicy<Error = StackE
         .collect::<Vec<_>>();
     Arc::new(
         AdmissionRouter::new()
-            .register_for_literals(wos, WOS_CANONICAL_EVENT_LITERALS.iter().copied())
+            .register_for_literals(
+                wos,
+                WOS_CANONICAL_EVENT_LITERALS
+                    .iter()
+                    .copied()
+                    .chain(std::iter::once(WOS_NATIVE_PROVENANCE_EVENT_LITERAL)),
+            )
             .register_for_literals(formspec, formspec_literals),
     )
 }
@@ -640,6 +646,28 @@ mod tests {
         assert_eq!(
             response_action.artifact_type,
             trellis_types::ArtifactType::Event
+        );
+    }
+    #[tokio::test]
+    async fn native_provenance_dispatch_reaches_owning_adapter() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/conformance/native-provenance-routing.json"
+        ))
+        .unwrap();
+        let bytes = serde_json::to_vec(&fixture["payload"]).unwrap();
+        let admitted = default_admission_policy()
+            .admit(&AdmissionEvent {
+                scope: b"case-1",
+                event_type: WOS_NATIVE_PROVENANCE_EVENT_LITERAL,
+                payload: &bytes,
+            })
+            .await
+            .expect("generic route registered independently of canonical literals");
+        assert_eq!(admitted.event_type, WOS_NATIVE_PROVENANCE_EVENT_LITERAL);
+        assert!(
+            default_event_type_specs()
+                .iter()
+                .any(|spec| spec.event_type == WOS_NATIVE_PROVENANCE_EVENT_LITERAL)
         );
     }
 }

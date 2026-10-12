@@ -11,6 +11,7 @@ import json
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 
@@ -20,10 +21,13 @@ SERVER_PATH = ROOT / "crates" / "trellis-server" / "src" / "lib.rs"
 # TWREF-086: Axum `.route(` calls live in `http.rs`; `lib.rs` keeps admission/constants.
 HTTP_ROUTER_PATH = ROOT / "crates" / "trellis-server" / "src" / "http.rs"
 CLIENT_PATH = ROOT / "crates" / "trellis-service-client" / "src" / "lib.rs"
-# Sibling `work-spec/` at stack root (TWREF-017): substrate literals authored once in kind.rs.
-WOS_EVENTS_KIND_PATH = (
-    ROOT.parent / "work-spec" / "crates" / "wos-events" / "src" / "provenance" / "kind.rs"
-)
+# Resolve the owning source through the SAME maintained path dependency as admission.
+_ADMISSION_MANIFEST = ROOT / "crates" / "trellis-admission-wos" / "Cargo.toml"
+_ADMISSION_DEPENDENCIES = tomllib.loads(_ADMISSION_MANIFEST.read_text())["dependencies"]
+_WOS_PACKAGE = (_ADMISSION_MANIFEST.parent / _ADMISSION_DEPENDENCIES["wos-events"]["path"]).resolve()
+WOS_EVENTS_KIND_PATH = _WOS_PACKAGE / "src" / "provenance" / "kind.rs"
+WOS_EVENTS_NATIVE_PATH = _WOS_PACKAGE / "src" / "native_provenance.rs"
+WOS_NATIVE_SCHEMA_PATH = _WOS_PACKAGE.parents[1] / "schemas" / "wos-native-provenance-event.schema.json"
 
 EXPECTED_OPERATIONS = {
     "appendEvent": ("POST", "/v1/scopes/{scope}/events"),
@@ -150,9 +154,11 @@ def parse_wos_event_types(_server_source: str) -> list[str]:
             "wos-events canonical literal table not found at "
             f"{WOS_EVENTS_KIND_PATH} (expected stack checkout with sibling work-spec/)"
         )
-    return parse_substrate_event_literals_from_kind_rs(
+    canonical = parse_substrate_event_literals_from_kind_rs(
         WOS_EVENTS_KIND_PATH.read_text(encoding="utf-8")
     )
+    generic = parse_const_str(WOS_EVENTS_NATIVE_PATH.read_text(encoding="utf-8"), "WOS_NATIVE_PROVENANCE_EVENT_LITERAL")
+    return canonical + [generic]
 
 
 def normalize_axum_path(path: str) -> str:
@@ -249,6 +255,16 @@ def check_defs(schema: dict, server_source: str, client_source: str, errors: lis
     )
     if not defs:
         return
+
+    native_schema = read_json(WOS_NATIVE_SCHEMA_PATH)
+    native_uri = native_schema.get("$id")
+    native_rules = defs["SubstrateAppendBody"].get("allOf", [])
+    native_refs = [rule.get("then", {}).get("properties", {}).get("payload", {}).get("$ref")
+                   for rule in native_rules
+                   if rule.get("if", {}).get("properties", {}).get("eventType", {}).get("const")
+                   == parse_const_str(WOS_EVENTS_NATIVE_PATH.read_text(encoding="utf-8"), "WOS_NATIVE_PROVENANCE_EVENT_LITERAL")]
+    if native_refs != [native_uri] or not isinstance(native_uri, str):
+        errors.append("native provenance payload must reference the owning canonical schema URI exactly once")
 
     expected_events = expected_admitted_event_types(server_source, client_source)
     schema_events = defs["EventType"].get("enum")

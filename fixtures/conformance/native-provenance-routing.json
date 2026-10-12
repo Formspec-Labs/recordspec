@@ -1,0 +1,31 @@
+{
+  "authority": "Controlled conformance input; not actual D1 history or custody qualification.",
+  "eventType": "wos.provenance.recorded",
+  "payload": {
+    "record": {
+      "id": "default_prov_01h455vb4pex5vsknk084sn02q",
+      "recordKind": "onEntry",
+      "timestamp": "2026-10-09T12:00:00Z",
+      "auditLayer": "facts",
+      "definitionVersion": "1.0.0",
+      "event": "original-entry-trigger",
+      "data": {
+        "nested": [
+          "preserve",
+          null,
+          {
+            "value": 7
+          }
+        ]
+      },
+      "inputs": [],
+      "outputs": [],
+      "transitionTags": []
+    }
+  },
+  "expected": {
+    "family": "wos.provenance",
+    "schemaRef": "wos-events://wos.provenance.recorded",
+    "directSubmit": "serviceOnly"
+  }
+}
