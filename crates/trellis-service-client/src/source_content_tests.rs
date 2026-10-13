@@ -46,6 +46,7 @@ fn selection() -> SourceContentSelection {
             provider_selection_hash: [3; 32],
             native_policy_hash: [4; 32],
             recipient_policy_hash: [5; 32],
+            recipient_set_sha256: [9; 32],
             workflow_url: "urn:neutral:workflow".into(),
             workflow_version: "1".into(),
             tenant_id: "tenant".into(),
@@ -101,4 +102,27 @@ fn source_only_reply_binds_namespace_separately_from_owning_case_and_refuses_cha
     assert!(reply.validate_for_request(&request).is_ok());
     reply.prefix_digest[0] ^= 1;
     assert!(reply.validate_for_request(&request).is_err());
+}
+
+#[test]
+fn source_content_recipient_set_digest_is_required_and_distinguishes_same_policy_key_rotation() {
+    let original = selection();
+    let original_bytes = serde_json::to_vec(&original).unwrap();
+    let mut value = serde_json::to_value(&original.identity).unwrap();
+    assert_eq!(
+        value["recipientSetSha256"],
+        serde_json::json!(vec![9u8; 32])
+    );
+    value.as_object_mut().unwrap().remove("recipientSetSha256");
+    assert!(serde_json::from_value::<SourceContentIdentityV1>(value).is_err());
+    let mut rotated = original.clone();
+    // Neutral opaque owner digests stand for different actual key sets. The
+    // owning WOS test qualifies its canonical sorted-key digest algorithm.
+    rotated.identity.recipient_set_sha256 = [10; 32];
+    assert_eq!(
+        original.identity.recipient_policy_hash,
+        rotated.identity.recipient_policy_hash
+    );
+    assert_ne!(original.identity, rotated.identity);
+    assert_ne!(original_bytes, serde_json::to_vec(&rotated).unwrap());
 }

@@ -478,6 +478,7 @@ async fn committed_original_fixture() -> (
         provider_selection_hash: [3; 32],
         native_policy_hash: [17; 32],
         recipient_policy_hash: [7; 32],
+        recipient_set_sha256: [9; 32],
         workflow_url: "urn:neutral:workflow".into(),
         workflow_version: "1.0.0".into(),
         tenant_id: "tenant-a".into(),
@@ -879,4 +880,125 @@ async fn source_content_response_claims_cannot_change_with_consistent_batch_key_
                 .is_none()
         );
     }
+}
+
+struct CurrentRecipientSetSelection {
+    original: SourceContentSelection,
+    rotated: SourceContentSelection,
+    use_rotated: std::sync::atomic::AtomicBool,
+}
+#[async_trait]
+impl SourceContentSelectionResolver for CurrentRecipientSetSelection {
+    async fn select(
+        &self,
+        _request: &SourceContentSelectionRequest<'_>,
+    ) -> Result<SourceContentSelection, StackError> {
+        Ok(if self.use_rotated.load(Ordering::SeqCst) {
+            self.rotated.clone()
+        } else {
+            self.original.clone()
+        })
+    }
+}
+#[tokio::test]
+async fn source_content_recipient_set_rotation_rekeys_batch_and_refuses_old_bytes_and_cached_replay()
+ {
+    use tower::ServiceExt;
+    let (state, body, selection, batch) = committed_original_fixture().await;
+    let mut rotated_batch = batch.clone();
+    rotated_batch.selection.recipient_set_sha256 = [10; 32];
+    let occurrences = rotated_batch
+        .records
+        .iter()
+        .map(|record| &record.occurrence)
+        .collect::<Vec<_>>();
+    let rotated_key = stack_common_hash::canonical_json_hash(
+        &serde_json::to_value((&rotated_batch.selection, occurrences)).unwrap(),
+    )
+    .unwrap();
+    assert_ne!(rotated_key, selection.preparation_key);
+    assert_eq!(
+        rotated_batch.selection.recipient_policy_hash,
+        batch.selection.recipient_policy_hash
+    );
+    let mut rotated = selection.clone();
+    rotated.identity = rotated_batch.selection;
+    rotated.preparation_key = rotated_key;
+    let resolver = Arc::new(CurrentRecipientSetSelection {
+        original: selection.clone(),
+        rotated: rotated.clone(),
+        use_rotated: std::sync::atomic::AtomicBool::new(false),
+    });
+    let contributor = Arc::new(CommittedOriginal {
+        batch,
+        reads: AtomicUsize::new(0),
+        lock_wait: None,
+    });
+    let mut composition = original_composition(contributor.clone());
+    composition.selection_resolver = resolver.clone();
+    let state = state.with_source_content(composition);
+    let app = router(state.clone()).unwrap();
+    let request = |key: &str| {
+        let mut request = post_request(
+            "/v1/scopes/case_123/events",
+            serde_json::to_vec(&body).unwrap(),
+        );
+        request
+            .headers_mut()
+            .insert(PREPARATION_KEY_HEADER, key.parse().unwrap());
+        request.headers_mut().insert(
+            trellis_service_client::COMPLETION_CALLER_AUTHORIZATION_HEADER,
+            "Bearer public-neutral-person".parse().unwrap(),
+        );
+        request
+    };
+    let first = app
+        .clone()
+        .oneshot(request(&selection.preparation_key))
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::CREATED);
+    let retained = state
+        .bundles
+        .get_by_seal(b"case_123", 2)
+        .await
+        .unwrap()
+        .unwrap();
+    let bytes = state
+        .artifact_store
+        .get(&retained.artifact_ref)
+        .await
+        .unwrap()
+        .unwrap();
+    resolver.use_rotated.store(true, Ordering::SeqCst);
+    let retry = app
+        .oneshot(request(&rotated.preparation_key))
+        .await
+        .unwrap();
+    assert_eq!(retry.status(), StatusCode::CONFLICT);
+    assert!(
+        retry
+            .headers()
+            .get(stack_common_http::idempotency::IDEMPOTENCY_REPLAY_HEADER)
+            .is_none()
+    );
+    assert_eq!(contributor.reads.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        state
+            .repository
+            .list_scope(b"case_123")
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        state
+            .artifact_store
+            .get(&retained.artifact_ref)
+            .await
+            .unwrap()
+            .unwrap(),
+        bytes
+    );
 }

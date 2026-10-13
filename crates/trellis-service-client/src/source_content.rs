@@ -30,6 +30,12 @@ pub struct SourceContentIdentityV1 {
     pub provider_selection_hash: [u8; 32],
     pub native_policy_hash: [u8; 32],
     pub recipient_policy_hash: [u8; 32],
+    /// WOS-derived digest of the canonical sorted actual recipient IDs and public keys.
+    ///
+    /// This required identity field distinguishes key rotation under the same
+    /// recipient policy. Trellis carries and compares the owning digest; it
+    /// neither computes the recipient-set algorithm nor grants read authority.
+    pub recipient_set_sha256: [u8; 32],
     pub workflow_url: String,
     pub workflow_version: String,
     pub tenant_id: String,
