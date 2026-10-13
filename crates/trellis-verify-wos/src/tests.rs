@@ -20,6 +20,9 @@ use crate::event_types::{
 use crate::records::parse_signature_affirmation_record;
 use crate::validator::WosRecordValidator;
 
+#[path = "catalog_protected_response_tests.rs"]
+mod protected_response_tests;
+
 /// Synthetic determination-family `event_type` for rescission-terminality tests (not in the substrate registry).
 fn test_determination_family_event_after_rescission() -> String {
     format!(
@@ -186,6 +189,7 @@ fn given_wrong_presentation_hash_when_catalog_compared_then_entry_does_not_match
     use crate::records::{SignatureAffirmationRecordDetails, SignatureManifestEntry};
 
     let entry = SignatureManifestEntry {
+        protected_response: None,
         canonical_event_hash: [0u8; 32],
         signer_id: "signer-1".to_string(),
         role_id: "role-1".to_string(),

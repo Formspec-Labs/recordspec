@@ -3,6 +3,12 @@
 
 #![forbid(unsafe_code)]
 
+#[path = "protected_response.rs"]
+mod protected_response;
+pub(crate) use protected_response::{
+    ProtectedResponseLocator, ResponseBindingPins, bind_opened_response,
+};
+
 use ciborium::Value;
 use trellis_types::{
     CborHelperError, map_lookup_array, map_lookup_bytes, map_lookup_fixed_bytes, map_lookup_map,
@@ -40,6 +46,7 @@ impl From<&str> for ParseError {
 
 #[derive(Clone, Debug)]
 pub(crate) struct SignatureManifestEntry {
+    pub(crate) protected_response: Option<ProtectedResponseLocator>,
     pub(crate) canonical_event_hash: [u8; 32],
     pub(crate) signer_id: String,
     pub(crate) role_id: String,
@@ -109,7 +116,54 @@ pub(crate) struct IntakeManifestEntry {
     pub(crate) intake_event_hash: [u8; 32],
     pub(crate) case_created_event_hash: Option<[u8; 32]>,
     pub(crate) handoff: IntakeHandoffDetails,
-    pub(crate) response_bytes: Vec<u8>,
+    pub(crate) response_content: IntakeResponseContent,
+}
+
+/// Keeps the admitted intake content alternatives mutually exclusive.
+#[derive(Clone, Debug)]
+pub(crate) enum IntakeResponseContent {
+    Inline(Vec<u8>),
+    Protected(ProtectedResponseLocator),
+}
+
+// Only newly interpreted content selectors gain this rule; legacy unknown fields remain tolerated.
+fn unique_content_selectors(map: &[(Value, Value)], selectors: &[&str]) -> Result<(), ParseError> {
+    for selector in selectors {
+        if map
+            .iter()
+            .filter(|(key, _)| key.as_text() == Some(*selector))
+            .count()
+            > 1
+        {
+            return Err("catalog Response content selector is duplicated".into());
+        }
+    }
+    Ok(())
+}
+
+fn optional_protected_response(
+    map: &[(Value, Value)],
+) -> Result<Option<ProtectedResponseLocator>, ParseError> {
+    unique_content_selectors(map, &["protected_response"])?;
+    map_lookup_optional_value(map, "protected_response")
+        .map(protected_response::parse_protected_response)
+        .transpose()
+}
+
+fn intake_response_content(map: &[(Value, Value)]) -> Result<IntakeResponseContent, ParseError> {
+    unique_content_selectors(map, &["response_bytes", "protected_response"])?;
+    let inline = map_lookup_optional_value(map, "response_bytes");
+    let protected = map_lookup_optional_value(map, "protected_response");
+    match (inline, protected) {
+        (Some(_), None) => Ok(IntakeResponseContent::Inline(map_lookup_bytes(
+            map,
+            "response_bytes",
+        )?)),
+        (None, Some(value)) => Ok(IntakeResponseContent::Protected(
+            protected_response::parse_protected_response(value)?,
+        )),
+        _ => Err("intake catalog requires exactly one Response content form".into()),
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -183,6 +237,7 @@ pub(crate) fn parse_signature_manifest_entries(
                 .as_map()
                 .ok_or_else(|| "signature affirmation catalog entry is not a map".to_string())?;
             Ok(SignatureManifestEntry {
+                protected_response: optional_protected_response(map)?,
                 canonical_event_hash: bytes_array(&map_lookup_fixed_bytes(
                     map,
                     "canonical_event_hash",
@@ -248,7 +303,7 @@ pub(crate) fn parse_intake_manifest_entries(
                 )?
                 .map(|bytes| bytes_array(&bytes)),
                 handoff,
-                response_bytes: map_lookup_bytes(map, "response_bytes")?,
+                response_content: intake_response_content(map)?,
             })
         })
         .collect()

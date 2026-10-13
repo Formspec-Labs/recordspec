@@ -14,16 +14,143 @@ use crate::event_types::{
 };
 use crate::records::{
     CaseCreatedRecordDetails, IntakeAcceptedRecordDetails, IntakeManifestEntry,
-    SignatureAffirmationRecordDetails, SignatureManifestEntry, cbor_nested_map_semantic_eq,
-    hex_string, parse_case_created_record, parse_intake_accepted_record,
-    parse_intake_export_digest, parse_intake_manifest_entries, parse_signature_affirmation_record,
-    parse_signature_export_digest, parse_signature_manifest_entries, response_hash_matches,
+    IntakeResponseContent, SignatureAffirmationRecordDetails, SignatureManifestEntry,
+    cbor_nested_map_semantic_eq, hex_string, parse_case_created_record,
+    parse_intake_accepted_record, parse_intake_export_digest, parse_intake_manifest_entries,
+    parse_signature_affirmation_record, parse_signature_export_digest,
+    parse_signature_manifest_entries, response_hash_matches,
 };
 
 pub(crate) fn validate_catalogs(export: &DomainExport<'_>) -> Vec<DomainFinding> {
     let mut findings = Vec::new();
     findings.extend(validate_signature_catalog(export));
     findings.extend(validate_intake_catalog(export));
+    findings
+}
+
+/// Requires protected content for every independently selected native occurrence.
+///
+/// This is a codec/native-binding gate, not decryption or Source signature verification.
+/// Protected content remains unavailable until those independent checks are composed.
+pub(crate) fn validate_required_response_catalogs(
+    export: &DomainExport<'_>,
+    required_intakes: &BTreeSet<[u8; 32]>,
+    required_signatures: &BTreeSet<[u8; 32]>,
+) -> Vec<DomainFinding> {
+    let mut findings = validate_catalogs(export);
+    let intakes = export
+        .members
+        .get("063-intake-handoffs.cbor")
+        .and_then(|bytes| parse_intake_manifest_entries(bytes).ok())
+        .unwrap_or_default();
+    let signatures = export
+        .members
+        .get("062-signature-affirmations.cbor")
+        .and_then(|bytes| parse_signature_manifest_entries(bytes).ok())
+        .unwrap_or_default();
+    let intake_bound = export
+        .members
+        .get("063-intake-handoffs.cbor")
+        .is_some_and(|bytes| {
+            export
+                .manifest_extensions
+                .get(INTAKE_EXPORT_EXTENSION)
+                .and_then(|extension| parse_intake_export_digest(extension).ok())
+                == Some(sha256_bytes(bytes))
+        });
+    let signature_bound = export
+        .members
+        .get("062-signature-affirmations.cbor")
+        .is_some_and(|bytes| {
+            export
+                .manifest_extensions
+                .get(SIGNATURE_EXPORT_EXTENSION)
+                .and_then(|extension| parse_signature_export_digest(extension).ok())
+                == Some(sha256_bytes(bytes))
+        });
+    if !required_intakes.is_empty() && !intake_bound {
+        findings.push(finding(
+            "required_response_catalog_unbound",
+            None,
+            "selected original content requires its valid manifest-bound intake catalog",
+        ));
+    }
+    if !required_signatures.is_empty() && !signature_bound {
+        findings.push(finding(
+            "required_response_catalog_unbound",
+            None,
+            "selected signing content requires its valid manifest-bound signature catalog",
+        ));
+    }
+    // Digest mismatches already run legacy native checks; missing/malformed extensions do not.
+    let intake_checks_ran = export
+        .manifest_extensions
+        .get(INTAKE_EXPORT_EXTENSION)
+        .is_some_and(|extension| parse_intake_export_digest(extension).is_ok());
+    let signature_checks_ran = export
+        .manifest_extensions
+        .get(SIGNATURE_EXPORT_EXTENSION)
+        .is_some_and(|extension| parse_signature_export_digest(extension).is_ok());
+    let fallback = (!required_intakes.is_empty() && !intake_checks_ran)
+        || (!required_signatures.is_empty() && !signature_checks_ran);
+    let events = if fallback {
+        event_by_hash(export.events, &mut findings)
+    } else {
+        BTreeMap::new()
+    };
+    if !intake_checks_ran {
+        for entry in &intakes {
+            if required_intakes.contains(&entry.intake_event_hash) {
+                validate_intake_entry(entry, &events, &mut findings);
+            }
+        }
+    }
+    if !signature_checks_ran {
+        for entry in &signatures {
+            if required_signatures.contains(&entry.canonical_event_hash) {
+                validate_signature_entry(entry, &events, &mut findings);
+            }
+        }
+    }
+    for hash in required_intakes {
+        if !intakes.iter().any(|entry| {
+            entry.intake_event_hash == *hash
+                && matches!(entry.response_content, IntakeResponseContent::Protected(_))
+        }) {
+            findings.push(finding(
+                "required_protected_response_missing",
+                Some(*hash),
+                "selected original Response requires protected catalog content",
+            ));
+        }
+    }
+    for hash in required_signatures {
+        if !signatures
+            .iter()
+            .any(|entry| entry.canonical_event_hash == *hash && entry.protected_response.is_some())
+        {
+            findings.push(finding(
+                "required_protected_response_missing",
+                Some(*hash),
+                "selected signing occurrence requires protected catalog content",
+            ));
+        }
+    }
+    for hash in required_intakes.iter().chain(required_signatures) {
+        let protected = intakes.iter().any(|entry| {
+            entry.intake_event_hash == *hash
+                && matches!(entry.response_content, IntakeResponseContent::Protected(_))
+        }) || signatures
+            .iter()
+            .any(|entry| entry.canonical_event_hash == *hash && entry.protected_response.is_some());
+        if protected
+            && !findings.iter().any(|item| {
+                item.kind == "protected_response_unavailable" && item.event_hash == Some(*hash)
+            })
+        {
+            findings.push(finding("protected_response_unavailable", Some(*hash), "selected protected content requires independently admitted opening and Source verification"));
+        }
+    }
     findings
 }
 
@@ -126,6 +253,23 @@ fn validate_signature_entry(
             "signature_catalog_mismatch",
             Some(entry.canonical_event_hash),
             "signature catalog fields do not match the signed record",
+        ));
+    }
+    if let Some(content) = &entry.protected_response {
+        if content.native_event_hash != entry.canonical_event_hash
+            || content.response_ref != entry.formspec_response_ref
+        {
+            findings.push(finding(
+                "protected_response_native_binding_mismatch",
+                Some(entry.canonical_event_hash),
+                "protected Response locator differs from the actual signature anchor",
+            ));
+        }
+        // Codec binding cannot confer decryption or Source signature authority.
+        findings.push(finding(
+            "protected_response_unavailable",
+            Some(entry.canonical_event_hash),
+            "protected Response requires independently admitted opening and Source verification",
         ));
     }
 }
@@ -231,18 +375,35 @@ fn validate_intake_entry(
             "intake handoff fields do not match the intakeAccepted record",
         ));
     }
-    match response_hash_matches(&entry.handoff.response_hash, &entry.response_bytes) {
-        Ok(true) => {}
-        Ok(false) => findings.push(finding(
-            "intake_response_hash_mismatch",
-            Some(entry.intake_event_hash),
-            "intake handoff response hash does not match response bytes",
-        )),
-        Err(error) => findings.push(finding(
-            "intake_handoff_catalog_invalid",
-            Some(entry.intake_event_hash),
-            format!("intake handoff response hash is invalid: {error}"),
-        )),
+    match &entry.response_content {
+        IntakeResponseContent::Inline(bytes) => {
+            match response_hash_matches(&entry.handoff.response_hash, bytes) {
+                Ok(true) => {}
+                Ok(false) => findings.push(finding(
+                    "intake_response_hash_mismatch",
+                    Some(entry.intake_event_hash),
+                    "intake handoff response hash does not match response bytes",
+                )),
+                Err(error) => findings.push(finding(
+                    "intake_handoff_catalog_invalid",
+                    Some(entry.intake_event_hash),
+                    format!("intake handoff response hash is invalid: {error}"),
+                )),
+            }
+        }
+        IntakeResponseContent::Protected(content) => {
+            if content.native_event_hash != entry.intake_event_hash
+                || content.response_ref != entry.handoff.response_ref
+                || content.response_hash != entry.handoff.response_hash
+            {
+                findings.push(finding(
+                    "protected_response_native_binding_mismatch",
+                    Some(entry.intake_event_hash),
+                    "protected Response locator differs from the actual intake handoff anchor",
+                ));
+            }
+            findings.push(finding("protected_response_unavailable", Some(entry.intake_event_hash), "protected Response requires independently admitted opening and Source verification"));
+        }
     }
     validate_case_created_entry(entry, &intake_record, event_by_hash, findings);
 }
