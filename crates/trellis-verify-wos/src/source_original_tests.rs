@@ -252,9 +252,11 @@ fn source_original_profile_case_must_match_actual_native_case() {
     let mut p = profile(&f);
     assert!(check(&f, &p, 0, true).is_empty());
     p.case_ref = "foreign-case".into();
-    assert!(check(&f, &p, 0, true)
-        .iter()
-        .any(|finding| finding.kind == "source_original_profile_mismatch"));
+    assert!(
+        check(&f, &p, 0, true)
+            .iter()
+            .any(|finding| finding.kind == "source_original_profile_mismatch")
+    );
 }
 #[test]
 fn source_original_public_catalog_never_carries_plain_complete_response() {
@@ -280,4 +282,32 @@ fn source_original_closed_opening_view_keeps_original_namespace_and_identity() {
         trellis_types::domain_separated_sha256(trellis_types::CONTENT_DOMAIN, view.ciphertext())
     );
     assert!(rows[0].protected_response_opening(b"other record").is_err());
+}
+
+#[test]
+fn original_context_join_refuses_inline_and_duplicate_selectors() {
+    let f = fixture();
+    let join = crate::OriginalContextProofV1 {
+        task_completed_event_hash: [2; 32],
+        package_record_hash: [3; 32],
+        context_instance: "neutral-context".into(),
+    };
+    let join = trellis_types::decode_cbor_value(&join.to_cbor().unwrap()).unwrap();
+    let mut value = trellis_types::decode_cbor_value(&f.catalog).unwrap();
+    let row = value.as_array_mut().unwrap()[0].as_map_mut().unwrap();
+    row.retain(|(key, _)| key.as_text() != Some("protected_response"));
+    row.push((
+        Value::Text("response_bytes".into()),
+        Value::Bytes(f.opened.clone()),
+    ));
+    row.push((Value::Text("original_context_proof".into()), join.clone()));
+    assert!(protected_intake_responses_from_catalog(&encoded(&value)).is_err());
+    let mut value = trellis_types::decode_cbor_value(&f.catalog).unwrap();
+    let row = value.as_array_mut().unwrap()[0].as_map_mut().unwrap();
+    row.push((Value::Text("original_context_proof".into()), join.clone()));
+    row.push((Value::Text("original_context_proof".into()), join));
+    // Serialize without canonicalizing duplicates so the owning parser sees them.
+    let mut bytes = Vec::new();
+    ciborium::into_writer(&value, &mut bytes).unwrap();
+    assert!(protected_intake_responses_from_catalog(&bytes).is_err());
 }

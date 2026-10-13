@@ -24,8 +24,55 @@ pub struct SourceIntakeRequirementV1 {
 pub struct ProtectedIntakeResponseV1 {
     pub(crate) entry: IntakeManifestEntry,
     row: Value,
+    original_context_proof: Option<crate::OriginalContextProofV1>,
 }
 impl ProtectedIntakeResponseV1 {
+    /// Returns the exact owning MIXED context join, when present.
+    pub fn original_context_proof(&self) -> Option<&crate::OriginalContextProofV1> {
+        self.original_context_proof.as_ref()
+    }
+    /// Joins an original to exactly one actual task's protected package.
+    ///
+    /// The owning reader must separately verify that context_instance exists in
+    /// the opened typed MIXED package and independently pin the original Source
+    /// binding. Current and original Source bindings may differ through the
+    /// admitted namespace association. This method grants no Source authority.
+    /// # Errors
+    /// Refuses missing, duplicate, foreign or differently published package joins.
+    pub fn validate_original_context_proof<'a>(
+        &'a self,
+        tasks: &[crate::SourceSignedCompletedTaskV1],
+    ) -> Result<&'a crate::OriginalContextProofV1, String> {
+        let join = self
+            .original_context_proof
+            .as_ref()
+            .ok_or("original context proof absent")?;
+        let mut matches = tasks
+            .iter()
+            .filter(|task| task.fields().canonical_event_hash == join.task_completed_event_hash);
+        let task = matches.next().ok_or("original context task absent")?;
+        if matches.next().is_some() {
+            return Err("original context task ambiguous".into());
+        }
+        let package = task
+            .fields()
+            .task_proof
+            .protected_package
+            .as_ref()
+            .ok_or("original context package absent")?;
+        let original = match &self.entry.response_content {
+            IntakeResponseContent::Protected(p) => p,
+            _ => unreachable!("validated protected row"),
+        };
+        if package.record_hash != join.package_record_hash
+            || package.task_completed_event_hash != join.task_completed_event_hash
+            || package.original_publication_hash != original.publication_hash
+            || package.recipient_policy_hash != original.recipient_policy_hash
+        {
+            return Err("original context package association differs".into());
+        }
+        Ok(join)
+    }
     pub fn intake_event_hash(&self) -> [u8; 32] {
         self.entry.intake_event_hash
     }
@@ -119,11 +166,26 @@ pub fn protected_intake_responses_from_catalog(
         if !seen.insert(entry.intake_event_hash) {
             return Err("duplicate original intake".into());
         }
+        let mut joins = row
+            .as_map()
+            .ok_or("original row must be map")?
+            .iter()
+            .filter(|(key, _)| key.as_text() == Some("original_context_proof"));
+        let original_context_proof = joins
+            .next()
+            .map(|(_, value)| crate::OriginalContextProofV1::from_value(value))
+            .transpose()?;
+        if joins.next().is_some() {
+            return Err("duplicate original context proof".into());
+        }
         if matches!(entry.response_content, IntakeResponseContent::Protected(_)) {
             out.push(ProtectedIntakeResponseV1 {
                 entry,
                 row: row.clone(),
+                original_context_proof,
             });
+        } else if original_context_proof.is_some() {
+            return Err("original context proof requires protected original".into());
         }
     }
     Ok(out)

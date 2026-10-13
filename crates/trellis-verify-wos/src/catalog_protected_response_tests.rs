@@ -374,6 +374,85 @@ fn protected_response_native_anchor_is_checked_and_unavailable_cannot_succeed() 
 }
 
 #[test]
+fn source_content_publication_defers_opening_without_changing_default_validation() {
+    let bytes = encoded(&workflow_catalog());
+    let (events, members, extensions) = export_fixture(&bytes);
+    let export = DomainExport {
+        events: &events,
+        members: &members,
+        manifest_extensions: &extensions,
+    };
+    assert!(crate::catalog::validate_source_content_publication_catalogs(&export).is_empty());
+    let final_findings = crate::catalog::validate_catalogs(&export);
+    assert_eq!(final_findings.len(), 1);
+    assert_eq!(final_findings[0].kind, "protected_response_unavailable");
+}
+
+#[test]
+fn source_content_publication_preserves_native_and_closed_catalog_refusals() {
+    for variation in 0..3 {
+        let mut value = workflow_catalog();
+        match variation {
+            0 => {
+                let locator = field(row(&mut value), "protected_response")
+                    .as_map_mut()
+                    .unwrap();
+                *field(locator, "native_event_hash") = Value::Bytes(vec![99; 32]);
+            }
+            1 => {
+                let handoff = field(row(&mut value), "handoff").as_map_mut().unwrap();
+                *field(handoff, "responseRef") =
+                    Value::Text("urn:formspec:response:foreign".into());
+            }
+            _ => field(row(&mut value), "protected_response")
+                .as_map_mut()
+                .unwrap()
+                .push((
+                    Value::Text("unknownPublicationClaim".into()),
+                    Value::Bool(true),
+                )),
+        }
+        let bytes = encoded(&value);
+        let (events, members, extensions) = export_fixture(&bytes);
+        let findings =
+            crate::catalog::validate_source_content_publication_catalogs(&DomainExport {
+                events: &events,
+                members: &members,
+                manifest_extensions: &extensions,
+            });
+        assert!(!findings.is_empty(), "variation {variation} must refuse");
+        assert!(
+            findings
+                .iter()
+                .all(|finding| finding.kind != "protected_response_unavailable")
+        );
+    }
+}
+
+#[test]
+fn source_content_publication_preserves_manifest_catalog_digest_refusal() {
+    let bytes = encoded(&workflow_catalog());
+    let (events, members, mut extensions) = export_fixture(&bytes);
+    extensions.insert(
+        crate::event_types::INTAKE_EXPORT_EXTENSION.into(),
+        encoded(&Value::Map(vec![(
+            Value::Text("intake_catalog_digest".into()),
+            Value::Bytes(vec![99; 32]),
+        )])),
+    );
+    let findings = crate::catalog::validate_source_content_publication_catalogs(&DomainExport {
+        events: &events,
+        members: &members,
+        manifest_extensions: &extensions,
+    });
+    assert!(
+        findings
+            .iter()
+            .any(|finding| finding.kind == "intake_handoff_catalog_digest_mismatch")
+    );
+}
+
+#[test]
 fn protected_response_required_profile_rejects_legacy_missing_content() {
     let mut value = workflow_catalog();
     let row = row(&mut value);

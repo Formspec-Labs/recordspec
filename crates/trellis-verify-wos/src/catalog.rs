@@ -28,6 +28,15 @@ pub(crate) fn validate_catalogs(export: &DomainExport<'_>) -> Vec<DomainFinding>
     findings
 }
 
+/// Checks publication structure without asserting protected Source content validity.
+pub(crate) fn validate_source_content_publication_catalogs(
+    export: &DomainExport<'_>,
+) -> Vec<DomainFinding> {
+    let mut findings = validate_signature_catalog_phase(export, false, false);
+    findings.extend(validate_intake_catalog_mode(export, false));
+    findings
+}
+
 /// Requires protected content for every independently selected native occurrence.
 ///
 /// This is a codec/native-binding gate, not decryption or Source signature verification.
@@ -157,7 +166,101 @@ pub(crate) fn validate_required_response_catalogs(
 fn validate_signature_catalog(export: &DomainExport<'_>) -> Vec<DomainFinding> {
     validate_signature_catalog_mode(export, true)
 }
-fn validate_signature_catalog_mode(export: &DomainExport<'_>, require_source_content: bool) -> Vec<DomainFinding> {
+fn validate_signature_catalog_mode(
+    export: &DomainExport<'_>,
+    require_source_content: bool,
+) -> Vec<DomainFinding> {
+    // Existing full Source validators still require opening legacy protected
+    // signature Responses; only the explicit publication phase defers that check.
+    validate_signature_catalog_phase(export, require_source_content, true)
+}
+
+#[cfg(test)]
+mod publication_phase_controls {
+    use super::*;
+    use integrity_verify::trellis::RecordValidator;
+    use std::cell::RefCell;
+
+    #[derive(Default)]
+    struct Capture(RefCell<Vec<DomainEvent>>);
+    impl RecordValidator for Capture {
+        fn validate_events(&self, events: &[DomainEvent]) -> Vec<DomainFinding> {
+            self.0.replace(events.to_vec());
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn source_content_publication_keeps_legacy_opening_required_in_full_source_phase() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../../fixtures/vectors/export/006-signature-affirmations-inline/expected-export.zip",
+        );
+        let zip = std::fs::read(path).unwrap();
+        let capture = Capture::default();
+        let _ = integrity_verify::trellis::verify_export_zip_with_validator(&zip, &capture);
+        let events = capture.0.into_inner();
+        let members = integrity_bundle::read_stored_zip(&zip).unwrap();
+        let raw = members
+            .iter()
+            .find(|member| member.path().ends_with("062-signature-affirmations.cbor"))
+            .unwrap()
+            .bytes();
+        let entry = parse_signature_manifest_entries(raw).unwrap().remove(0);
+        // This is a codec-phase control; no encryption or Source signature is claimed.
+        let locator = crate::records::ProtectedResponseLocator {
+            native_event_hash: entry.canonical_event_hash,
+            response_ref: entry.formspec_response_ref.clone(),
+            response_id: "codec-response".into(),
+            response_hash: format!("sha256:{}", "00".repeat(32)),
+            original_byte_length: 1,
+            content_hash: [2; 32],
+            context_key: vec![3; 32],
+            record_hash: [4; 32],
+            source_binding_hash: [5; 32],
+            publication_hash: [6; 32],
+            public_policy_hash: [7; 32],
+            recipient_policy_hash: [8; 32],
+            nonce: [9; 12],
+            key_bag: ciborium::Value::Map(Vec::new()),
+        };
+        let mut catalog = trellis_types::decode_cbor_value(raw).unwrap();
+        catalog.as_array_mut().unwrap()[0]
+            .as_map_mut()
+            .unwrap()
+            .push((
+                ciborium::Value::Text("protected_response".into()),
+                locator.to_value(true),
+            ));
+        let bytes = trellis_types::encode_canonical_cbor_value(&catalog).unwrap();
+        let members = BTreeMap::from([("062-signature-affirmations.cbor".into(), bytes.clone())]);
+        let extension = ciborium::Value::Map(vec![(
+            ciborium::Value::Text("signature_catalog_digest".into()),
+            ciborium::Value::Bytes(sha256_bytes(&bytes).to_vec()),
+        )]);
+        let extensions = BTreeMap::from([(
+            SIGNATURE_EXPORT_EXTENSION.into(),
+            trellis_types::encode_canonical_cbor_value(&extension).unwrap(),
+        )]);
+        let export = DomainExport {
+            events: &events,
+            members: &members,
+            manifest_extensions: &extensions,
+        };
+        let full = validate_signature_catalog_mode(&export, false);
+        assert!(
+            full.iter()
+                .any(|finding| finding.kind == "protected_response_unavailable")
+        );
+        let publication = validate_signature_catalog_phase(&export, false, false);
+        assert!(publication.is_empty(), "{publication:?}");
+    }
+}
+
+fn validate_signature_catalog_phase(
+    export: &DomainExport<'_>,
+    require_source_content: bool,
+    require_legacy_protected_content: bool,
+) -> Vec<DomainFinding> {
     let Some(extension) = export.manifest_extensions.get(SIGNATURE_EXPORT_EXTENSION) else {
         return Vec::new();
     };
@@ -205,9 +308,17 @@ fn validate_signature_catalog_mode(export: &DomainExport<'_>, require_source_con
         }
     }
     for entry in &entries {
-        validate_signature_entry(entry, &event_by_hash, &mut findings);
+        validate_signature_entry_mode(
+            entry,
+            &event_by_hash,
+            &mut findings,
+            require_legacy_protected_content,
+        );
     }
-    findings.extend(crate::source_signed_task::structural_findings(export, require_source_content));
+    findings.extend(crate::source_signed_task::structural_findings(
+        export,
+        require_source_content,
+    ));
     findings
 }
 
@@ -215,6 +326,15 @@ fn validate_signature_entry(
     entry: &SignatureManifestEntry,
     event_by_hash: &BTreeMap<[u8; 32], &DomainEvent>,
     findings: &mut Vec<DomainFinding>,
+) {
+    validate_signature_entry_mode(entry, event_by_hash, findings, true);
+}
+
+fn validate_signature_entry_mode(
+    entry: &SignatureManifestEntry,
+    event_by_hash: &BTreeMap<[u8; 32], &DomainEvent>,
+    findings: &mut Vec<DomainFinding>,
+    require_source_content: bool,
 ) {
     let Some(event) = event_by_hash.get(&entry.canonical_event_hash) else {
         findings.push(finding(
@@ -270,16 +390,23 @@ fn validate_signature_entry(
             ));
         }
         // Codec binding cannot confer decryption or Source signature authority.
-        findings.push(finding(
-            "protected_response_unavailable",
-            Some(entry.canonical_event_hash),
-            "protected Response requires independently admitted opening and Source verification",
-        ));
+        if require_source_content {
+            findings.push(finding(
+                "protected_response_unavailable",
+                Some(entry.canonical_event_hash),
+                "protected Response requires independently admitted opening and Source verification",
+            ));
+        }
     }
 }
 
-fn validate_intake_catalog(export: &DomainExport<'_>) -> Vec<DomainFinding> { validate_intake_catalog_mode(export, true) }
-fn validate_intake_catalog_mode(export: &DomainExport<'_>, require_protected_content: bool) -> Vec<DomainFinding> {
+fn validate_intake_catalog(export: &DomainExport<'_>) -> Vec<DomainFinding> {
+    validate_intake_catalog_mode(export, true)
+}
+fn validate_intake_catalog_mode(
+    export: &DomainExport<'_>,
+    require_protected_content: bool,
+) -> Vec<DomainFinding> {
     let Some(extension) = export.manifest_extensions.get(INTAKE_EXPORT_EXTENSION) else {
         return Vec::new();
     };
@@ -315,6 +442,7 @@ fn validate_intake_catalog_mode(export: &DomainExport<'_>, require_protected_con
             )];
         }
     };
+    findings.extend(validate_original_context_joins(export, catalog_bytes));
     let event_by_hash = event_by_hash(export.events, &mut findings);
     let mut seen = BTreeSet::new();
     for entry in &entries {
@@ -327,18 +455,68 @@ fn validate_intake_catalog_mode(export: &DomainExport<'_>, require_protected_con
         }
     }
     for entry in &entries {
-        validate_intake_entry_mode(entry, &event_by_hash, &mut findings, require_protected_content);
+        validate_intake_entry_mode(
+            entry,
+            &event_by_hash,
+            &mut findings,
+            require_protected_content,
+        );
     }
     findings
 }
 
-fn validate_intake_entry(entry: &IntakeManifestEntry,event_by_hash: &BTreeMap<[u8;32], &DomainEvent>,findings:&mut Vec<DomainFinding>) {
-    validate_intake_entry_mode(entry,event_by_hash,findings,true)
+/// Checks supplied original/task associations without requiring them on legacy rows.
+fn validate_original_context_joins(
+    export: &DomainExport<'_>,
+    catalog_bytes: &[u8],
+) -> Vec<DomainFinding> {
+    let originals = match crate::protected_intake_responses_from_catalog(catalog_bytes) {
+        Ok(originals) => originals,
+        Err(error) => {
+            return vec![finding("intake_handoff_catalog_invalid", None, error)];
+        }
+    };
+    if originals
+        .iter()
+        .all(|original| original.original_context_proof().is_none())
+    {
+        return Vec::new();
+    }
+    let tasks = export
+        .members
+        .get("062-signature-affirmations.cbor")
+        .and_then(|bytes| crate::source_signed_tasks_from_catalog(bytes).ok())
+        .unwrap_or_default();
+    originals
+        .iter()
+        .filter(|original| original.original_context_proof().is_some())
+        .filter_map(|original| {
+            original
+                .validate_original_context_proof(&tasks)
+                .err()
+                .map(|error| {
+                    finding(
+                        "source_original_context_join_invalid",
+                        Some(original.intake_event_hash()),
+                        error,
+                    )
+                })
+        })
+        .collect()
+}
+
+fn validate_intake_entry(
+    entry: &IntakeManifestEntry,
+    event_by_hash: &BTreeMap<[u8; 32], &DomainEvent>,
+    findings: &mut Vec<DomainFinding>,
+) {
+    validate_intake_entry_mode(entry, event_by_hash, findings, true)
 }
 fn validate_intake_entry_mode(
     entry: &IntakeManifestEntry,
     event_by_hash: &BTreeMap<[u8; 32], &DomainEvent>,
-    findings: &mut Vec<DomainFinding>, require_protected_content: bool,
+    findings: &mut Vec<DomainFinding>,
+    require_protected_content: bool,
 ) {
     let Some(event) = event_by_hash.get(&entry.intake_event_hash) else {
         findings.push(finding(
@@ -410,7 +588,9 @@ fn validate_intake_entry_mode(
                     "protected Response locator differs from the actual intake handoff anchor",
                 ));
             }
-            if require_protected_content { findings.push(finding("protected_response_unavailable", Some(entry.intake_event_hash), "protected Response requires independently admitted opening and Source verification")); }
+            if require_protected_content {
+                findings.push(finding("protected_response_unavailable", Some(entry.intake_event_hash), "protected Response requires independently admitted opening and Source verification"));
+            }
         }
     }
     validate_case_created_entry(entry, &intake_record, event_by_hash, findings);
@@ -585,25 +765,57 @@ fn finding(
 
 // Explicit selected owning verification changes Source content dispatch only.
 // All legacy/native/intake checks remain; no existing finding is filtered away.
-pub(crate) fn validate_catalogs_with_source_content<V: crate::source_signed_task::SourceTaskContentVerifier>(
-    export: &DomainExport<'_>, archive_sha256: [u8;32],
-    profile: &crate::source_signed_task::SourceTaskContentProfileV1, verifier: &V,
+pub(crate) fn validate_catalogs_with_source_content<
+    V: crate::source_signed_task::SourceTaskContentVerifier,
+>(
+    export: &DomainExport<'_>,
+    archive_sha256: [u8; 32],
+    profile: &crate::source_signed_task::SourceTaskContentProfileV1,
+    verifier: &V,
 ) -> Vec<DomainFinding> {
     let mut findings = validate_signature_catalog_mode(export, false);
     findings.extend(validate_intake_catalog(export));
-    findings.extend(crate::source_signed_task::verified_profile_findings(export, archive_sha256, profile, verifier));
+    findings.extend(crate::source_signed_task::verified_profile_findings(
+        export,
+        archive_sha256,
+        profile,
+        verifier,
+    ));
     findings
 }
 
-pub(crate) fn intake_native_findings(entry:&IntakeManifestEntry,export:&DomainExport<'_>)->Vec<DomainFinding>{
-    let mut findings=Vec::new();let events=event_by_hash(export.events,&mut findings);
-    validate_intake_entry_mode(entry,&events,&mut findings,false);findings
+pub(crate) fn intake_native_findings(
+    entry: &IntakeManifestEntry,
+    export: &DomainExport<'_>,
+) -> Vec<DomainFinding> {
+    let mut findings = Vec::new();
+    let events = event_by_hash(export.events, &mut findings);
+    validate_intake_entry_mode(entry, &events, &mut findings, false);
+    findings
 }
-pub(crate) fn validate_catalogs_with_all_source_content<T:crate::SourceTaskContentVerifier,I:crate::SourceIntakeContentVerifier>(
- export:&DomainExport<'_>,archive_sha256:[u8;32],profile:&crate::SourceTaskContentProfileV1,tasks:&T,intakes:&I,
-)->Vec<DomainFinding>{
- let mut findings=validate_signature_catalog_mode(export,false);
- findings.extend(validate_intake_catalog_mode(export,false));
- findings.extend(crate::source_signed_task::verified_profile_findings(export,archive_sha256,profile,tasks));
- findings.extend(crate::source_original::verified_original_findings(export,archive_sha256,profile,intakes));findings
+pub(crate) fn validate_catalogs_with_all_source_content<
+    T: crate::SourceTaskContentVerifier,
+    I: crate::SourceIntakeContentVerifier,
+>(
+    export: &DomainExport<'_>,
+    archive_sha256: [u8; 32],
+    profile: &crate::SourceTaskContentProfileV1,
+    tasks: &T,
+    intakes: &I,
+) -> Vec<DomainFinding> {
+    let mut findings = validate_signature_catalog_mode(export, false);
+    findings.extend(validate_intake_catalog_mode(export, false));
+    findings.extend(crate::source_signed_task::verified_profile_findings(
+        export,
+        archive_sha256,
+        profile,
+        tasks,
+    ));
+    findings.extend(crate::source_original::verified_original_findings(
+        export,
+        archive_sha256,
+        profile,
+        intakes,
+    ));
+    findings
 }

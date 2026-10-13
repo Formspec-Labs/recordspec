@@ -100,6 +100,7 @@ fn fixture(family: SourceTaskFamily) -> Fixture {
         signed_payload_digest: format!("sha256:{}", hex::encode([9; 32])),
         signed_payload_digest_algorithm: "sha-256".into(),
         task_proof: SourceTaskProofDescriptorV1 {
+            protected_package: None,
             witness_sha256: [10; 32],
             native_snapshot_hash: [11; 32],
             provider_selection_hash: [12; 32],
@@ -300,6 +301,63 @@ fn source_task_reader_requires_exact_owning_result_and_protected_bytes() {
         assert!(!findings(&f, &p, variation).is_empty());
     }
 }
+
+#[test]
+fn source_content_publication_keeps_full_task_verification_phase_unchanged() {
+    let f = fixture(SourceTaskFamily::MixedV2);
+    let p = profile(&f.task);
+    let catalog =
+        encode_source_signed_task_catalog(None, std::slice::from_ref(&f.task), &f.events).unwrap();
+    let members = BTreeMap::from([
+        ("062-signature-affirmations.cbor".into(), catalog.clone()),
+        ("000-manifest.cbor".into(), vec![1]),
+        ("040-checkpoints.cbor".into(), vec![2]),
+    ]);
+    let extensions = BTreeMap::from([(
+        crate::event_types::SIGNATURE_EXPORT_EXTENSION.into(),
+        encode_canonical_cbor_value(&m(vec![(
+            "signature_catalog_digest",
+            b(sha256_bytes(&catalog)),
+        )]))
+        .unwrap(),
+    )]);
+    let export = DomainExport {
+        events: &f.events,
+        members: &members,
+        manifest_extensions: &extensions,
+    };
+    // The existing controlled adapter proves phase routing only, not Source crypto.
+    assert!(crate::catalog::validate_source_content_publication_catalogs(&export).is_empty());
+    assert!(
+        crate::catalog::validate_catalogs_with_source_content(
+            &export,
+            [19; 32],
+            &p,
+            &ControlledVerifier {
+                f: &f,
+                variation: 0
+            },
+        )
+        .is_empty()
+    );
+    assert!(
+        !crate::catalog::validate_catalogs_with_source_content(
+            &export,
+            [19; 32],
+            &p,
+            &ControlledVerifier {
+                f: &f,
+                variation: 1
+            },
+        )
+        .is_empty()
+    );
+    assert!(
+        crate::catalog::validate_catalogs(&export)
+            .iter()
+            .any(|finding| finding.kind == "source_task_content_unavailable")
+    );
+}
 #[test]
 fn source_task_family_does_not_override_independent_formal_obligation() {
     for family in [
@@ -351,4 +409,220 @@ fn source_task_closed_opening_view_reuses_record_and_ciphertext_refusals() {
     changed[last] ^= 1;
     assert!(f.task.protected_response_opening(&changed).is_err());
     assert!(f.task.protected_response_opening(b"malformed").is_err());
+}
+
+#[test]
+fn source_package_descriptor_and_original_context_join_bind_exact_task_and_publications() {
+    let f = fixture(SourceTaskFamily::MixedV2);
+    let ciphertext = vec![9; 48];
+    let mut package = crate::ProtectedSourceProofPackageLocatorV1 {
+        family: "mixed-v2".into(),
+        task_completed_event_hash: [2; 32],
+        package_sha256: [3; 32],
+        witness_sha256: [10; 32],
+        original_byte_length: 32,
+        content_hash: trellis_types::domain_separated_sha256(
+            trellis_types::CONTENT_DOMAIN,
+            &ciphertext,
+        ),
+        context_key: vec![4; 32],
+        record_hash: [0; 32],
+        source_binding_hash: [4; 32],
+        current_publication_hash: [5; 32],
+        original_publication_hash: [5; 32],
+        public_policy_hash: [6; 32],
+        recipient_policy_hash: [7; 32],
+        nonce: [8; 12],
+        key_bag: m(vec![(
+            "entries",
+            Value::Array(vec![m(vec![
+                ("recipient", Value::Bytes(b"neutral-reader".to_vec())),
+                ("suite", Value::Integer(1.into())),
+                ("ephemeral_pubkey", Value::Bytes(vec![1; 32])),
+                ("wrapped_dek", Value::Bytes(vec![2; 48])),
+            ])]),
+        )]),
+    };
+    let record = encode_canonical_cbor_value(&m(vec![
+        (
+            "locator",
+            trellis_types::decode_cbor_value(&package.to_record_locator_cbor().unwrap()).unwrap(),
+        ),
+        ("ciphertext", Value::Bytes(ciphertext)),
+    ]))
+    .unwrap();
+    package.record_hash = sha256_bytes(&record);
+    let mut fields = f.task.fields().clone();
+    fields.task_proof.protected_package = Some(package.clone());
+    let task =
+        SourceSignedCompletedTaskV1::new(fields.clone(), &f.task.protected_locator_cbor().unwrap())
+            .unwrap();
+    assert_eq!(
+        task.protected_package_opening(&record)
+            .unwrap()
+            .witness_sha256(),
+        [10; 32]
+    );
+    let encoded = encode_canonical_cbor_value(&Value::Array(vec![
+        trellis_types::decode_cbor_value(&task.to_cbor().unwrap()).unwrap(),
+    ]))
+    .unwrap();
+    assert_eq!(
+        source_signed_tasks_from_catalog(&encoded).unwrap()[0]
+            .protected_package_locator_cbor()
+            .unwrap(),
+        package.to_cbor().unwrap()
+    );
+    for change in 0..5 {
+        let mut changed = fields.clone();
+        let package = changed.task_proof.protected_package.as_mut().unwrap();
+        match change {
+            0 => package.task_completed_event_hash = [99; 32],
+            1 => package.witness_sha256 = [99; 32],
+            2 => package.current_publication_hash = [99; 32],
+            3 => package.recipient_policy_hash = [99; 32],
+            _ => package.source_binding_hash = [99; 32],
+        }
+        assert!(
+            SourceSignedCompletedTaskV1::new(changed, &f.task.protected_locator_cbor().unwrap())
+                .is_err()
+        );
+    }
+    let original_catalog = |join: crate::OriginalContextProofV1| {
+        encode_canonical_cbor_value(&Value::Array(vec![m(vec![
+            ("intake_event_hash", Value::Bytes(vec![20; 32])),
+            (
+                "handoff",
+                m(vec![
+                    ("handoffId", Value::Text("neutral-handoff".into())),
+                    ("initiationMode", Value::Text("workflowInitiated".into())),
+                    ("caseRef", Value::Text("case".into())),
+                    (
+                        "definitionRef",
+                        m(vec![
+                            ("url", Value::Text("urn:form".into())),
+                            ("version", Value::Text("1".into())),
+                        ]),
+                    ),
+                    (
+                        "responseRef",
+                        Value::Text(f.task.protected.response_ref.clone()),
+                    ),
+                    (
+                        "responseHash",
+                        Value::Text(f.task.protected.response_hash.clone()),
+                    ),
+                    ("validationReportRef", Value::Text("report".into())),
+                    ("ledgerHeadRef", Value::Text("head".into())),
+                ]),
+            ),
+            ("protected_response", {
+                let mut locator = f.task.protected.clone();
+                locator.native_event_hash = [20; 32];
+                locator.to_value(true)
+            }),
+            (
+                "original_context_proof",
+                trellis_types::decode_cbor_value(&join.to_cbor().unwrap()).unwrap(),
+            ),
+        ])]))
+        .unwrap()
+    };
+    let join = crate::OriginalContextProofV1 {
+        task_completed_event_hash: [2; 32],
+        package_record_hash: package.record_hash,
+        context_instance: "retained-origin-context".into(),
+    };
+    let originals =
+        crate::protected_intake_responses_from_catalog(&original_catalog(join.clone())).unwrap();
+    let catalog_join_findings = |join: crate::OriginalContextProofV1, include_task: bool| {
+        let original_bytes = original_catalog(join);
+        let task_bytes = encoded.clone();
+        let mut members =
+            BTreeMap::from([("063-intake-handoffs.cbor".into(), original_bytes.clone())]);
+        if include_task {
+            members.insert("062-signature-affirmations.cbor".into(), task_bytes);
+        }
+        let extensions = BTreeMap::from([(
+            crate::event_types::INTAKE_EXPORT_EXTENSION.into(),
+            encode_canonical_cbor_value(&m(vec![(
+                "intake_catalog_digest",
+                Value::Bytes(sha256_bytes(&original_bytes).to_vec()),
+            )]))
+            .unwrap(),
+        )]);
+        crate::catalog::validate_source_content_publication_catalogs(&DomainExport {
+            events: &[],
+            members: &members,
+            manifest_extensions: &extensions,
+        })
+    };
+    assert!(
+        !catalog_join_findings(join.clone(), true)
+            .iter()
+            .any(|finding| finding.kind == "source_original_context_join_invalid")
+    );
+    assert!(
+        catalog_join_findings(join.clone(), false)
+            .iter()
+            .any(|finding| finding.kind == "source_original_context_join_invalid")
+    );
+    assert_eq!(
+        originals[0]
+            .validate_original_context_proof(std::slice::from_ref(&task))
+            .unwrap(),
+        &join
+    );
+    assert!(originals[0].validate_original_context_proof(&[]).is_err());
+    assert!(
+        originals[0]
+            .validate_original_context_proof(&[task.clone(), task.clone()])
+            .is_err()
+    );
+    let mut foreign = join;
+    foreign.package_record_hash = [99; 32];
+    assert!(
+        catalog_join_findings(foreign.clone(), true)
+            .iter()
+            .any(|finding| finding.kind == "source_original_context_join_invalid")
+    );
+    let originals =
+        crate::protected_intake_responses_from_catalog(&original_catalog(foreign)).unwrap();
+    assert!(
+        originals[0]
+            .validate_original_context_proof(std::slice::from_ref(&task))
+            .is_err()
+    );
+    for change in 0..2 {
+        let mut changed = fields.clone();
+        let package = changed.task_proof.protected_package.as_mut().unwrap();
+        if change == 0 {
+            package.original_publication_hash = [99; 32];
+        } else {
+            package.recipient_policy_hash = [99; 32];
+        }
+        let package_record_hash = package.record_hash;
+        // A foreign original publication remains a valid task descriptor but must
+        // fail the independently bound original join. A foreign reader policy
+        // already fails the correction Response/task association.
+        let changed =
+            SourceSignedCompletedTaskV1::new(changed, &f.task.protected_locator_cbor().unwrap());
+        if let Ok(changed) = changed {
+            let originals = crate::protected_intake_responses_from_catalog(&original_catalog(
+                crate::OriginalContextProofV1 {
+                    task_completed_event_hash: [2; 32],
+                    package_record_hash,
+                    context_instance: "retained-origin-context".into(),
+                },
+            ))
+            .unwrap();
+            assert!(
+                originals[0]
+                    .validate_original_context_proof(&[changed])
+                    .is_err()
+            );
+        } else {
+            assert_eq!(change, 1);
+        }
+    }
 }

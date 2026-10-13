@@ -132,8 +132,9 @@ impl SourceTaskContentProfileV1 {
 }
 
 /// Bounded provider-admitted off-event witness binding, never independent commit proof.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SourceTaskProofDescriptorV1 {
+    pub protected_package: Option<crate::ProtectedSourceProofPackageLocatorV1>,
     pub witness_sha256: [u8; 32],
     pub native_snapshot_hash: [u8; 32],
     pub provider_selection_hash: [u8; 32],
@@ -145,7 +146,7 @@ pub struct SourceTaskProofDescriptorV1 {
 }
 
 /// Public fields derived only from admitted retained Source and native evidence.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SourceSignedCompletedTaskFieldsV1 {
     pub family: SourceTaskFamily,
     pub canonical_event_hash: [u8; 32],
@@ -224,6 +225,32 @@ impl SourceSignedCompletedTaskV1 {
         crate::ProtectedResponseOpeningV1::from_record(&self.protected, record)
             .map_err(|_| "protected Response record refused".into())
     }
+    /// Returns the protected package locator associated with this actual task.
+    /// # Errors
+    /// Refuses absent package metadata or invalid encoding.
+    pub fn protected_package_locator_cbor(&self) -> Result<Vec<u8>, String> {
+        self.fields
+            .task_proof
+            .protected_package
+            .as_ref()
+            .ok_or("Source proof package locator absent")?
+            .to_cbor()
+    }
+    /// Checks exact retained package bytes against the validated task descriptor.
+    /// # Errors
+    /// Refuses absent package, changed anchors, metadata, hashes or ciphertext.
+    pub fn protected_package_opening(
+        &self,
+        record: &[u8],
+    ) -> Result<crate::ProtectedSourceProofPackageOpeningV1, String> {
+        self.validate()?;
+        self.fields
+            .task_proof
+            .protected_package
+            .as_ref()
+            .ok_or("Source proof package locator absent")?
+            .opening(record)
+    }
     fn validate(&self) -> Result<(), String> {
         let f = &self.fields;
         if [
@@ -257,6 +284,19 @@ impl SourceSignedCompletedTaskV1 {
             || self.protected.response_id != f.response_id
         {
             return Err("Source task protected binding mismatch".into());
+        }
+        if let Some(package) = &f.task_proof.protected_package {
+            package.to_cbor()?;
+            if package.family != f.family.wire()
+                || package.task_completed_event_hash != f.canonical_event_hash
+                || package.witness_sha256 != f.task_proof.witness_sha256
+                || package.source_binding_hash != self.protected.source_binding_hash
+                || package.current_publication_hash != self.protected.publication_hash
+                || package.public_policy_hash != self.protected.public_policy_hash
+                || package.recipient_policy_hash != self.protected.recipient_policy_hash
+            {
+                return Err("Source proof package task association differs".into());
+            }
         }
         Ok(())
     }
@@ -306,6 +346,9 @@ impl SourceSignedCompletedTaskV1 {
         if let Some(h) = p.original_selection_hash {
             proof.push(("original_selection_hash", b(h)));
         }
+        if let Some(package) = &p.protected_package {
+            proof.push(("protected_package", package.value(true)));
+        }
         rows.push(("task_proof", m(proof)));
         rows.push(("protected_response", self.protected.to_value(true)));
         m(rows)
@@ -348,6 +391,7 @@ impl SourceSignedCompletedTaskV1 {
                 "version",
                 "admission",
                 "witness_sha256",
+                "protected_package",
                 "native_snapshot_hash",
                 "provider_selection_hash",
                 "family_selection_hash",
@@ -377,6 +421,13 @@ impl SourceSignedCompletedTaskV1 {
             signed_payload_digest: t(map, "signed_payload_digest")?,
             signed_payload_digest_algorithm: t(map, "signed_payload_digest_algorithm")?,
             task_proof: SourceTaskProofDescriptorV1 {
+                protected_package: if has(proof, "protected_package") {
+                    Some(crate::ProtectedSourceProofPackageLocatorV1::from_value(
+                        get(proof, "protected_package")?,
+                    )?)
+                } else {
+                    None
+                },
                 witness_sha256: h(proof, "witness_sha256")?,
                 native_snapshot_hash: h(proof, "native_snapshot_hash")?,
                 provider_selection_hash: h(proof, "provider_selection_hash")?,

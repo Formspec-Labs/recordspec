@@ -30,11 +30,15 @@ mod signature_encoder;
 mod signed_acts;
 mod source_formal;
 mod source_original;
+pub mod source_proof_package;
 mod source_signed_task;
 mod validator;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod source_publication_tests;
 
 pub use certificate_html::{CertificateHtml, certificate_html_from_export};
 pub use certificate_resolver::WosFormspecResolver;
@@ -49,6 +53,11 @@ pub use findings::{
 #[doc(inline)]
 pub use signature_encoder::{SignatureCatalogError, encode_signature_affirmations_v1};
 pub use signed_acts::{derive_signed_acts_manifest_v1, encode_signed_acts_manifest_v1};
+#[doc(inline)]
+pub use source_proof_package::{
+    OriginalContextProofV1, ProtectedSourceProofPackageLocatorV1,
+    ProtectedSourceProofPackageOpeningV1,
+};
 #[doc(inline)]
 pub use source_signed_task::{
     NativeSigningObligation, SourceSignedCompletedTaskFieldsV1, SourceSignedCompletedTaskV1,
@@ -69,6 +78,56 @@ pub use validator::WosRecordValidator;
 #[must_use]
 pub fn verify_export_zip(zip: &[u8]) -> WosVerificationReport {
     integrity_verify::trellis::verify_export_zip_with_validator(zip, &WosRecordValidator).into()
+}
+
+/// Reports protected-content publication admission, never final Source readiness.
+///
+/// This phase retains substrate and WOS structural findings. It does not open
+/// protected records or verify their Source signatures. An independently selected
+/// Source-content publication path must separately admit its complete census and
+/// provider pins, and final readers must use the full owning Source verifiers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceContentPublicationReport {
+    report: WosVerificationReport,
+}
+
+impl SourceContentPublicationReport {
+    /// Returns whether all publication-phase obligations passed.
+    #[must_use]
+    pub fn publication_admitted(&self) -> bool {
+        self.report.relying_party_valid()
+    }
+
+    /// Returns all substrate findings and verification details unchanged.
+    #[must_use]
+    pub fn substrate(&self) -> &integrity_verify::trellis::VerificationReport {
+        &self.report.trellis
+    }
+
+    /// Returns every WOS publication-phase finding without filtering.
+    #[must_use]
+    pub fn findings(&self) -> &[WosFinding] {
+        &self.report.wos_findings
+    }
+}
+
+/// Checks publication structure before independent protected Source verification.
+///
+/// Select only for an explicitly admitted Source-content publication. Default and
+/// full Source verifiers remain unchanged. Existing formal certificate checks,
+/// operator authority, native joins, catalogs, clocks and policy checks still run.
+#[must_use]
+pub fn verify_source_content_publication(
+    zip: &[u8],
+    authorities: Option<&integrity_verify::trellis::CertificateAuthorityRegistry>,
+) -> SourceContentPublicationReport {
+    SourceContentPublicationReport {
+        report: integrity_verify::trellis::verify_export_zip_with_validator(
+            zip,
+            &validator::SourceContentPublicationValidator { authorities },
+        )
+        .into(),
+    }
 }
 
 /// Verifies all existing WOS checks plus externally selected operator authority.
