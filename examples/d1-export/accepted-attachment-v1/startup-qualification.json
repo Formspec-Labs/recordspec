@@ -1,0 +1,68 @@
+{
+  "status": "SOURCE_STARTUP_COMPOSITION_QUALIFIED_NOT_LIVE_ADOPTED",
+  "baselineCommit": "246610e517a2dc369e018ef223c62190328023fa",
+  "files": {
+    "crates/trellis-server/src/oidc_startup.rs": "5766e297edc145bb25ac19dba5b127ab3a87c74a2123e09f00f39f21547be0a2",
+    "crates/trellis-server/src/oidc_startup_tests.rs": "a0babe389eae64e16c7f9ad6f88242ffae4c6bfb20ebcde19b6f704e4212e061",
+    "crates/trellis-server/OIDC_STARTUP.md": "ca07aeb77b9e1dcbcd508e53cbf4f650c9cafde2159d1844fa3ab40545045f21"
+  },
+  "red": {
+    "label": "red",
+    "packages": [
+      "trellis-server"
+    ],
+    "command": [
+      "cargo",
+      "+1.94.0",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "trellis-server",
+      "--lib",
+      "oidc_startup_composes_selected_attachment_recipients",
+      "--",
+      "--test-threads=1"
+    ],
+    "target": "/tmp/formspec-exact-source-composition-target-20261009-v1",
+    "pid": 81888,
+    "exitCode": 101,
+    "elapsedSeconds": 8.548,
+    "logSha256": "178b0b20014cf27c9837d4dca2d6046f6c3198325cf5b01a1f949aa4a0e7eb93",
+    "ownedGroupAbsent": true,
+    "locksReleased": true
+  },
+  "green": {
+    "label": "green",
+    "packages": [
+      "trellis-server"
+    ],
+    "command": [
+      "cargo",
+      "+1.94.0",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "trellis-server",
+      "--lib",
+      "oidc_startup",
+      "--",
+      "--test-threads=1"
+    ],
+    "target": "/tmp/formspec-exact-source-composition-target-20261009-v1",
+    "pid": 90577,
+    "exitCode": 0,
+    "elapsedSeconds": 9.548,
+    "logSha256": "5b66d011cc08574cfa5b45fcad48add99372fe96022c4aa71eed40be06692681",
+    "ownedGroupAbsent": true,
+    "locksReleased": true
+  },
+  "greenSummary": {
+    "passed": 15,
+    "failed": 0,
+    "filtered": 138,
+    "testRuntimeSeconds": 0.22
+  },
+  "scope": "Native neutral OIDC startup tests only. No live configuration, service, case, attachment, or export was changed."
+}

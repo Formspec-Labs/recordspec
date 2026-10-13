@@ -107,3 +107,27 @@ Verification includes actual CLI refusal tests, maintained RS256/discovery/JWKS/
 introspection protocol fixtures, current-grant and unchanged-retry negatives,
 and all five outbound client operations. Test execution and host startup require
 the separately allocated build and runtime window.
+
+
+The same private OIDC profile may select accepted-attachment custody through
+`acceptedAttachmentRecipients`. Omit this field when the deployment does not
+need accepted attachments. An explicitly selected empty list or null fails startup.
+Each row contains exactly `principal`, `scope`, and `recipients`; each recipient
+contains exactly `id` (UTF-8 key-version ID), `publicKey` (32 JSON byte values for
+an existing X25519 public key), and `operatorHeld` (boolean). The row inherits
+`tenantScope` from this profile and selects an exact admitted principal and
+ledger scope. Supply public keys only; private reader keys stay with their owner.
+
+Startup rejects unknown principals, invalid ledger scopes, duplicate rows,
+empty or oversized lists, empty, whitespace-only, control-containing, or oversized IDs, zero keys, duplicate recipient
+IDs or keys, and selections without a designated nonoperator reader. These
+failures report `accepted-attachment recipient selection invalid` before signing
+keys or storage open. Limits are 1024 rows, 64 recipients per row, and 256 bytes
+per recipient ID, within the existing 1 MiB profile-file bound.
+
+Normal startup installs this immutable selection through the existing recipient
+port. Selection requires the authenticated append permission's exact tenant,
+principal, and scope. The existing current resource grants remain authoritative
+and are checked on each request. Caller-supplied descriptors do not choose keys
+or readers. A successor profile requires restarting the host to change custody;
+retained attachment bytes and historical reader keys remain separate.

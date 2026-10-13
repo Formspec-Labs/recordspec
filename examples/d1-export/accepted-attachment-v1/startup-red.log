@@ -1,0 +1,22 @@
+   Compiling trellis-server v0.1.0 (/Users/mikewolfd/Work/formspec-stack/trellis/crates/trellis-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.71s
+     Running unittests src/lib.rs (/tmp/formspec-exact-source-composition-target-20261009-v1/debug/deps/trellis_server-c62fb33574d5209a)
+
+running 1 test
+test tests::oidc_startup_tests::oidc_startup_composes_selected_attachment_recipients ... FAILED
+
+failures:
+
+---- tests::oidc_startup_tests::oidc_startup_composes_selected_attachment_recipients stdout ----
+
+thread 'tests::oidc_startup_tests::oidc_startup_composes_selected_attachment_recipients' (67528159) panicked at crates/trellis-server/src/oidc_startup_tests.rs:517:10:
+called `Result::unwrap()` on an `Err` value: StackError { code: ErrorCode("INFRA-4000"), status: 400, title: "invalid Trellis OIDC configuration or current grants", detail: None, type_url: "about:blank", instance: None, context: {} }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    tests::oidc_startup_tests::oidc_startup_composes_selected_attachment_recipients
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 150 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p trellis-server --lib`

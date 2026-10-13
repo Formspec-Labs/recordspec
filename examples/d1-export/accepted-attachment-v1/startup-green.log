@@ -1,0 +1,23 @@
+   Compiling trellis-server v0.1.0 (/Users/mikewolfd/Work/formspec-stack/trellis/crates/trellis-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.18s
+     Running unittests src/lib.rs (/tmp/formspec-exact-source-composition-target-20261009-v1/debug/deps/trellis_server-c62fb33574d5209a)
+
+running 15 tests
+test tests::oidc_startup_tests::oidc_startup_action_scope_is_required_beyond_base_oauth_access ... ok
+test tests::oidc_startup_tests::oidc_startup_attachment_selection_is_optional_and_fails_closed_when_selected ... ok
+test tests::oidc_startup_tests::oidc_startup_attachment_selection_requires_exact_admitted_append_permission ... ok
+test tests::oidc_startup_tests::oidc_startup_changed_actor_kind_grant_blocks_the_same_cached_body ... ok
+test tests::oidc_startup_tests::oidc_startup_closed_profile_and_current_grant_validation_refuse_ambiguous_authority ... ok
+test tests::oidc_startup_tests::oidc_startup_composes_selected_attachment_recipients ... ok
+test tests::oidc_startup_tests::oidc_startup_head_requires_current_read_and_administer_grants ... ok
+test tests::oidc_startup_tests::oidc_startup_private_files_reject_shared_permissions_and_symlinks ... ok
+test tests::oidc_startup_tests::oidc_startup_protocol_refuses_wrong_issuer_audience_client_or_base_scope ... ok
+test tests::oidc_startup_tests::oidc_startup_real_protocol_rechecks_token_and_current_case_grant_before_replay ... ok
+test tests::oidc_startup_tests::oidc_startup_refuses_foreign_tenant_component_scope_and_actor_kind ... ok
+test tests::oidc_startup_tests::oidc_startup_rejects_duplicate_fields_in_profile_and_grants ... ok
+test tests::oidc_startup_tests::oidc_startup_required_payload_selector_refuses_missing_nontext_and_foreign_human ... ok
+test tests::oidc_startup_tests::oidc_startup_revoked_payload_delegation_blocks_unchanged_cached_retry ... ok
+test tests::oidc_startup_tests::oidc_startup_unavailable_or_invalid_current_grants_fail_closed_after_admission ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 138 filtered out; finished in 0.22s
+

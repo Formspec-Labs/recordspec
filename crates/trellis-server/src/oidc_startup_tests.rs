@@ -485,3 +485,179 @@ fn oidc_startup_private_files_reject_shared_permissions_and_symlinks() {
     symlink(Path::new("other.json"), files.root.join("grants.json")).unwrap();
     assert!(files.load(Arc::new(ProtocolHttp::new())).is_err());
 }
+
+fn attachment_selection() -> Value {
+    // Public maintained vector key, without deployment custody assertions.
+    json!([{"principal":"internal-producer","scope":"case_123","recipients":[{
+        "id":"fixture-reader-v1",
+        "publicKey":hex::decode("7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13").unwrap(),
+        "operatorHeld":false
+    }]}])
+}
+
+fn attachment_descriptor()
+-> trellis_admission_formspec::accepted_attachment::AcceptedAttachmentDescriptor {
+    serde_json::from_value(json!({
+        "version":1,"responseId":"fixture-response","responseHash":format!("sha256:{}", "00".repeat(32)),
+        "sourceId":"urn:fixture:source","serviceBindingId":"fixture-binding",
+        "acceptedActorRef":"actor:human:fixture","formId":"fixture-form","subjectRef":"fixture-subject",
+        "fieldPath":"/file","uploadId":"fixture-upload","acceptedAttachmentId":"fixture-occurrence",
+        "bindingAttachmentId":"fixture-slot","mediaType":"application/octet-stream","byteLength":1,
+        "attachmentSha256":format!("sha256:{}", "00".repeat(32)),"objectUri":"urn:fixture:object", "filename":null, "priorBindingHash":null
+    })).unwrap()
+}
+
+#[tokio::test]
+async fn oidc_startup_composes_selected_attachment_recipients() {
+    let mut files = Files::new();
+    files.profile["acceptedAttachmentRecipients"] = attachment_selection();
+    files.save();
+    let state = files
+        .load(Arc::new(ProtocolHttp::new()))
+        .unwrap()
+        .apply(test_state());
+    let selector = state
+        .external_attachment_recipients
+        .as_ref()
+        .expect("normal startup installs selection");
+    let permit = trellis_server_ports::AuthorizedScope {
+        principal: "internal-producer".into(),
+        tenant_scope: serde_json::from_value(files.profile["tenantScope"].clone()).unwrap(),
+        scope: b"case_123".to_vec(),
+        action: trellis_server_ports::ScopeAction::Append,
+    };
+    let recipients = selector
+        .select(&permit, &attachment_descriptor())
+        .await
+        .unwrap();
+    assert_eq!(recipients.len(), 1);
+    assert_eq!(recipients[0].id, b"fixture-reader-v1");
+    assert!(!recipients[0].operator_held);
+}
+
+#[test]
+fn oidc_startup_attachment_selection_is_optional_and_fails_closed_when_selected() {
+    let files = Files::new();
+    assert!(
+        files
+            .load(Arc::new(ProtocolHttp::new()))
+            .unwrap()
+            .apply(test_state())
+            .external_attachment_recipients
+            .is_none()
+    );
+    let selected = attachment_selection();
+    let mut invalid = vec![
+        json!(null),
+        json!([]),
+        json!([selected[0].clone(), selected[0].clone()]),
+    ];
+    for (path, value) in [
+        ("/0/principal", json!("unknown-principal")),
+        ("/0/scope", json!("bad/scope")),
+        ("/0/recipients", json!([])),
+        ("/0/recipients/0/id", json!("")),
+        ("/0/recipients/0/id", json!(" ")),
+        ("/0/recipients/0/id", json!("reader\n")),
+        ("/0/recipients/0/id", json!("x".repeat(257))),
+        ("/0/recipients/0/publicKey", json!(vec![0u8; 32])),
+        ("/0/recipients/0/publicKey", json!(vec![1u8; 31])),
+        ("/0/recipients/0/operatorHeld", json!(true)),
+    ] {
+        let mut selection = selected.clone();
+        *selection.pointer_mut(path).unwrap() = value;
+        invalid.push(selection);
+    }
+    let mut duplicate_id = selected.clone();
+    let mut second = selected[0]["recipients"][0].clone();
+    second["publicKey"][0] = json!(18);
+    duplicate_id[0]["recipients"]
+        .as_array_mut()
+        .unwrap()
+        .push(second);
+    invalid.push(duplicate_id);
+    let mut duplicate_key = selected.clone();
+    let mut second = selected[0]["recipients"][0].clone();
+    second["id"] = json!("another-reader");
+    duplicate_key[0]["recipients"]
+        .as_array_mut()
+        .unwrap()
+        .push(second);
+    invalid.push(duplicate_key);
+    let mut unknown_field = selected.clone();
+    unknown_field[0]["recipients"][0]["callerKey"] = json!(true);
+    invalid.push(unknown_field);
+    let oversized_rows = (0..1025)
+        .map(|index| {
+            let mut row = selected[0].clone();
+            row["scope"] = json!(format!("case_{index}"));
+            row
+        })
+        .collect::<Vec<_>>();
+    invalid.push(json!(oversized_rows));
+    let mut oversized_recipients = selected.clone();
+    oversized_recipients[0]["recipients"] = json!(
+        (0..65)
+            .map(|index| {
+                let mut recipient = selected[0]["recipients"][0].clone();
+                recipient["id"] = json!(format!("fixture-reader-{index}"));
+                recipient["publicKey"][0] = json!(index);
+                recipient
+            })
+            .collect::<Vec<_>>()
+    );
+    invalid.push(oversized_recipients);
+    for selection in invalid {
+        let mut files = Files::new();
+        files.profile["acceptedAttachmentRecipients"] = selection;
+        files.save();
+        let error = files
+            .load(Arc::new(ProtocolHttp::new()))
+            .err()
+            .expect("invalid selection must refuse startup");
+        assert!(
+            error
+                .to_string()
+                .contains("accepted-attachment recipient selection invalid"),
+            "{error}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn oidc_startup_attachment_selection_requires_exact_admitted_append_permission() {
+    let mut files = Files::new();
+    files.profile["acceptedAttachmentRecipients"] = attachment_selection();
+    files.save();
+    let state = files
+        .load(Arc::new(ProtocolHttp::new()))
+        .unwrap()
+        .apply(test_state());
+    let selector = state.external_attachment_recipients.as_ref().unwrap();
+    let allowed = trellis_server_ports::AuthorizedScope {
+        principal: "internal-producer".into(),
+        tenant_scope: serde_json::from_value(files.profile["tenantScope"].clone()).unwrap(),
+        scope: b"case_123".to_vec(),
+        action: trellis_server_ports::ScopeAction::Append,
+    };
+    for changed in 0..4 {
+        let mut permit = allowed.clone();
+        match changed {
+            0 => permit.principal = "unknown-principal".into(),
+            1 => permit.scope = b"case_124".to_vec(),
+            2 => permit.tenant_scope.tenant = "other-tenant".into(),
+            _ => permit.action = trellis_server_ports::ScopeAction::Read,
+        }
+        let error = selector
+            .select(&permit, &attachment_descriptor())
+            .await
+            .err()
+            .expect("mismatched permission refused");
+        assert!(
+            error
+                .to_string()
+                .contains("accepted-attachment recipient selection required"),
+            "{error}"
+        );
+    }
+}

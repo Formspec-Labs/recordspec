@@ -32,6 +32,7 @@ pub(crate) struct StartupAuth {
     tenant_scope: TenantScope,
     verifier: Arc<dyn AccessTokenVerifier>,
     authorizer: Arc<dyn ScopeAuthorizer<Error = StackError>>,
+    attachment_recipients: Option<Arc<dyn crate::ExternalAttachmentRecipientSelector>>,
 }
 
 impl StartupAuth {
@@ -56,9 +57,18 @@ impl StartupAuth {
     }
 
     pub(crate) fn load(path: &Path, dependencies: OidcDependencies) -> Result<Self, StackError> {
-        let profile: Profile =
-            serde_json::from_slice(&read_private(path)?).map_err(|_| invalid())?;
+        let profile: Profile = serde_json::from_slice(&read_private(path)?).map_err(|error| {
+            if error
+                .to_string()
+                .contains("accepted-attachment recipient selection invalid")
+            {
+                attachment_invalid()
+            } else {
+                invalid()
+            }
+        })?;
         profile.validate()?;
+        let attachment_recipients = profile.attachment_selector()?;
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
         let secret = String::from_utf8(read_private(
             &parent.join(&profile.introspection_client_secret_file),
@@ -108,6 +118,7 @@ impl StartupAuth {
             tenant_scope,
             verifier: Arc::new(verifier),
             authorizer: Arc::new(authorizer),
+            attachment_recipients,
         })
     }
 
@@ -116,10 +127,14 @@ impl StartupAuth {
     }
 
     pub(crate) fn apply(self, state: TrellisServerState) -> TrellisServerState {
-        state
+        let state = state
             .with_access_token_verifier(self.verifier)
             .with_scope_authorizer(self.authorizer)
-            .with_production_like_scope_posture(true)
+            .with_production_like_scope_posture(true);
+        match self.attachment_recipients {
+            Some(selector) => state.with_external_attachment_recipients(selector),
+            None => state,
+        }
     }
 }
 
@@ -140,6 +155,71 @@ struct Profile {
     tenant_scope: Deployment,
     identities: Vec<Identity>,
     action_scopes: ActionScopes,
+    #[serde(default, deserialize_with = "deserialize_attachment_selection")]
+    accepted_attachment_recipients: Option<Vec<AttachmentSelection>>,
+}
+
+// Selected custody shares the OIDC deployment tuple and admitted principal registry.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AttachmentSelection {
+    principal: String,
+    scope: String,
+    recipients: Vec<AttachmentRecipient>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AttachmentRecipient {
+    id: String,
+    public_key: [u8; 32],
+    operator_held: bool,
+}
+
+struct ScopedAttachmentRecipients {
+    tenant_scope: TenantScope,
+    rows: Vec<(String, Vec<u8>, Vec<crate::ExternalAttachmentRecipient>)>,
+}
+
+#[async_trait]
+impl crate::ExternalAttachmentRecipientSelector for ScopedAttachmentRecipients {
+    async fn select(
+        &self,
+        permit: &AuthorizedScope,
+        _descriptor: &trellis_admission_formspec::accepted_attachment::AcceptedAttachmentDescriptor,
+    ) -> Result<Vec<crate::ExternalAttachmentRecipient>, StackError> {
+        if permit.action != ScopeAction::Append || permit.tenant_scope != self.tenant_scope {
+            return Err(attachment_denied());
+        }
+        self.rows
+            .iter()
+            .find(|(principal, scope, _)| principal == &permit.principal && scope == &permit.scope)
+            .map(|(_, _, recipients)| recipients.clone())
+            .ok_or_else(attachment_denied)
+    }
+}
+
+fn deserialize_attachment_selection<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<AttachmentSelection>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Vec::<AttachmentSelection>::deserialize(deserializer)
+        .map(Some)
+        .map_err(|_| serde::de::Error::custom("accepted-attachment recipient selection invalid"))
+}
+
+fn attachment_invalid() -> StackError {
+    StackError::bad_request("accepted-attachment recipient selection invalid")
+}
+
+fn attachment_denied() -> StackError {
+    StackError::new(
+        ErrorCode::new("INFRA-4030").expect("static error code is valid"),
+        StatusCode::FORBIDDEN,
+        "accepted-attachment recipient selection required for admitted resource",
+    )
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -194,6 +274,66 @@ struct ActionScopes {
 }
 
 impl Profile {
+    fn attachment_selector(
+        &self,
+    ) -> Result<Option<Arc<dyn crate::ExternalAttachmentRecipientSelector>>, StackError> {
+        let Some(selections) = &self.accepted_attachment_recipients else {
+            return Ok(None);
+        };
+        // Operator profiles fit the existing 1 MiB private-file bound; cap row work too.
+        if selections.is_empty() || selections.len() > 1024 {
+            return Err(attachment_invalid());
+        }
+        let mut row_ids = BTreeSet::new();
+        let mut rows = Vec::with_capacity(selections.len());
+        for selection in selections {
+            if !self
+                .identities
+                .iter()
+                .any(|identity| identity.principal == selection.principal)
+                || nonempty(&selection.scope).is_err()
+                || crate::http::validate_scope(&selection.scope).is_err()
+                || !row_ids.insert((&selection.principal, &selection.scope))
+                || selection.recipients.is_empty()
+                || selection.recipients.len() > 64
+            {
+                return Err(attachment_invalid());
+            }
+            let mut ids = BTreeSet::new();
+            let mut keys = BTreeSet::new();
+            let mut recipients = Vec::with_capacity(selection.recipients.len());
+            for recipient in &selection.recipients {
+                // Match the owning transport's recipient bounds before storage opens.
+                if recipient.id.trim().is_empty()
+                    || recipient.id.len() > 256
+                    || recipient.id.chars().any(char::is_control)
+                    || recipient.public_key == [0; 32]
+                    || !ids.insert(&recipient.id)
+                    || !keys.insert(recipient.public_key)
+                {
+                    return Err(attachment_invalid());
+                }
+                recipients.push(crate::ExternalAttachmentRecipient {
+                    id: recipient.id.as_bytes().to_vec(),
+                    public_key: recipient.public_key,
+                    operator_held: recipient.operator_held,
+                });
+            }
+            if recipients.iter().all(|recipient| recipient.operator_held) {
+                return Err(attachment_invalid());
+            }
+            rows.push((
+                selection.principal.clone(),
+                selection.scope.as_bytes().to_vec(),
+                recipients,
+            ));
+        }
+        Ok(Some(Arc::new(ScopedAttachmentRecipients {
+            tenant_scope: self.tenant_scope.tuple(),
+            rows,
+        })))
+    }
+
     fn validate(&self) -> Result<(), StackError> {
         self.tenant_scope.validate()?;
         unique_nonempty(&self.required_scopes)?;
