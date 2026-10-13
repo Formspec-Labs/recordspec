@@ -171,6 +171,7 @@ impl SourceIntakeContentVerifier for RoutingOnly<'_> {
         if self.variation == 1 {
             return Err("missing owning verifier".into());
         }
+        assert_eq!(native.case_ref(), "case");
         let mut v = Controlled {
             native: native.clone(),
             record: self.f.record.clone(),
@@ -246,12 +247,25 @@ fn source_original_exact_inventory_and_native_anchor_required() {
     assert!(!check(&foreign, &profile(&foreign), 0, true).is_empty());
 }
 #[test]
+fn source_original_profile_case_must_match_actual_native_case() {
+    let f = fixture();
+    let mut p = profile(&f);
+    assert!(check(&f, &p, 0, true).is_empty());
+    p.case_ref = "foreign-case".into();
+    assert!(check(&f, &p, 0, true)
+        .iter()
+        .any(|finding| finding.kind == "source_original_profile_mismatch"));
+}
+#[test]
 fn source_original_public_catalog_never_carries_plain_complete_response() {
     let f = fixture();
     assert!(!f.catalog.windows(f.opened.len()).any(|w| w == f.opened));
     let rows = protected_intake_responses_from_catalog(&f.catalog).unwrap();
     assert_eq!(rows[0].handoff_id(), "handoff");
     assert_eq!(rows[0].response_id(), "response");
+    assert_eq!(rows[0].initiation_mode(), "workflowInitiated");
+    assert_eq!(rows[0].validation_report_ref(), "report");
+    assert_eq!(rows[0].ledger_head_ref(), "head");
 }
 
 #[test]

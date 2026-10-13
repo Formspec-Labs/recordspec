@@ -47,6 +47,18 @@ impl ProtectedIntakeResponseV1 {
     pub fn definition_version(&self) -> &str {
         &self.entry.handoff.definition_version
     }
+    /// Returns the validated handoff initiation mode.
+    pub fn initiation_mode(&self) -> &str {
+        &self.entry.handoff.initiation_mode
+    }
+    /// Returns the validated handoff's report reference.
+    pub fn validation_report_ref(&self) -> &str {
+        &self.entry.handoff.validation_report_ref
+    }
+    /// Returns the validated handoff's ledger head reference.
+    pub fn ledger_head_ref(&self) -> &str {
+        &self.entry.handoff.ledger_head_ref
+    }
     pub fn response_id(&self) -> &str {
         match &self.entry.response_content {
             IntakeResponseContent::Protected(p) => &p.response_id,
@@ -126,6 +138,7 @@ pub struct SourceIntakeNativeBindings {
     checkpoints_sha256: [u8; 32],
     profile: SourceTaskContentProfileV1,
     requirement: SourceIntakeRequirementV1,
+    case_ref: String,
     intake_payload: Vec<u8>,
     case_created_payload: Option<Vec<u8>>,
 }
@@ -150,6 +163,10 @@ impl SourceIntakeNativeBindings {
     }
     pub fn requirement(&self) -> &SourceIntakeRequirementV1 {
         &self.requirement
+    }
+    /// Returns the actual case from the validated native intake record.
+    pub fn case_ref(&self) -> &str {
+        &self.case_ref
     }
     pub fn intake_record_payload(&self) -> &[u8] {
         &self.intake_payload
@@ -251,6 +268,20 @@ pub(crate) fn verified_original_findings<V: SourceIntakeContentVerifier>(
             findings.push(finding("source_original_native_join_mismatch", Some(hash)));
             continue;
         };
+        let intake_record = match crate::records::parse_intake_accepted_record(
+            &intake,
+            crate::event_types::wos_intake_accepted_event_type(),
+        ) {
+            Ok(record) => record,
+            Err(_) => {
+                findings.push(finding("source_original_native_join_mismatch", Some(hash)));
+                continue;
+            }
+        };
+        if profile.case_ref != intake_record.case_ref {
+            findings.push(finding("source_original_profile_mismatch", Some(hash)));
+            continue;
+        }
         let case_created = requirement
             .case_created_event_hash
             .and_then(|h| export.events.iter().find(|e| e.canonical_event_hash == h))
@@ -277,6 +308,7 @@ pub(crate) fn verified_original_findings<V: SourceIntakeContentVerifier>(
             checkpoints_sha256: sha256_bytes(checkpoints),
             profile: profile.clone(),
             requirement: requirement.clone(),
+            case_ref: intake_record.case_ref,
             intake_payload: intake,
             case_created_payload: case_created,
         };
