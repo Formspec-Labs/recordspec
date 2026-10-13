@@ -5,6 +5,7 @@
 
 #[path = "protected_response.rs"]
 mod protected_response;
+pub use protected_response::ProtectedResponseOpeningV1;
 pub(crate) use protected_response::{
     ProtectedResponseLocator, ResponseBindingPins, bind_opened_response,
 };
@@ -609,4 +610,9 @@ pub(crate) fn bytes_array(bytes: &[u8]) -> [u8; 32] {
 
 fn decode_value(bytes: &[u8]) -> Result<Value, ParseError> {
     ciborium::from_reader(bytes).map_err(|error| error.to_string().into())
+}
+
+// Reuses the owning closed locator parser for additive Source catalog rows.
+pub(crate) fn protected_locator(value: &Value) -> Result<ProtectedResponseLocator, ParseError> {
+    protected_response::parse_protected_response(value)
 }

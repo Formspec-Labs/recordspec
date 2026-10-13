@@ -1,0 +1,250 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:trellis:source-task-content-profile:1",
+  "title": "Independently admitted Source task content policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "caseRef",
+    "workflowUrl",
+    "workflowVersion",
+    "workflowHash",
+    "requiredTasks",
+    "requiredIntakes"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "caseRef": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "workflowUrl": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "workflowVersion": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "workflowHash": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 255
+      },
+      "minItems": 32,
+      "maxItems": 32
+    },
+    "requiredTasks": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "taskCompletedEventHash",
+          "taskCreatedEventHash",
+          "family",
+          "descriptorSha256",
+          "providerSelectionHash",
+          "nativePolicyHash",
+          "obligation"
+        ],
+        "properties": {
+          "taskCompletedEventHash": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            },
+            "minItems": 32,
+            "maxItems": 32
+          },
+          "taskCreatedEventHash": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            },
+            "minItems": 32,
+            "maxItems": 32
+          },
+          "descriptorSha256": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            },
+            "minItems": 32,
+            "maxItems": 32
+          },
+          "providerSelectionHash": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            },
+            "minItems": 32,
+            "maxItems": 32
+          },
+          "nativePolicyHash": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            },
+            "minItems": 32,
+            "maxItems": 32
+          },
+          "family": {
+            "enum": [
+              "native-v1",
+              "mixed-v2",
+              "native-local-v3"
+            ]
+          },
+          "obligation": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "source-content-only"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind",
+                  "affirmation_event_hashes"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "source-content-and-formal-kernel"
+                  },
+                  "affirmation_event_hashes": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 256,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 255
+                      },
+                      "minItems": 32,
+                      "maxItems": 32
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "requiredIntakes": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "intakeEventHash",
+          "descriptorSha256",
+          "providerSelectionHash"
+        ],
+        "properties": {
+          "intakeEventHash": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            },
+            "minItems": 32,
+            "maxItems": 32
+          },
+          "caseCreatedEventHash": {
+            "oneOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 255
+                },
+                "minItems": 32,
+                "maxItems": 32
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "descriptorSha256": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            },
+            "minItems": 32,
+            "maxItems": 32
+          },
+          "providerSelectionHash": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            },
+            "minItems": 32,
+            "maxItems": 32
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "anyOf": [
+        {
+          "properties": {
+            "requiredTasks": {
+              "minItems": 1
+            }
+          }
+        },
+        {
+          "properties": {
+            "requiredIntakes": {
+              "minItems": 1
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

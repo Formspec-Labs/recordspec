@@ -155,6 +155,9 @@ pub(crate) fn validate_required_response_catalogs(
 }
 
 fn validate_signature_catalog(export: &DomainExport<'_>) -> Vec<DomainFinding> {
+    validate_signature_catalog_mode(export, true)
+}
+fn validate_signature_catalog_mode(export: &DomainExport<'_>, require_source_content: bool) -> Vec<DomainFinding> {
     let Some(extension) = export.manifest_extensions.get(SIGNATURE_EXPORT_EXTENSION) else {
         return Vec::new();
     };
@@ -180,7 +183,7 @@ fn validate_signature_catalog(export: &DomainExport<'_>) -> Vec<DomainFinding> {
             "signature catalog digest does not match manifest extension",
         ));
     }
-    let entries = match parse_signature_manifest_entries(catalog_bytes) {
+    let entries = match crate::source_signed_task::legacy_catalog(catalog_bytes) {
         Ok(entries) => entries,
         Err(error) => {
             return vec![finding(
@@ -204,6 +207,7 @@ fn validate_signature_catalog(export: &DomainExport<'_>) -> Vec<DomainFinding> {
     for entry in &entries {
         validate_signature_entry(entry, &event_by_hash, &mut findings);
     }
+    findings.extend(crate::source_signed_task::structural_findings(export, require_source_content));
     findings
 }
 
@@ -274,7 +278,8 @@ fn validate_signature_entry(
     }
 }
 
-fn validate_intake_catalog(export: &DomainExport<'_>) -> Vec<DomainFinding> {
+fn validate_intake_catalog(export: &DomainExport<'_>) -> Vec<DomainFinding> { validate_intake_catalog_mode(export, true) }
+fn validate_intake_catalog_mode(export: &DomainExport<'_>, require_protected_content: bool) -> Vec<DomainFinding> {
     let Some(extension) = export.manifest_extensions.get(INTAKE_EXPORT_EXTENSION) else {
         return Vec::new();
     };
@@ -322,15 +327,18 @@ fn validate_intake_catalog(export: &DomainExport<'_>) -> Vec<DomainFinding> {
         }
     }
     for entry in &entries {
-        validate_intake_entry(entry, &event_by_hash, &mut findings);
+        validate_intake_entry_mode(entry, &event_by_hash, &mut findings, require_protected_content);
     }
     findings
 }
 
-fn validate_intake_entry(
+fn validate_intake_entry(entry: &IntakeManifestEntry,event_by_hash: &BTreeMap<[u8;32], &DomainEvent>,findings:&mut Vec<DomainFinding>) {
+    validate_intake_entry_mode(entry,event_by_hash,findings,true)
+}
+fn validate_intake_entry_mode(
     entry: &IntakeManifestEntry,
     event_by_hash: &BTreeMap<[u8; 32], &DomainEvent>,
-    findings: &mut Vec<DomainFinding>,
+    findings: &mut Vec<DomainFinding>, require_protected_content: bool,
 ) {
     let Some(event) = event_by_hash.get(&entry.intake_event_hash) else {
         findings.push(finding(
@@ -402,7 +410,7 @@ fn validate_intake_entry(
                     "protected Response locator differs from the actual intake handoff anchor",
                 ));
             }
-            findings.push(finding("protected_response_unavailable", Some(entry.intake_event_hash), "protected Response requires independently admitted opening and Source verification"));
+            if require_protected_content { findings.push(finding("protected_response_unavailable", Some(entry.intake_event_hash), "protected Response requires independently admitted opening and Source verification")); }
         }
     }
     validate_case_created_entry(entry, &intake_record, event_by_hash, findings);
@@ -573,4 +581,29 @@ fn finding(
     message: impl Into<String>,
 ) -> DomainFinding {
     DomainFinding::new(kind, event_hash, Severity::Failure, message)
+}
+
+// Explicit selected owning verification changes Source content dispatch only.
+// All legacy/native/intake checks remain; no existing finding is filtered away.
+pub(crate) fn validate_catalogs_with_source_content<V: crate::source_signed_task::SourceTaskContentVerifier>(
+    export: &DomainExport<'_>, archive_sha256: [u8;32],
+    profile: &crate::source_signed_task::SourceTaskContentProfileV1, verifier: &V,
+) -> Vec<DomainFinding> {
+    let mut findings = validate_signature_catalog_mode(export, false);
+    findings.extend(validate_intake_catalog(export));
+    findings.extend(crate::source_signed_task::verified_profile_findings(export, archive_sha256, profile, verifier));
+    findings
+}
+
+pub(crate) fn intake_native_findings(entry:&IntakeManifestEntry,export:&DomainExport<'_>)->Vec<DomainFinding>{
+    let mut findings=Vec::new();let events=event_by_hash(export.events,&mut findings);
+    validate_intake_entry_mode(entry,&events,&mut findings,false);findings
+}
+pub(crate) fn validate_catalogs_with_all_source_content<T:crate::SourceTaskContentVerifier,I:crate::SourceIntakeContentVerifier>(
+ export:&DomainExport<'_>,archive_sha256:[u8;32],profile:&crate::SourceTaskContentProfileV1,tasks:&T,intakes:&I,
+)->Vec<DomainFinding>{
+ let mut findings=validate_signature_catalog_mode(export,false);
+ findings.extend(validate_intake_catalog_mode(export,false));
+ findings.extend(crate::source_signed_task::verified_profile_findings(export,archive_sha256,profile,tasks));
+ findings.extend(crate::source_original::verified_original_findings(export,archive_sha256,profile,intakes));findings
 }

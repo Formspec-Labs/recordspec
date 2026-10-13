@@ -169,43 +169,7 @@ pub(crate) fn bind_opened_response(
     {
         return Err("protected Response independent binding differs".into());
     }
-    if record.len() > MAX_RESPONSE_BYTES + MAX_PROTECTION_METADATA_BYTES
-        || trellis_types::sha256_bytes(record) != locator.record_hash
-    {
-        return Err("protected Response retained record differs".into());
-    }
-    let value = trellis_types::decode_cbor_value(record)?;
-    let map = value
-        .as_map()
-        .ok_or("protected Response record must be a map")?;
-    closed_fields(map, &["locator", "ciphertext"])?;
-    let metadata = map_lookup_map(map, "locator")?;
-    if metadata
-        .iter()
-        .any(|(key, _)| key.as_text() == Some("record_hash"))
-    {
-        return Err("protected Response record contains its own hash".into());
-    }
-    let mut with_hash = metadata.to_vec();
-    with_hash.push((
-        Value::Text("record_hash".into()),
-        Value::Bytes(locator.record_hash.to_vec()),
-    ));
-    let actual = parse_protected_response(&Value::Map(with_hash))?;
-    if !cbor_nested_map_semantic_eq(&locator.to_value(false), &actual.to_value(false)) {
-        return Err("protected Response record metadata differs".into());
-    }
-    let ciphertext = map_lookup_bytes(map, "ciphertext")?;
-    if trellis_types::domain_separated_sha256(trellis_types::CONTENT_DOMAIN, &ciphertext)
-        != locator.content_hash
-        || ciphertext.len() as u64
-            != locator
-                .original_byte_length
-                .checked_add(PROTECTION_TAG_BYTES)
-                .ok_or("protected Response length overflow")?
-    {
-        return Err("protected Response ciphertext differs".into());
-    }
+    let _ciphertext = validated_record_ciphertext(locator, record)?;
     if opened.len() as u64 != locator.original_byte_length
         || !super::response_hash_matches(&locator.response_hash, opened)?
     {
@@ -267,5 +231,120 @@ impl ProtectedResponseLocator {
                 .map(|(key, value)| (Value::Text(key.into()), value))
                 .collect(),
         )
+    }
+}
+
+fn validated_record_ciphertext(
+    locator: &ProtectedResponseLocator,
+    record: &[u8],
+) -> Result<Vec<u8>, ParseError> {
+    if record.len() > MAX_RESPONSE_BYTES + MAX_PROTECTION_METADATA_BYTES
+        || trellis_types::sha256_bytes(record) != locator.record_hash
+    {
+        return Err("protected Response retained record differs".into());
+    }
+    let value = trellis_types::decode_cbor_value(record)?;
+    let map = value
+        .as_map()
+        .ok_or("protected Response record must be a map")?;
+    closed_fields(map, &["locator", "ciphertext"])?;
+    let metadata = map_lookup_map(map, "locator")?;
+    if metadata
+        .iter()
+        .any(|(key, _)| key.as_text() == Some("record_hash"))
+    {
+        return Err("protected Response record contains its own hash".into());
+    }
+    let mut with_hash = metadata.to_vec();
+    with_hash.push((
+        Value::Text("record_hash".into()),
+        Value::Bytes(locator.record_hash.to_vec()),
+    ));
+    let actual = parse_protected_response(&Value::Map(with_hash))?;
+    if !cbor_nested_map_semantic_eq(&locator.to_value(false), &actual.to_value(false)) {
+        return Err("protected Response record metadata differs".into());
+    }
+    let ciphertext = map_lookup_bytes(map, "ciphertext")?;
+    if trellis_types::domain_separated_sha256(trellis_types::CONTENT_DOMAIN, &ciphertext)
+        != locator.content_hash
+        || ciphertext.len() as u64
+            != locator
+                .original_byte_length
+                .checked_add(PROTECTION_TAG_BYTES)
+                .ok_or("protected Response length overflow")?
+    {
+        return Err("protected Response ciphertext differs".into());
+    }
+    Ok(ciphertext)
+}
+
+/// Validated encrypted Response metadata; this grants no read or Source authority.
+///
+/// The selected reader must independently admit recipient, source and publication
+/// bindings before opening. This view reuses the owning closed codec unchanged.
+pub struct ProtectedResponseOpeningV1 {
+    locator: ProtectedResponseLocator,
+    ciphertext: Vec<u8>,
+}
+impl ProtectedResponseOpeningV1 {
+    pub(crate) fn from_record(
+        locator: &ProtectedResponseLocator,
+        record: &[u8],
+    ) -> Result<Self, ParseError> {
+        Ok(Self {
+            locator: locator.clone(),
+            ciphertext: validated_record_ciphertext(locator, record)?,
+        })
+    }
+    /// Returns the exact encrypted body after record and content hash validation.
+    pub fn ciphertext(&self) -> &[u8] {
+        &self.ciphertext
+    }
+    /// Returns the bound original byte length.
+    pub fn original_byte_length(&self) -> u64 {
+        self.locator.original_byte_length
+    }
+    /// Returns the complete original Response digest.
+    pub fn response_hash(&self) -> &str {
+        &self.locator.response_hash
+    }
+    /// Returns the existing protection context key.
+    pub fn context_key(&self) -> &[u8] {
+        &self.locator.context_key
+    }
+    /// Returns the maintained protection nonce.
+    pub fn nonce(&self) -> &[u8; 12] {
+        &self.locator.nonce
+    }
+    /// Returns the encrypted content digest.
+    pub fn content_hash(&self) -> [u8; 32] {
+        self.locator.content_hash
+    }
+    /// Returns the retained whole record digest.
+    pub fn record_hash(&self) -> [u8; 32] {
+        self.locator.record_hash
+    }
+    /// Returns the independently admitted recipient policy digest to compare.
+    pub fn recipient_policy_hash(&self) -> [u8; 32] {
+        self.locator.recipient_policy_hash
+    }
+    /// Returns the bound Source identity digest to compare.
+    pub fn source_binding_hash(&self) -> [u8; 32] {
+        self.locator.source_binding_hash
+    }
+    /// Returns the bound publication digest to compare.
+    pub fn publication_hash(&self) -> [u8; 32] {
+        self.locator.publication_hash
+    }
+    /// Returns the bound public signing policy digest to compare.
+    pub fn public_policy_hash(&self) -> [u8; 32] {
+        self.locator.public_policy_hash
+    }
+    /// Returns the existing recipient wraps as canonical CBOR.
+    /// # Errors
+    /// Refuses encoding failure; no permission is inferred from these public wraps.
+    pub fn key_bag_cbor(&self) -> Result<Vec<u8>, String> {
+        trellis_types::encode_canonical_cbor_value(&self.locator.key_bag)
+            .map_err(|_| "protected Response key bag encode refused".into())
     }
 }

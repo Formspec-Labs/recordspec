@@ -23,27 +23,40 @@ mod findings;
 mod native_provenance;
 mod policy_closure;
 mod records;
+#[doc(inline)]
+pub use records::ProtectedResponseOpeningV1;
 mod rescission;
 mod signature_encoder;
 mod signed_acts;
+mod source_formal;
+mod source_original;
+mod source_signed_task;
 mod validator;
 
 #[cfg(test)]
 mod tests;
 
-pub use certificate_html::{certificate_html_from_export, CertificateHtml};
+pub use certificate_html::{CertificateHtml, certificate_html_from_export};
 pub use certificate_resolver::WosFormspecResolver;
 #[doc(inline)]
 pub use completion_selection::{
-    completion_record_bindings, validate_completion_prefix, CompletionRecord,
+    CompletionRecord, completion_record_bindings, validate_completion_prefix,
 };
 pub use findings::{
     WosDomainReport, WosFinding, WosLayeredVerificationReport, WosRelyingPartyVerdict,
     WosVerificationReport,
 };
 #[doc(inline)]
-pub use signature_encoder::{encode_signature_affirmations_v1, SignatureCatalogError};
+pub use signature_encoder::{SignatureCatalogError, encode_signature_affirmations_v1};
 pub use signed_acts::{derive_signed_acts_manifest_v1, encode_signed_acts_manifest_v1};
+#[doc(inline)]
+pub use source_signed_task::{
+    NativeSigningObligation, SourceSignedCompletedTaskFieldsV1, SourceSignedCompletedTaskV1,
+    SourceTaskContentProfileV1, SourceTaskContentVerifier, SourceTaskFamily,
+    SourceTaskNativeBindings, SourceTaskProofDescriptorV1, SourceTaskRequirementV1,
+    SourceTaskResponsePinsV1, VerifiedSourceTaskContent, encode_source_signed_task_catalog,
+    source_signed_tasks_from_catalog,
+};
 pub use validator::WosRecordValidator;
 
 /// Verifies a Trellis export ZIP using structural Trellis checks plus WOS-domain validation.
@@ -167,4 +180,88 @@ pub fn verify_tampered_ledger(
         &WosRecordValidator,
     )
     .map(Into::into)
+}
+
+/// Verifies selected Source task content without relaxing existing formal certificate checks.
+///
+/// The profile and proof adapter must be admitted independently of the archive.
+/// No Source family or missing certificate selects ordinary native obligations.
+#[must_use]
+pub fn verify_export_zip_with_source_task_content<V: SourceTaskContentVerifier>(
+    zip: &[u8],
+    profile: &SourceTaskContentProfileV1,
+    verifier: &V,
+    authorities: Option<&integrity_verify::trellis::CertificateAuthorityRegistry>,
+) -> WosVerificationReport {
+    let report = integrity_verify::trellis::verify_export_zip_with_validator(
+        zip,
+        &validator::SourceContentWosRecordValidator {
+            profile,
+            verifier,
+            authorities,
+            archive_sha256: trellis_types::sha256_bytes(zip),
+        },
+    )
+    .into();
+    require_selected_formal_certificate(report, profile, zip)
+}
+
+#[doc(inline)]
+pub use source_original::{
+    ProtectedIntakeResponseV1, SourceIntakeContentVerifier, SourceIntakeNativeBindings,
+    SourceIntakeRequirementV1, VerifiedSourceIntakeContent,
+    protected_intake_responses_from_catalog,
+};
+
+/// Verifies all selected original/task content with independent owning proof adapters.
+///
+/// Missing proofs or selected formal requirements remain failures; no findings are filtered.
+#[must_use]
+pub fn verify_export_zip_with_source_content<
+    T: SourceTaskContentVerifier,
+    I: SourceIntakeContentVerifier,
+>(
+    zip: &[u8],
+    profile: &SourceTaskContentProfileV1,
+    tasks: &T,
+    intakes: &I,
+    authorities: Option<&integrity_verify::trellis::CertificateAuthorityRegistry>,
+) -> WosVerificationReport {
+    let report = integrity_verify::trellis::verify_export_zip_with_validator(
+        zip,
+        &validator::CompleteSourceWosRecordValidator {
+            profile,
+            tasks,
+            intakes,
+            authorities,
+            archive_sha256: trellis_types::sha256_bytes(zip),
+        },
+    )
+    .into();
+    require_selected_formal_certificate(report, profile, zip)
+}
+
+fn require_selected_formal_certificate(
+    mut report: WosVerificationReport,
+    profile: &SourceTaskContentProfileV1,
+    zip: &[u8],
+) -> WosVerificationReport {
+    for requirement in &profile.required_tasks {
+        let NativeSigningObligation::SourceContentAndFormalKernel {
+            affirmation_event_hashes,
+        } = &requirement.obligation
+        else {
+            continue;
+        };
+        if !source_formal::selected_certificate_covers(
+            zip,
+            &report.trellis.certificates_of_completion,
+            affirmation_event_hashes,
+        ) {
+            report.wos_findings.push(integrity_verify::trellis::DomainFinding::new(
+                "source_task_formal_certificate_required",Some(requirement.task_completed_event_hash),integrity_verify::trellis::Severity::Failure,
+                "Selected native formal obligation requires a trusted certificate covering its actual signing events"));
+        }
+    }
+    report
 }
