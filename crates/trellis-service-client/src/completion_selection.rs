@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 use stack_common_error::StackError;
 use stack_common_http::tenant::TenantScope;
-use trellis_types::{completion_selection::completion_selection_prefix_digest, StoredEvent};
+use trellis_types::{StoredEvent, completion_selection::completion_selection_prefix_digest};
 
 use crate::CompletionRequest;
 
@@ -334,27 +334,7 @@ impl crate::TrellisServiceClient {
         person_authorization: &str,
     ) -> Result<CompletionSelectionResponse, StackError> {
         crate::validate_completion_caller_authorization(person_authorization)?;
-        let origin = reqwest::Url::parse(&self.config.endpoint).map_err(|_| invalid())?;
-        let local = origin
-            .host_str()
-            .and_then(|host| {
-                host.trim_matches(['[', ']'])
-                    .parse::<std::net::IpAddr>()
-                    .ok()
-            })
-            .is_some_and(|ip| ip.is_loopback());
-        if self.token_provider.is_none()
-            || !origin.username().is_empty()
-            || origin.password().is_some()
-            || origin.path() != "/"
-            || origin.query().is_some()
-            || origin.fragment().is_some()
-            || !(origin.scheme() == "https" || (origin.scheme() == "http" && local))
-        {
-            return Err(StackError::unavailable(
-                "completion selection origin or provider is invalid",
-            ));
-        }
+        self.validate_current_completion_origin()?;
         let bytes = body.to_json_bytes()?;
         let tenant = TenantScope {
             tenant: body.tenant.tenant.clone(),

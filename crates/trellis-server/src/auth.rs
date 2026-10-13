@@ -16,7 +16,10 @@ use crate::state::{AuthenticatedRequest, TrellisServerState};
 
 /// Parsed append admitted by the current authorization boundary.
 #[derive(Clone)]
-pub(crate) struct AuthorizedAppend(pub(crate) SubstrateAppendBody);
+pub(crate) struct AuthorizedAppend(
+    pub(crate) SubstrateAppendBody,
+    pub(crate) Option<crate::SourceContentSelection>,
+);
 
 pub(crate) async fn authorize_append(
     State(state): State<TrellisServerState>,
@@ -71,15 +74,116 @@ async fn admit_append(
     )
     .await
     .map_err(IntoResponse::into_response)?;
+    // Qualify current borrowed human + selected machine authority before HTTP replay.
+    // The locator conveys no authority; no credential enters request replay state.
+    let source_selection = match crate::source_content::preparation_key(request.headers())
+        .map_err(IntoResponse::into_response)?
+    {
+        None => {
+            if let Some(composition) = &state.source_content {
+                let prefix = state
+                    .repository
+                    .list_scope(scope.as_bytes())
+                    .await
+                    .map_err(IntoResponse::into_response)?;
+                if matches!(
+                    composition
+                        .final_prefix_guard
+                        .classify_append(scope.as_bytes(), &body, &prefix)
+                        .map_err(IntoResponse::into_response)?,
+                    crate::SourceContentPrefixClass::FinalCloseout { .. }
+                ) {
+                    return Err(StackError::unavailable(
+                        "final closeout requires committed Source content",
+                    )
+                    .into_response());
+                }
+            }
+            None
+        }
+        Some(key) => {
+            let composition = state.source_content.as_ref().ok_or_else(|| {
+                StackError::unavailable("Source content composition is absent").into_response()
+            })?;
+            let caller = crate::CompletionCallerContext::from_headers(request.headers())
+                .map_err(IntoResponse::into_response)?;
+            if caller.person_authorization().is_none() {
+                return Err(
+                    StackError::unavailable("qualified Source content caller is absent")
+                        .into_response(),
+                );
+            }
+            let prefix = state
+                .repository
+                .list_scope(scope.as_bytes())
+                .await
+                .map_err(IntoResponse::into_response)?;
+            let selection = composition
+                .selection_resolver
+                .select(&crate::SourceContentSelectionRequest {
+                    preparation_key: key,
+                    scope,
+                    prefix: &prefix,
+                    append_body: &body,
+                    caller: &caller,
+                    tenant: tenant_scope,
+                })
+                .await
+                .map_err(IntoResponse::into_response)?;
+            if selection.preparation_key != key {
+                return Err(
+                    StackError::conflict("Source preparation locator changed").into_response()
+                );
+            }
+            crate::validate_source_content_append_closeout(
+                &body.event_type,
+                &body.payload,
+                &selection.identity,
+            )
+            .map_err(IntoResponse::into_response)?;
+            Some(selection)
+        }
+    };
+    if source_selection.is_some() {
+        let current = state
+            .authenticate(request.headers())
+            .await
+            .map_err(IntoResponse::into_response)?;
+        let refreshed = authorize_action(
+            state,
+            &current,
+            tenant_scope,
+            scope,
+            ScopeAction::Append,
+            Some(&body),
+        )
+        .await
+        .map_err(IntoResponse::into_response)?;
+        if refreshed != permit {
+            return Err(StackError::conflict(
+                "Source append permission changed during owner selection",
+            )
+            .into_response());
+        }
+    }
     // JSON encodes the tuple without delimiter ambiguity. No bearer token is retained.
-    let partition =
-        serde_json::to_string(&(permit.principal, &permit.tenant_scope, scope, "append")).map_err(
-            |_| StackError::internal("replay partition encoding failed").into_response(),
-        )?;
+    let partition = match &source_selection {
+        None => serde_json::to_string(&(permit.principal, &permit.tenant_scope, scope, "append")),
+        Some(selection) => serde_json::to_string(&(
+            permit.principal,
+            &permit.tenant_scope,
+            scope,
+            "source-content-only",
+            selection,
+        )),
+    }
+    .map_err(|_| StackError::internal("replay partition encoding failed").into_response())?;
     request
         .extensions_mut()
         .insert(TrustedReplayPartition::new(partition));
-    request.extensions_mut().insert(AuthorizedAppend(body));
+    request
+        .extensions_mut()
+        .insert(AuthorizedAppend(body, source_selection));
     *request.body_mut() = Body::from(bytes);
     Ok(())
 }

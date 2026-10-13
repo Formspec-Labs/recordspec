@@ -64,24 +64,30 @@
 #![forbid(unsafe_code)]
 
 pub mod completion_selection;
+pub mod source_content;
+#[cfg(test)]
+mod source_content_tests;
+mod source_content_transport;
+#[doc(inline)]
+pub use source_content::MAX_PREPARED_SOURCE_CONTENT_BYTES;
 mod wos_ext;
 
-pub use wos_ext::{wos_provenance_append_request, SubstrateClientExt, WosProvenanceAppend};
+pub use wos_ext::{SubstrateClientExt, WosProvenanceAppend, wos_provenance_append_request};
 
 use std::{fmt, sync::Arc, time::Duration};
 
 use stack_common_auth::client_credentials::ClientCredentialsTokenProvider;
 
 use async_trait::async_trait;
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use stack_common_error::StackError;
 use stack_common_http::idempotency::IDEMPOTENCY_KEY_HEADER;
 use stack_common_http::tenant::{HeaderConfig, TenantScope};
 use trellis_types::ArtifactType;
+use utoipa::ToSchema;
 use utoipa::openapi::schema::{ObjectBuilder, SchemaType, Type};
 use utoipa::openapi::{RefOr, Schema};
-use utoipa::ToSchema;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -568,6 +574,21 @@ pub trait SubstrateClient: Send + Sync {
         request: SubstrateAppendRequest,
     ) -> Result<SubstrateAppendResult, StackError>;
 
+    /// Appends an actual closeout with a locator and borrowed current human credential.
+    ///
+    /// # Errors
+    /// Refuses absent capability; implementations never fall back to a bare append.
+    async fn append_source_content_event(
+        &self,
+        _request: SubstrateAppendRequest,
+        _preparation_key: &str,
+        _person_authorization: &str,
+    ) -> Result<SubstrateAppendResult, StackError> {
+        Err(StackError::unavailable(
+            "Source-content closeout transport is not selected",
+        ))
+    }
+
     /// Fetches the current export bundle for `scope`.
     ///
     /// # Errors
@@ -944,23 +965,68 @@ impl TrellisServiceClient {
     }
 }
 
+impl TrellisServiceClient {
+    async fn send_event_append(
+        &self,
+        request: SubstrateAppendRequest,
+        source: Option<(&str, &str)>,
+    ) -> Result<SubstrateAppendResult, StackError> {
+        request.validate()?;
+        let path = format!("/v1/scopes/{}/events", encode_path_segment(&request.scope));
+        let mut outgoing = self
+            .request(reqwest::Method::POST, &path, &request.tenant_scope)
+            .await?
+            .header(IDEMPOTENCY_KEY_HEADER, request.idempotency_key.as_str())
+            .json(&request.body());
+        if let Some((key, human)) = source {
+            let mut human = reqwest::header::HeaderValue::from_str(human)
+                .map_err(|_| StackError::bad_request("completion caller authorization invalid"))?;
+            human.set_sensitive(true);
+            outgoing = outgoing
+                .header(source_content::SOURCE_CONTENT_PREPARATION_KEY_HEADER, key)
+                .header(COMPLETION_CALLER_AUTHORIZATION_HEADER, human);
+        }
+        let source_selected = source.is_some();
+        let response = outgoing.send().await.map_err(|error| {
+            if source_selected {
+                StackError::unavailable("trellis Source-content append transport failed")
+            } else {
+                StackError::unavailable(format!("trellis append failed: {error}"))
+            }
+        })?;
+        Self::append_response(response, &request.scope, &request.event_type).await
+    }
+}
+
 #[async_trait]
 impl SubstrateClient for TrellisServiceClient {
     async fn append_event(
         &self,
         request: SubstrateAppendRequest,
     ) -> Result<SubstrateAppendResult, StackError> {
-        request.validate()?;
-        let path = format!("/v1/scopes/{}/events", encode_path_segment(&request.scope));
-        let response = self
-            .request(reqwest::Method::POST, &path, &request.tenant_scope)
-            .await?
-            .header(IDEMPOTENCY_KEY_HEADER, request.idempotency_key.as_str())
-            .json(&request.body())
-            .send()
+        self.send_event_append(request, None).await
+    }
+
+    async fn append_source_content_event(
+        &self,
+        request: SubstrateAppendRequest,
+        preparation_key: &str,
+        person_authorization: &str,
+    ) -> Result<SubstrateAppendResult, StackError> {
+        crate::validate_completion_caller_authorization(person_authorization)?;
+        if preparation_key.is_empty()
+            || preparation_key.len() > 256
+            || !preparation_key.is_ascii()
+            || preparation_key
+                .bytes()
+                .any(|b| b.is_ascii_whitespace() || b.is_ascii_control())
+        {
+            return Err(StackError::bad_request(
+                "Source preparation locator invalid",
+            ));
+        }
+        self.send_event_append(request, Some((preparation_key, person_authorization)))
             .await
-            .map_err(|error| StackError::unavailable(format!("trellis append failed: {error}")))?;
-        Self::append_response(response, &request.scope, &request.event_type).await
     }
 
     async fn head_bundle(
@@ -1233,6 +1299,9 @@ mod tests {
 
     mod current_token_tests {
         include!("current_token_tests.rs");
+        mod source_content_http_tests {
+            include!("source_content_http_tests.rs");
+        }
     }
 
     fn attachment_body() -> AcceptedAttachmentAppendBody {
@@ -1270,10 +1339,12 @@ mod tests {
                 .with_service_bearer_token("attachment-token"),
         )
         .unwrap();
-        assert!(client
-            .append_accepted_attachment("case_123", &tenant_scope(), &attachment_body())
-            .await
-            .is_ok());
+        assert!(
+            client
+                .append_accepted_attachment("case_123", &tenant_scope(), &attachment_body())
+                .await
+                .is_ok()
+        );
     }
 
     #[test]
@@ -1341,10 +1412,12 @@ mod tests {
             HeaderConfig::wos(),
         ))
         .unwrap();
-        assert!(client
-            .append_accepted_attachment("case_123", &tenant_scope(), &attachment_body())
-            .await
-            .is_err());
+        assert!(
+            client
+                .append_accepted_attachment("case_123", &tenant_scope(), &attachment_body())
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -1431,9 +1504,11 @@ mod tests {
             },
         };
 
-        assert!(result
-            .validate_for_event_append("case_123", "wos.kernel.case_created")
-            .is_err());
+        assert!(
+            result
+                .validate_for_event_append("case_123", "wos.kernel.case_created")
+                .is_err()
+        );
     }
 
     #[test]
@@ -1483,21 +1558,25 @@ mod tests {
             Vec::new(),
             vec![0; ACCEPTED_ATTACHMENT_ORIGINAL_BYTES_LIMIT + 1],
         ] {
-            assert!(AcceptedAttachmentAppendBody::from_original_bytes(
-                "bounded-original".into(),
-                AppendActor::service("producer"),
-                descriptor.clone(),
-                &bytes,
-            )
-            .is_err());
+            assert!(
+                AcceptedAttachmentAppendBody::from_original_bytes(
+                    "bounded-original".into(),
+                    AppendActor::service("producer"),
+                    descriptor.clone(),
+                    &bytes,
+                )
+                .is_err()
+            );
         }
-        assert!(AcceptedAttachmentAppendBody::from_original_bytes(
-            "bounded-original".into(),
-            AppendActor::user("person"),
-            descriptor,
-            &[1],
-        )
-        .is_err());
+        assert!(
+            AcceptedAttachmentAppendBody::from_original_bytes(
+                "bounded-original".into(),
+                AppendActor::user("person"),
+                descriptor,
+                &[1],
+            )
+            .is_err()
+        );
     }
 
     #[tokio::test]
@@ -1529,10 +1608,12 @@ mod tests {
                 HeaderConfig::wos(),
             ))
             .unwrap();
-            assert!(client
-                .bundle_bounded("case_123", "sha256:abc", &tenant_scope(), limit)
-                .await
-                .is_err());
+            assert!(
+                client
+                    .bundle_bounded("case_123", "sha256:abc", &tenant_scope(), limit)
+                    .await
+                    .is_err()
+            );
         }
     }
 
@@ -1566,8 +1647,17 @@ mod tests {
             "HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Length: 9\r\n\r\nzip",
         ] {
             let endpoint = test_server(move |_| raw.to_owned());
-            let client = TrellisServiceClient::new(TrellisServiceClientConfig::new(endpoint, HeaderConfig::wos())).unwrap();
-            assert!(client.bundle_bounded("case_123", "sha256:abc", &tenant_scope(), 9).await.is_err());
+            let client = TrellisServiceClient::new(TrellisServiceClientConfig::new(
+                endpoint,
+                HeaderConfig::wos(),
+            ))
+            .unwrap();
+            assert!(
+                client
+                    .bundle_bounded("case_123", "sha256:abc", &tenant_scope(), 9)
+                    .await
+                    .is_err()
+            );
         }
     }
 
@@ -1582,9 +1672,11 @@ mod tests {
             .bundle_bounded("case_123", "sha256:abc", &tenant_scope(), 0)
             .await
             .expect_err("invalid limit");
-        assert!(error
-            .to_string()
-            .contains("bundle byte limit must be positive"));
+        assert!(
+            error
+                .to_string()
+                .contains("bundle byte limit must be positive")
+        );
     }
 
     fn tenant_scope() -> TenantScope {

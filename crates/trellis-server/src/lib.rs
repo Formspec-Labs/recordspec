@@ -38,10 +38,21 @@ mod artifacts;
 mod auth;
 mod completion;
 mod composition;
+mod source_content;
+mod source_content_startup;
 pub use completion::{
     CompletionAttestor, CompletionCallerContext, CompletionRecord, CompletionRequest,
     CompletionSelector, CompletionSigner, CompletionSignerLabel, CoseCompletionSigner,
     SelectedCompletion, WosCompletionSelector, completion_record_bindings, seal_completion,
+};
+#[doc(inline)]
+pub use source_content::{
+    ConfiguredSourceContentPins, PreparedSourceContentBatchV1, PreparedSourceContentRecordV1,
+    SourceContentComposition, SourceContentContributor, SourceContentFinalPrefixGuard,
+    SourceContentIdentityV1, SourceContentOccurrenceV1, SourceContentPrefixClass,
+    SourceContentRecordPins, SourceContentRequest, SourceContentRoleV1, SourceContentSelection,
+    SourceContentSelectionRequest, SourceContentSelectionResolver,
+    StructuralSourcePublicationVerifier, WosSourceContentContributor,
 };
 mod event_repository;
 mod external_attachment;
@@ -214,6 +225,102 @@ pub(crate) fn export_bundle_cryptographically_verified(zip_bytes: &[u8]) -> bool
     report.structure_verified && report.integrity_verified
 }
 
+pub(crate) fn validate_source_closeout_rule_kind(kind: &str) -> Result<(), StackError> {
+    serde_json::from_value::<wos_events::ProvenanceKind>(serde_json::Value::String(
+        kind.to_owned(),
+    ))
+    .map_err(|_| StackError::bad_request("native Source closeout kind invalid"))?;
+    Ok(())
+}
+
+pub(crate) fn source_native_append_record_for_guard(
+    body: &trellis_service_client::SubstrateAppendBody,
+) -> Result<Option<serde_json::Value>, StackError> {
+    if body.event_type != wos_events::WOS_NATIVE_PROVENANCE_EVENT_LITERAL {
+        return Ok(None);
+    }
+    let native = wos_events::NativeProvenanceEvent::from_json(&body.payload)
+        .map_err(|_| StackError::conflict("native Source closeout append payload invalid"))?;
+    Ok(Some(native.record().clone()))
+}
+
+pub(crate) fn source_native_record_for_guard(
+    event: &StoredEvent,
+) -> Result<Option<serde_json::Value>, StackError> {
+    if event_summary(event)?.event_type != wos_events::WOS_NATIVE_PROVENANCE_EVENT_LITERAL {
+        return Ok(None);
+    }
+    let value =
+        integrity_cbor::decode_cbor_value(event.canonical_event()).map_err(cbor_bad_request)?;
+    let fields = value
+        .as_map()
+        .ok_or_else(|| StackError::conflict("native event malformed"))?;
+    let reference = map_lookup_map(fields, "payload_ref").map_err(cbor_bad_request)?;
+    let bytes = map_lookup_bytes(reference, "ciphertext").map_err(cbor_bad_request)?;
+    let native = wos_events::NativeProvenanceEvent::from_dcbor_slice(&bytes)
+        .map_err(|_| StackError::conflict("native Source closeout payload invalid"))?;
+    Ok(Some(native.record().clone()))
+}
+
+fn validate_source_content_native_closeout(
+    native: &wos_events::NativeProvenanceEvent,
+    event_type: &str,
+    selected: &SourceContentIdentityV1,
+) -> Result<(), StackError> {
+    let original: wos_events::ProvenanceRecord = serde_json::from_value(native.record().clone())
+        .map_err(|_| StackError::conflict("reserved native closeout record malformed"))?;
+    let context = wos_events::CustodyAppendContext {
+        event_type_prefix: "wos".into(),
+        case_id: Some(selected.case_ledger_id.clone()),
+        max_inline_record_bytes: None,
+        workflow_ref: Some(selected.workflow_url.clone()),
+    };
+    // Position does not alter authored record bytes in the maintained factory.
+    let metadata = context
+        .metadata_for_provenance_record(&selected.process_id, 0, &original)
+        .map_err(|_| StackError::conflict("reserved native closeout metadata invalid"))?;
+    let input =
+        wos_events::CustodyAppendInput::from_provenance_record(&original, &context, metadata)
+            .map_err(|_| StackError::conflict("reserved native closeout input invalid"))?;
+    if input.case_id != selected.case_ledger_id
+        || input.record_id != selected.reserved_closeout_record_id
+        || input.event_type != event_type
+        || integrity_cbor::sha256_bytes(input.record_bytes())
+            != selected.reserved_native_closeout_record_sha256
+    {
+        return Err(StackError::conflict(
+            "reserved native closeout identity changed",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_source_content_stored_closeout(
+    event: &StoredEvent,
+    selected: &SourceContentIdentityV1,
+) -> Result<(), StackError> {
+    let value =
+        integrity_cbor::decode_cbor_value(event.canonical_event()).map_err(cbor_bad_request)?;
+    let fields = value
+        .as_map()
+        .ok_or_else(|| StackError::conflict("native closeout event malformed"))?;
+    let reference = map_lookup_map(fields, "payload_ref").map_err(cbor_bad_request)?;
+    let payload = map_lookup_bytes(reference, "ciphertext").map_err(cbor_bad_request)?;
+    let native = wos_events::NativeProvenanceEvent::from_dcbor_slice(&payload)
+        .map_err(|_| StackError::conflict("native closeout payload invalid"))?;
+    validate_source_content_native_closeout(&native, &event_summary(event)?.event_type, selected)
+}
+
+pub(crate) fn validate_source_content_append_closeout(
+    event_type: &str,
+    payload: &serde_json::Value,
+    selected: &SourceContentIdentityV1,
+) -> Result<(), StackError> {
+    let native = wos_events::NativeProvenanceEvent::from_json(payload)
+        .map_err(|_| StackError::conflict("native closeout payload invalid"))?;
+    validate_source_content_native_closeout(&native, event_type, selected)
+}
+
 pub(crate) async fn publish_bundle(
     state: &TrellisServerState,
     scope: &[u8],
@@ -221,8 +328,28 @@ pub(crate) async fn publish_bundle(
     update_head: bool,
     compute: &ComputeContext,
 ) -> Result<BundleRecord, StackError> {
+    publish_bundle_with_source_content(state, scope, events, update_head, compute, None).await
+}
+
+pub(crate) async fn publish_bundle_with_source_content(
+    state: &TrellisServerState,
+    scope: &[u8],
+    events: &[StoredEvent],
+    update_head: bool,
+    compute: &ComputeContext,
+    source: Option<&source_content::ProtectedSourceMembersReady>,
+) -> Result<BundleRecord, StackError> {
     if events.is_empty() {
         return Err(StackError::not_found("scope has no events"));
+    }
+    // A failed immutable write cannot expose a bare genuine final closeout through
+    // generic head, pinned fallback, or retained publication paths.
+    if let Some(composition) = &state.source_content {
+        composition.require_publication_purpose(scope, events, source)?;
+    } else if source.is_some() {
+        return Err(StackError::unavailable(
+            "Source content composition is absent",
+        ));
     }
     let timestamps = events
         .iter()
@@ -251,7 +378,20 @@ pub(crate) async fn publish_bundle(
                 "published bundle prefix identity mismatch",
             ));
         }
-        verify_retained_publication(state, scope, events, &record).await?;
+        verify_retained_publication_with_source(state, scope, events, &record, source).await?;
+        if let Some(source) = source {
+            let bytes = state
+                .artifact_store
+                .get(&record.artifact_ref)
+                .await?
+                .ok_or_else(|| StackError::unavailable("published Source artifact unavailable"))?;
+            source.verify_retained_members(&bytes)?;
+            let composition = state
+                .source_content
+                .as_ref()
+                .ok_or_else(|| StackError::unavailable("Source content composition is absent"))?;
+            composition.verify_structural(&bytes)?;
+        }
         state
             .bundles
             .insert_published_record(scope, &record, update_head)
@@ -263,6 +403,9 @@ pub(crate) async fn publish_bundle(
     let mut evidence_members =
         signature_evidence_members(scope, &events.iter().collect::<Vec<_>>())?;
     evidence_members.extend(external_attachment::evidence_members(state, scope, events).await?);
+    if let Some(source) = source {
+        evidence_members = source.merge_members(evidence_members)?;
+    }
     let registry_bytes = event_type_registry_cbor(state.event_type_catalog.as_ref())?;
     let policy_artifacts = composition::default_signature_policy_artifacts();
     let export_profile = export_profile::build_export_profile_members(
@@ -320,11 +463,25 @@ pub(crate) async fn publish_bundle(
             "published export bundle failed independent verification",
         ));
     }
-    if profile_validation_required && !(state.profile_export_verifier.as_ref())(&package.zip_bytes)
-    {
-        return Err(StackError::internal(
-            "published export bundle failed WOS/Formspec profile verification",
-        ));
+    if profile_validation_required {
+        match (&state.source_content, source) {
+            (Some(composition), Some(_)) => composition.verify_structural(&package.zip_bytes)?,
+            _ if !(state.profile_export_verifier.as_ref())(&package.zip_bytes) => {
+                return Err(StackError::internal(
+                    "published export bundle failed WOS/Formspec profile verification",
+                ));
+            }
+            _ => {}
+        }
+    }
+    if let Some(source) = source {
+        source_content::archive_bound(&package.zip_bytes)?;
+        source.verify_retained_members(&package.zip_bytes)?;
+        let composition = state
+            .source_content
+            .as_ref()
+            .ok_or_else(|| StackError::unavailable("Source content composition is absent"))?;
+        composition.verify_structural(&package.zip_bytes)?;
     }
     state.bundles.reserve_publishable(scope, &identity).await?;
     let artifact_ref = state
@@ -365,6 +522,16 @@ async fn verify_retained_publication(
     scope: &[u8],
     events: &[StoredEvent],
     record: &BundleRecord,
+) -> Result<(), StackError> {
+    verify_retained_publication_with_source(state, scope, events, record, None).await
+}
+
+async fn verify_retained_publication_with_source(
+    state: &TrellisServerState,
+    scope: &[u8],
+    events: &[StoredEvent],
+    record: &BundleRecord,
+    source: Option<&source_content::ProtectedSourceMembersReady>,
 ) -> Result<(), StackError> {
     let bytes = state
         .artifact_store
@@ -525,10 +692,16 @@ async fn verify_retained_publication(
         &composition::default_signature_policy_artifacts(),
     )?
     .requires_profile_validation();
-    if (has_profile || profile_applies) && !(state.profile_export_verifier.as_ref())(&bytes) {
-        return Err(StackError::internal(
-            "retained export bundle failed WOS/Formspec profile verification",
-        ));
+    if has_profile || profile_applies {
+        match (&state.source_content, source) {
+            (Some(composition), Some(_)) => composition.verify_structural(&bytes)?,
+            _ if !(state.profile_export_verifier.as_ref())(&bytes) => {
+                return Err(StackError::internal(
+                    "retained export bundle failed WOS/Formspec profile verification",
+                ));
+            }
+            _ => {}
+        }
     }
     Ok(())
 }
@@ -833,6 +1006,9 @@ fn hex_digit(value: u8) -> char {
 
 #[cfg(test)]
 mod tests {
+    mod source_content_tests {
+        include!("source_content_tests.rs");
+    }
     mod completion_tests {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),

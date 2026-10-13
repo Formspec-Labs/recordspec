@@ -136,7 +136,11 @@ pub(crate) async fn seal_completion(
 pub(crate) async fn append_event(
     State(state): State<TrellisServerState>,
     Path(scope): Path<String>,
-    Extension(crate::auth::AuthorizedAppend(body)): Extension<crate::auth::AuthorizedAppend>,
+    Extension(crate::auth::AuthorizedAppend(body, source_selection)): Extension<
+        crate::auth::AuthorizedAppend,
+    >,
+    tenant: TenantScope,
+    headers: HeaderMap,
 ) -> Result<(StatusCode, Json<SubstrateAppendResult>), StackError> {
     let command = append::AppendCommand {
         scope: scope.clone(),
@@ -146,7 +150,21 @@ pub(crate) async fn append_event(
         compute_context: append::port_compute_context(&body),
         client_attestation: body.client_attestation.clone(),
     };
-    let outcome = state.append_runner.run_append(&state, command).await?;
+    let outcome = match source_selection {
+        None => state.append_runner.run_append(&state, command).await?,
+        Some(selection) => {
+            let source = crate::source_content::SourceContentAppendContext {
+                selection: &selection,
+                headers: &headers,
+                tenant: &tenant,
+                body: &body,
+            };
+            state
+                .append_coordinator()
+                .append_selected_source_content(command, &source)
+                .await?
+        }
+    };
     Ok((StatusCode::CREATED, Json(outcome.result)))
 }
 

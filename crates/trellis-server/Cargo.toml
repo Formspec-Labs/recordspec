@@ -30,6 +30,7 @@ sqlx = { version = "0.8", features = ["postgres", "runtime-tokio-rustls"] }
 sha2 = "0.10"
 stack-common-auth = { path = "../../../stack-common/crates/stack-common-auth", features = ["oidc"] }
 stack-common-error = { path = "../../../stack-common/crates/stack-common-error" }
+stack-common-hash = { path = "../../../stack-common/crates/stack-common-hash" }
 stack-common-http = { path = "../../../stack-common/crates/stack-common-http" }
 stack-common-idempotency = { path = "../../../stack-common/crates/stack-common-idempotency", default-features = false, features = ["replay"] }
 stack-common-ops = { path = "../../../stack-common/crates/stack-common-ops" }

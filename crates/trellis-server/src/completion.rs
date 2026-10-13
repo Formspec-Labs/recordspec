@@ -4,8 +4,8 @@
 use async_trait::async_trait;
 use axum::http::HeaderMap;
 use integrity_cbor::{
-    decode_cbor_value, domain_separated_sha256, map_lookup_bytes, map_lookup_map,
-    map_lookup_optional_value, map_lookup_text, sha256_bytes, Value,
+    Value, decode_cbor_value, domain_separated_sha256, map_lookup_bytes, map_lookup_map,
+    map_lookup_optional_value, map_lookup_text, sha256_bytes,
 };
 use stack_common_error::StackError;
 use stack_common_http::tenant::TenantScope;
@@ -43,7 +43,7 @@ pub fn completion_record_bindings(
         .map_err(StackError::conflict)
 }
 
-pub use trellis_service_client::{CompletionRequest, COMPLETION_EVENT};
+pub use trellis_service_client::{COMPLETION_EVENT, CompletionRequest};
 
 /// Product-owned labels for one retained signing event.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -99,7 +99,7 @@ impl std::fmt::Debug for CompletionCallerContext<'_> {
 }
 
 impl<'a> CompletionCallerContext<'a> {
-    fn from_headers(headers: &'a HeaderMap) -> Result<Self, StackError> {
+    pub(crate) fn from_headers(headers: &'a HeaderMap) -> Result<Self, StackError> {
         let all_values =
             headers.get_all(trellis_service_client::COMPLETION_CALLER_AUTHORIZATION_HEADER);
         let mut values = all_values.iter();
@@ -1204,10 +1204,12 @@ mod caller_context_tests {
     #[test]
     fn caller_context_is_optional_bounded_opaque_and_redacted() {
         let mut headers = HeaderMap::new();
-        assert!(CompletionCallerContext::from_headers(&headers)
-            .unwrap()
-            .person_authorization()
-            .is_none());
+        assert!(
+            CompletionCallerContext::from_headers(&headers)
+                .unwrap()
+                .person_authorization()
+                .is_none()
+        );
         let name = trellis_service_client::COMPLETION_CALLER_AUTHORIZATION_HEADER;
         headers.insert(name, "Bearer private-test-person".parse().unwrap());
         let context = CompletionCallerContext::from_headers(&headers).unwrap();

@@ -3955,6 +3955,7 @@ dependencies = [
  "sqlx",
  "stack-common-auth",
  "stack-common-error",
+ "stack-common-hash",
  "stack-common-http",
  "stack-common-idempotency",
  "stack-common-ops",

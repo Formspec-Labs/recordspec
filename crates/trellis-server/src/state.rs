@@ -119,6 +119,7 @@ pub struct TrellisServerState {
     /// literals or hand-build constants.
     pub(crate) event_type_catalog: Arc<EventTypeCatalog>,
     pub(crate) profile_export_verifier: Arc<ProfileExportVerifier>,
+    pub(crate) source_content: Option<crate::SourceContentComposition>,
 }
 
 impl TrellisServerState {
@@ -156,6 +157,7 @@ impl TrellisServerState {
             append_runner: Arc::new(DefaultAppendRunner),
             event_type_catalog: Arc::new(EventTypeCatalog::default_stack()),
             profile_export_verifier: Arc::new(crate::composition::wos_profile_export_verified),
+            source_content: None,
         }
     }
 
@@ -201,6 +203,13 @@ impl TrellisServerState {
         selector: Arc<dyn crate::ExternalAttachmentRecipientSelector>,
     ) -> Self {
         self.external_attachment_recipients = Some(selector);
+        self
+    }
+
+    /// Selects committed Source reads and separate structural/final verification.
+    #[must_use]
+    pub fn with_source_content(mut self, composition: crate::SourceContentComposition) -> Self {
+        self.source_content = Some(composition);
         self
     }
 

@@ -31,8 +31,9 @@ use crate::{
 };
 
 pub(crate) struct StartupCompletion {
-    selector: WosCompletionSelector,
-    signer: OperatorSigners,
+    selector: Option<WosCompletionSelector>,
+    signer: Option<OperatorSigners>,
+    source_content: Option<crate::SourceContentComposition>,
 }
 
 impl StartupCompletion {
@@ -45,14 +46,35 @@ impl StartupCompletion {
             (Some(service), Some(operator)) if !service.is_empty() && !operator.is_empty() => {
                 Self::load(Path::new(&service), Path::new(&operator), tenant).map(Some)
             }
+            (Some(service), None) if !service.is_empty() => {
+                Self::load_selected(Path::new(&service), None, tenant)
+                    .map_err(|_| invalid())
+                    .map(Some)
+            }
             _ => Err(invalid()),
         }
     }
 
     fn load(service: &Path, operator: &Path, tenant: &TenantScope) -> Result<Self, StackError> {
+        Self::load_selected(service, Some(operator), tenant)
+    }
+
+    fn load_selected(
+        service: &Path,
+        operator: Option<&Path>,
+        tenant: &TenantScope,
+    ) -> Result<Self, StackError> {
         let profile: ServiceProfile =
             serde_json::from_slice(&read_private(service)?).map_err(|_| invalid())?;
         profile.validate(tenant)?;
+        let native_guard = profile
+            .source_content
+            .as_ref()
+            .map(|configuration| configuration.load(service))
+            .transpose()?;
+        if operator.is_none() && native_guard.is_none() {
+            return Err(invalid());
+        }
         let secret_path = service
             .parent()
             .unwrap_or_else(|| Path::new("."))
@@ -107,13 +129,16 @@ impl StartupCompletion {
         .with_token_provider(Arc::new(provider))
         .map_err(|_| invalid())?;
 
-        let rows: Vec<OperatorProfile> =
-            serde_json::from_slice(&read_private(operator)?).map_err(|_| invalid())?;
-        if rows.is_empty() || rows.len() > 8 {
+        let rows: Vec<OperatorProfile> = match operator {
+            Some(path) => serde_json::from_slice(&read_private(path)?).map_err(|_| invalid())?,
+            None => Vec::new(),
+        };
+        if (operator.is_some() && rows.is_empty()) || rows.len() > 8 {
             return Err(invalid());
         }
         let mut authorities = BTreeSet::new();
         let mut signers = Vec::with_capacity(rows.len());
+        let mut trusted = integrity_verify::trellis::CertificateAuthorityRegistry::new();
         for row in rows {
             text(&row.authority)?;
             if !authorities.insert(row.authority.clone()) {
@@ -128,6 +153,7 @@ impl StartupCompletion {
                 public_key: row.public_key,
             };
             let key_path = operator
+                .ok_or_else(invalid)?
                 .parent()
                 .unwrap_or_else(|| Path::new("."))
                 .join(row.cose_key_file);
@@ -139,16 +165,57 @@ impl StartupCompletion {
                 &read_private(&key_path)?,
             )
             .map_err(|_| invalid())?;
+            trusted.insert(
+                authority.authority.clone(),
+                integrity_verify::trellis::TrustedCertificateAuthority {
+                    public_key: authority.public_key,
+                    authority_class: authority.authority_class.clone(),
+                    allowed_purpose: trellis_service_client::COMPLETION_EVENT.into(),
+                    valid_from: integrity_verify::trellis::TrellisTimestamp {
+                        seconds: row.valid_from.0,
+                        nanos: row.valid_from.1,
+                    },
+                    valid_until: integrity_verify::trellis::TrellisTimestamp {
+                        seconds: row.valid_until.0,
+                        nanos: row.valid_until.1,
+                    },
+                },
+            );
             signers.push((authority, signer));
         }
+        let source_content = match (profile.source_content, native_guard) {
+            (Some(configuration), Some(guard)) => Some(configuration.compose(
+                guard,
+                client.clone(),
+                tenant.clone(),
+                if operator.is_some() {
+                    Some(trusted)
+                } else {
+                    None
+                },
+            )),
+            (None, None) => None,
+            _ => return Err(invalid()),
+        };
         Ok(Self {
-            selector: WosCompletionSelector::for_tenant(client, tenant.clone()),
-            signer: OperatorSigners(signers),
+            selector: operator.map(|_| WosCompletionSelector::for_tenant(client, tenant.clone())),
+            signer: operator.map(|_| OperatorSigners(signers)),
+            source_content,
         })
     }
 
     pub(crate) fn apply(self, state: TrellisServerState) -> TrellisServerState {
-        state.with_completion(Arc::new(self.selector), Arc::new(self.signer))
+        let state = match (self.selector, self.signer) {
+            (Some(selector), Some(signer)) => {
+                state.with_completion(Arc::new(selector), Arc::new(signer))
+            }
+            (None, None) => state,
+            _ => unreachable!("startup constructs paired formal dependencies"),
+        };
+        match self.source_content {
+            Some(composition) => state.with_source_content(composition),
+            None => state,
+        }
     }
 }
 
@@ -169,6 +236,8 @@ struct ServiceProfile {
     authentication: Authentication,
     assurance: Assurance,
     client_secret_file: PathBuf,
+    #[serde(default)]
+    source_content: Option<crate::source_content_startup::SourceContentStartupConfiguration>,
 }
 
 #[derive(Deserialize)]
@@ -430,6 +499,29 @@ mod tests {
         interval["validUntil"] = json!([0, 0]);
         private(&operator, &serde_json::to_vec(&json!([interval])).unwrap());
         assert!(StartupCompletion::load(&service, &operator, &tenant()).is_err());
+    }
+
+    #[test]
+    fn source_content_normal_startup_needs_no_formal_operator_or_signing_key() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = directory.path().join("service.json");
+        private(
+            &directory.path().join("secret"),
+            b"private-test-only-secret",
+        );
+        let owning = serde_json::to_vec(&json!({"closeoutRecord":{"recordKind":serde_json::to_value(wos_events::ProvenanceKind::OnEntry).unwrap(),"event":"neutral.closeout","tests":[]}})).unwrap();
+        private(&directory.path().join("owning.json"), &owning);
+        let mut selected = profile();
+        selected["sourceContent"] = json!({"pins":{"providerSelectionHash":vec![1u8;32],"nativePolicyHash":vec![2u8;32],"recipientPolicyHash":vec![3u8;32]},
+            "nativeHostSelectionFile":"owning.json","nativeHostSelectionSha256":stack_common_hash::sha256_prefixed(&owning)});
+        private(&service, &serde_json::to_vec(&selected).unwrap());
+        let loaded = StartupCompletion::load_selected(&service, None, &tenant()).unwrap();
+        assert!(loaded.selector.is_none());
+        assert!(loaded.signer.is_none());
+        assert!(loaded.source_content.is_some());
+        // An unrelated formal profile retains its required operator dependency.
+        private(&service, &serde_json::to_vec(&profile()).unwrap());
+        assert!(StartupCompletion::load_selected(&service, None, &tenant()).is_err());
     }
 
     #[tokio::test]

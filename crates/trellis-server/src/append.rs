@@ -24,7 +24,7 @@ use trellis_service_client::{ClientAttestation, SubstrateAppendBody, SubstrateAp
 use trellis_types::{CONTENT_DOMAIN, StoredEvent};
 
 use crate::{
-    TrellisServerState, append_result_for_event, event_hash, now_timestamp, publish_bundle,
+    TrellisServerState, append_result_for_event, event_hash, now_timestamp,
     validate_existing_replay,
 };
 
@@ -97,6 +97,33 @@ impl<'a> AppendCoordinator<'a> {
     /// # Errors
     /// Returns an error when admission, core append, persistence, or bundle publication fails.
     pub async fn append(&self, command: AppendCommand) -> Result<AppendOutcome, StackError> {
+        self.append_inner(command, None).await
+    }
+
+    pub(crate) async fn append_selected_source_content(
+        &self,
+        command: AppendCommand,
+        source: &crate::source_content::SourceContentAppendContext<'_>,
+    ) -> Result<AppendOutcome, StackError> {
+        if command.event_type != source.body.event_type
+            || command.payload != source.body.payload
+            || command.idempotency_key != source.body.idempotency_key
+        {
+            return Err(StackError::conflict("Source closeout append body differs"));
+        }
+        crate::validate_source_content_append_closeout(
+            &command.event_type,
+            &command.payload,
+            &source.selection.identity,
+        )?;
+        self.append_inner(command, Some(source)).await
+    }
+
+    async fn append_inner(
+        &self,
+        command: AppendCommand,
+        source: Option<&crate::source_content::SourceContentAppendContext<'_>>,
+    ) -> Result<AppendOutcome, StackError> {
         if !self.state.signing_key.is_active_at(now_timestamp()?) {
             return Err(StackError::bad_request(
                 "signing key inactive at append time",
@@ -130,7 +157,7 @@ impl<'a> AppendCoordinator<'a> {
             )));
         }
 
-        let _scope_guard = self.state.scope_locks.lock(command.scope.as_bytes()).await;
+        let mut scope_guard = self.state.scope_locks.lock(command.scope.as_bytes()).await;
         let mut events = self
             .state
             .repository
@@ -151,14 +178,26 @@ impl<'a> AppendCoordinator<'a> {
                 .collect::<Vec<_>>();
             let prior_event_hash =
                 prior_event_hash_for(command.scope.as_str(), &replay_events, existing)?;
-            let bundle = publish_bundle(
+            let (new_guard, protected) = self
+                .prefetch_source_content(
+                    &command.scope,
+                    &events,
+                    &replay_events,
+                    source,
+                    scope_guard,
+                )
+                .await?;
+            scope_guard = new_guard;
+            let bundle = crate::publish_bundle_with_source_content(
                 self.state,
                 command.scope.as_bytes(),
                 &replay_events,
                 false,
                 &command.compute_context,
+                protected.as_ref(),
             )
             .await?;
+            drop(scope_guard);
             let result = append_result_for_event(
                 &command.scope,
                 existing,
@@ -200,9 +239,93 @@ impl<'a> AppendCoordinator<'a> {
             .take()
             .ok_or_else(|| StackError::internal("trellis core did not emit a stored event"))?
             .with_canonical_event_hash(Some(artifacts.canonical_event_hash));
+        let mut planned = events.clone();
+        planned.push(stored.clone());
+        let (new_guard, protected) = self
+            .prefetch_source_content(&command.scope, &events, &planned, source, scope_guard)
+            .await?;
+        scope_guard = new_guard;
         let unit = AppendUnitOfWork::new(stored, command.compute_context);
-        self.commit_unit(&command.scope, &admitted, &mut events, unit, true)
-            .await
+        let outcome = self
+            .commit_unit(
+                &command.scope,
+                &admitted,
+                &mut events,
+                unit,
+                true,
+                protected.as_ref(),
+            )
+            .await;
+        drop(scope_guard);
+        outcome
+    }
+
+    async fn prefetch_source_content(
+        &self,
+        scope: &str,
+        expected_current: &[StoredEvent],
+        planned: &[StoredEvent],
+        source: Option<&crate::source_content::SourceContentAppendContext<'_>>,
+        guard: tokio::sync::OwnedMutexGuard<()>,
+    ) -> Result<
+        (
+            tokio::sync::OwnedMutexGuard<()>,
+            Option<crate::source_content::ProtectedSourceMembersReady>,
+        ),
+        StackError,
+    > {
+        let Some(source) = source else {
+            if let Some(composition) = &self.state.source_content {
+                composition.require_publication_purpose(scope.as_bytes(), planned, None)?;
+            }
+            return Ok((guard, None));
+        };
+        let composition = self
+            .state
+            .source_content
+            .as_ref()
+            .ok_or_else(|| StackError::unavailable("Source content composition is absent"))?;
+        if !matches!(
+            composition
+                .final_prefix_guard
+                .classify(scope.as_bytes(), planned)?,
+            crate::SourceContentPrefixClass::FinalCloseout { .. }
+        ) {
+            return Err(StackError::conflict(
+                "Source publication is not the selected final closeout",
+            ));
+        }
+        // The externally awaited read cannot hold Trellis's serialization lock.
+        drop(guard);
+        let before = source.current_permission(self.state, scope).await?;
+        let caller = crate::CompletionCallerContext::from_headers(source.headers)?;
+        let request = crate::SourceContentRequest {
+            selection: source.selection,
+            scope: scope.as_bytes(),
+            events: planned,
+            caller: &caller,
+        };
+        let protected =
+            crate::source_content::read_admitted(composition.contributor.as_ref(), &request)
+                .await?;
+        if source.current_permission(self.state, scope).await? != before {
+            return Err(StackError::conflict(
+                "Source append authority changed during content read",
+            ));
+        }
+        let guard = self.state.scope_locks.lock(scope.as_bytes()).await;
+        // Match maintained completion admission: authority may change while waiting
+        // for the scope lock. This bounded authentication/grant check may consult
+        // OIDC, but no owning WOS selection or content callback runs under the lock.
+        if source.current_permission(self.state, scope).await? != before
+            || self.state.repository.list_scope(scope.as_bytes()).await? != expected_current
+        {
+            return Err(StackError::conflict(
+                "Source append authority or exact prefix changed",
+            ));
+        }
+        composition.require_publication_purpose(scope.as_bytes(), planned, Some(&protected))?;
+        Ok((guard, Some(protected)))
     }
 
     async fn commit_unit(
@@ -212,6 +335,7 @@ impl<'a> AppendCoordinator<'a> {
         events: &mut Vec<StoredEvent>,
         unit: AppendUnitOfWork,
         update_head: bool,
+        protected: Option<&crate::source_content::ProtectedSourceMembersReady>,
     ) -> Result<AppendOutcome, StackError> {
         let compute = unit.compute_context().clone();
         let stored = unit.event().clone();
@@ -223,8 +347,15 @@ impl<'a> AppendCoordinator<'a> {
         self.state.repository.append_event(stored.clone()).await?;
         let prior_event_hash = prior_event_hash_for(scope, events, &stored)?;
         events.push(stored.clone());
-        let bundle =
-            publish_bundle(self.state, scope.as_bytes(), events, update_head, &compute).await?;
+        let bundle = crate::publish_bundle_with_source_content(
+            self.state,
+            scope.as_bytes(),
+            events,
+            update_head,
+            &compute,
+            protected,
+        )
+        .await?;
         let result = append_result_for_event(
             scope,
             &stored,
