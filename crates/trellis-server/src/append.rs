@@ -23,6 +23,7 @@ use trellis_server_ports::{
 use trellis_service_client::{ClientAttestation, SubstrateAppendBody, SubstrateAppendResult};
 use trellis_types::{CONTENT_DOMAIN, StoredEvent};
 
+use crate::source_diagnostics::{self as diag, Outcome, Stage};
 use crate::{
     TrellisServerState, append_result_for_event, event_hash, now_timestamp,
     validate_existing_replay,
@@ -105,18 +106,29 @@ impl<'a> AppendCoordinator<'a> {
         command: AppendCommand,
         source: &crate::source_content::SourceContentAppendContext<'_>,
     ) -> Result<AppendOutcome, StackError> {
+        diag::mark(true, Stage::Coordinator, Outcome::Enter);
         if command.event_type != source.body.event_type
             || command.payload != source.body.payload
             || command.idempotency_key != source.body.idempotency_key
         {
+            diag::mark(true, Stage::Coordinator, Outcome::Refused);
             return Err(StackError::conflict("Source closeout append body differs"));
         }
-        crate::validate_source_content_append_closeout(
-            &command.event_type,
-            &command.payload,
-            &source.selection.identity,
+        diag::mark(true, Stage::SelectedNative, Outcome::Enter);
+        diag::observed(
+            true,
+            Stage::SelectedNative,
+            crate::validate_source_content_append_closeout(
+                &command.event_type,
+                &command.payload,
+                &source.selection.identity,
+            ),
         )?;
-        self.append_inner(command, Some(source)).await
+        diag::observed(
+            true,
+            Stage::Coordinator,
+            self.append_inner(command, Some(source)).await,
+        )
     }
 
     async fn append_inner(
@@ -124,6 +136,8 @@ impl<'a> AppendCoordinator<'a> {
         command: AppendCommand,
         source: Option<&crate::source_content::SourceContentAppendContext<'_>>,
     ) -> Result<AppendOutcome, StackError> {
+        let selected = source.is_some();
+        diag::mark(selected, Stage::Policy, Outcome::Enter);
         if !self.state.signing_key.is_active_at(now_timestamp()?) {
             return Err(StackError::bad_request(
                 "signing key inactive at append time",
@@ -132,15 +146,18 @@ impl<'a> AppendCoordinator<'a> {
         let payload_json = serde_json::to_vec(&command.payload).map_err(|error| {
             StackError::bad_request(format!("payload JSON encode failed: {error}"))
         })?;
-        let admitted = self
-            .state
-            .admission_policy
-            .admit(&AdmissionEvent {
-                scope: command.scope.as_bytes(),
-                event_type: &command.event_type,
-                payload: &payload_json,
-            })
-            .await?;
+        let admitted = diag::observed(
+            selected,
+            Stage::Policy,
+            self.state
+                .admission_policy
+                .admit(&AdmissionEvent {
+                    scope: command.scope.as_bytes(),
+                    event_type: &command.event_type,
+                    payload: &payload_json,
+                })
+                .await,
+        )?;
 
         // Direct-submit policy is metadata-driven (TODO acceptance line 294):
         // reject a `clientAttestation`-bearing submission when admitted
@@ -157,20 +174,29 @@ impl<'a> AppendCoordinator<'a> {
             )));
         }
 
+        diag::mark(selected, Stage::Prefix, Outcome::Enter);
         let mut scope_guard = self.state.scope_locks.lock(command.scope.as_bytes()).await;
-        let mut events = self
-            .state
-            .repository
-            .list_scope(command.scope.as_bytes())
-            .await?;
+        let mut events = diag::observed(
+            selected,
+            Stage::Prefix,
+            self.state
+                .repository
+                .list_scope(command.scope.as_bytes())
+                .await,
+        )?;
         let content =
             EventContent::from_payload(&command.payload, command.idempotency_key.as_bytes())?;
 
+        diag::mark(selected, Stage::Replay, Outcome::Enter);
         if let Some(existing) = events
             .iter()
             .find(|event| event.idempotency_key() == Some(command.idempotency_key.as_bytes()))
         {
-            validate_existing_replay(existing, &admitted.event_type, content.content_hash)?;
+            diag::observed(
+                selected,
+                Stage::Replay,
+                validate_existing_replay(existing, &admitted.event_type, content.content_hash),
+            )?;
             let replay_events = events
                 .iter()
                 .filter(|event| event.sequence() <= existing.sequence())
@@ -188,24 +214,34 @@ impl<'a> AppendCoordinator<'a> {
                 )
                 .await?;
             scope_guard = new_guard;
-            let bundle = crate::publish_bundle_with_source_content(
-                self.state,
-                command.scope.as_bytes(),
-                &replay_events,
-                false,
-                &command.compute_context,
-                protected.as_ref(),
-            )
-            .await?;
+            diag::mark(selected, Stage::ZipPublish, Outcome::Enter);
+            let bundle = diag::observed(
+                selected,
+                Stage::ZipPublish,
+                crate::publish_bundle_with_source_content(
+                    self.state,
+                    command.scope.as_bytes(),
+                    &replay_events,
+                    false,
+                    &command.compute_context,
+                    protected.as_ref(),
+                )
+                .await,
+            )?;
             drop(scope_guard);
-            let result = append_result_for_event(
-                &command.scope,
-                existing,
-                prior_event_hash,
-                admitted.artifact_type,
-                &admitted.event_type,
-                &bundle,
-                true,
+            diag::mark(selected, Stage::Receipt, Outcome::Enter);
+            let result = diag::observed(
+                selected,
+                Stage::Receipt,
+                append_result_for_event(
+                    &command.scope,
+                    existing,
+                    prior_event_hash,
+                    admitted.artifact_type,
+                    &admitted.event_type,
+                    &bundle,
+                    true,
+                ),
             )?;
             return Ok(AppendOutcome {
                 result,
@@ -213,6 +249,8 @@ impl<'a> AppendCoordinator<'a> {
             });
         }
 
+        diag::mark(selected, Stage::Replay, Outcome::ReturnedOk);
+        diag::mark(selected, Stage::Core, Outcome::Enter);
         let sequence = u64::try_from(events.len())
             .map_err(|_| StackError::internal("event count exceeds u64"))?;
         let prev_hash = events
@@ -233,12 +271,14 @@ impl<'a> AppendCoordinator<'a> {
         let artifacts =
             trellis_core::append_event(&mut capture, &self.state.signing_key.core_key(), &authored)
                 .map_err(|error| {
+                    diag::mark(selected, Stage::Core, Outcome::Refused);
                     StackError::bad_request(format!("trellis append rejected: {error}"))
                 })?;
         let stored = capture
             .take()
             .ok_or_else(|| StackError::internal("trellis core did not emit a stored event"))?
             .with_canonical_event_hash(Some(artifacts.canonical_event_hash));
+        diag::mark(selected, Stage::Core, Outcome::ReturnedOk);
         let mut planned = events.clone();
         planned.push(stored.clone());
         let (new_guard, protected) = self
@@ -280,6 +320,7 @@ impl<'a> AppendCoordinator<'a> {
             }
             return Ok((guard, None));
         };
+        diag::mark(true, Stage::FinalGuard, Outcome::Enter);
         let composition = self
             .state
             .source_content
@@ -288,16 +329,27 @@ impl<'a> AppendCoordinator<'a> {
         if !matches!(
             composition
                 .final_prefix_guard
-                .classify(scope.as_bytes(), planned)?,
+                .classify(scope.as_bytes(), planned)
+                .map_err(|error| {
+                    diag::mark(true, Stage::FinalGuard, Outcome::Refused);
+                    error
+                })?,
             crate::SourceContentPrefixClass::FinalCloseout { .. }
         ) {
+            diag::mark(true, Stage::FinalGuard, Outcome::Refused);
             return Err(StackError::conflict(
                 "Source publication is not the selected final closeout",
             ));
         }
+        diag::mark(true, Stage::FinalGuard, Outcome::ReturnedOk);
         // The externally awaited read cannot hold Trellis's serialization lock.
         drop(guard);
-        let before = source.current_permission(self.state, scope).await?;
+        diag::mark(true, Stage::CurrentAuthority, Outcome::Enter);
+        let before = diag::observed(
+            true,
+            Stage::CurrentAuthority,
+            source.current_permission(self.state, scope).await,
+        )?;
         let caller = crate::CompletionCallerContext::from_headers(source.headers)?;
         let request = crate::SourceContentRequest {
             selection: source.selection,
@@ -305,26 +357,55 @@ impl<'a> AppendCoordinator<'a> {
             events: planned,
             caller: &caller,
         };
-        let protected =
-            crate::source_content::read_admitted(composition.contributor.as_ref(), &request)
-                .await?;
-        if source.current_permission(self.state, scope).await? != before {
+        diag::mark(true, Stage::ContentRead, Outcome::Enter);
+        let protected = diag::observed(
+            true,
+            Stage::ContentRead,
+            crate::source_content::read_admitted(composition.contributor.as_ref(), &request).await,
+        )?;
+        diag::mark(true, Stage::CurrentAuthority, Outcome::Enter);
+        if diag::observed(
+            true,
+            Stage::CurrentAuthority,
+            source.current_permission(self.state, scope).await,
+        )? != before
+        {
+            diag::mark(true, Stage::CurrentAuthority, Outcome::Refused);
             return Err(StackError::conflict(
                 "Source append authority changed during content read",
             ));
         }
+        diag::mark(true, Stage::Reacquire, Outcome::Enter);
         let guard = self.state.scope_locks.lock(scope.as_bytes()).await;
+        diag::mark(true, Stage::Reacquire, Outcome::ReturnedOk);
         // Match maintained completion admission: authority may change while waiting
         // for the scope lock. This bounded authentication/grant check may consult
         // OIDC, but no owning WOS selection or content callback runs under the lock.
-        if source.current_permission(self.state, scope).await? != before
-            || self.state.repository.list_scope(scope.as_bytes()).await? != expected_current
+        diag::mark(true, Stage::CurrentAuthority, Outcome::Enter);
+        let current = diag::observed(
+            true,
+            Stage::CurrentAuthority,
+            source.current_permission(self.state, scope).await,
+        )?;
+        diag::mark(true, Stage::ExactPrefix, Outcome::Enter);
+        if current != before
+            || diag::observed(
+                true,
+                Stage::ExactPrefix,
+                self.state.repository.list_scope(scope.as_bytes()).await,
+            )? != expected_current
         {
+            diag::mark(true, Stage::ExactPrefix, Outcome::Refused);
             return Err(StackError::conflict(
                 "Source append authority or exact prefix changed",
             ));
         }
-        composition.require_publication_purpose(scope.as_bytes(), planned, Some(&protected))?;
+        diag::mark(true, Stage::FinalGuard, Outcome::Enter);
+        diag::observed(
+            true,
+            Stage::FinalGuard,
+            composition.require_publication_purpose(scope.as_bytes(), planned, Some(&protected)),
+        )?;
         Ok((guard, Some(protected)))
     }
 
@@ -337,33 +418,54 @@ impl<'a> AppendCoordinator<'a> {
         update_head: bool,
         protected: Option<&crate::source_content::ProtectedSourceMembersReady>,
     ) -> Result<AppendOutcome, StackError> {
+        let selected = protected.is_some();
         let compute = unit.compute_context().clone();
         let stored = unit.event().clone();
         let prefix = events
             .iter()
             .chain(std::iter::once(&stored))
             .collect::<Vec<_>>();
-        crate::signature_evidence_members(scope.as_bytes(), &prefix)?;
-        self.state.repository.append_event(stored.clone()).await?;
+        diag::mark(selected, Stage::Evidence, Outcome::Enter);
+        diag::observed(
+            selected,
+            Stage::Evidence,
+            crate::signature_evidence_members(scope.as_bytes(), &prefix),
+        )?;
+        diag::mark(selected, Stage::RepositoryWrite, Outcome::Enter);
+        diag::observed(
+            selected,
+            Stage::RepositoryWrite,
+            self.state.repository.append_event(stored.clone()).await,
+        )?;
         let prior_event_hash = prior_event_hash_for(scope, events, &stored)?;
         events.push(stored.clone());
-        let bundle = crate::publish_bundle_with_source_content(
-            self.state,
-            scope.as_bytes(),
-            events,
-            update_head,
-            &compute,
-            protected,
-        )
-        .await?;
-        let result = append_result_for_event(
-            scope,
-            &stored,
-            prior_event_hash,
-            admitted.artifact_type,
-            &admitted.event_type,
-            &bundle,
-            true,
+        diag::mark(selected, Stage::ZipPublish, Outcome::Enter);
+        let bundle = diag::observed(
+            selected,
+            Stage::ZipPublish,
+            crate::publish_bundle_with_source_content(
+                self.state,
+                scope.as_bytes(),
+                events,
+                update_head,
+                &compute,
+                protected,
+            )
+            .await,
+        )?;
+        diag::mark(selected, Stage::Receipt, Outcome::Enter);
+        let result = diag::observed(
+            selected,
+            Stage::Receipt,
+            append_result_for_event(
+                scope,
+                &stored,
+                prior_event_hash,
+                admitted.artifact_type,
+                &admitted.event_type,
+                &bundle,
+                true,
+            ),
         )?;
         Ok(AppendOutcome { result, stored })
     }

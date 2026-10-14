@@ -68,6 +68,7 @@ pub mod source_content;
 #[cfg(test)]
 mod source_content_tests;
 mod source_content_transport;
+mod source_diagnostics;
 #[doc(inline)]
 pub use source_content::MAX_PREPARED_SOURCE_CONTENT_BYTES;
 mod wos_ext;
@@ -882,23 +883,44 @@ impl TrellisServiceClient {
         scope: &str,
         event_type: &str,
     ) -> Result<SubstrateAppendResult, StackError> {
+        Self::append_response_diagnostic(response, scope, event_type, false).await
+    }
+
+    async fn append_response_diagnostic(
+        response: reqwest::Response,
+        scope: &str,
+        event_type: &str,
+        selected: bool,
+    ) -> Result<SubstrateAppendResult, StackError> {
+        use source_diagnostics::{Outcome, Stage};
+        source_diagnostics::mark(selected, Stage::Response, Outcome::Enter);
         if !response.status().is_success() {
             let status = response.status();
             let body = truncate_utf8_body_for_error_preview(
                 response.text().await.unwrap_or_default(),
                 APPEND_HTTP_ERROR_BODY_PREVIEW_BYTES,
             );
+            source_diagnostics::http_refusal(selected, status.as_u16(), &body);
             return Err(StackError::unavailable(format!(
                 "trellis append returned HTTP {status}: {body}"
             )));
         }
+        source_diagnostics::mark(selected, Stage::Response, Outcome::ReturnedOk);
+        source_diagnostics::mark(selected, Stage::Decode, Outcome::Enter);
         let result = response
             .json::<SubstrateAppendResult>()
             .await
             .map_err(|error| {
+                source_diagnostics::mark(selected, Stage::Decode, Outcome::Refused);
                 StackError::unavailable(format!("trellis append response is invalid: {error}"))
             })?;
-        result.validate_for_event_append(scope, event_type)?;
+        source_diagnostics::mark(selected, Stage::Decode, Outcome::ReturnedOk);
+        source_diagnostics::mark(selected, Stage::Receipt, Outcome::Enter);
+        source_diagnostics::observed(
+            selected,
+            Stage::Receipt,
+            result.validate_for_event_append(scope, event_type),
+        )?;
         Ok(result)
     }
 
@@ -971,30 +993,53 @@ impl TrellisServiceClient {
         request: SubstrateAppendRequest,
         source: Option<(&str, &str)>,
     ) -> Result<SubstrateAppendResult, StackError> {
-        request.validate()?;
+        use source_diagnostics::{Outcome, Stage};
+        let source_selected = source.is_some();
+        source_diagnostics::mark(source_selected, Stage::Input, Outcome::Enter);
+        source_diagnostics::observed(source_selected, Stage::Input, request.validate())?;
+        source_diagnostics::mark(source_selected, Stage::Request, Outcome::Enter);
         let path = format!("/v1/scopes/{}/events", encode_path_segment(&request.scope));
         let mut outgoing = self
             .request(reqwest::Method::POST, &path, &request.tenant_scope)
-            .await?
+            .await
+            .map_err(|error| {
+                source_diagnostics::mark(source_selected, Stage::Request, Outcome::Refused);
+                error
+            })?
             .header(IDEMPOTENCY_KEY_HEADER, request.idempotency_key.as_str())
             .json(&request.body());
         if let Some((key, human)) = source {
-            let mut human = reqwest::header::HeaderValue::from_str(human)
-                .map_err(|_| StackError::bad_request("completion caller authorization invalid"))?;
+            let mut human = reqwest::header::HeaderValue::from_str(human).map_err(|_| {
+                source_diagnostics::mark(source_selected, Stage::Request, Outcome::Refused);
+                StackError::bad_request("completion caller authorization invalid")
+            })?;
             human.set_sensitive(true);
             outgoing = outgoing
                 .header(source_content::SOURCE_CONTENT_PREPARATION_KEY_HEADER, key)
                 .header(COMPLETION_CALLER_AUTHORIZATION_HEADER, human);
         }
-        let source_selected = source.is_some();
+        source_diagnostics::mark(source_selected, Stage::Request, Outcome::ReturnedOk);
+        source_diagnostics::mark(source_selected, Stage::Send, Outcome::Enter);
         let response = outgoing.send().await.map_err(|error| {
+            if error.is_builder() {
+                source_diagnostics::mark(source_selected, Stage::Request, Outcome::Refused);
+            } else {
+                source_diagnostics::send_error(source_selected, &error);
+            }
             if source_selected {
                 StackError::unavailable("trellis Source-content append transport failed")
             } else {
                 StackError::unavailable(format!("trellis append failed: {error}"))
             }
         })?;
-        Self::append_response(response, &request.scope, &request.event_type).await
+        source_diagnostics::mark(source_selected, Stage::Send, Outcome::ReturnedOk);
+        Self::append_response_diagnostic(
+            response,
+            &request.scope,
+            &request.event_type,
+            source_selected,
+        )
+        .await
     }
 }
 
@@ -1013,7 +1058,13 @@ impl SubstrateClient for TrellisServiceClient {
         preparation_key: &str,
         person_authorization: &str,
     ) -> Result<SubstrateAppendResult, StackError> {
-        crate::validate_completion_caller_authorization(person_authorization)?;
+        use source_diagnostics::{Outcome, Stage};
+        source_diagnostics::mark(true, Stage::Input, Outcome::Enter);
+        source_diagnostics::observed(
+            true,
+            Stage::Input,
+            crate::validate_completion_caller_authorization(person_authorization),
+        )?;
         if preparation_key.is_empty()
             || preparation_key.len() > 256
             || !preparation_key.is_ascii()
@@ -1021,6 +1072,7 @@ impl SubstrateClient for TrellisServiceClient {
                 .bytes()
                 .any(|b| b.is_ascii_whitespace() || b.is_ascii_control())
         {
+            source_diagnostics::mark(true, Stage::Input, Outcome::Refused);
             return Err(StackError::bad_request(
                 "Source preparation locator invalid",
             ));
@@ -1299,6 +1351,9 @@ mod tests {
 
     mod current_token_tests {
         include!("current_token_tests.rs");
+        mod source_diagnostic_http_tests {
+            include!("source_diagnostic_http_tests.rs");
+        }
         mod source_content_http_tests {
             include!("source_content_http_tests.rs");
         }

@@ -5,6 +5,11 @@ edition.workspace = true
 description = "Shared Trellis service HTTP client and substrate contract"
 license.workspace = true
 
+[features]
+default = []
+# Fixed privacy-preserving Source append capture in explicitly selected test dependencies.
+test-diagnostics = []
+
 [dependencies]
 base64 = "0.22"
 async-trait = "0.1"

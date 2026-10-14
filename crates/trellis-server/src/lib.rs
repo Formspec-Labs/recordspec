@@ -40,6 +40,7 @@ mod completion;
 mod composition;
 mod source_content;
 mod source_content_startup;
+mod source_diagnostics;
 pub use completion::{
     CompletionAttestor, CompletionCallerContext, CompletionRecord, CompletionRequest,
     CompletionSelector, CompletionSigner, CompletionSignerLabel, CoseCompletionSigner,
@@ -1006,6 +1007,10 @@ fn hex_digit(value: u8) -> char {
 
 #[cfg(test)]
 mod tests {
+    mod source_diagnostic_state_tests {
+        include!("source_diagnostic_state_tests.rs");
+    }
+
     mod source_content_tests {
         include!("source_content_tests.rs");
     }

@@ -153,16 +153,22 @@ pub(crate) async fn append_event(
     let outcome = match source_selection {
         None => state.append_runner.run_append(&state, command).await?,
         Some(selection) => {
+            use crate::source_diagnostics::{self as diag, Outcome, Stage};
+            diag::mark(true, Stage::Handler, Outcome::Enter);
             let source = crate::source_content::SourceContentAppendContext {
                 selection: &selection,
                 headers: &headers,
                 tenant: &tenant,
                 body: &body,
             };
-            state
-                .append_coordinator()
-                .append_selected_source_content(command, &source)
-                .await?
+            diag::observed(
+                true,
+                Stage::Handler,
+                state
+                    .append_coordinator()
+                    .append_selected_source_content(command, &source)
+                    .await,
+            )?
         }
     };
     Ok((StatusCode::CREATED, Json(outcome.result)))
