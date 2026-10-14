@@ -116,7 +116,7 @@ mod source_content_configuration_tests {
         let client = trellis_service_client::TrellisServiceClient::new(
             trellis_service_client::TrellisServiceClientConfig::new(
                 "http://127.0.0.1:1",
-                trellis_service_client::HeaderConfig::wos(),
+                stack_common_http::tenant::HeaderConfig::wos(),
             ),
         )
         .unwrap();
