@@ -133,6 +133,19 @@ pub(crate) fn send_error(selected: bool, error: &reqwest::Error) {
     #[cfg(not(feature = "test-diagnostics"))]
     let _ = (selected, error);
 }
+pub(crate) fn send_timeout(selected: bool) {
+    #[cfg(feature = "test-diagnostics")]
+    if selected {
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "trellis_source_client stage=send outcome=refused class={}",
+            SendClass::Timeout.label()
+        );
+    }
+    #[cfg(not(feature = "test-diagnostics"))]
+    let _ = selected;
+}
+
 #[cfg(any(feature = "test-diagnostics", test))]
 fn write_http(writer: &mut impl Write, status: u16, preview: &str) {
     let _ = writeln!(

@@ -121,13 +121,19 @@ impl StartupCompletion {
             Arc::new(credentials),
         )
         .map_err(|_| invalid())?;
-        let client = TrellisServiceClient::new(TrellisServiceClientConfig::new(
-            profile.origin,
-            HeaderConfig::wos(),
-        ))
-        .map_err(|_| invalid())?
-        .with_token_provider(Arc::new(provider))
-        .map_err(|_| invalid())?;
+        let client_configuration =
+            TrellisServiceClientConfig::new(profile.origin, HeaderConfig::wos());
+        let client_configuration = if profile.source_content.is_some() {
+            client_configuration.with_timeout(
+                trellis_service_client::source_content::DEFAULT_SOURCE_CONTENT_CALLBACK_TIMEOUT,
+            )
+        } else {
+            client_configuration
+        };
+        let client = TrellisServiceClient::new(client_configuration)
+            .map_err(|_| invalid())?
+            .with_token_provider(Arc::new(provider))
+            .map_err(|_| invalid())?;
 
         let rows: Vec<OperatorProfile> = match operator {
             Some(path) => serde_json::from_slice(&read_private(path)?).map_err(|_| invalid())?,

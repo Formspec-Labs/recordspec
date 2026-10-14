@@ -1077,8 +1077,23 @@ impl SubstrateClient for TrellisServiceClient {
                 "Source preparation locator invalid",
             ));
         }
-        self.send_event_append(request, Some((preparation_key, person_authorization)))
-            .await
+        // Bound all asynchronous Source append work, including token acquisition
+        // before HTTP and response/receipt handling after HTTP. This timer cannot
+        // preempt synchronous validation or other work that does not yield.
+        match tokio::time::timeout(
+            self.config.timeout,
+            self.send_event_append(request, Some((preparation_key, person_authorization))),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                source_diagnostics::send_timeout(true);
+                Err(StackError::unavailable(
+                    "trellis Source-content append transport failed",
+                ))
+            }
+        }
     }
 
     async fn head_bundle(
@@ -1351,6 +1366,9 @@ mod tests {
 
     mod current_token_tests {
         include!("current_token_tests.rs");
+        mod source_budget_tests {
+            include!("source_budget_tests.rs");
+        }
         mod source_diagnostic_http_tests {
             include!("source_diagnostic_http_tests.rs");
         }

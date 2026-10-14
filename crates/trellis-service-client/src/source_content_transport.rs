@@ -40,7 +40,7 @@ impl TrellisServiceClient {
             cell: body.tenant.cell.clone(),
         };
         let fail = || StackError::unavailable("Source owning selection response refused");
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::time::timeout(self.config.timeout, async {
             let mut person =
                 reqwest::header::HeaderValue::from_str(person_authorization).map_err(|_| fail())?;
             person.set_sensitive(true);

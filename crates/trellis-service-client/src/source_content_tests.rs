@@ -4,7 +4,7 @@ use super::source_content::*;
 use crate::{AppendActor, ComputeContext, SubstrateAppendBody};
 use stack_common_http::tenant::TenantScope;
 
-fn request() -> SourceContentOnlySelectionRequest {
+pub(crate) fn request() -> SourceContentOnlySelectionRequest {
     let tenant = TenantScope {
         tenant: "tenant".into(),
         workspace: "workspace".into(),
@@ -34,7 +34,7 @@ fn request() -> SourceContentOnlySelectionRequest {
     )
     .unwrap()
 }
-fn selection() -> SourceContentSelection {
+pub(crate) fn selection() -> SourceContentSelection {
     SourceContentSelection {
         preparation_key: "sha256:neutral".into(),
         identity: SourceContentIdentityV1 {

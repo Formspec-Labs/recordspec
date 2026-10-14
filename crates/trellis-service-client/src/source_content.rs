@@ -109,6 +109,22 @@ pub struct SourceContentRecordPins {
     pub locator_sha256: [u8; 32],
 }
 
+/// Default transport budget for independently selected Source callbacks.
+///
+/// The owning WOS handler retains its five-second inner bound. The selected
+/// callback client uses this larger transport bound for both HTTP and its
+/// complete callback wait, including current-token acquisition and decoding.
+pub const DEFAULT_SOURCE_CONTENT_CALLBACK_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(10);
+
+/// Default whole-append budget selected by the owning Source export caller.
+///
+/// Thirty seconds reserves two ten-second callbacks plus ten seconds for
+/// admission and publication. Configure the caller through existing
+/// TrellisServiceClientConfig::with_timeout; ordinary defaults remain unchanged.
+pub const DEFAULT_SOURCE_CONTENT_APPEND_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(30);
+
 /// Read-response ceiling shared with the owning encoded prepared batch.
 pub const MAX_PREPARED_SOURCE_CONTENT_BYTES: usize = 16 * 1024 * 1024;
 
@@ -170,7 +186,7 @@ impl TrellisServiceClient {
             crate::encode_path_segment(preparation_key)
         );
         let fail = || StackError::unavailable("prepared Source content GET refused");
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::time::timeout(self.config.timeout, async {
             let mut person =
                 reqwest::header::HeaderValue::from_str(person_authorization).map_err(|_| fail())?;
             person.set_sensitive(true);
