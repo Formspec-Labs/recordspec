@@ -7,6 +7,23 @@ use stack_common_http::tenant::TenantScope;
 
 use crate::TrellisServiceClient;
 
+/// Encodes byte payloads as standard base64 text. JSON number arrays expand
+/// protected ciphertext about 3.6x, which pushed real batches past the 16 MiB bound.
+mod base64_bytes {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&STANDARD.encode(bytes))
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        STANDARD
+            .decode(String::deserialize(deserializer)?)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
 /// Already committed protected content returned by the independently selected owner.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -14,7 +31,9 @@ pub struct PreparedSourceContentBatchV1 {
     pub version: u8,
     pub selection: SourceContentIdentityV1,
     pub records: Vec<PreparedSourceContentRecordV1>,
+    #[serde(with = "base64_bytes")]
     pub intake_handoffs: Vec<u8>,
+    #[serde(with = "base64_bytes")]
     pub source_signed_tasks: Vec<u8>,
 }
 
@@ -74,7 +93,9 @@ pub struct PreparedSourceContentRecordV1 {
     pub occurrence: SourceContentOccurrenceV1,
     pub record_sha256: [u8; 32],
     pub member_content_hash: [u8; 32],
+    #[serde(with = "base64_bytes")]
     pub protected_record_bytes: Vec<u8>,
+    #[serde(with = "base64_bytes")]
     pub locator_cbor: Vec<u8>,
 }
 
@@ -112,21 +133,28 @@ pub struct SourceContentRecordPins {
     pub locator_sha256: [u8; 32],
 }
 
+/// Inner bound for each owning WOS Source callback handler (selection and read).
+///
+/// Sized from a real-size D1 case: each callback reads the full case snapshot
+/// twice (~5.5 s each) and validates the retained batch once. The handler bound
+/// stays below the callback transport bound so the owner's refusal arrives first.
+pub const SOURCE_CONTENT_OWNER_HANDLER_BUDGET: std::time::Duration =
+    std::time::Duration::from_secs(45);
+
 /// Default transport budget for independently selected Source callbacks.
 ///
-/// The owning WOS handler retains its five-second inner bound. The selected
-/// callback client uses this larger transport bound for both HTTP and its
-/// complete callback wait, including current-token acquisition and decoding.
+/// The selected callback client uses this bound for both HTTP and its complete
+/// callback wait, including current-token acquisition and decoding.
 pub const DEFAULT_SOURCE_CONTENT_CALLBACK_TIMEOUT: std::time::Duration =
-    std::time::Duration::from_secs(10);
+    std::time::Duration::from_secs(60);
 
 /// Default whole-append budget selected by the owning Source export caller.
 ///
-/// Thirty seconds reserves two ten-second callbacks plus ten seconds for
-/// admission and publication. Configure the caller through existing
-/// TrellisServiceClientConfig::with_timeout; ordinary defaults remain unchanged.
+/// Reserves two callbacks plus ten seconds for admission and publication.
+/// Configure the caller through existing TrellisServiceClientConfig::with_timeout;
+/// ordinary defaults remain unchanged.
 pub const DEFAULT_SOURCE_CONTENT_APPEND_TIMEOUT: std::time::Duration =
-    std::time::Duration::from_secs(30);
+    std::time::Duration::from_secs(130);
 
 /// Read-response ceiling shared with the owning encoded prepared batch.
 pub const MAX_PREPARED_SOURCE_CONTENT_BYTES: usize = 16 * 1024 * 1024;
@@ -415,3 +443,69 @@ pub const SOURCE_CONTENT_SELECTION_PATH: &str =
     "/api/v1/internal/completion-source-content-selection";
 /// Request-local prepared locator; this header grants no authority.
 pub const SOURCE_CONTENT_PREPARATION_KEY_HEADER: &str = "x-wos-source-content-preparation-key";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn batch(payload: usize) -> PreparedSourceContentBatchV1 {
+        let identity = SourceContentIdentityV1 {
+            case_ledger_id: "case".into(),
+            process_id: "process".into(),
+            native_prefix_digest: [1; 32],
+            reserved_closeout_record_id: "closeout".into(),
+            reserved_native_closeout_record_sha256: [2; 32],
+            provider_selection_hash: [3; 32],
+            native_policy_hash: [4; 32],
+            recipient_policy_hash: [5; 32],
+            recipient_set_sha256: [6; 32],
+            workflow_url: "urn:test:workflow".into(),
+            workflow_version: "1".into(),
+            tenant_id: "tenant".into(),
+            workspace_id: "workspace".into(),
+            environment_id: "environment".into(),
+            cell_id: "cell".into(),
+            source_id: "source".into(),
+            service_binding_id: "binding".into(),
+        };
+        PreparedSourceContentBatchV1 {
+            version: 1,
+            selection: identity,
+            records: vec![PreparedSourceContentRecordV1 {
+                occurrence: SourceContentOccurrenceV1 {
+                    role: SourceContentRoleV1::TaskProofPackage,
+                    occurrence_event_hash: [7; 32],
+                    response_id: None,
+                    publication_hash: [8; 32],
+                    public_signing_policy_hash: [9; 32],
+                    evaluation_registration_hash: [10; 32],
+                },
+                record_sha256: [11; 32],
+                member_content_hash: [12; 32],
+                protected_record_bytes: (0..payload).map(|i| (i * 131 % 256) as u8).collect(),
+                locator_cbor: vec![0xa0],
+            }],
+            intake_handoffs: vec![0x80],
+            source_signed_tasks: vec![0x80],
+        }
+    }
+
+    #[test]
+    fn byte_fields_round_trip_as_compact_base64_text() {
+        let original = batch(8 * 1024 * 1024);
+        let encoded = serde_json::to_vec(&original).unwrap();
+        // Ciphertext near the 8 MiB package bound must fit the 16 MiB batch bound.
+        assert!(encoded.len() < MAX_PREPARED_SOURCE_CONTENT_BYTES);
+        assert_eq!(serde_json::from_slice::<PreparedSourceContentBatchV1>(&encoded).unwrap(), original);
+        let value = serde_json::to_value(&original).unwrap();
+        assert!(value["records"][0]["protectedRecordBytes"].is_string());
+        assert_eq!(serde_json::from_value::<PreparedSourceContentBatchV1>(value).unwrap(), original);
+    }
+
+    #[test]
+    fn non_base64_byte_text_is_refused() {
+        let mut value = serde_json::to_value(batch(4)).unwrap();
+        value["intakeHandoffs"] = serde_json::json!("not base64!");
+        assert!(serde_json::from_value::<PreparedSourceContentBatchV1>(value).is_err());
+    }
+}

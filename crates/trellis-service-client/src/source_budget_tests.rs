@@ -3,6 +3,7 @@
 use super::*;
 use crate::source_content::{
     DEFAULT_SOURCE_CONTENT_APPEND_TIMEOUT, DEFAULT_SOURCE_CONTENT_CALLBACK_TIMEOUT,
+    SOURCE_CONTENT_OWNER_HANDLER_BUDGET,
     SourceContentOnlySelectionResponse,
 };
 
@@ -21,6 +22,7 @@ fn source_budget_named_defaults_preserve_inner_transport_outer_order() {
         Duration::from_secs(5)
     );
     assert!(Duration::from_secs(5) < DEFAULT_SOURCE_CONTENT_CALLBACK_TIMEOUT);
+    assert!(SOURCE_CONTENT_OWNER_HANDLER_BUDGET < DEFAULT_SOURCE_CONTENT_CALLBACK_TIMEOUT);
     assert!(DEFAULT_SOURCE_CONTENT_CALLBACK_TIMEOUT < DEFAULT_SOURCE_CONTENT_APPEND_TIMEOUT);
     assert_eq!(
         DEFAULT_SOURCE_CONTENT_APPEND_TIMEOUT,
