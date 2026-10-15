@@ -178,8 +178,11 @@ fn opened_fixture() -> (
     else {
         panic!("protected fixture")
     };
-    let opened =
-        serde_json::to_vec(&serde_json::json!({"id":SOURCE_RESPONSE_ID,"data":{"answer":"retained"},"authoredSignatures":[]})).unwrap();
+    // Protected plaintext is the Formspec response handoff encoding, as the producer writes it.
+    let opened = integrity_canonical::canonical_response_handoff_bytes(
+        &serde_json::json!({"id":SOURCE_RESPONSE_ID,"data":{"answer":"retained"},"authoredSignatures":[]}),
+    )
+    .unwrap();
     // This codec body is not HPKE ciphertext and establishes no cryptographic claim.
     let ciphertext = vec![10; opened.len() + 16];
     locator.original_byte_length = opened.len() as u64;

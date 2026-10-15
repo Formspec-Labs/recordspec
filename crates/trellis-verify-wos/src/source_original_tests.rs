@@ -21,8 +21,11 @@ struct Fixture {
     pins: SourceTaskResponsePinsV1,
 }
 fn fixture() -> Fixture {
-    let opened =
-        br#"{"id":"response","data":{"original":"complete"},"authoredSignatures":[]}"#.to_vec();
+    // Protected plaintext is the Formspec response handoff encoding, as the producer writes it.
+    let opened = integrity_canonical::canonical_response_handoff_bytes(
+        &serde_json::json!({"id":"response","data":{"original":"complete"},"authoredSignatures":[]}),
+    )
+    .unwrap();
     let ciphertext = vec![3; opened.len() + 16];
     let mut p = ProtectedResponseLocator {
         native_event_hash: [1; 32],

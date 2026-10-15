@@ -4051,6 +4051,7 @@ dependencies = [
  "ciborium",
  "hex",
  "integrity-bundle",
+ "integrity-canonical",
  "integrity-cbor",
  "integrity-cose",
  "integrity-verify",
