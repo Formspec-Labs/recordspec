@@ -211,7 +211,7 @@ async fn oidc_startup_required_payload_selector_refuses_missing_nontext_and_fore
 }
 
 #[tokio::test]
-async fn oidc_startup_head_requires_current_read_and_administer_grants() {
+async fn oidc_startup_retained_head_requires_current_read_without_administer() {
     let mut files = Files::new();
     let app = files.app(Arc::new(ProtocolHttp::new()));
     let token = sign(&claims());
@@ -238,6 +238,15 @@ async fn oidc_startup_head_requires_current_read_and_administer_grants() {
         .as_array_mut()
         .unwrap()
         .retain(|grant| grant["action"] != "administer");
+    files.save();
+    assert_eq!(
+        app.clone().oneshot(head()).await.unwrap().status(),
+        StatusCode::OK
+    );
+    files.grants["grants"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|grant| grant["action"] != "read");
     files.save();
     assert_eq!(
         app.oneshot(head()).await.unwrap().status(),

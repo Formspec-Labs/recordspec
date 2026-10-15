@@ -19,7 +19,13 @@ fn unknown(reason: ReconciliationUnknown) -> AppendReconciliation {
 }
 
 /// Validates stored identity and recomputes hashes instead of trusting materialized values.
-fn checked_prefix(scope: &[u8], events: Vec<StoredEvent>) -> Result<Vec<StoredEvent>, StackError> {
+///
+/// # Errors
+/// Refuses duplicate keys, malformed signed rows or inconsistent stored identities and hashes.
+pub(crate) fn checked_prefix(
+    scope: &[u8],
+    events: Vec<StoredEvent>,
+) -> Result<Vec<StoredEvent>, StackError> {
     let mut keys = std::collections::BTreeSet::new();
     if events
         .iter()

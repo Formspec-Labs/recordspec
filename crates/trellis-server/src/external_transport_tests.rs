@@ -569,8 +569,15 @@ async fn cross_process_native_transport_qualification() {
             .await
             .is_err()
     );
-    assert!(
+    assert_eq!(
         client(&endpoint, "no-admin", calls.clone())
+            .head_bundle("case_123", &tenant())
+            .await
+            .unwrap(),
+        pinned
+    );
+    assert!(
+        client(&endpoint, "no-read", calls.clone())
             .head_bundle("case_123", &tenant())
             .await
             .is_err()
@@ -676,7 +683,8 @@ async fn cross_process_native_transport_qualification() {
         "changedBodyAfterFailedFingerprint409":true,
         "changedRecipientIdRefusedCachedAndRestarted":true,"sameRecipientIdChangedKeyRefusedCached":true,
         "closedUnknownAndDuplicateRefused":true,"wrongOriginalRefused":true,
-        "noAppendReadAdministerRefused":true,"wrongTenantAndScopeRefused":true
+        "noAppendOrReadRefused":true,"retainedHeadReadWithoutAdminister":true,
+        "wrongTenantAndScopeRefused":true
     });
     std::fs::write(
         evidence.join("result.json"),

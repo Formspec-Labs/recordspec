@@ -147,6 +147,13 @@ async fn source_content_final_guard_precedes_retained_seal_shortcut() {
         "final closeout requires committed Source content"
     );
     assert_eq!(ports.reads.load(Ordering::SeqCst), 0);
+    let response = router(state)
+        .unwrap()
+        .oneshot(get_request("/v1/scopes/case_123/bundles/head"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(ports.reads.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

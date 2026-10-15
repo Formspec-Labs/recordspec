@@ -535,6 +535,22 @@ async fn verify_retained_publication_with_source(
     record: &BundleRecord,
     source: Option<&source_content::ProtectedSourceMembersReady>,
 ) -> Result<(), StackError> {
+    read_verified_retained_publication(state, scope, events, record, source)
+        .await
+        .map(|_| ())
+}
+
+/// Returns the exact bytes admitted by the maintained retained-publication verifier.
+///
+/// # Errors
+/// Refuses missing, corrupt or changed publication evidence; never writes or publishes.
+pub(crate) async fn read_verified_retained_publication(
+    state: &TrellisServerState,
+    scope: &[u8],
+    events: &[StoredEvent],
+    record: &BundleRecord,
+    source: Option<&source_content::ProtectedSourceMembersReady>,
+) -> Result<Vec<u8>, StackError> {
     let bytes = state
         .artifact_store
         .get(&record.artifact_ref)
@@ -705,7 +721,7 @@ async fn verify_retained_publication_with_source(
             _ => {}
         }
     }
-    Ok(())
+    Ok(bytes)
 }
 
 fn export_attempt_id(

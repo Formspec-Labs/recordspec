@@ -207,7 +207,8 @@ pub(crate) async fn append_event(
     path = "/v1/scopes/{scope}/bundles/head",
     params(("scope" = String, Path, description = "Trellis ledger scope.")),
     responses(
-        (status = 200, description = "Current Trellis export bundle.", content_type = "application/zip"),
+        (status = 200, description = "Verified retained current bundle under Read, or an Administer-authorized publication.", content_type = "application/zip"),
+        (status = 403, description = "Current Read refused, or publication requires Administer.", body = ProblemJson, content_type = "application/problem+json"),
         (status = 404, description = "Scope has no bundle.", body = ProblemJson, content_type = "application/problem+json"),
         (status = 409, description = "Bundle artifact or seal identity conflict.", body = ProblemJson, content_type = "application/problem+json"),
         (status = 503, description = "Bundle store unavailable.", body = ProblemJson, content_type = "application/problem+json")
@@ -222,20 +223,65 @@ pub(crate) async fn head_bundle(
     headers: HeaderMap,
 ) -> Result<Response, StackError> {
     let (identity, read_permit) = read_authorized(&state, &scope, &tenant_scope, &headers).await?;
-    crate::auth::authorize_publication(&state, &identity, &read_permit).await?;
-    let bundle = {
+    let response = {
         let _scope_guard = state.scope_locks.lock(scope.as_bytes()).await;
-        let events = state.repository.list_scope(scope.as_bytes()).await?;
-        publish_bundle(
-            &state,
+        // The ordered repository read defines this response's current prefix.
+        // A later append never substitutes an older or arbitrary indexed head.
+        let events = crate::reconciliation::checked_prefix(
             scope.as_bytes(),
-            &events,
-            true,
-            &append::default_public_compute_context(),
-        )
-        .await?
+            state.repository.list_scope(scope.as_bytes()).await?,
+        )?;
+        // Retained reads preserve the existing refusal of a bare Source closeout.
+        if let Some(composition) = &state.source_content {
+            composition.require_publication_purpose(scope.as_bytes(), &events, None)?;
+        }
+        let seal = u64::try_from(events.len())
+            .map_err(|_| StackError::internal("event count exceeds u64"))?;
+        let retained = state.bundles.get_by_seal(scope.as_bytes(), seal).await?;
+        if let Some(record) = retained {
+            let last = events
+                .last()
+                .ok_or_else(|| StackError::conflict("retained empty head differs"))?;
+            let attempt = crate::export_attempt_id(
+                scope.as_bytes(),
+                seal,
+                last.sequence(),
+                crate::event_hash(scope.as_bytes(), last)?,
+            )?;
+            if record.seal_version != seal || record.export_attempt_id != attempt {
+                return Err(StackError::conflict(
+                    "retained head publication identity differs",
+                ));
+            }
+            // Return the same immutable bytes that passed verification, without
+            // entering the publisher's retained-hit index update or fetching twice.
+            let bytes = crate::read_verified_retained_publication(
+                &state,
+                scope.as_bytes(),
+                &events,
+                &record,
+                None,
+            )
+            .await?;
+            bytes_response("application/zip", bytes)
+        } else {
+            crate::auth::authorize_publication(&state, &identity, &read_permit).await?;
+            let bundle = publish_bundle(
+                &state,
+                scope.as_bytes(),
+                &events,
+                true,
+                &append::default_public_compute_context(),
+            )
+            .await?;
+            bundle_response(&state, &bundle).await?
+        }
     };
-    bundle_response(&state, &bundle).await
+    let (_, after) = read_authorized(&state, &scope, &tenant_scope, &headers).await?;
+    if after != read_permit {
+        return Err(StackError::unavailable("bundle read authority changed"));
+    }
+    Ok(response)
 }
 
 #[utoipa::path(

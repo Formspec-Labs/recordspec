@@ -221,6 +221,92 @@ fn native_state() -> (TrellisServerState, Arc<AtomicBool>, Arc<AtomicBool>) {
     (state, identity, grants)
 }
 
+#[tokio::test]
+async fn retained_head_read_advances_after_an_actual_accepted_attachment() {
+    struct ReadAppendOnly(Arc<dyn ScopeAuthorizer<Error = StackError>>);
+    #[async_trait]
+    impl ScopeAuthorizer for ReadAppendOnly {
+        type Error = StackError;
+        async fn authorize(
+            &self,
+            request: &ScopeAuthorization<'_>,
+        ) -> Result<AuthorizedScope, StackError> {
+            if request.action == ScopeAction::Administer {
+                return Err(StackError::new(
+                    stack_common_error::ErrorCode::new("INFRA-4030").unwrap(),
+                    StatusCode::FORBIDDEN,
+                    "controlled publication refused",
+                ));
+            }
+            self.0.authorize(request).await
+        }
+    }
+    let (mut state, _, _) = native_state();
+    state.authorizer = Arc::new(ReadAppendOnly(state.authorizer.clone()));
+    let app = router(state.clone()).unwrap();
+    let first = app
+        .clone()
+        .oneshot(post_request_bearer(
+            "/v1/scopes/case_123/events",
+            append_body("before-accepted-photo"),
+            "controlled-native-token",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::CREATED);
+    let first: trellis_service_client::SubstrateAppendResult =
+        serde_json::from_slice(&to_bytes(first.into_body(), 64 * 1024).await.unwrap()).unwrap();
+    let before = native_bundle(&state, &first).await;
+    let (descriptor, mut input, original) = external_fixture_input();
+    let prior = state.repository.list_scope(b"case_123").await.unwrap();
+    let prepared = descriptor
+        .clone()
+        .prepare(
+            &input.scope,
+            &original,
+            &input.ciphertext,
+            &prior,
+            preparation_limits(),
+        )
+        .unwrap();
+    input.expected_head = prepared.expected_head();
+    input.preparation_identity = prepared.replay_digest();
+    let authorization = native_authorization(&descriptor, &input);
+    let result = append_prepared_external_attachment(
+        &state,
+        &native_headers(&authorization.idempotency_key),
+        &native_tenant(),
+        &authorization,
+        &prepared,
+        input.clone(),
+        &recipient_policy(),
+    )
+    .await
+    .unwrap();
+    let expected = native_bundle(&state, &result).await;
+    assert_ne!(expected, before);
+    let mut head = get_request("/v1/scopes/case_123/bundles/head");
+    head.headers_mut().insert(
+        "authorization",
+        "Bearer controlled-native-token".parse().unwrap(),
+    );
+    let response = app.oneshot(head).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let actual = to_bytes(response.into_body(), 32 * 1024 * 1024)
+        .await
+        .unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(
+        state
+            .repository
+            .list_scope(b"case_123")
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
 fn native_headers(key: &str) -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert(

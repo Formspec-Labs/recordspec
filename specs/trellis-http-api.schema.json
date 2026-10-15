@@ -88,7 +88,7 @@
           {
             "status": 200,
             "contentType": "application/zip",
-            "description": "Current deterministic Trellis export bundle bytes."
+            "description": "Verified retained current-prefix bundle under Read; creating a missing publication additionally requires Administer."
           },
           {
             "status": "4xx/5xx",

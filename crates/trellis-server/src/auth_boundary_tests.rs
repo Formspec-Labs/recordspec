@@ -154,12 +154,330 @@ fn external_state() -> (TrellisServerState, Controls) {
     (state, controls)
 }
 
+#[tokio::test]
+async fn retained_head_read_returns_the_exact_current_publication_without_administer() {
+    let (state, _) = external_state();
+    let app = router(state).unwrap();
+    let appended = app
+        .clone()
+        .oneshot(request(append_body("retained-head-read")))
+        .await
+        .unwrap();
+    assert_eq!(appended.status(), StatusCode::CREATED);
+    let receipt: SubstrateAppendResult =
+        serde_json::from_slice(&to_bytes(appended.into_body(), 64 * 1024).await.unwrap()).unwrap();
+    let mut head = get_request("/v1/scopes/case_123/bundles/head");
+    head.headers_mut().insert(
+        "authorization",
+        "Bearer controlled-current-token".parse().unwrap(),
+    );
+    let response = app.clone().oneshot(head).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let actual = to_bytes(response.into_body(), 32 * 1024 * 1024)
+        .await
+        .unwrap();
+    let mut pinned = get_request(&format!(
+        "/v1/scopes/case_123/bundles/{}",
+        receipt.checkpoint_ref.rsplit('/').next().unwrap()
+    ));
+    pinned.headers_mut().insert(
+        "authorization",
+        "Bearer controlled-current-token".parse().unwrap(),
+    );
+    let expected = app.oneshot(pinned).await.unwrap();
+    assert_eq!(expected.status(), StatusCode::OK);
+    assert_eq!(
+        actual,
+        to_bytes(expected.into_body(), 32 * 1024 * 1024)
+            .await
+            .unwrap()
+    );
+}
+
 fn request(body: Vec<u8>) -> Request<Body> {
     post_request_bearer(
         "/v1/scopes/case_123/events",
         body,
         "controlled-current-token",
     )
+}
+
+fn head_request() -> Request<Body> {
+    let mut request = get_request("/v1/scopes/case_123/bundles/head");
+    request.headers_mut().insert(
+        "authorization",
+        "Bearer controlled-current-token".parse().unwrap(),
+    );
+    request
+}
+
+struct HeadReadStore {
+    inner: Arc<dyn ArtifactStore<Error = StackError>>,
+    mode: u8,
+    reads: Arc<AtomicUsize>,
+    writes: Arc<AtomicUsize>,
+    grants: Arc<AtomicBool>,
+    principal: Arc<AtomicU8>,
+}
+
+#[async_trait]
+impl ArtifactStore for HeadReadStore {
+    type Error = StackError;
+    async fn put(&self, key: &str, bytes: &[u8]) -> Result<ArtifactRef, StackError> {
+        self.writes.fetch_add(1, Ordering::SeqCst);
+        self.inner.put(key, bytes).await
+    }
+    async fn put_immutable(&self, key: &str, bytes: &[u8]) -> Result<ArtifactRef, StackError> {
+        self.writes.fetch_add(1, Ordering::SeqCst);
+        self.inner.put_immutable(key, bytes).await
+    }
+    async fn get(&self, reference: &ArtifactRef) -> Result<Option<Vec<u8>>, StackError> {
+        let read = self.reads.fetch_add(1, Ordering::SeqCst);
+        if self.mode == 1 {
+            return Ok(None);
+        }
+        let mut bytes = self.inner.get(reference).await?;
+        if self.mode == 2 || (self.mode == 5 && read > 0) {
+            bytes.as_mut().unwrap()[0] ^= 1;
+        }
+        if self.mode == 3 {
+            self.grants.store(false, Ordering::SeqCst);
+        }
+        if self.mode == 4 {
+            self.principal.store(18, Ordering::SeqCst);
+        }
+        Ok(bytes)
+    }
+}
+
+struct HeadReadIndex {
+    inner: Arc<dyn crate::artifacts::BundleIndexPort>,
+    fault: u8,
+}
+
+#[async_trait]
+impl crate::artifacts::BundleIndexPort for HeadReadIndex {
+    async fn reserve_publishable(
+        &self,
+        _: &[u8],
+        _: &crate::artifacts::BundleIdentity,
+    ) -> Result<(), StackError> {
+        panic!("retained head read attempted publication reservation")
+    }
+    async fn insert_published_record(
+        &self,
+        _: &[u8],
+        _: &crate::artifacts::BundleRecord,
+        _: bool,
+    ) -> Result<(), StackError> {
+        panic!("retained head read attempted index mutation")
+    }
+    async fn get_by_digest(
+        &self,
+        scope: &[u8],
+        digest: &str,
+    ) -> Result<Option<crate::artifacts::BundleRecord>, StackError> {
+        self.inner.get_by_digest(scope, digest).await
+    }
+    async fn get_by_seal(
+        &self,
+        scope: &[u8],
+        seal: u64,
+    ) -> Result<Option<crate::artifacts::BundleRecord>, StackError> {
+        let mut record = self.inner.get_by_seal(scope, seal).await?;
+        if let Some(record) = &mut record {
+            match self.fault {
+                1 => record.seal_version += 1,
+                2 => record.export_attempt_id.push_str("foreign"),
+                3 => record.checkpoint_digest = format!("sha256:{}", "f".repeat(64)),
+                _ => {}
+            }
+        }
+        Ok(record)
+    }
+}
+
+async fn retained_head_fixture(
+    mode: u8,
+    fault: u8,
+) -> (
+    TrellisServerState,
+    Controls,
+    Arc<AtomicUsize>,
+    Arc<AtomicUsize>,
+) {
+    let (mut state, controls) = external_state();
+    let response = router(state.clone())
+        .unwrap()
+        .oneshot(request(append_body("head-read-fixture")))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let reads = Arc::new(AtomicUsize::new(0));
+    let writes = Arc::new(AtomicUsize::new(0));
+    state.artifact_store = Arc::new(HeadReadStore {
+        inner: state.artifact_store,
+        mode,
+        reads: reads.clone(),
+        writes: writes.clone(),
+        grants: controls.grants.clone(),
+        principal: controls.principal.clone(),
+    });
+    state.bundles = Arc::new(HeadReadIndex {
+        inner: state.bundles,
+        fault,
+    });
+    (state, controls, reads, writes)
+}
+
+#[tokio::test]
+async fn retained_head_read_has_no_writes_and_returns_the_single_verified_fetch() {
+    for mode in [0, 5] {
+        let (state, _, reads, writes) = retained_head_fixture(mode, 0).await;
+        let response = router(state)
+            .unwrap()
+            .oneshot(head_request())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), 32 * 1024 * 1024)
+            .await
+            .unwrap();
+        assert!(export_bundle_cryptographically_verified(&bytes));
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+        assert_eq!(writes.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
+async fn retained_head_read_refuses_missing_corrupt_and_revoked_evidence_without_publication() {
+    for (mode, expected) in [
+        (1, StatusCode::SERVICE_UNAVAILABLE),
+        (2, StatusCode::CONFLICT),
+        (3, StatusCode::FORBIDDEN),
+        (4, StatusCode::SERVICE_UNAVAILABLE),
+    ] {
+        let (state, _, reads, writes) = retained_head_fixture(mode, 0).await;
+        let response = router(state)
+            .unwrap()
+            .oneshot(head_request())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected, "mode {mode}");
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+        assert_eq!(writes.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
+async fn retained_head_read_refuses_changed_seal_attempt_or_checkpoint_without_publication() {
+    for fault in 1..=3 {
+        let (state, _, _, writes) = retained_head_fixture(0, fault).await;
+        assert_eq!(
+            router(state)
+                .unwrap()
+                .oneshot(head_request())
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(writes.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
+async fn retained_head_read_refuses_foreign_scope_before_artifact_access() {
+    let (state, _, reads, writes) = retained_head_fixture(0, 0).await;
+    let mut request = head_request();
+    *request.uri_mut() = "/v1/scopes/foreign-scope/bundles/head".parse().unwrap();
+    assert_eq!(
+        router(state)
+            .unwrap()
+            .oneshot(request)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(reads.load(Ordering::SeqCst), 0);
+    assert_eq!(writes.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn retained_head_missing_publication_still_requires_administer() {
+    let (mut state, controls, _, writes) = retained_head_fixture(0, 0).await;
+    state.bundles = Arc::new(crate::artifacts::BundleIndex::default());
+    let app = router(state.clone()).unwrap();
+    assert_eq!(
+        app.clone().oneshot(head_request()).await.unwrap().status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(writes.load(Ordering::SeqCst), 0);
+    controls.administer.store(true, Ordering::SeqCst);
+    assert_eq!(
+        app.oneshot(head_request()).await.unwrap().status(),
+        StatusCode::OK
+    );
+    assert!(writes.load(Ordering::SeqCst) > 0);
+    assert_eq!(
+        state
+            .repository
+            .list_scope(b"case_123")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn retained_head_read_never_substitutes_an_older_publication_for_a_later_unpublished_event() {
+    let (mut state, _, _, writes) = retained_head_fixture(0, 0).await;
+    // Keep only the old seal while a second committed event lacks its publication.
+    let first = state
+        .bundles
+        .get_by_seal(b"case_123", 1)
+        .await
+        .unwrap()
+        .unwrap();
+    let index = Arc::new(crate::artifacts::BundleIndex::default());
+    use crate::artifacts::BundleIndexPort;
+    index
+        .insert_published_record(b"case_123", &first, true)
+        .await
+        .unwrap();
+    let source = test_state();
+    for key in ["head-read-fixture", "later-uncertain-record"] {
+        let body: SubstrateAppendBody = serde_json::from_slice(&append_body(key)).unwrap();
+        source
+            .append_coordinator()
+            .append(append::AppendCommand {
+                scope: "case_123".into(),
+                event_type: body.event_type,
+                idempotency_key: body.idempotency_key,
+                payload: body.payload,
+                compute_context: body.compute_context,
+                client_attestation: None,
+            })
+            .await
+            .unwrap();
+    }
+    state.repository = source.repository;
+    state.bundles = Arc::new(HeadReadIndex {
+        inner: index,
+        fault: 0,
+    });
+    assert_eq!(
+        router(state)
+            .unwrap()
+            .oneshot(head_request())
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(writes.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
@@ -262,7 +580,7 @@ async fn authorized_append_replay_refuses_mismatched_authorizer_result() {
 }
 
 #[tokio::test]
-async fn authorized_append_replay_head_publication_requires_administer() {
+async fn authorized_append_replay_retained_head_is_readable_without_administer() {
     let (state, controls) = external_state();
     let app = router(state).unwrap();
     let appended = app
@@ -280,7 +598,7 @@ async fn authorized_append_replay_head_publication_requires_administer() {
     );
     assert_eq!(
         app.clone().oneshot(head).await.unwrap().status(),
-        StatusCode::FORBIDDEN
+        StatusCode::OK
     );
     let mut pinned = get_request(&format!(
         "/v1/scopes/case_123/bundles/{}",
@@ -432,11 +750,11 @@ async fn authorized_append_replay_publication_refuses_changed_principal_and_pinn
             self.inner.get(reference).await
         }
     }
-    let state = state.with_artifact_store(Arc::new(CountingPublicationStore {
+    let mut state = state.with_artifact_store(Arc::new(CountingPublicationStore {
         inner: crate::artifacts::InMemoryArtifactStore::default(),
         calls: publication_calls.clone(),
     }));
-    let app = router(state).unwrap();
+    let app = router(state.clone()).unwrap();
     assert_eq!(
         app.clone()
             .oneshot(request(append_body("publication-grants")))
@@ -447,6 +765,9 @@ async fn authorized_append_replay_publication_refuses_changed_principal_and_pinn
     );
     let baseline = publication_calls.load(Ordering::SeqCst);
     assert!(baseline > 0);
+    // Exercise publication misses, rather than the already-retained read path.
+    state.bundles = Arc::new(crate::artifacts::BundleIndex::default());
+    let app = router(state).unwrap();
     let missing = format!("/v1/scopes/case_123/bundles/{}", "a".repeat(64));
     for path in ["/v1/scopes/case_123/bundles/head", &missing] {
         let mut read_only = get_request(path);
