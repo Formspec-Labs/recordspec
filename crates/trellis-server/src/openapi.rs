@@ -24,6 +24,7 @@ use utoipa::{OpenApi, ToSchema};
     ),
     paths(
         crate::http::append_event,
+        crate::http::reconcile_event,
         crate::http::seal_completion,
         crate::external_transport::append,
         crate::http::head_bundle,
@@ -34,6 +35,9 @@ use utoipa::{OpenApi, ToSchema};
     ),
     components(schemas(
         AppendActor,
+        trellis_service_client::AppendReconciliationRequest,
+        trellis_service_client::AppendReconciliation,
+        trellis_service_client::ReconciliationUnknown,
         trellis_service_client::CompletionRequest,
         crate::external_transport::WireRequest,
         crate::external_transport::WireActor,
@@ -107,6 +111,7 @@ pub fn assert_trellis_openapi_shape(doc: &serde_json::Value) {
     for (path, method) in [
         ("/openapi.json", "get"),
         ("/v1/scopes/{scope}/events", "post"),
+        ("/v1/scopes/{scope}/events/reconcile", "post"),
         ("/v1/scopes/{scope}/bundles/head", "get"),
         ("/v1/scopes/{scope}/bundles/{checkpointDigest}", "get"),
         ("/v1/scopes/{scope}/registries/signing-keys", "get"),

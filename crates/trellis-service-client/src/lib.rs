@@ -64,11 +64,18 @@
 #![forbid(unsafe_code)]
 
 pub mod completion_selection;
+mod reconciliation;
 pub mod source_content;
 #[cfg(test)]
 mod source_content_tests;
 mod source_content_transport;
 mod source_diagnostics;
+#[doc(inline)]
+pub use reconciliation::{
+    AppendReconciliation, AppendReconciliationRequest, CanonicalAppendContent,
+    ReconciliationUnknown, canonical_append_content,
+};
+
 #[doc(inline)]
 pub use source_content::MAX_PREPARED_SOURCE_CONTENT_BYTES;
 mod wos_ext;
@@ -565,6 +572,22 @@ impl SubstrateAppendResult {
 /// Core shared substrate client contract.
 #[async_trait]
 pub trait SubstrateClient: Send + Sync {
+    /// Reconciles an original append without creating events or publications.
+    ///
+    /// Absence describes a single read point and grants no authority to append.
+    /// # Errors
+    /// Refuses unsupported clients, invalid input or unavailable transport/admission.
+    async fn reconcile_event(
+        &self,
+        _scope: &str,
+        _tenant_scope: &TenantScope,
+        _request: &AppendReconciliationRequest,
+    ) -> Result<AppendReconciliation, StackError> {
+        Err(StackError::unavailable(
+            "append reconciliation is unsupported",
+        ))
+    }
+
     /// Appends one event through the Trellis service.
     ///
     /// # Errors
@@ -1045,6 +1068,44 @@ impl TrellisServiceClient {
 
 #[async_trait]
 impl SubstrateClient for TrellisServiceClient {
+    async fn reconcile_event(
+        &self,
+        scope: &str,
+        tenant_scope: &TenantScope,
+        request: &AppendReconciliationRequest,
+    ) -> Result<AppendReconciliation, StackError> {
+        validate_scope(scope)?;
+        request.validate()?;
+        // Bound token acquisition, HTTP and decoding together; never retry or fall back to append.
+        tokio::time::timeout(self.config.timeout, async {
+            let path = format!("/v1/scopes/{}/events/reconcile", encode_path_segment(scope));
+            let response = self
+                .request(reqwest::Method::POST, &path, tenant_scope)
+                .await?
+                .json(request)
+                .send()
+                .await
+                .map_err(|_| {
+                    StackError::unavailable("append reconciliation transport unavailable")
+                })?;
+            if response.status() != reqwest::StatusCode::OK {
+                return Err(StackError::unavailable(
+                    "append reconciliation admission refused",
+                ));
+            }
+            let result = response
+                .json::<AppendReconciliation>()
+                .await
+                .map_err(|_| StackError::unavailable("append reconciliation response invalid"))?;
+            if let AppendReconciliation::Committed { receipt } = &result {
+                receipt.validate_for_event_append(scope, &request.event_type)?;
+            }
+            Ok(result)
+        })
+        .await
+        .map_err(|_| StackError::unavailable("append reconciliation deadline exceeded"))?
+    }
+
     async fn append_event(
         &self,
         request: SubstrateAppendRequest,
@@ -1356,6 +1417,9 @@ fn hex_digit(value: u8) -> char {
 
 #[cfg(test)]
 mod tests {
+    mod reconciliation_tests {
+        include!("reconciliation_tests.rs");
+    }
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;

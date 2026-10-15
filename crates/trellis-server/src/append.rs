@@ -10,7 +10,7 @@
 
 use async_trait::async_trait;
 use hkdf::Hkdf;
-use integrity_cbor::{Value, domain_separated_sha256, json_to_dcbor_bytes};
+use integrity_cbor::{Value, json_to_dcbor_bytes};
 use sha2::{Digest, Sha256};
 use stack_common_error::StackError;
 use trellis_core::{AuthoredEvent, LedgerStore};
@@ -21,7 +21,7 @@ use trellis_server_ports::{
     DirectSubmitPolicy,
 };
 use trellis_service_client::{ClientAttestation, SubstrateAppendBody, SubstrateAppendResult};
-use trellis_types::{CONTENT_DOMAIN, StoredEvent};
+use trellis_types::StoredEvent;
 
 use crate::source_diagnostics::{self as diag, Outcome, Stage};
 use crate::{
@@ -542,10 +542,10 @@ impl EventContent {
         payload: &serde_json::Value,
         idempotency_key: &[u8],
     ) -> Result<Self, StackError> {
-        let payload_bytes = json_to_dcbor_bytes(payload, &[]).map_err(|error| {
-            StackError::bad_request(format!("payload CBOR encode failed: {error}"))
-        })?;
-        let content_hash = domain_separated_sha256(CONTENT_DOMAIN, &payload_bytes);
+        let trellis_service_client::CanonicalAppendContent {
+            payload_bytes,
+            content_hash,
+        } = trellis_service_client::canonical_append_content(payload)?;
         let nonce = derive_payload_inline_nonce(idempotency_key, &payload_bytes)?;
         Ok(Self {
             payload_bytes,

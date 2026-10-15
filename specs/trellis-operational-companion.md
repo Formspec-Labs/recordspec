@@ -693,6 +693,14 @@ Trellis Core §17 (Append Idempotency Contract) fixes the **byte-level** contrac
 
 **OC-59 (MUST NOT).** Duplicate or retried submission handling MUST NOT create ambiguity about whether a canonical record was newly appended, previously appended, or not admitted.
 
+### 18.5a Reference-service append reconciliation
+
+The reference HTTP service exposes `POST /v1/scopes/{scope}/events/reconcile` under current tenant/scope read permission. The request carries the original idempotency key, event type, and `CONTENT_DOMAIN` hash of the canonical dCBOR payload. This is the existing append replay identity; it does not prove equality of the original HTTP body, actor, or compute selection. `AppendReconciliationRequest::from_append_body` derives it through the maintained shared payload encoder.
+
+The closed result distinguishes `committed` (a fully verified, already-retained exact-prefix publication and its existing append receipt), `conflict`, `absent` at a serialized read point, and `unknown`. An event without sufficient retained receipt proof remains unknown. Lookup creates no event, publication reservation, bundle, or Source fetch; current read authority is checked again after awaited verification. The machine JSON receipt is not a substitute for the consumer's independent proof checks.
+
+Memory snapshots use the existing repository mutex. PostgreSQL snapshots use the existing transaction scope lock shared with append and a subsequent READ COMMITTED query, releasing the transaction before immutable artifact verification. Absence reports the captured count/head, never that an operation was never sent or cannot commit later. Lookup and a later send are separate operations. A separately authorized continuation retains the identical native key and payload identity; existing atomic key uniqueness and replay/conflict handling prevent duplicate canonical commits, but a racing caller may still receive a refusal. Owner settlement, case leases and local attempt persistence remain consumer responsibilities.
+
 ### 18.6 Idempotent-Acceptance Consequences
 
 **OC-60 (MUST).** If idempotent acceptance is supported (retries resolved to the previously appended record reference), the Operator MUST define the **verifier-visible consequences** of that behavior in the Posture Declaration. A verifier MUST be able to distinguish a newly appended record from an idempotent resolution to an existing record, where the active binding's proof model supports the distinction.

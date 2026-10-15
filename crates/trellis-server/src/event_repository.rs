@@ -136,6 +136,19 @@ pub trait EventRepository: Send + Sync {
     /// Returns [`StackError::unavailable`] when a durable store read fails.
     async fn list_scope(&self, scope: &[u8]) -> Result<Vec<StoredEvent>, StackError>;
 
+    /// Reads committed events at a point serialized with scope appends.
+    ///
+    /// The returned prefix describes only this read point, not a reservation or
+    /// permission to append. Implementations release their store lock before return.
+    ///
+    /// # Errors
+    /// Refuses unsupported adapters or unavailable durable snapshot reads.
+    async fn reconciliation_snapshot(&self, _scope: &[u8]) -> Result<Vec<StoredEvent>, StackError> {
+        Err(StackError::unavailable(
+            "append reconciliation snapshot is unsupported",
+        ))
+    }
+
     /// Atomically appends an admitted protected attachment and retains its exact body.
     ///
     /// # Errors
@@ -269,6 +282,10 @@ impl EventRepository for InMemoryEventRepository {
         Ok(state.events.get(scope).cloned().unwrap_or_default())
     }
 
+    async fn reconciliation_snapshot(&self, scope: &[u8]) -> Result<Vec<StoredEvent>, StackError> {
+        self.list_scope(scope).await
+    }
+
     async fn append_event(&self, event: StoredEvent) -> Result<(), StackError> {
         let mut state = self.state.lock().await;
         let scope_events = state.events.entry(event.scope().to_vec()).or_default();
@@ -370,54 +387,51 @@ impl EventRepository for PostgresEventRepository {
         external_repository::postgres_body(self, scope, hash).await
     }
     async fn list_scope(&self, scope: &[u8]) -> Result<Vec<StoredEvent>, StackError> {
-        let rows = sqlx::query_as::<
-            _,
-            (
-                Vec<u8>,
-                i64,
-                Vec<u8>,
-                Vec<u8>,
-                Option<Vec<u8>>,
-                Option<Vec<u8>>,
-            ),
-        >(
-            "\
-SELECT scope, sequence, canonical_event, signed_event, idempotency_key, canonical_event_hash
-FROM trellis_events
-WHERE scope = $1
-ORDER BY sequence",
+        let rows = sqlx::query_as::<_, external_repository::EventRow>(
+            "SELECT scope, sequence, canonical_event, signed_event, idempotency_key, canonical_event_hash
+             FROM trellis_events WHERE scope = $1 ORDER BY sequence",
         )
         .bind(scope)
         .fetch_all(&self.pool)
         .await
         .map_err(|error| StackError::unavailable(format!("trellis event read failed: {error}")))?;
-
         rows.into_iter()
-            .map(
-                |(scope, sequence, canonical, signed, idempotency_key, canonical_hash)| {
-                    let sequence = u64::try_from(sequence)
-                        .map_err(|_| StackError::internal("stored Trellis sequence is negative"))?;
-                    let mut event = if let Some(idempotency_key) = idempotency_key {
-                        StoredEvent::with_idempotency_key(
-                            scope,
-                            sequence,
-                            canonical,
-                            signed,
-                            idempotency_key,
-                        )
-                    } else {
-                        StoredEvent::new(scope, sequence, canonical, signed)
-                    };
-                    if let Some(hash) = canonical_hash {
-                        let hash = hash.as_slice().try_into().map_err(|_| {
-                            StackError::internal("stored canonical_event_hash is not 32 bytes")
-                        })?;
-                        event = event.with_canonical_event_hash(Some(hash));
-                    }
-                    Ok(event)
-                },
-            )
+            .map(external_repository::event_from_row)
             .collect()
+    }
+
+    async fn reconciliation_snapshot(&self, scope: &[u8]) -> Result<Vec<StoredEvent>, StackError> {
+        // Explicit READ COMMITTED takes the SELECT's read point
+        // after this existing append lock is acquired, including a writer that
+        // committed while lock acquisition waited. No artifact I/O occurs here.
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|_| StackError::unavailable("reconciliation transaction unavailable"))?;
+        // Override connection defaults before the advisory-lock SELECT can
+        // establish a repeatable-read snapshot that predates an in-flight writer.
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| StackError::unavailable("reconciliation isolation unavailable"))?;
+        external_repository::lock_scope(&mut tx, scope).await?;
+        let rows = sqlx::query_as::<_, external_repository::EventRow>(
+            "SELECT scope, sequence, canonical_event, signed_event, idempotency_key, canonical_event_hash
+             FROM trellis_events WHERE scope = $1 ORDER BY sequence",
+        )
+        .bind(scope)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|_| StackError::unavailable("reconciliation snapshot unavailable"))?;
+        let events = rows
+            .into_iter()
+            .map(external_repository::event_from_row)
+            .collect::<Result<Vec<_>, _>>()?;
+        tx.commit()
+            .await
+            .map_err(|_| StackError::unavailable("reconciliation read release unavailable"))?;
+        Ok(events)
     }
 
     async fn append_event(&self, event: StoredEvent) -> Result<(), StackError> {

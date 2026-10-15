@@ -30,6 +30,7 @@ WOS_EVENTS_NATIVE_PATH = _WOS_PACKAGE / "src" / "native_provenance.rs"
 WOS_NATIVE_SCHEMA_PATH = _WOS_PACKAGE.parents[1] / "schemas" / "wos-native-provenance-event.schema.json"
 
 EXPECTED_OPERATIONS = {
+    "reconcileEvent": ("POST", "/v1/scopes/{scope}/events/reconcile"),
     "appendEvent": ("POST", "/v1/scopes/{scope}/events"),
     "getHeadBundle": ("GET", "/v1/scopes/{scope}/bundles/head"),
     "getBundleByCheckpointDigest": ("GET", "/v1/scopes/{scope}/bundles/{checkpointDigest}"),
@@ -53,6 +54,7 @@ EXPECTED_TENANT_HEADERS = {
 }
 
 CLIENT_ROUTE_FRAGMENTS = {
+    "/v1/scopes/{scope}/events/reconcile": "/v1/scopes/{}/events/reconcile",
     "/v1/scopes/{scope}/events": "/v1/scopes/{}/events",
     "/v1/scopes/{scope}/bundles/head": "/v1/scopes/{}/bundles/head",
     "/v1/scopes/{scope}/bundles/{checkpointDigest}": "/v1/scopes/{}/bundles/{}",
@@ -249,6 +251,8 @@ def check_defs(schema: dict, server_source: str, client_source: str, errors: lis
             "EventTypeRegistryEntry",
             "SubstrateAppendBody",
             "SubstrateAppendResult",
+            "AppendReconciliationRequest",
+            "AppendReconciliation",
             "VerificationReceipt",
             "ProblemJson",
         ],

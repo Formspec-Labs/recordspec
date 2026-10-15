@@ -55,6 +55,10 @@ pub fn router(state: TrellisServerState) -> Result<Router, StackError> {
         .route("/openapi.json", get(crate::openapi::openapi_json))
         .route("/v1/scopes/{scope}/events", append)
         .route(
+            "/v1/scopes/{scope}/events/reconcile",
+            post(reconcile_event).layer(axum::extract::DefaultBodyLimit::max(4096)),
+        )
+        .route(
             "/v1/scopes/{scope}/completion",
             post(seal_completion).layer(axum::extract::DefaultBodyLimit::max(32 * 1024)),
         )
@@ -82,6 +86,30 @@ pub fn router(state: TrellisServerState) -> Result<Router, StackError> {
         )
         .with_state(state)
         .layer(http_layer))
+}
+
+/// Looks up append identity with current read authority and no publication effects.
+#[utoipa::path(post, path="/v1/scopes/{scope}/events/reconcile",
+    params(("scope"=String,Path,description="Authorized ledger scope")),
+    request_body=trellis_service_client::AppendReconciliationRequest,
+    responses((status=200,description="Read-point disposition; lookup never appends or publishes",body=trellis_service_client::AppendReconciliation),(status=400,description="Invalid lookup identity"),(status=401,description="Current authentication refused"),(status=403,description="Current scope read permission refused")),tag="events",operation_id="reconcileEvent")]
+pub(crate) async fn reconcile_event(
+    State(state): State<TrellisServerState>,
+    Path(scope): Path<String>,
+    tenant: TenantScope,
+    headers: HeaderMap,
+    Json(request): Json<trellis_service_client::AppendReconciliationRequest>,
+) -> Result<Json<trellis_service_client::AppendReconciliation>, StackError> {
+    let (_, before) = read_authorized(&state, &scope, &tenant, &headers).await?;
+    request.validate()?;
+    let result = crate::reconciliation::reconcile(&state, &scope, &request).await;
+    let (_, after) = read_authorized(&state, &scope, &tenant, &headers).await?;
+    if before != after {
+        return Err(StackError::unavailable(
+            "reconciliation read authority changed",
+        ));
+    }
+    Ok(Json(result))
 }
 
 #[utoipa::path(post, path="/v1/scopes/{scope}/completion",

@@ -38,6 +38,7 @@ mod artifacts;
 mod auth;
 mod completion;
 mod composition;
+mod reconciliation;
 mod source_content;
 mod source_content_startup;
 mod source_diagnostics;
@@ -1007,6 +1008,9 @@ fn hex_digit(value: u8) -> char {
 
 #[cfg(test)]
 mod tests {
+    mod reconciliation_tests {
+        include!("reconciliation_tests.rs");
+    }
     mod source_diagnostic_state_tests {
         include!("source_diagnostic_state_tests.rs");
     }

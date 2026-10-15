@@ -15,6 +15,12 @@
     },
     {
       "$ref": "#/$defs/ProblemJson"
+    },
+    {
+      "$ref": "#/$defs/AppendReconciliationRequest"
+    },
+    {
+      "$ref": "#/$defs/AppendReconciliation"
     }
   ],
   "x-trellis-http-api": {
@@ -151,6 +157,30 @@
             "status": 200,
             "contentType": "application/json",
             "schemaRef": "#/$defs/EventTypeRegistry"
+          },
+          {
+            "status": "4xx/5xx",
+            "contentType": "application/problem+json",
+            "schemaRef": "#/$defs/ProblemJson"
+          }
+        ]
+      },
+      {
+        "operationId": "reconcileEvent",
+        "method": "POST",
+        "path": "/v1/scopes/{scope}/events/reconcile",
+        "tenantScopeRequired": true,
+        "authorizationAction": "read",
+        "sideEffects": "none",
+        "request": {
+          "contentType": "application/json",
+          "schemaRef": "#/$defs/AppendReconciliationRequest"
+        },
+        "responses": [
+          {
+            "status": 200,
+            "contentType": "application/json",
+            "schemaRef": "#/$defs/AppendReconciliation"
           },
           {
             "status": "4xx/5xx",
@@ -528,6 +558,112 @@
         }
       },
       "additionalProperties": false
+    },
+    "AppendReconciliationRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "eventType": {
+          "type": "string",
+          "minLength": 1
+        },
+        "idempotencyKey": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Core bound: 1..64 UTF-8 bytes, enforced by server."
+        },
+        "contentHash": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255
+          },
+          "minItems": 32,
+          "maxItems": 32
+        }
+      },
+      "required": [
+        "eventType",
+        "idempotencyKey",
+        "contentHash"
+      ]
+    },
+    "AppendReconciliation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "committed"
+            },
+            "receipt": {
+              "$ref": "#/$defs/SubstrateAppendResult"
+            }
+          },
+          "required": [
+            "status",
+            "receipt"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "conflict"
+            }
+          },
+          "required": [
+            "status"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "absent"
+            },
+            "eventCount": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "lastEventHash": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "status",
+            "eventCount",
+            "lastEventHash"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "unknown"
+            },
+            "reason": {
+              "enum": [
+                "storeUnavailable",
+                "receiptUnavailable",
+                "verificationFailed"
+              ]
+            }
+          },
+          "required": [
+            "status",
+            "reason"
+          ]
+        }
+      ]
     }
   }
 }
