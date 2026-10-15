@@ -25,6 +25,14 @@ mod base64_bytes {
 }
 
 /// Already committed protected content returned by the independently selected owner.
+///
+/// Wire encoding of the byte fields (`intake_handoffs`, `source_signed_tasks`, and the
+/// per-record `protected_record_bytes` and `locator_cbor`) is standard base64 text.
+/// They were JSON number arrays before 2026-10-15, which inflated ciphertext about 3.6x
+/// past the batch bound. The version stays 1 on purpose: the retained batch of the
+/// exported real D1 case is already base64 and must stay readable, and no
+/// array-encoded batch exists outside fixtures that predate 2026-10-15. Bump the
+/// version only for a change that cannot be read back as this encoding.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PreparedSourceContentBatchV1 {
