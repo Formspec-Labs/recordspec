@@ -84,7 +84,10 @@ pub struct PreparedSourceContentRecordV1 {
 pub struct SourceContentSelection {
     pub preparation_key: String,
     pub identity: SourceContentIdentityV1,
-    /// Exact ordered N-1 native anchors, followed only by the selected suffix.
+    /// Complete ordered authenticated prefix before selected photos and closeout.
+    /// Includes independently bound WOS and Source events in their original order.
+    /// `identity.native_prefix_digest` binds this entire prefix; the selected photo
+    /// events and reserved closeout follow it.
     pub native_prefix_event_hashes: Vec<[u8; 32]>,
     #[serde(rename = "orderedPhotoEventHashes")]
     pub photo_event_hashes: Vec<[u8; 32]>,
