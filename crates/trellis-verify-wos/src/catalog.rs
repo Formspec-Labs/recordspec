@@ -731,12 +731,14 @@ fn intake_entry_matches_record(
                 && record.case_intent == "attachToExistingCase"
                 && record.case_disposition == "attachToExistingCase"
         }
+        // The handoff's definitionRef names the Formspec Definition (the validation
+        // contract); the record's definitionUrl names the governing WOS kernel. They are
+        // different namespaces: require the governing definition, never equate the two.
         "publicIntake" => {
             record.case_intent == "requestGovernedCaseCreation"
                 && record.case_disposition == "createGovernedCase"
-                && record.definition_url.as_deref() == Some(entry.handoff.definition_url.as_str())
-                && record.definition_version.as_deref()
-                    == Some(entry.handoff.definition_version.as_str())
+                && record.definition_url.as_deref().is_some_and(|url| !url.is_empty())
+                && record.definition_version.as_deref().is_some_and(|v| !v.is_empty())
         }
         _ => false,
     }
@@ -818,4 +820,50 @@ pub(crate) fn validate_catalogs_with_all_source_content<
         intakes,
     ));
     findings
+}
+
+#[cfg(test)]
+mod intake_definition_tests {
+    use super::*;
+    use crate::records::{IntakeAcceptedRecordDetails, IntakeHandoffDetails, IntakeManifestEntry, IntakeResponseContent};
+
+    fn entry() -> IntakeManifestEntry {
+        IntakeManifestEntry {
+            intake_event_hash: [1; 32],
+            case_created_event_hash: Some([2; 32]),
+            handoff: IntakeHandoffDetails {
+                handoff_id: "handoff-1".into(),
+                initiation_mode: "publicIntake".into(),
+                case_ref: None,
+                definition_url: "urn:formspec:demo:form".into(),
+                definition_version: "0.3.8".into(),
+                response_ref: "response-1".into(),
+                response_hash: "sha256:00".into(),
+                validation_report_ref: "report-1".into(),
+                ledger_head_ref: "head-1".into(),
+            },
+            response_content: IntakeResponseContent::Inline(Vec::new()),
+        }
+    }
+    fn record(definition_url: Option<&str>) -> IntakeAcceptedRecordDetails {
+        IntakeAcceptedRecordDetails {
+            intake_id: "handoff-1".into(),
+            case_intent: "requestGovernedCaseCreation".into(),
+            case_disposition: "createGovernedCase".into(),
+            case_ref: "case-1".into(),
+            definition_url: definition_url.map(Into::into),
+            definition_version: Some("0.3.19".into()),
+        }
+    }
+
+    #[test]
+    fn governing_kernel_differing_from_the_form_definition_matches() {
+        assert!(intake_entry_matches_record(&entry(), &record(Some("urn:wos:demo:workflow"))));
+    }
+
+    #[test]
+    fn public_intake_without_a_governing_definition_does_not_match() {
+        assert!(!intake_entry_matches_record(&entry(), &record(None)));
+        assert!(!intake_entry_matches_record(&entry(), &record(Some(""))));
+    }
 }

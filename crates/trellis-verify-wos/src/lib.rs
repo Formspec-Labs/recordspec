@@ -109,6 +109,20 @@ impl SourceContentPublicationReport {
     pub fn findings(&self) -> &[WosFinding] {
         &self.report.wos_findings
     }
+
+    /// Returns the verifier's blocking reasons plus each domain finding's kind and
+    /// message; empty when admitted.
+    #[must_use]
+    pub fn blocking_reasons(&self) -> Vec<String> {
+        let mut reasons = self.report.verdict().blocking_reasons;
+        reasons.extend(
+            self.report
+                .wos_findings
+                .iter()
+                .map(|finding| format!("{}: {}", finding.kind, finding.message)),
+        );
+        reasons
+    }
 }
 
 /// Checks publication structure before independent protected Source verification.

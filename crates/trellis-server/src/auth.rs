@@ -168,11 +168,19 @@ async fn admit_append(
                         .into_response(),
                 );
             }
-            let prefix = state
+            let mut prefix = state
                 .repository
                 .list_scope(scope.as_bytes())
                 .await
                 .map_err(IntoResponse::into_response)?;
+            // A same-key replay of an already committed closeout selects against the
+            // history that preceded it, exactly as the original append did.
+            if let Some(index) = prefix
+                .iter()
+                .position(|event| event.idempotency_key() == Some(body.idempotency_key.as_bytes()))
+            {
+                prefix.truncate(index);
+            }
             diag::mark(selected, Stage::Selection, Outcome::Enter);
             let selection = diag::observed(
                 selected,

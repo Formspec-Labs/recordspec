@@ -215,9 +215,10 @@ impl SourceContentComposition {
     pub(crate) fn verify_structural(&self, zip: &[u8]) -> Result<(), StackError> {
         let report = self.structural.verify(zip)?;
         if !report.publication_admitted() {
-            return Err(StackError::conflict(
-                "protected Source publication structural admission refused",
-            ));
+            return Err(StackError::conflict(format!(
+                "protected Source publication structural admission refused: {}",
+                report.blocking_reasons().join("; ")
+            )));
         }
         Ok(())
     }
