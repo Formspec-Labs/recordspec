@@ -175,7 +175,8 @@ pub(crate) fn bind_opened_response(
     {
         return Err("protected Response opened bytes differ".into());
     }
-    let response: serde_json::Value = serde_json::from_slice(opened)
+    // The protected plaintext is the Formspec response handoff encoding.
+    let response = integrity_canonical::parse_canonical_response_handoff_bytes(opened)
         .map_err(|_| ParseError::from("protected Response JSON is invalid"))?;
     if !response.is_object()
         || response.get("id").and_then(serde_json::Value::as_str)

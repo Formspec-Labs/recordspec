@@ -9,6 +9,7 @@ ciborium = "0.2"
 hex = "0.4"
 integrity-bundle = { path = "../../../integrity-stack/crates/integrity-bundle" }
 integrity-cbor = { path = "../../../integrity-stack/crates/integrity-cbor" }
+integrity-canonical = { path = "../../../integrity-stack/crates/integrity-canonical" }
 integrity-cose = { path = "../../../integrity-stack/crates/integrity-cose" }
 serde_json = "1.0"
 serde = { version = "1", features = ["derive"] }
