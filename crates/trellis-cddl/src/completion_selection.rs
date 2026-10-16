@@ -53,7 +53,7 @@ pub fn validate_completion_prefix(events: &[StoredEvent], scope: &[u8]) -> Resul
     let mut prior = Value::Null;
     for (index, event) in events.iter().enumerate() {
         let parsed =
-            trellis_cddl::parse_canonical_event(event.canonical_event()).map_err(|_| invalid())?;
+            crate::parse_canonical_event(event.canonical_event()).map_err(|_| invalid())?;
         let value = decode_cbor_value(event.canonical_event()).map_err(|_| invalid())?;
         // Preserve the maintained native map order, including appended author hash.
         // Canonicalization checks duplicate keys recursively without rewriting it.
@@ -73,7 +73,7 @@ pub fn validate_completion_prefix(events: &[StoredEvent], scope: &[u8]) -> Resul
         }
         let hash = domain_separated_sha256(
             EVENT_DOMAIN,
-            &trellis_cddl::canonical_event_hash_preimage(scope, event.canonical_event()),
+            &crate::canonical_event_hash_preimage(scope, event.canonical_event()),
         );
         if event
             .canonical_event_hash()
@@ -95,10 +95,10 @@ pub fn validate_completion_prefix(events: &[StoredEvent], scope: &[u8]) -> Resul
 /// Refuses missing, duplicate, extra relevant, unreadable, oversized, or changed records.
 pub fn completion_record_bindings(
     prefix: &[StoredEvent],
+    scope: &[u8],
     records: &[CompletionRecord],
     relevant_event_types: &[String],
 ) -> Result<Vec<[u8; 32]>, String> {
-    let scope = prefix.first().ok_or_else(invalid)?.scope();
     validate_completion_prefix(prefix, scope)?;
     if records.is_empty()
         || records.len() > MAX_COMPLETION_EVENTS
@@ -145,7 +145,7 @@ pub fn completion_record_bindings(
         }
         let hash = domain_separated_sha256(
             EVENT_DOMAIN,
-            &trellis_cddl::canonical_event_hash_preimage(scope, event.canonical_event()),
+            &crate::canonical_event_hash_preimage(scope, event.canonical_event()),
         );
         actual.push((event_type, payload, hash));
     }
@@ -209,7 +209,7 @@ mod tests {
         let first = event(b"a", 0, Value::Null, b"first");
         let hash = domain_separated_sha256(
             EVENT_DOMAIN,
-            &trellis_cddl::canonical_event_hash_preimage(b"a", first.canonical_event()),
+            &crate::canonical_event_hash_preimage(b"a", first.canonical_event()),
         );
         let second = event(b"a", 1, Value::Bytes(hash.to_vec()), b"second");
         assert!(validate_completion_prefix(&[first.clone(), second], b"a").is_ok());
@@ -250,24 +250,35 @@ mod tests {
         };
         let vocabulary = ["owner.done".into()];
         assert_eq!(
-            completion_record_bindings(&prefix, &[record(b"retained")], &vocabulary)
+            completion_record_bindings(&prefix, b"a", &[record(b"retained")], &vocabulary)
                 .unwrap()
                 .len(),
             1
         );
-        assert!(completion_record_bindings(&prefix, &[], &vocabulary).is_err());
-        assert!(completion_record_bindings(&prefix, &[record(b"changed")], &vocabulary).is_err());
+        assert!(completion_record_bindings(&prefix, b"a", &[], &vocabulary).is_err());
+        assert!(
+            completion_record_bindings(&prefix, b"a", &[record(b"changed")], &vocabulary).is_err()
+        );
         assert!(
             completion_record_bindings(
                 &prefix,
+                b"a",
                 &[record(b"retained"), record(b"retained")],
                 &vocabulary
             )
             .is_err()
         );
         assert!(
-            completion_record_bindings(&prefix, &[record(b"retained")], &["owner.other".into()])
-                .is_err()
+            completion_record_bindings(
+                &prefix,
+                b"a",
+                &[record(b"retained")],
+                &["owner.other".into()]
+            )
+            .is_err()
+        );
+        assert!(
+            completion_record_bindings(&prefix, b"b", &[record(b"retained")], &vocabulary).is_err()
         );
     }
 

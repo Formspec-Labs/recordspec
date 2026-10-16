@@ -41,15 +41,14 @@ mod append;
 mod artifacts;
 mod auth;
 mod completion;
-mod completion_selection;
 mod reconciliation;
 mod source_content;
 mod source_content_startup;
 mod source_diagnostics;
 pub use completion::{
-    CompletionAttestor, CompletionCallerContext, CompletionRecord, CompletionRequest,
-    CompletionSelector, CompletionSigner, CompletionSignerLabel, CoseCompletionSigner,
-    RemoteCompletionSelector, SelectedCompletion, completion_record_bindings, seal_completion,
+    CompletionAttestor, CompletionCallerContext, CompletionRequest, CompletionSelector,
+    CompletionSigner, CompletionSignerLabel, CoseCompletionSigner, RemoteCompletionSelector,
+    SelectedCompletion, seal_completion,
 };
 #[doc(inline)]
 pub use source_content::{

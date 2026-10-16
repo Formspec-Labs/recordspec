@@ -21,22 +21,6 @@ const TEMPLATE: &str =
     include_str!("../../../reference/certificate-of-completion/template-v2/template.html");
 const MAX_BYTES: usize = 1024 * 1024;
 
-#[doc(inline)]
-pub use crate::completion_selection::CompletionRecord;
-
-/// Binds owning records through the shared structural verifier.
-///
-/// # Errors
-/// Refuses any shared prefix or complete census mismatch.
-pub fn completion_record_bindings(
-    prefix: &[StoredEvent],
-    records: &[CompletionRecord],
-    relevant_event_types: &[String],
-) -> Result<Vec<[u8; 32]>, StackError> {
-    crate::completion_selection::completion_record_bindings(prefix, records, relevant_event_types)
-        .map_err(StackError::conflict)
-}
-
 pub use trellis_service_client::{COMPLETION_EVENT, CompletionRequest};
 
 /// Product-owned labels for one retained signing event.
@@ -1147,8 +1131,7 @@ pub(crate) fn certificate_html(event: &StoredEvent) -> Result<Vec<u8>, StackErro
     Ok(html)
 }
 fn validate_prefix(events: &[StoredEvent], scope: &str) -> Result<(), StackError> {
-    crate::completion_selection::validate_completion_prefix(events, scope.as_bytes())
-        .map_err(StackError::conflict)
+    trellis_cddl::validate_completion_prefix(events, scope.as_bytes()).map_err(StackError::conflict)
 }
 fn refuse_certificate_collision(events: &[StoredEvent], id: &str) -> Result<(), StackError> {
     for event in events {
