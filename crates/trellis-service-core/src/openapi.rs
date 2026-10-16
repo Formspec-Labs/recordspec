@@ -100,29 +100,6 @@ pub async fn openapi_json() -> Result<Json<serde_json::Value>, StackError> {
         .map_err(|error| StackError::internal(format!("OpenAPI serialization failed: {error}")))
 }
 
-/// Asserts OpenAPI version, title, and substrate route entries on a JSON document.
-///
-/// Intended for contract tests (library and integration) so HTTP-served and
-/// derived documents stay aligned.
-pub fn assert_trellis_openapi_shape(doc: &serde_json::Value) {
-    assert_eq!(doc["openapi"], "3.1.0");
-    assert_eq!(doc["info"]["title"], "Trellis Substrate API");
-    for (path, method) in [
-        ("/openapi.json", "get"),
-        ("/v1/scopes/{scope}/events", "post"),
-        ("/v1/scopes/{scope}/events/reconcile", "post"),
-        ("/v1/scopes/{scope}/bundles/head", "get"),
-        ("/v1/scopes/{scope}/bundles/{checkpointDigest}", "get"),
-        ("/v1/scopes/{scope}/registries/signing-keys", "get"),
-        ("/v1/scopes/{scope}/registries/event-types", "get"),
-    ] {
-        assert!(
-            doc["paths"][path].get(method).is_some(),
-            "OpenAPI must include {method} {path}"
-        );
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -137,7 +114,7 @@ mod tests {
 
     use super::*;
 
-    /// The committed document is the route inventory, regenerated from code. Regenerate with
+    /// The committed document is regenerated from code; a route or schema change is a diff of it. Regenerate with
     /// `cargo run -q -p trellis-server --bin emit_openapi > specs/trellis-server.openapi.json`.
     #[test]
     fn committed_openapi_document_equals_the_generated_one() {
@@ -221,7 +198,6 @@ mod tests {
     #[test]
     fn openapi_registry_declares_trellis_append_response_shape() {
         let doc = serde_json::to_value(TrellisServerOpenApi::openapi()).unwrap();
-        assert_trellis_openapi_shape(&doc);
         let schemas = doc["components"]["schemas"].as_object().unwrap();
         let append_properties = schemas["SubstrateAppendResult"]["properties"]
             .as_object()
