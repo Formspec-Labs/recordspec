@@ -124,6 +124,7 @@ impl<T> SubstrateClientExt for T where T: SubstrateClient + ?Sized {}
 #[cfg(test)]
 mod native_provenance_tests {
     use super::*;
+    use stack_common_typeid::testing::fixture_minter;
     fn tenant() -> TenantScope {
         TenantScope {
             tenant: "tenant".into(),
@@ -160,7 +161,7 @@ mod native_provenance_tests {
     fn native_provenance_client_keeps_all_canonical_routes_exact() {
         for literal in WOS_CANONICAL_EVENT_LITERALS {
             let kind = wos_events::ProvenanceKind::from_canonical_event_literal(literal).unwrap();
-            let record = ProvenanceRecord::blank(kind);
+            let record = ProvenanceRecord::blank(&fixture_minter(), kind);
             let original = serde_json::to_value(&record).unwrap();
             let request = wos_provenance_append_request(
                 "case-1",

@@ -168,10 +168,11 @@ impl EventAdmissionPolicy for WosEventAdmissionPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use stack_common_typeid::testing::fixture_minter;
     use trellis_server_ports::{EventTypeRegistry, ReviewGateEventTypeRegistry};
 
     fn provenance_payload(kind: ProvenanceKind, id: &str) -> Vec<u8> {
-        let mut record = ProvenanceRecord::blank(kind);
+        let mut record = ProvenanceRecord::blank(&fixture_minter(), kind);
         record.id = id.to_string();
         serde_json::to_vec(&record).expect("encode provenance record")
     }

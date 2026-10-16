@@ -16,6 +16,7 @@ name = "canonical_cbor_emit"
 path = "examples/canonical_cbor_emit.rs"
 
 [dev-dependencies]
+stack-common-typeid = { path = "../../../stack-common/crates/stack-common-typeid", features = ["testing"] }
 jsonschema = { version = "0.46", default-features = false }
 referencing = { version = "0.46", default-features = false }
 integrity-hpke = { path = "../../../integrity-stack/crates/integrity-hpke" }

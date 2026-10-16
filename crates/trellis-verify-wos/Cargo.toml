@@ -17,3 +17,6 @@ trellis-types = { path = "../trellis-types" }
 integrity-verify = { path = "../../../integrity-stack/crates/integrity-verify" }
 wos-events = { path = "../../../work-spec/crates/wos-events" }
 trellis-cddl = { path = "../trellis-cddl" }
+
+[dev-dependencies]
+stack-common-typeid = { path = "../../../stack-common/crates/stack-common-typeid", features = ["testing"] }

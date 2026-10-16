@@ -467,12 +467,15 @@ impl Default for EventTypeCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use stack_common_typeid::testing::fixture_minter;
 
     #[tokio::test]
     async fn given_default_policy_when_wos_literal_admits_then_wos_metadata() {
         let policy = default_admission_policy();
-        let mut record =
-            wos_events::ProvenanceRecord::blank(wos_events::ProvenanceKind::CaseCreated);
+        let mut record = wos_events::ProvenanceRecord::blank(
+            &fixture_minter(),
+            wos_events::ProvenanceKind::CaseCreated,
+        );
         record.id = "prov-default-route".to_string();
         let payload = serde_json::to_vec(&record).expect("serialize record");
         let event = AdmissionEvent {

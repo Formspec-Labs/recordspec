@@ -1418,6 +1418,7 @@ fn hex_digit(value: u8) -> char {
 
 #[cfg(test)]
 mod tests {
+    use stack_common_typeid::testing::fixture_minter;
     mod reconciliation_tests {
         include!("reconciliation_tests.rs");
     }
@@ -1584,7 +1585,7 @@ mod tests {
             HeaderConfig::wos(),
         ))
         .expect("client");
-        let mut record = ProvenanceRecord::blank(ProvenanceKind::CaseCreated);
+        let mut record = ProvenanceRecord::blank(&fixture_minter(), ProvenanceKind::CaseCreated);
         record.id = "prov_1".to_string();
 
         let result = client
