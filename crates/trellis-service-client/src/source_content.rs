@@ -27,12 +27,16 @@ mod base64_bytes {
 /// Already committed protected content returned by the independently selected owner.
 ///
 /// Wire encoding of the byte fields (`intake_handoffs`, `source_signed_tasks`, and the
-/// per-record `protected_record_bytes` and `locator_cbor`) is standard base64 text.
-/// They were JSON number arrays before 2026-10-15, which inflated ciphertext about 3.6x
-/// past the batch bound. The version stays 1 on purpose: the retained batch of the
-/// exported real D1 case is already base64 and must stay readable, and no
-/// array-encoded batch exists outside fixtures that predate 2026-10-15. Bump the
-/// version only for a change that cannot be read back as this encoding.
+/// per-record `protected_record_bytes` and `locator_cbor`) is standard base64 text; the
+/// decoder accepts only text, so a JSON number array is a decode error.
+///
+/// The version stays 1 on purpose, because the retained batch of the exported real D1
+/// case is already base64 and must stay readable. No array-encoded batch can exist in
+/// retained storage: as arrays the same content serializes about 3.6x larger and exceeds
+/// the 16 MiB batch bound, and WOS refuses an oversized batch before persisting it.
+/// A mixed-version WOS/Trellis deployment (one side still on arrays) therefore fails
+/// loudly with a decode error rather than misreading bytes. Bump the version only for
+/// a change that cannot be read back as this encoding.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PreparedSourceContentBatchV1 {

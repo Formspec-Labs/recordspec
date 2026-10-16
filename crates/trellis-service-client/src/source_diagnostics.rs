@@ -73,8 +73,11 @@ impl SendClass {
         }
     }
 }
-#[cfg(any(feature = "test-diagnostics", test))]
-fn public_code(preview: &str) -> &'static str {
+/// Maps a bounded Trellis error-response preview to a closed public `error_code`.
+///
+/// Anything outside the closed set, including every title, detail and unparsable or
+/// truncated preview, yields `"other"`; no response text is ever returned.
+pub fn public_code(preview: &str) -> &'static str {
     // Only the already bounded existing error preview is parsed. No additional
     // response read or unbounded diagnostic parse is introduced.
     let Ok(value) = serde_json::from_str::<serde_json::Value>(preview) else {
