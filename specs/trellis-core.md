@@ -2008,8 +2008,7 @@ VERIFY(E) -> VerificationReport
    proof and principal; its digest, principal and exact event timestamp MUST
    match that row. A principal is a text string compared exactly (no
    trimming); a missing or empty principal, like a missing or unrecognized
-   proof, fails `signing_event_unresolved` and skips that row's other checks,
-   while a present but different principal fails
+   proof, makes the row unresolvable (step 5), while a present but different principal fails
    `certificate_chain_summary_mismatch`. Response digests are raw hex as the
    WOS and Formspec record schemas pin them (no `sha256:` prefix);
    malformed digest fails `malformed_response_digest`; wrong digest fails
@@ -2033,6 +2032,7 @@ VERIFY(E) -> VerificationReport
    remains the byte-authoritative source if prose drifts.
      1. Decode the payload against the ADR 0007 CDDL. Mismatch is a
         structure failure for that event (recorded in report.event_failures).
+        Attestation rows are reported by step 3.
      2. Validate the chain-summary invariants:
         `signer_count == len(signing_events)`,
         `len(signer_display) == len(signing_events)`, and each
@@ -2099,7 +2099,11 @@ VERIFY(E) -> VerificationReport
         Each MUST be a chain-present signing/provenance event whose
         readable payload is available to the verifier. Missing events or
         unreadable signing-event payloads flip `integrity_verified = false`
-        with `signing_event_unresolved`. Consumer validators own any
+        with `signing_event_unresolved`. Any unresolvable row (missing event,
+        unreadable payload, or for v2 a missing or empty principal or absent
+        proof) fails `signing_event_unresolved`, sets
+        `all_signing_events_resolved = false`, skips that row's other
+        checks, and leaves `chain_summary_consistent` unchanged. Consumer validators own any
         event-type-specific assertion for the signing event.
      6. Validate temporal consistency: every
         `signer_display[i].signed_at` MUST exactly equal the resolved
