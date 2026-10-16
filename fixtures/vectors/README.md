@@ -21,7 +21,7 @@ Operation-first tagged union. Each vector declares its `op` in its manifest and 
 
 - **append** — `(prior_head?, signing_key, authored_event) → (canonical_event, signed_event, next_head)`. Runner byte-compares outputs against committed sibling files.
 - **verify** — `(ledger_artifact) → VerificationReport`. Runner compares report fields (`structure_verified`, `integrity_verified`, `readability_verified`) against inline expected.
-- **export** — `(ledger_state) → zip_bytes`. Runner byte-compares ZIP bytes against committed expected and validates the manifest `zip_sha256` pin against the committed ZIP.
+- **export** — `(ledger_state) → zip_bytes`. Runner byte-compares ZIP bytes against committed expected, validates the manifest `zip_sha256` pin against the committed ZIP, and verifies the ZIP, comparing the report to the required inline `[expected.report]` (a byte-exact ZIP that does not verify to its labelled outcome fails the build).
 - **tamper** — `(tampered_artifact) → VerificationReport` where at least one `*_verified` flag is false. Runner compares failure kind + failing event id.
 
 Manifest input/expected fields mirror whatever Core says each API's signature is. This spec does not re-normatize the API — it reflects Core.
@@ -36,7 +36,7 @@ Runner responsibilities:
 - Parse `manifest.toml`, dispatch on `op`.
 - Load inputs; invoke the local `append` / `verify` / `export` API.
 - For `append` / `export`: byte-compare output against expected sibling files.
-- For `verify` / `tamper`: compare report fields against inline `[expected.report]`.
+- For `verify` / `tamper` / `export`: compare report fields against inline `[expected.report]` (for `export`, the report is of `expected-export.zip`).
 
 A shared stdin/stdout protocol was considered and rejected. It would dilute the stranger test by introducing a second normative artifact beyond Core — "did I implement the protocol right?" competing with "did I implement Core right?" Data-only preserves the ratification bar.
 

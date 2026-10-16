@@ -1,9 +1,7 @@
 id          = "tamper/027-interop-sidecar-populated-phase-1"
 op          = "tamper"
 status      = "active"
-description = """Phase-1 interop sidecar lock-off. Manifest lists a populated
-interop_sidecars entry; Phase-1 verifier MUST reject with
-interop_sidecar_phase_1_locked per ADR 0008."""
+description = """Phase-1 interop sidecar lock-off. Manifest lists a populated `scitt-receipt` interop_sidecars entry; Phase-1 verifier MUST reject with interop_sidecar_phase_1_locked per ADR 0008."""
 
 [coverage]
 tr_core = ["TR-CORE-145"]
@@ -16,6 +14,3 @@ structure_verified   = false
 integrity_verified   = false
 readability_verified = false
 tamper_kind          = "interop_sidecar_phase_1_locked"
-
-[derivation]
-document = "derivation.md"

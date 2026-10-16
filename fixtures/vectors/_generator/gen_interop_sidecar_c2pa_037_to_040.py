@@ -1,7 +1,8 @@
-"""Generate Wave 25 interop-sidecar fixtures for the c2pa-manifest@v1
-dispatched verifier:
+"""Generate the interop-sidecar export + tamper fixtures:
 
-* `export/014-interop-sidecar-c2pa-manifest`        — positive
+* `export/012-interop-sidecars-empty-list`          — positive, `interop_sidecars: []`
+* `export/014-interop-sidecar-c2pa-manifest`        — positive, one c2pa-manifest@v1
+* `tamper/027-interop-sidecar-populated-phase-1`    — TR-CORE-145 (locked kind)
 * `tamper/037-interop-sidecar-content-mismatch`     — TR-CORE-163
 * `tamper/038-interop-sidecar-kind-unknown`         — TR-CORE-164
 * `tamper/039-interop-sidecar-unlisted-file`        — TR-CORE-165
@@ -11,12 +12,13 @@ dispatched verifier:
 Authoring aid only. The committed fixture bytes are the evidence
 surface; this script exists so the CBOR + ZIP output is reproducible.
 
-Strategy: take `export/012-interop-sidecars-empty-list/expected-export.zip`
-as the base (a known-valid Phase-1 export with `interop_sidecars: []`),
-re-emit the manifest with a populated `interop_sidecars` field and an
-accompanying `interop-sidecars/c2pa-manifest/<file>` member, and re-sign
-the manifest under `_keys/issuer-001.cose_key`. Per Core §18.3a / ADR
-0008 §"Phase-1 verifier obligation" Wave 25:
+Strategy: take `export/001-two-event-chain/expected-export.zip` as the
+base — the one export the real writer reproduces byte for byte, so its
+chain, checkpoints, and timestamps (`[seconds, nanos]`, Core §28) are
+current. Re-emit only the manifest with the requested `interop_sidecars`
+field and an accompanying `interop-sidecars/<kind>/<file>` member, and
+re-sign it under `_keys/issuer-001.cose_key`. Per Core §18.3a / ADR 0008
+§"Phase-1 verifier obligation" Wave 25:
 
 * Positive sidecar payload is a deterministic synthetic dCBOR map
   carrying the five-field Trellis assertion shape (the actual C2PA
@@ -26,6 +28,9 @@ the manifest under `_keys/issuer-001.cose_key`. Per Core §18.3a / ADR
   `manifest.interop_sidecars[i].content_digest`).
 * Per-tamper mutation: each fixture varies exactly one surface vs the
   positive (content bytes / kind / unlisted file / derivation_version).
+
+Every export vector carries `[expected.report]`, so the conformance
+runners verify the ZIP against its labelled outcome, not only its bytes.
 
 ISC-02 deterministic derivation: re-running this generator MUST yield
 byte-identical output.
@@ -65,9 +70,11 @@ from _lib.byte_utils import (  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 KEY_ISSUER = ROOT / "_keys" / "issuer-001.cose_key"
 
-BASE_EXPORT_ZIP = ROOT / "export" / "012-interop-sidecars-empty-list" / "expected-export.zip"
+BASE_EXPORT_ZIP = ROOT / "export" / "001-two-event-chain" / "expected-export.zip"
 
+OUT_EXPORT_012 = ROOT / "export" / "012-interop-sidecars-empty-list"
 OUT_EXPORT_014 = ROOT / "export" / "014-interop-sidecar-c2pa-manifest"
+OUT_TAMPER_027 = ROOT / "tamper" / "027-interop-sidecar-populated-phase-1"
 OUT_TAMPER_037 = ROOT / "tamper" / "037-interop-sidecar-content-mismatch"
 OUT_TAMPER_038 = ROOT / "tamper" / "038-interop-sidecar-kind-unknown"
 OUT_TAMPER_039 = ROOT / "tamper" / "039-interop-sidecar-unlisted-file"
@@ -257,60 +264,11 @@ def build_positive_entry(
     }
 
 
-def gen_export_014(seed: bytes, base_zip: bytes) -> tuple[bytes, dict[str, bytes], str]:
-    """Positive: c2pa-manifest@v1 entry, file present, digest matches.
-
-    Uses the `export` op so the directory-name lint (check-specs.py
-    rule: `<op>/<slug>` must agree with `manifest.op`) accepts the
-    `export/014-...` slot per the Wave 25 brief. The conformance
-    walker rebuilds the ZIP byte-for-byte from `input-ledger-state.cbor`
-    + per-member files; we ship every member from the mutated bundle
-    individually so the walker's byte-exact replay closes.
-
-    Returns `(zip_bytes, members_by_relative_path, manifest_toml)`.
-    """
-    content_digest = domain_separated_sha256(CONTENT_DOMAIN, SIDECAR_BYTES)
-    entry = build_positive_entry(content_digest)
-    zip_bytes = build_export_zip(
-        base_zip, seed,
-        sidecar_entries=[entry],
-        sidecar_files={SIDECAR_PATH: SIDECAR_BYTES},
-    )
-
-    # Decode the freshly-built ZIP back into per-member bytes plus the
-    # root_dir; the walker re-zips from these.
-    root, members = parse_zip_members(zip_bytes)
-
-    # Build the input-ledger-state.cbor mirroring export/012 schema.
-    ledger_state = {
-        "version": 1,
-        "scope": b"test-response-ledger-2",  # mirrors base export
-        "tree_size": 2,
-        "root_dir": root,
-        "members": sorted(members.keys()),
-        "notes": (
-            "Wave 25 export/014. Mutated from "
-            "export/012-interop-sidecars-empty-list with "
-            "interop_sidecars: [<one c2pa-manifest@v1 entry>] and an "
-            "interop-sidecars/c2pa-manifest/cert-wave25-001.c2pa file."
-        ),
-    }
-    members_with_state = dict(members)
-
-    manifest_toml = f"""\
-id          = "export/014-interop-sidecar-c2pa-manifest"
+EXPORT_TEMPLATE = """\
+id          = "export/{slug}"
 op          = "export"
 status      = "active"
-description = \"\"\"Wave 25 positive — manifest lists one
-`c2pa-manifest@v1` entry; the sidecar file at
-`interop-sidecars/c2pa-manifest/cert-wave25-001.c2pa` is present and
-its SHA-256 (under `trellis-content-v1`) matches manifest
-`content_digest`. Phase-1 verifier (path-(b): digest-binds only) returns
-`structure_verified = integrity_verified = readability_verified = true`;
-`VerificationReport.interop_sidecars` carries one outcome with
-`content_digest_ok = kind_registered = true`, `phase_1_locked = false`.
-Anchors TR-CORE-145 (envelope reservation posture under Wave 25
-narrowing).\"\"\"
+description = \"\"\"{description}\"\"\"
 
 [coverage]
 tr_core = ["TR-CORE-145"]
@@ -320,14 +278,81 @@ ledger_state = "input-ledger-state.cbor"
 
 [expected]
 zip        = "expected-export.zip"
-zip_sha256 = "{hashlib.sha256(zip_bytes).hexdigest()}"
+zip_sha256 = "{zip_sha256}"
+
+[expected.report]
+structure_verified   = true
+integrity_verified   = true
+readability_verified = true
 
 [derivation]
 document = "derivation.md"
 """
 
-    members_with_state["__ledger_state__"] = dcbor(ledger_state)
-    return zip_bytes, members_with_state, manifest_toml
+
+def write_export_fixture(
+    out_dir: Path, slug: str, description: str, zip_bytes: bytes, derivation: str
+) -> None:
+    """Write an `export/` vector: the ZIP, its members (the runners re-zip
+    them byte-for-byte from `input-ledger-state.cbor`), and the manifest."""
+    root, members = parse_zip_members(zip_bytes)
+    ledger_state = {
+        "version": 1,
+        "scope": b"test-response-ledger",  # mirrors the export/001 base
+        "tree_size": 2,
+        "root_dir": root,
+        "members": sorted(members),
+        "notes": f"Fixture ledger_state for export/{slug.split('-')[0]}; pack listed members into deterministic ZIP.",
+    }
+    for relative, blob in members.items():
+        target = out_dir / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(blob)
+    manifest_toml = EXPORT_TEMPLATE.format(
+        slug=slug,
+        description=description,
+        zip_sha256=hashlib.sha256(zip_bytes).hexdigest(),
+    )
+    write_fixture(
+        out_dir,
+        manifest_toml,
+        {
+            "expected-export.zip": zip_bytes,
+            "input-ledger-state.cbor": dcbor(ledger_state),
+            "derivation.md": derivation.encode("utf-8"),
+        },
+    )
+
+
+def gen_export_012(seed: bytes, base_zip: bytes) -> bytes:
+    """Positive: manifest explicitly lists `interop_sidecars: []`."""
+    return build_export_zip(base_zip, seed, sidecar_entries=[], sidecar_files={})
+
+
+def gen_export_014(seed: bytes, base_zip: bytes) -> bytes:
+    """Positive: c2pa-manifest@v1 entry, file present, digest matches."""
+    content_digest = domain_separated_sha256(CONTENT_DOMAIN, SIDECAR_BYTES)
+    return build_export_zip(
+        base_zip, seed,
+        sidecar_entries=[build_positive_entry(content_digest)],
+        sidecar_files={SIDECAR_PATH: SIDECAR_BYTES},
+    )
+
+
+def gen_tamper_027(seed: bytes, base_zip: bytes) -> bytes:
+    """tamper/027 — Phase-1-locked kind. Manifest lists a populated
+    `scitt-receipt` entry (a kind with no dispatched verifier); the
+    verifier emits `interop_sidecar_phase_1_locked` before touching the
+    (absent) file or its placeholder digest."""
+    entry = {
+        "kind": "scitt-receipt",
+        "derivation_version": 1,
+        "path": "interop-sidecars/scitt-receipt/001.cbor",
+        "content_digest": bytes(32),
+        "source_ref": "checkpoint/tree_size/1",
+        "extensions": None,
+    }
+    return build_export_zip(base_zip, seed, sidecar_entries=[entry], sidecar_files={})
 
 
 def gen_tamper_037(seed: bytes, base_zip: bytes) -> bytes:
@@ -444,52 +469,71 @@ def main() -> None:
     seed, _pubkey = load_seed_and_pubkey(KEY_ISSUER)
     base_zip = BASE_EXPORT_ZIP.read_bytes()
 
-    # === export/014 (positive — export-op, byte-exact ZIP replay) ===
-    zip_014, members_014, manifest_014 = gen_export_014(seed, base_zip)
-    inputs_014: dict[str, bytes] = {
-        "expected-export.zip": zip_014,
-        "input-ledger-state.cbor": members_014.pop("__ledger_state__"),
-    }
-    # Ship each member as an individual file at the fixture root; the
-    # conformance walker reads `input-ledger-state.cbor.members[*]` and
-    # opens each path under the fixture dir.
-    for relative, blob in members_014.items():
-        # Members can be nested (e.g. `050-registries/<digest>.cbor` /
-        # `interop-sidecars/c2pa-manifest/<file>`). Create parents
-        # before writing.
-        target = OUT_EXPORT_014 / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(blob)
-    write_fixture(
-        OUT_EXPORT_014,
-        manifest_014,
-        inputs_014,
+    # === export/012 (positive — empty list) ===
+    zip_012 = gen_export_012(seed, base_zip)
+    write_export_fixture(
+        OUT_EXPORT_012,
+        "012-interop-sidecars-empty-list",
+        "Canonical positive: manifest explicitly lists\n"
+        "interop_sidecars: [] (empty array). Phase-1 verifier accepts empty list\n"
+        "without error per ADR 0008.",
+        zip_012,
+        "# `export/012-interop-sidecars-empty-list` derivation\n\n"
+        "Built by `_generator/gen_interop_sidecar_c2pa_037_to_040.py` from\n"
+        "`export/001-two-event-chain`: the manifest is re-emitted with\n"
+        "`interop_sidecars: []` and re-signed under `_keys/issuer-001.cose_key`;\n"
+        "every other member is byte-identical to the base.\n\n"
+        f"`zip_sha256 = {hashlib.sha256(zip_012).hexdigest()}`\n",
     )
-    derivation_014 = (
+
+    # === export/014 (positive — one c2pa-manifest@v1 entry) ===
+    zip_014 = gen_export_014(seed, base_zip)
+    write_export_fixture(
+        OUT_EXPORT_014,
+        "014-interop-sidecar-c2pa-manifest",
+        "Wave 25 positive — manifest lists one\n"
+        "`c2pa-manifest@v1` entry; the sidecar file at\n"
+        "`interop-sidecars/c2pa-manifest/cert-wave25-001.c2pa` is present and\n"
+        "its SHA-256 (under `trellis-content-v1`) matches manifest\n"
+        "`content_digest`. Phase-1 verifier (path-(b): digest-binds only) returns\n"
+        "`structure_verified = integrity_verified = readability_verified = true`;\n"
+        "`VerificationReport.interop_sidecars` carries one outcome with\n"
+        "`content_digest_ok = kind_registered = true`, `phase_1_locked = false`.\n"
+        "Anchors TR-CORE-145 (envelope reservation posture under Wave 25\n"
+        "narrowing).",
+        zip_014,
         "# `export/014-interop-sidecar-c2pa-manifest` derivation\n\n"
         "Wave 25 positive — c2pa-manifest@v1 dispatched verifier.\n\n"
-        "Built by re-emitting `export/012-interop-sidecars-empty-list`'s\n"
-        "manifest with `interop_sidecars: [<one c2pa-manifest@v1 entry>]`,\n"
-        "adding the sidecar file at\n"
-        "`interop-sidecars/c2pa-manifest/cert-wave25-001.c2pa`, and re-\n"
-        "signing the manifest under `_keys/issuer-001.cose_key`.\n\n"
+        "Built by `_generator/gen_interop_sidecar_c2pa_037_to_040.py` from\n"
+        "`export/001-two-event-chain`: the manifest is re-emitted with\n"
+        "`interop_sidecars: [<one c2pa-manifest@v1 entry>]`, the sidecar file\n"
+        "`interop-sidecars/c2pa-manifest/cert-wave25-001.c2pa` is added, and the\n"
+        "manifest is re-signed under `_keys/issuer-001.cose_key`.\n\n"
         "The sidecar bytes are a synthetic five-field Trellis assertion\n"
         "dCBOR map (mirrors `trellis-interop-c2pa::emit_c2pa_manifest_for_certificate`).\n"
         "For path-(b) digest-only verification, the wrapping format is\n"
         "irrelevant — the verifier only recomputes\n"
         "`SHA-256(trellis-content-v1, file-bytes)` and compares to\n"
         "`manifest.interop_sidecars[0].content_digest`.\n\n"
-        "Op is `export` per the directory naming rule "
-        "(`check-specs.py:check_vector_manifest_identity` requires the\n"
-        "directory's first segment match `manifest.op`). The conformance\n"
-        "walker rebuilds the ZIP byte-for-byte from\n"
-        "`input-ledger-state.cbor` + per-member files; the result MUST\n"
-        "equal `expected-export.zip` (Core §18.1 deterministic ZIP).\n"
-        "Sidecar member at `interop-sidecars/c2pa-manifest/cert-wave25-001.c2pa`\n"
-        "is included in the member list.\n\n"
-        f"`zip_sha256 = {hashlib.sha256(zip_014).hexdigest()}`\n"
+        "The runners rebuild the ZIP byte-for-byte from `input-ledger-state.cbor`\n"
+        "+ per-member files (Core §18.1 deterministic ZIP) and then verify it\n"
+        "against `[expected.report]`.\n\n"
+        f"`zip_sha256 = {hashlib.sha256(zip_014).hexdigest()}`\n",
     )
-    (OUT_EXPORT_014 / "derivation.md").write_text(derivation_014, encoding="utf-8")
+
+    # === tamper/027 (Phase-1-locked kind) ===
+    zip_027 = gen_tamper_027(seed, base_zip)
+    manifest_027 = TAMPER_TEMPLATE.format(
+        slug="027-interop-sidecar-populated-phase-1",
+        description=(
+            "Phase-1 interop sidecar lock-off. Manifest lists a populated "
+            "`scitt-receipt` interop_sidecars entry; Phase-1 verifier MUST "
+            "reject with interop_sidecar_phase_1_locked per ADR 0008."
+        ),
+        coverage_rows='"TR-CORE-145"',
+        tamper_kind="interop_sidecar_phase_1_locked",
+    )
+    write_fixture(OUT_TAMPER_027, manifest_027, {"input-export.zip": zip_027})
 
     # === tamper/037 (content mismatch) ===
     zip_037 = gen_tamper_037(seed, base_zip)
@@ -584,7 +628,9 @@ def main() -> None:
     write_fixture(OUT_TAMPER_044, manifest_044, {"input-export.zip": zip_044})
 
     print("Wrote:")
+    print(f"  {OUT_EXPORT_012.relative_to(ROOT)}/  zip_sha256={hashlib.sha256(zip_012).hexdigest()}")
     print(f"  {OUT_EXPORT_014.relative_to(ROOT)}/  zip_sha256={hashlib.sha256(zip_014).hexdigest()}")
+    print(f"  {OUT_TAMPER_027.relative_to(ROOT)}/")
     print(f"  {OUT_TAMPER_037.relative_to(ROOT)}/")
     print(f"  {OUT_TAMPER_038.relative_to(ROOT)}/")
     print(f"  {OUT_TAMPER_039.relative_to(ROOT)}/")

@@ -162,12 +162,22 @@ def _assert_export(root: Path, manifest: dict[str, Any]) -> None:
     if "zip_sha256" in expected:
         assert hashlib.sha256(expected_zip).hexdigest() == expected["zip_sha256"]
     assert actual == expected_zip
+    # Byte-identity alone says nothing about whether the bytes are a valid
+    # export: the labelled outcome is checked by running the verifier on them.
+    assert "report" in expected, "export vector must declare [expected.report]"
+    _assert_report_matches_zip(root, expected["report"], expected_zip)
 
 
 def _assert_verify(root: Path, manifest: dict[str, Any]) -> None:
     inputs = manifest["inputs"]
     expected_report = manifest["expected"]["report"]
-    wos_report = verify_wos.verify_export_zip((root / inputs["export_zip"]).read_bytes())
+    _assert_report_matches_zip(root, expected_report, (root / inputs["export_zip"]).read_bytes())
+
+
+def _assert_report_matches_zip(
+    root: Path, expected_report: dict[str, Any], export_zip: bytes
+) -> None:
+    wos_report = verify_wos.verify_export_zip(export_zip)
     expected_kind = expected_report.get("first_failure_kind")
     if expected_kind in WOS_TAMPER_KINDS:
         _assert_wos_report(root, expected_report, wos_report, expected_kind)
