@@ -4,15 +4,18 @@
 // signature in this crate. Follow-up: convert `StackError` to a `Box<...>` newtype workspace-wide.
 //! Trellis substrate HTTP service.
 //!
-//! The service is the composition root between product-facing HTTP append
-//! calls and Trellis Core byte construction. Consumers share the
-//! `trellis-service-client` wire DTOs; this crate owns admission,
-//! authorization, persistence, export publication, and registry reads.
+//! The service sits between product-facing HTTP append calls and Trellis Core
+//! byte construction. Consumers share the `trellis-service-client` wire DTOs;
+//! this crate owns admission dispatch, authorization, persistence, export
+//! publication, and registry reads.
+//!
+//! The crate is producer-neutral: WOS and Formspec arrive as [`ServerAdapters`]
+//! (admission, event-type vocabulary, attachment admission, export profile, tenant
+//! headers) and the `NativeCloseout` port, assembled by `trellis-server-app`.
+//! `deny.toml` keeps the adapter crates out of this crate's build graph.
 //!
 //! Axum routing is exposed via [`router`]; durable bootstrap and HTTP replay state via
 //! [`TrellisServerState`] / [`state_from_env`] (implemented in `src/http.rs` and `src/state.rs`).
-//! This file remains a large composition root (event admission dispatch, bundle publication, CBOR/registry
-//! helpers, and related tests), not a thin re-export-only façade.
 //!
 //! **HTTP replay idempotency** is enforced only through
 //! [`stack_common_idempotency::InMemoryHttpReplayStore`] wired into
@@ -20,15 +23,15 @@
 //! 0092c). There is no parallel `IdempotencyStore` port in `trellis-server-ports`.
 //!
 //! **Governance overlay (TWREF-064):** `wos-server` may restrict which WOS literals it emits
-//! over HTTP before calling Trellis, while Trellis admits the union of WOS registry
-//! literals plus Formspec append dialect subjects to admission policy. Bearer
-//! credentials targeting Trellis are the substrate trust root: durable non-permissive
-//! startups require current OIDC authority and exact deployment resource grants.
+//! over HTTP before calling Trellis, while Trellis admits whatever the installed admission
+//! policy registers. Bearer credentials targeting Trellis are the substrate trust root:
+//! durable non-permissive startups require current OIDC authority and exact deployment
+//! resource grants.
 //!
 //! **Case scope versus Trellis URL scope (TWREF-005):** Admission here keys off `event_type` and payload shape for the
 //! HTTP `{scope}` segment plus tenant headers. It does not fetch WOS case relationship rows; product servers must map
-//! their governed case identity into scope and credentials deliberately. Formspec and WOS append dialects share the
-//! same route but diverge in `RoutedEventAdmissionPolicy` on the `substrate.append.*` prefix versus `wos.*` literals.
+//! their governed case identity into scope and credentials deliberately. Dispatch to a producer's rules is the
+//! installed `AdmissionRouter`'s literal lookup, never an event-type prefix match here.
 
 #![forbid(unsafe_code)]
 
