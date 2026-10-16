@@ -21,28 +21,6 @@ const TEMPLATE: &str =
     include_str!("../../../reference/certificate-of-completion/template-v2/template.html");
 const MAX_BYTES: usize = 1024 * 1024;
 
-#[doc(inline)]
-pub use trellis_cddl::CompletionRecord;
-
-/// Binds owning records through the shared structural verifier.
-///
-/// # Errors
-/// Refuses any shared prefix or complete census mismatch.
-pub fn completion_record_bindings(
-    prefix: &[StoredEvent],
-    scope: &str,
-    records: &[CompletionRecord],
-    relevant_event_types: &[String],
-) -> Result<Vec<[u8; 32]>, StackError> {
-    trellis_cddl::completion_record_bindings(
-        prefix,
-        scope.as_bytes(),
-        records,
-        relevant_event_types,
-    )
-    .map_err(StackError::conflict)
-}
-
 pub use trellis_service_client::{COMPLETION_EVENT, CompletionRequest};
 
 /// Product-owned labels for one retained signing event.

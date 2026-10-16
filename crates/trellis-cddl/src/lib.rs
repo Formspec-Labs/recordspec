@@ -1,5 +1,7 @@
 // Rust guideline compliant 2026-02-21
-//! Minimal CDDL-facing parsers and encoders for the G-4 append scaffold.
+//! Minimal CDDL-facing parsers and encoders for the G-4 append scaffold, plus the
+//! completion-prefix check (`validate_completion_prefix`) and census binder
+//! (`completion_record_bindings`).
 
 #![forbid(unsafe_code)]
 
