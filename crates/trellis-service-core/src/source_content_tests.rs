@@ -7,41 +7,65 @@ use serde_json::json;
 
 struct NeutralPorts {
     final_prefix: bool,
-    reads: AtomicUsize,
     structural_calls: AtomicUsize,
 }
-#[async_trait]
-impl SourceContentSelectionResolver for NeutralPorts {
-    async fn select(
-        &self,
-        _request: &SourceContentSelectionRequest<'_>,
-    ) -> Result<SourceContentSelection, StackError> {
-        self.reads.fetch_add(1, Ordering::SeqCst);
-        Err(StackError::new(
-            stack_common_error::ErrorCode::new("INFRA-4030").unwrap(),
-            StatusCode::FORBIDDEN,
-            "current owning human permission revoked",
-        ))
-    }
-}
-#[async_trait]
-impl SourceContentContributor for NeutralPorts {
-    async fn read(
-        &self,
-        _request: &SourceContentRequest<'_>,
-    ) -> Result<PreparedSourceContentBatchV1, StackError> {
-        self.reads.fetch_add(1, Ordering::SeqCst);
-        Err(StackError::unavailable(
-            "neutral content deliberately unavailable",
-        ))
-    }
-
+impl SourceContentBatchChecker for NeutralPorts {
     fn check_batch(
         &self,
         selected: &SourceContentSelection,
         batch: &PreparedSourceContentBatchV1,
     ) -> Result<(), StackError> {
         trellis_export_profile_wos::check_source_content_batch(selected, batch)
+    }
+}
+
+/// Counts reads and delegates to the real store-backed reader.
+struct CountingReader {
+    inner: StoreSourceContentReader,
+    reads: AtomicUsize,
+}
+#[async_trait]
+impl SourceContentObjectReader for CountingReader {
+    async fn read(
+        &self,
+        tenant: &stack_common_http::tenant::TenantScope,
+        claim: &SourceContentClaim,
+        budget: std::time::Duration,
+    ) -> Result<PreparedSourceContentBatchV1, StackError> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        self.inner.read(tenant, claim, budget).await
+    }
+}
+
+fn config() -> trellis_server_ports::S3ObjectConfig {
+    trellis_server_ports::S3ObjectConfig {
+        bucket: "source-content".into(),
+        endpoint: None,
+        region: None,
+    }
+}
+fn store_over(
+    backend: &Arc<object_store::memory::InMemory>,
+) -> trellis_server_ports::S3CompatibleArtifactStore {
+    trellis_server_ports::S3CompatibleArtifactStore::from_object_store_for_test(
+        config(),
+        "pfx/",
+        backend.clone(),
+    )
+}
+fn tenant_a() -> stack_common_http::tenant::TenantScope {
+    stack_common_http::tenant::TenantScope {
+        tenant: "tenant-a".into(),
+        workspace: "workspace-a".into(),
+        environment: "prod".into(),
+        cell: "cell-a".into(),
+    }
+}
+fn pins() -> ConfiguredSourceContentPins {
+    ConfiguredSourceContentPins {
+        provider_selection_hash: [3; 32],
+        native_policy_hash: [17; 32],
+        recipient_policy_hash: [7; 32],
     }
 }
 
@@ -75,21 +99,35 @@ impl StructuralSourcePublicationVerifier for NeutralPorts {
         trellis_export_profile_wos::verify_source_content_export(zip, None)
     }
 }
-fn selected(final_prefix: bool) -> (SourceContentComposition, Arc<NeutralPorts>) {
+fn composition_over(
+    reader: Arc<dyn SourceContentObjectReader>,
+    final_prefix: bool,
+) -> (SourceContentComposition, Arc<NeutralPorts>) {
     let ports = Arc::new(NeutralPorts {
         final_prefix,
-        reads: AtomicUsize::new(0),
         structural_calls: AtomicUsize::new(0),
     });
     (
         SourceContentComposition {
-            selection_resolver: ports.clone(),
-            contributor: ports.clone(),
+            object_reader: reader,
+            batch_checker: ports.clone(),
             final_prefix_guard: ports.clone(),
             structural: ports.clone(),
+            pins: pins(),
+            publisher: "wos-server".into(),
         },
         ports,
     )
+}
+/// A composition whose store holds nothing; for tests that must never reach the object.
+fn selected(final_prefix: bool) -> (SourceContentComposition, Arc<CountingReader>) {
+    let reader = Arc::new(CountingReader {
+        inner: StoreSourceContentReader::new(store_over(&Arc::new(
+            object_store::memory::InMemory::new(),
+        ))),
+        reads: AtomicUsize::new(0),
+    });
+    (composition_over(reader.clone(), final_prefix).0, reader)
 }
 fn command(body: &[u8]) -> append::AppendCommand {
     let body: SubstrateAppendBody = serde_json::from_slice(body).unwrap();
@@ -105,7 +143,7 @@ fn command(body: &[u8]) -> append::AppendCommand {
 
 #[tokio::test]
 async fn source_content_final_guard_refuses_plain_append_before_repository_write() {
-    let (composition, ports) = selected(true);
+    let (composition, reader) = selected(true);
     let state = test_state().with_source_content(composition);
     let error = state
         .append_coordinator()
@@ -124,7 +162,7 @@ async fn source_content_final_guard_refuses_plain_append_before_repository_write
             .unwrap()
             .is_empty()
     );
-    assert_eq!(ports.reads.load(Ordering::SeqCst), 0);
+    assert_eq!(reader.reads.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
@@ -136,7 +174,7 @@ async fn source_content_final_guard_precedes_retained_seal_shortcut() {
         .await
         .unwrap();
     let events = state.repository.list_scope(b"case_123").await.unwrap();
-    let (composition, ports) = selected(true);
+    let (composition, reader) = selected(true);
     let state = state.with_source_content(composition);
     let error = publish_bundle(
         &state,
@@ -151,20 +189,20 @@ async fn source_content_final_guard_precedes_retained_seal_shortcut() {
         error.title(),
         "final closeout requires committed Source content"
     );
-    assert_eq!(ports.reads.load(Ordering::SeqCst), 0);
+    assert_eq!(reader.reads.load(Ordering::SeqCst), 0);
     let response = router(state)
         .unwrap()
         .oneshot(get_request("/v1/scopes/case_123/bundles/head"))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(ports.reads.load(Ordering::SeqCst), 0);
+    assert_eq!(reader.reads.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
 async fn source_content_ordinary_publication_keeps_prior_profile_gate_and_never_reads_contributor()
 {
-    let (composition, ports) = selected(false);
+    let (composition, reader) = selected(false);
     let state = test_state()
         .with_source_content(composition)
         .with_profile_export_verifier(Arc::new(|_| false));
@@ -179,27 +217,7 @@ async fn source_content_ordinary_publication_keeps_prior_profile_gate_and_never_
         error.title(),
         "published export bundle failed profile verification"
     );
-    assert_eq!(ports.reads.load(Ordering::SeqCst), 0);
-    assert_eq!(ports.structural_calls.load(Ordering::SeqCst), 0);
-}
-
-#[test]
-fn source_content_locator_is_optional_closed_and_does_not_grant_authority() {
-    let mut headers = axum::http::HeaderMap::new();
-    assert_eq!(preparation_key(&headers).unwrap(), None);
-    headers.insert(
-        PREPARATION_KEY_HEADER,
-        "opaque-preparation-key".parse().unwrap(),
-    );
-    assert_eq!(
-        preparation_key(&headers).unwrap(),
-        Some("opaque-preparation-key")
-    );
-    headers.append(PREPARATION_KEY_HEADER, "other-key".parse().unwrap());
-    assert!(preparation_key(&headers).is_err());
-    headers.remove(PREPARATION_KEY_HEADER);
-    headers.insert(PREPARATION_KEY_HEADER, " ".parse().unwrap());
-    assert!(preparation_key(&headers).is_err());
+    assert_eq!(reader.reads.load(Ordering::SeqCst), 0);
 }
 
 fn neutral_native_body(key: &str, event: &str) -> SubstrateAppendBody {
@@ -217,6 +235,7 @@ fn neutral_native_body(key: &str, event: &str) -> SubstrateAppendBody {
         payload: native.payload().clone(),
         compute_context: trellis_service_client::ComputeContext::no_delegated_compute("wos-server"),
         client_attestation: None,
+            source_content: None,
     }
 }
 fn real_guard() -> ConfiguredNativeCloseoutGuard {
@@ -280,7 +299,7 @@ async fn source_content_locatorless_cached_append_is_refused_before_http_replay(
         .await
         .unwrap();
     assert_eq!(first.status(), StatusCode::CREATED);
-    let (composition, ports) = selected(true);
+    let (composition, reader) = selected(true);
     let app = router(state.with_source_content(composition)).unwrap();
     let second = app
         .oneshot(post_request("/v1/scopes/case_123/events", payload))
@@ -293,45 +312,7 @@ async fn source_content_locatorless_cached_append_is_refused_before_http_replay(
             .get(stack_common_http::idempotency::IDEMPOTENCY_REPLAY_HEADER)
             .is_none()
     );
-    assert_eq!(ports.reads.load(Ordering::SeqCst), 0);
-}
-
-#[tokio::test]
-async fn source_content_revoked_owning_selection_blocks_cached_opaque_append_response() {
-    use tower::ServiceExt;
-    let state = test_state();
-    let payload = append_body("source-revoked-http-cache");
-    let first = router(state.clone())
-        .unwrap()
-        .oneshot(post_request("/v1/scopes/case_123/events", payload.clone()))
-        .await
-        .unwrap();
-    assert_eq!(first.status(), StatusCode::CREATED);
-    let (composition, ports) = selected(false);
-    let mut retry = post_request("/v1/scopes/case_123/events", payload);
-    retry.headers_mut().insert(
-        PREPARATION_KEY_HEADER,
-        "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-            .parse()
-            .unwrap(),
-    );
-    retry.headers_mut().insert(
-        trellis_service_client::COMPLETION_CALLER_AUTHORIZATION_HEADER,
-        "Bearer neutral-person".parse().unwrap(),
-    );
-    let response = router(state.with_source_content(composition))
-        .unwrap()
-        .oneshot(retry)
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    assert!(
-        response
-            .headers()
-            .get(stack_common_http::idempotency::IDEMPOTENCY_REPLAY_HEADER)
-            .is_none()
-    );
-    assert_eq!(ports.reads.load(Ordering::SeqCst), 1);
+    assert_eq!(reader.reads.load(Ordering::SeqCst), 0);
 }
 
 fn neutral_map(rows: Vec<(&str, Value)>) -> Value {
@@ -344,70 +325,6 @@ fn neutral_map(rows: Vec<(&str, Value)>) -> Value {
 fn neutral_encoded(value: &Value) -> Vec<u8> {
     integrity_cbor::encode_canonical_cbor_value(value).unwrap()
 }
-struct CommittedOriginal {
-    batch: PreparedSourceContentBatchV1,
-    reads: AtomicUsize,
-    lock_wait: Option<(Arc<crate::artifacts::ScopeLocks>, Arc<LockWaitAuthority>)>,
-}
-#[async_trait]
-impl SourceContentContributor for CommittedOriginal {
-    async fn read(
-        &self,
-        request: &SourceContentRequest<'_>,
-    ) -> Result<PreparedSourceContentBatchV1, StackError> {
-        self.reads.fetch_add(1, Ordering::SeqCst);
-        if let Some((locks, authority)) = &self.lock_wait {
-            let guard = locks.lock(request.scope).await;
-            let authority = authority.clone();
-            tokio::spawn(async move {
-                authority.before_lock.notified().await;
-                authority.revoked.store(true, Ordering::SeqCst);
-                drop(guard);
-            });
-        }
-        Ok(self.batch.clone())
-    }
-
-    fn check_batch(
-        &self,
-        selected: &SourceContentSelection,
-        batch: &PreparedSourceContentBatchV1,
-    ) -> Result<(), StackError> {
-        trellis_export_profile_wos::check_source_content_batch(selected, batch)
-    }
-}
-
-// This authority changes only after the pre-lock check, while the append waits.
-struct LockWaitAuthority {
-    calls: AtomicUsize,
-    revoked: std::sync::atomic::AtomicBool,
-    before_lock: tokio::sync::Notify,
-}
-#[async_trait]
-impl trellis_server_ports::ScopeAuthorizer for LockWaitAuthority {
-    type Error = StackError;
-    async fn authorize(
-        &self,
-        request: &trellis_server_ports::ScopeAuthorization<'_>,
-    ) -> Result<trellis_server_ports::AuthorizedScope, StackError> {
-        let revoked = self.revoked.load(Ordering::SeqCst);
-        if self.calls.fetch_add(1, Ordering::SeqCst) == 1 {
-            self.before_lock.notify_one();
-        }
-        if revoked {
-            return Err(StackError::conflict(
-                "neutral Append permission revoked during lock wait",
-            ));
-        }
-        Ok(trellis_server_ports::AuthorizedScope {
-            principal: request.actor.into(),
-            tenant_scope: request.tenant_scope.clone(),
-            scope: request.scope.to_vec(),
-            action: request.action,
-        })
-    }
-}
-
 // Real neutral encryption and canonical catalogs exercise publication plumbing.
 // These fixtures confer no Source signing authority or independent-reader readiness.
 async fn committed_original_fixture() -> (
@@ -670,162 +587,279 @@ async fn committed_original_fixture() -> (
     (state, closeout, selection, batch)
 }
 
-fn original_composition(contributor: Arc<CommittedOriginal>) -> SourceContentComposition {
-    let (_, verifier) = selected(false);
-    SourceContentComposition {
-        selection_resolver: verifier.clone(),
-        contributor,
-        final_prefix_guard: Arc::new(real_guard()),
-        structural: verifier,
+fn object_key(tenant: &stack_common_http::tenant::TenantScope, claim: &SourceContentClaim) -> String {
+    trellis_server_ports::source_content_object_key(tenant, &claim.selection.preparation_key)
+        .unwrap()
+}
+
+/// A fixture whose closeout body carries a claim for a real prepared batch.
+struct Sourced {
+    state: TrellisServerState,
+    body: SubstrateAppendBody,
+    batch: PreparedSourceContentBatchV1,
+    claim: SourceContentClaim,
+    backend: Arc<object_store::memory::InMemory>,
+    reader: Arc<CountingReader>,
+}
+impl Sourced {
+    async fn put_object(&self, tenant: &stack_common_http::tenant::TenantScope) {
+        use trellis_server_ports::ArtifactStore;
+        store_over(&self.backend)
+            .put_immutable(
+                &object_key(tenant, &self.claim),
+                &serde_json::to_vec(&self.batch).unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+    fn payload(&self) -> Vec<u8> {
+        serde_json::to_vec(&self.body).unwrap()
+    }
+    async fn ledger_len(&self) -> usize {
+        self.state.repository.list_scope(b"case_123").await.unwrap().len()
     }
 }
-fn source_headers_tenant() -> (
-    axum::http::HeaderMap,
-    stack_common_http::tenant::TenantScope,
-) {
-    let headers = post_request("/v1/scopes/case_123/events", append_body("unused"))
-        .headers()
-        .clone();
-    let mut headers = headers;
-    headers.insert(
-        trellis_service_client::COMPLETION_CALLER_AUTHORIZATION_HEADER,
-        "Bearer public-neutral-person".parse().unwrap(),
-    );
-    let tenant = stack_common_http::tenant::TenantScope {
-        tenant: "tenant-a".into(),
-        workspace: "workspace-a".into(),
-        environment: "prod".into(),
-        cell: "cell-a".into(),
+async fn sourced(
+    stored: bool,
+    adjust: impl FnOnce(&mut SourceContentComposition),
+) -> Sourced {
+    let (state, mut body, selection, batch) = committed_original_fixture().await;
+    let backend = Arc::new(object_store::memory::InMemory::new());
+    let bytes = serde_json::to_vec(&batch).unwrap();
+    let claim = SourceContentClaim {
+        hash: hex::encode(integrity_cbor::sha256_bytes(&bytes)),
+        size: bytes.len() as u64,
+        selection,
     };
-    (headers, tenant)
+    body.source_content = Some(claim.clone());
+    let reader = Arc::new(CountingReader {
+        inner: StoreSourceContentReader::new(store_over(&backend)),
+        reads: AtomicUsize::new(0),
+    });
+    let (mut composition, _) = composition_over(reader.clone(), false);
+    composition.final_prefix_guard = Arc::new(real_guard());
+    adjust(&mut composition);
+    let fixture = Sourced {
+        state: state.with_source_content(composition),
+        body,
+        batch,
+        claim,
+        backend,
+        reader,
+    };
+    if stored {
+        fixture.put_object(&tenant_a()).await;
+    }
+    fixture
 }
+
+const EVENTS: &str = "/v1/scopes/case_123/events";
+
+async fn refusal_title(response: axum::response::Response) -> (StatusCode, String) {
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+    let title = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .and_then(|value| value["title"].as_str().map(str::to_owned))
+        .unwrap_or_default();
+    (status, title)
+}
+
 #[tokio::test]
 async fn source_content_committed_original_read_writer_and_immutable_replay() {
-    let (state, body, selection, batch) = committed_original_fixture().await;
-    let contributor = Arc::new(CommittedOriginal {
-        batch: batch.clone(),
-        reads: AtomicUsize::new(0),
-        lock_wait: None,
-    });
-    let state = state.with_source_content(original_composition(contributor.clone()));
-    let (headers, tenant) = source_headers_tenant();
-    let context = SourceContentAppendContext {
-        selection: &selection,
-        headers: &headers,
-        tenant: &tenant,
-        body: &body,
+    // A lost 201: the same admitted claim again reaches the ledger branch and returns the record.
+    let f = sourced(true, |_| {}).await;
+    let admitted = AdmittedSourceContent {
+        claim: f.claim.clone(),
+        batch: f.batch.clone(),
     };
-    let cmd = command(&serde_json::to_vec(&body).unwrap());
-    let first = state
+    let context = SourceContentAppendContext {
+        admitted: &admitted,
+        body: &f.body,
+    };
+    let cmd = command(&f.payload());
+    let first = f
+        .state
         .append_coordinator()
         .append_selected_source_content(cmd.clone(), &context)
         .await
         .unwrap();
-    let retained = state
-        .bundles
-        .get_by_seal(b"case_123", 2)
-        .await
-        .unwrap()
-        .unwrap();
-    let bytes = state
-        .artifact_store
-        .get(&retained.artifact_ref)
-        .await
-        .unwrap()
-        .unwrap();
+    let retained = f.state.bundles.get_by_seal(b"case_123", 2).await.unwrap().unwrap();
+    let bytes = f.state.artifact_store.get(&retained.artifact_ref).await.unwrap().unwrap();
     let entries = integrity_bundle::read_stored_zip(&bytes).unwrap();
     assert!(
         entries
             .iter()
-            .any(|entry| entry.bytes() == batch.records[0].protected_record_bytes)
+            .any(|entry| entry.bytes() == f.batch.records[0].protected_record_bytes)
     );
-    let replay = state
+    let replay = f
+        .state
         .append_coordinator()
         .append_selected_source_content(cmd, &context)
         .await
         .unwrap();
     assert_eq!(first.stored, replay.stored);
+    assert_eq!(f.ledger_len().await, 2);
     assert_eq!(
-        state
-            .repository
-            .list_scope(b"case_123")
-            .await
-            .unwrap()
-            .len(),
-        2
-    );
-    assert_eq!(
-        state
-            .bundles
-            .get_by_seal(b"case_123", 2)
-            .await
-            .unwrap()
-            .unwrap(),
+        f.state.bundles.get_by_seal(b"case_123", 2).await.unwrap().unwrap(),
         retained
     );
     assert_eq!(
-        state
-            .artifact_store
-            .get(&retained.artifact_ref)
-            .await
-            .unwrap()
-            .unwrap(),
+        f.state.artifact_store.get(&retained.artifact_ref).await.unwrap().unwrap(),
         bytes
     );
-    assert_eq!(contributor.reads.load(Ordering::SeqCst), 2);
 }
+
 #[tokio::test]
-async fn source_content_permission_revoked_during_scope_lock_wait_prevents_commit() {
-    let (state, body, selection, batch) = committed_original_fixture().await;
-    let authority = Arc::new(LockWaitAuthority {
-        calls: AtomicUsize::new(0),
-        revoked: std::sync::atomic::AtomicBool::new(false),
-        before_lock: tokio::sync::Notify::new(),
-    });
-    let contributor = Arc::new(CommittedOriginal {
-        batch,
-        reads: AtomicUsize::new(0),
-        lock_wait: Some((state.scope_locks.clone(), authority.clone())),
-    });
-    let state = state
-        .with_source_content(original_composition(contributor))
-        .with_scope_authorizer(authority.clone());
-    let (headers, tenant) = source_headers_tenant();
-    let context = SourceContentAppendContext {
-        selection: &selection,
-        headers: &headers,
-        tenant: &tenant,
-        body: &body,
-    };
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        state
-            .append_coordinator()
-            .append_selected_source_content(command(&serde_json::to_vec(&body).unwrap()), &context),
-    )
-    .await
-    .unwrap();
+async fn source_content_append_over_http_commits_with_the_object_and_no_person_credential() {
+    let f = sourced(true, |_| {}).await;
+    let response = router(f.state.clone())
+        .unwrap()
+        .oneshot(post_request(EVENTS, f.payload()))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(f.ledger_len().await, 2);
+    assert_eq!(f.reader.reads.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn source_content_missing_object_is_503_and_the_identical_retry_succeeds_once_it_exists() {
+    let f = sourced(false, |_| {}).await;
+    let app = router(f.state.clone()).unwrap();
+    let first = app.clone().oneshot(post_request(EVENTS, f.payload())).await.unwrap();
     assert_eq!(
-        result.unwrap_err().title(),
-        "neutral Append permission revoked during lock wait"
+        refusal_title(first).await,
+        (StatusCode::SERVICE_UNAVAILABLE, "source-content.object-missing".into())
     );
-    assert_eq!(authority.calls.load(Ordering::SeqCst), 3);
+    assert_eq!(f.ledger_len().await, 1);
+    f.put_object(&tenant_a()).await;
+    let retry = app.oneshot(post_request(EVENTS, f.payload())).await.unwrap();
+    assert_eq!(retry.status(), StatusCode::CREATED);
+    assert_eq!(f.ledger_len().await, 2);
+}
+
+#[tokio::test]
+async fn source_content_hash_mismatch_is_422_with_no_ledger_record() {
+    use trellis_server_ports::ArtifactStore;
+    let f = sourced(false, |_| {}).await;
+    store_over(&f.backend)
+        .put(&object_key(&tenant_a(), &f.claim), b"corrupted object bytes")
+        .await
+        .unwrap();
+    let app = router(f.state.clone()).unwrap();
+    let response = app.clone().oneshot(post_request(EVENTS, f.payload())).await.unwrap();
     assert_eq!(
-        state
-            .repository
-            .list_scope(b"case_123")
-            .await
-            .unwrap()
-            .len(),
-        1
+        refusal_title(response).await,
+        (StatusCode::UNPROCESSABLE_ENTITY, "source-content.hash-mismatch".into())
     );
+    assert_eq!(f.ledger_len().await, 1);
+    assert!(f.state.bundles.get_by_seal(b"case_123", 2).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn source_content_claim_that_differs_from_the_ledger_is_refused_with_no_record() {
+    let mut f = sourced(true, |_| {}).await;
+    f.claim.selection.photo_event_hashes = vec![[9; 32]];
+    f.body.source_content = Some(f.claim.clone());
+    let response = router(f.state.clone())
+        .unwrap()
+        .oneshot(post_request(EVENTS, f.payload()))
+        .await
+        .unwrap();
+    assert_eq!(
+        refusal_title(response).await,
+        (StatusCode::CONFLICT, "source-content.claim-differs".into())
+    );
+    assert_eq!(f.ledger_len().await, 1);
+}
+
+#[tokio::test]
+async fn source_content_wrong_publisher_or_pins_are_refused_before_any_object_read() {
+    let wrong_publisher = sourced(true, |c| c.publisher = "someone-else".into()).await;
+    let response = router(wrong_publisher.state.clone())
+        .unwrap()
+        .oneshot(post_request(EVENTS, wrong_publisher.payload()))
+        .await
+        .unwrap();
+    assert_eq!(
+        refusal_title(response).await,
+        (StatusCode::FORBIDDEN, "source-content.publisher-mismatch".into())
+    );
+    assert_eq!(wrong_publisher.reader.reads.load(Ordering::SeqCst), 0);
+    assert_eq!(wrong_publisher.ledger_len().await, 1);
+
+    let wrong_pins = sourced(true, |c| c.pins.recipient_policy_hash = [99; 32]).await;
+    let response = router(wrong_pins.state.clone())
+        .unwrap()
+        .oneshot(post_request(EVENTS, wrong_pins.payload()))
+        .await
+        .unwrap();
+    assert_eq!(
+        refusal_title(response).await,
+        (StatusCode::CONFLICT, "source-content.pins-differ".into())
+    );
+    assert_eq!(wrong_pins.reader.reads.load(Ordering::SeqCst), 0);
+    assert_eq!(wrong_pins.ledger_len().await, 1);
+}
+
+#[tokio::test]
+async fn source_content_claim_cannot_resolve_outside_the_append_tenant_scope() {
+    // The object exists, but only under another tenant's key; the claim carries no address.
+    let f = sourced(false, |_| {}).await;
+    let mut other = tenant_a();
+    other.tenant = "tenant-b".into();
+    f.put_object(&other).await;
+    let response = router(f.state.clone())
+        .unwrap()
+        .oneshot(post_request(EVENTS, f.payload()))
+        .await
+        .unwrap();
+    assert_eq!(
+        refusal_title(response).await,
+        (StatusCode::SERVICE_UNAVAILABLE, "source-content.object-missing".into())
+    );
+    assert_eq!(f.reader.reads.load(Ordering::SeqCst), 1);
+    assert_eq!(f.ledger_len().await, 1);
+}
+
+#[tokio::test]
+async fn source_content_claim_without_a_composition_is_refused() {
+    let f = sourced(true, |_| {}).await;
+    let mut state = f.state.clone();
+    state.source_content = None;
+    let response = router(state)
+        .unwrap()
+        .oneshot(post_request(EVENTS, f.payload()))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(f.ledger_len().await, 1);
+}
+
+#[tokio::test]
+async fn source_content_publication_fault_after_the_repository_write_resends_to_the_committed_record() {
+    // fs-y075 at the Source route: the 5xx is not cached, so the byte-identical resend
+    // reaches the ledger branch and returns the committed record with the Source members.
+    let f = sourced(true, |_| {}).await;
+    let state = f.state.clone().with_artifact_store(Arc::new(FailsFirstImmutablePut {
+        remaining: AtomicUsize::new(1),
+        inner: Default::default(),
+    }));
+    let app = router(state.clone()).unwrap();
+    let first = app.clone().oneshot(post_request(EVENTS, f.payload())).await.unwrap();
+    assert_eq!(first.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(state.repository.list_scope(b"case_123").await.unwrap().len(), 2);
+    let resend = app.oneshot(post_request(EVENTS, f.payload())).await.unwrap();
+    assert_eq!(resend.status(), StatusCode::CREATED);
+    assert_eq!(state.repository.list_scope(b"case_123").await.unwrap().len(), 2);
+    let retained = state.bundles.get_by_seal(b"case_123", 2).await.unwrap().unwrap();
+    let zip = state.artifact_store.get(&retained.artifact_ref).await.unwrap().unwrap();
     assert!(
-        state
-            .bundles
-            .get_by_seal(b"case_123", 2)
-            .await
+        integrity_bundle::read_stored_zip(&zip)
             .unwrap()
-            .is_none()
+            .iter()
+            .any(|entry| entry.bytes() == f.batch.records[0].protected_record_bytes)
     );
 }
 
@@ -833,7 +867,9 @@ async fn source_content_permission_revoked_during_scope_lock_wait_prevents_commi
 async fn source_content_response_claims_cannot_change_with_consistent_batch_key_and_selected_pins()
 {
     for change in 0..4 {
-        let (state, body, mut selection, mut batch) = committed_original_fixture().await;
+        let f = sourced(true, |_| {}).await;
+        let mut selection = f.claim.selection.clone();
+        let mut batch = f.batch.clone();
         match change {
             0 => {
                 batch.records[0].occurrence.publication_hash = [99; 32];
@@ -852,173 +888,41 @@ async fn source_content_response_claims_cannot_change_with_consistent_batch_key_
                 selection.identity.recipient_policy_hash = [99; 32];
             }
         }
-        let occurrences = batch
-            .records
-            .iter()
-            .map(|record| &record.occurrence)
-            .collect::<Vec<_>>();
-        let key = stack_common_hash::canonical_json_hash(
-            &serde_json::to_value((&batch.selection, occurrences)).unwrap(),
-        )
-        .unwrap();
-        selection.preparation_key = key;
-        let contributor = Arc::new(CommittedOriginal {
+        selection.preparation_key = source_content_batch_key(&batch).unwrap();
+        let admitted = AdmittedSourceContent {
+            claim: SourceContentClaim {
+                selection,
+                ..f.claim.clone()
+            },
             batch,
-            reads: AtomicUsize::new(0),
-            lock_wait: None,
-        });
-        let state = state.with_source_content(original_composition(contributor.clone()));
-        let (headers, tenant) = source_headers_tenant();
-        let context = SourceContentAppendContext {
-            selection: &selection,
-            headers: &headers,
-            tenant: &tenant,
-            body: &body,
         };
-        let error = state
+        let context = SourceContentAppendContext {
+            admitted: &admitted,
+            body: &f.body,
+        };
+        let error = f
+            .state
             .append_coordinator()
-            .append_selected_source_content(command(&serde_json::to_vec(&body).unwrap()), &context)
+            .append_selected_source_content(command(&f.payload()), &context)
             .await
             .unwrap_err();
-        assert_eq!(error.title(), "committed Source content selection differs");
-        assert_eq!(contributor.reads.load(Ordering::SeqCst), 1);
-        assert_eq!(
-            state
-                .repository
-                .list_scope(b"case_123")
-                .await
-                .unwrap()
-                .len(),
-            1
-        );
-        assert!(
-            state
-                .bundles
-                .get_by_seal(b"case_123", 2)
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert_eq!(error.title(), "source-content.claim-differs");
+        assert_eq!(f.ledger_len().await, 1);
+        assert!(f.state.bundles.get_by_seal(b"case_123", 2).await.unwrap().is_none());
     }
 }
 
-struct CurrentRecipientSetSelection {
-    original: SourceContentSelection,
-    rotated: SourceContentSelection,
-    use_rotated: std::sync::atomic::AtomicBool,
-}
-#[async_trait]
-impl SourceContentSelectionResolver for CurrentRecipientSetSelection {
-    async fn select(
-        &self,
-        _request: &SourceContentSelectionRequest<'_>,
-    ) -> Result<SourceContentSelection, StackError> {
-        Ok(if self.use_rotated.load(Ordering::SeqCst) {
-            self.rotated.clone()
-        } else {
-            self.original.clone()
-        })
+#[test]
+fn refusal_codes_map_to_the_adr_statuses() {
+    for (refusal, code, status) in [
+        (SourceContentRefusal::ObjectMissing, "source-content.object-missing", 503),
+        (SourceContentRefusal::HashMismatch, "source-content.hash-mismatch", 422),
+        (SourceContentRefusal::ClaimDiffers, "source-content.claim-differs", 409),
+        (SourceContentRefusal::PublisherMismatch, "source-content.publisher-mismatch", 403),
+        (SourceContentRefusal::PinsDiffer, "source-content.pins-differ", 409),
+    ] {
+        let error = refusal.error();
+        assert_eq!((error.title(), error.status().as_u16()), (code, status));
+        assert_eq!(error.into_problem().status, i64::from(status));
     }
-}
-#[tokio::test]
-async fn source_content_recipient_set_rotation_rekeys_batch_and_refuses_old_bytes_and_cached_replay()
- {
-    use tower::ServiceExt;
-    let (state, body, selection, batch) = committed_original_fixture().await;
-    let mut rotated_batch = batch.clone();
-    rotated_batch.selection.recipient_set_sha256 = [10; 32];
-    let occurrences = rotated_batch
-        .records
-        .iter()
-        .map(|record| &record.occurrence)
-        .collect::<Vec<_>>();
-    let rotated_key = stack_common_hash::canonical_json_hash(
-        &serde_json::to_value((&rotated_batch.selection, occurrences)).unwrap(),
-    )
-    .unwrap();
-    assert_ne!(rotated_key, selection.preparation_key);
-    assert_eq!(
-        rotated_batch.selection.recipient_policy_hash,
-        batch.selection.recipient_policy_hash
-    );
-    let mut rotated = selection.clone();
-    rotated.identity = rotated_batch.selection;
-    rotated.preparation_key = rotated_key;
-    let resolver = Arc::new(CurrentRecipientSetSelection {
-        original: selection.clone(),
-        rotated: rotated.clone(),
-        use_rotated: std::sync::atomic::AtomicBool::new(false),
-    });
-    let contributor = Arc::new(CommittedOriginal {
-        batch,
-        reads: AtomicUsize::new(0),
-        lock_wait: None,
-    });
-    let mut composition = original_composition(contributor.clone());
-    composition.selection_resolver = resolver.clone();
-    let state = state.with_source_content(composition);
-    let app = router(state.clone()).unwrap();
-    let request = |key: &str| {
-        let mut request = post_request(
-            "/v1/scopes/case_123/events",
-            serde_json::to_vec(&body).unwrap(),
-        );
-        request
-            .headers_mut()
-            .insert(PREPARATION_KEY_HEADER, key.parse().unwrap());
-        request.headers_mut().insert(
-            trellis_service_client::COMPLETION_CALLER_AUTHORIZATION_HEADER,
-            "Bearer public-neutral-person".parse().unwrap(),
-        );
-        request
-    };
-    let first = app
-        .clone()
-        .oneshot(request(&selection.preparation_key))
-        .await
-        .unwrap();
-    assert_eq!(first.status(), StatusCode::CREATED);
-    let retained = state
-        .bundles
-        .get_by_seal(b"case_123", 2)
-        .await
-        .unwrap()
-        .unwrap();
-    let bytes = state
-        .artifact_store
-        .get(&retained.artifact_ref)
-        .await
-        .unwrap()
-        .unwrap();
-    resolver.use_rotated.store(true, Ordering::SeqCst);
-    let retry = app
-        .oneshot(request(&rotated.preparation_key))
-        .await
-        .unwrap();
-    assert_eq!(retry.status(), StatusCode::CONFLICT);
-    assert!(
-        retry
-            .headers()
-            .get(stack_common_http::idempotency::IDEMPOTENCY_REPLAY_HEADER)
-            .is_none()
-    );
-    assert_eq!(contributor.reads.load(Ordering::SeqCst), 2);
-    assert_eq!(
-        state
-            .repository
-            .list_scope(b"case_123")
-            .await
-            .unwrap()
-            .len(),
-        2
-    );
-    assert_eq!(
-        state
-            .artifact_store
-            .get(&retained.artifact_ref)
-            .await
-            .unwrap()
-            .unwrap(),
-        bytes
-    );
 }

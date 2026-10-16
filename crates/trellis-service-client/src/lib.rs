@@ -66,9 +66,6 @@
 pub mod completion_selection;
 mod reconciliation;
 pub mod source_content;
-#[cfg(test)]
-mod source_content_tests;
-mod source_content_transport;
 mod source_diagnostics;
 #[doc(inline)]
 pub use reconciliation::{
@@ -275,6 +272,10 @@ pub struct SubstrateAppendRequest {
     /// `trellis-server` until verification is implemented (see [`ClientAttestation`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_attestation: Option<ClientAttestation>,
+    /// Claim about the prepared Source-content batch object (ADR 0163); only the final
+    /// Source closeout carries one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_content: Option<source_content::SourceContentClaim>,
 }
 
 /// JSON body for `POST /v1/scopes/{scope}/events`.
@@ -291,6 +292,11 @@ pub struct SubstrateAppendBody {
     /// `trellis-server` until verification is implemented (see [`ClientAttestation`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_attestation: Option<ClientAttestation>,
+    /// Claim about the prepared Source-content batch object (ADR 0163): the object's hash and
+    /// size and the selection WOS derived. Trellis reads the object from its own derived key,
+    /// so no address or credential travels. The reconcile lookup identity ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_content: Option<source_content::SourceContentClaim>,
 }
 
 /// Maximum original bytes accepted by the protected attachment HTTP route.
@@ -443,9 +449,17 @@ impl SubstrateAppendRequest {
             payload,
             compute_context,
             client_attestation: None,
+            source_content: None,
         };
         request.validate()?;
         Ok(request)
+    }
+
+    /// Attaches the claim for the final Source closeout.
+    #[must_use]
+    pub fn with_source_content(mut self, claim: source_content::SourceContentClaim) -> Self {
+        self.source_content = Some(claim);
+        self
     }
 
     /// Attaches a direct-client attestation block.
@@ -464,6 +478,7 @@ impl SubstrateAppendRequest {
             payload: self.payload.clone(),
             compute_context: self.compute_context.clone(),
             client_attestation: self.client_attestation.clone(),
+            source_content: self.source_content.clone(),
         }
     }
 
@@ -492,6 +507,9 @@ impl SubstrateAppendBody {
         if let Some(attestation) = &self.client_attestation {
             validate_required("client_attestation.kid", &attestation.kid)?;
             validate_required("client_attestation.cose_sign1", &attestation.cose_sign1)?;
+        }
+        if let Some(claim) = &self.source_content {
+            claim.validate()?;
         }
         Ok(())
     }
@@ -599,21 +617,6 @@ pub trait SubstrateClient: Send + Sync {
         &self,
         request: SubstrateAppendRequest,
     ) -> Result<SubstrateAppendResult, StackError>;
-
-    /// Appends an actual closeout with a locator and borrowed current human credential.
-    ///
-    /// # Errors
-    /// Refuses absent capability; implementations never fall back to a bare append.
-    async fn append_source_content_event(
-        &self,
-        _request: SubstrateAppendRequest,
-        _preparation_key: &str,
-        _person_authorization: &str,
-    ) -> Result<SubstrateAppendResult, StackError> {
-        Err(StackError::unavailable(
-            "Source-content closeout transport is not selected",
-        ))
-    }
 
     /// Fetches the current export bundle for `scope`.
     ///
@@ -1016,15 +1019,14 @@ impl TrellisServiceClient {
     async fn send_event_append(
         &self,
         request: SubstrateAppendRequest,
-        source: Option<(&str, &str)>,
     ) -> Result<SubstrateAppendResult, StackError> {
         use source_diagnostics::{Outcome, Stage};
-        let source_selected = source.is_some();
+        let source_selected = request.source_content.is_some();
         source_diagnostics::mark(source_selected, Stage::Input, Outcome::Enter);
         source_diagnostics::observed(source_selected, Stage::Input, request.validate())?;
         source_diagnostics::mark(source_selected, Stage::Request, Outcome::Enter);
         let path = format!("/v1/scopes/{}/events", encode_path_segment(&request.scope));
-        let mut outgoing = self
+        let outgoing = self
             .request(reqwest::Method::POST, &path, &request.tenant_scope)
             .await
             .map_err(|error| {
@@ -1033,16 +1035,6 @@ impl TrellisServiceClient {
             })?
             .header(IDEMPOTENCY_KEY_HEADER, request.idempotency_key.as_str())
             .json(&request.body());
-        if let Some((key, human)) = source {
-            let mut human = reqwest::header::HeaderValue::from_str(human).map_err(|_| {
-                source_diagnostics::mark(source_selected, Stage::Request, Outcome::Refused);
-                StackError::bad_request("completion caller authorization invalid")
-            })?;
-            human.set_sensitive(true);
-            outgoing = outgoing
-                .header(source_content::SOURCE_CONTENT_PREPARATION_KEY_HEADER, key)
-                .header(COMPLETION_CALLER_AUTHORIZATION_HEADER, human);
-        }
         source_diagnostics::mark(source_selected, Stage::Request, Outcome::ReturnedOk);
         source_diagnostics::mark(source_selected, Stage::Send, Outcome::Enter);
         let response = outgoing.send().await.map_err(|error| {
@@ -1112,51 +1104,7 @@ impl SubstrateClient for TrellisServiceClient {
         &self,
         request: SubstrateAppendRequest,
     ) -> Result<SubstrateAppendResult, StackError> {
-        self.send_event_append(request, None).await
-    }
-
-    async fn append_source_content_event(
-        &self,
-        request: SubstrateAppendRequest,
-        preparation_key: &str,
-        person_authorization: &str,
-    ) -> Result<SubstrateAppendResult, StackError> {
-        use source_diagnostics::{Outcome, Stage};
-        source_diagnostics::mark(true, Stage::Input, Outcome::Enter);
-        source_diagnostics::observed(
-            true,
-            Stage::Input,
-            crate::validate_completion_caller_authorization(person_authorization),
-        )?;
-        if preparation_key.is_empty()
-            || preparation_key.len() > 256
-            || !preparation_key.is_ascii()
-            || preparation_key
-                .bytes()
-                .any(|b| b.is_ascii_whitespace() || b.is_ascii_control())
-        {
-            source_diagnostics::mark(true, Stage::Input, Outcome::Refused);
-            return Err(StackError::bad_request(
-                "Source preparation locator invalid",
-            ));
-        }
-        // Bound all asynchronous Source append work, including token acquisition
-        // before HTTP and response/receipt handling after HTTP. This timer cannot
-        // preempt synchronous validation or other work that does not yield.
-        match tokio::time::timeout(
-            self.config.timeout,
-            self.send_event_append(request, Some((preparation_key, person_authorization))),
-        )
-        .await
-        {
-            Ok(result) => result,
-            Err(_) => {
-                source_diagnostics::send_timeout(true);
-                Err(StackError::unavailable(
-                    "trellis Source-content append transport failed",
-                ))
-            }
-        }
+        self.send_event_append(request).await
     }
 
     async fn head_bundle(
@@ -1433,14 +1381,8 @@ mod tests {
 
     mod current_token_tests {
         include!("current_token_tests.rs");
-        mod source_budget_tests {
-            include!("source_budget_tests.rs");
-        }
         mod source_diagnostic_http_tests {
             include!("source_diagnostic_http_tests.rs");
-        }
-        mod source_content_http_tests {
-            include!("source_content_http_tests.rs");
         }
     }
 

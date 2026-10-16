@@ -15,6 +15,12 @@ fn reconciliation_builder_shares_canonical_payload_identity_and_key_byte_bound()
         first,
         AppendReconciliationRequest::from_append_body(&body).unwrap()
     );
+    // The Source-content claim is not part of the retained replay identity.
+    body.source_content = Some(crate::source_content::tests::claim());
+    assert_eq!(
+        first,
+        AppendReconciliationRequest::from_append_body(&body).unwrap()
+    );
     body.idempotency_key = "é".repeat(33);
     assert!(AppendReconciliationRequest::from_append_body(&body).is_err());
 }

@@ -120,7 +120,7 @@ impl<'a> AppendCoordinator<'a> {
             Stage::SelectedNative,
             self.state.native_closeout.validate(
                 CloseoutSource::Append(source.body),
-                &source.selection.identity,
+                &source.admitted.claim.selection.identity,
             ),
         )?;
         diag::observed(
@@ -174,7 +174,7 @@ impl<'a> AppendCoordinator<'a> {
         }
 
         diag::mark(selected, Stage::Prefix, Outcome::Enter);
-        let mut scope_guard = self.state.scope_locks.lock(command.scope.as_bytes()).await;
+        let scope_guard = self.state.scope_locks.lock(command.scope.as_bytes()).await;
         let mut events = diag::observed(
             selected,
             Stage::Prefix,
@@ -206,16 +206,7 @@ impl<'a> AppendCoordinator<'a> {
                     .map_err(committed_unpublished)?;
             // Source-content refusals (changed authority, selection or recipients) are the caller's
             // current answer, not a fault after the commit, so they stay client errors.
-            let (new_guard, protected) = self
-                .prefetch_source_content(
-                    &command.scope,
-                    &events,
-                    &replay_events,
-                    source,
-                    scope_guard,
-                )
-                .await?;
-            scope_guard = new_guard;
+            let protected = self.admit_source_content(&command.scope, &replay_events, source)?;
             diag::mark(selected, Stage::ZipPublish, Outcome::Enter);
             let bundle = diag::observed(
                 selected,
@@ -294,10 +285,7 @@ impl<'a> AppendCoordinator<'a> {
         diag::mark(selected, Stage::Core, Outcome::ReturnedOk);
         let mut planned = events.clone();
         planned.push(stored.clone());
-        let (new_guard, protected) = self
-            .prefetch_source_content(&command.scope, &events, &planned, source, scope_guard)
-            .await?;
-        scope_guard = new_guard;
+        let protected = self.admit_source_content(&command.scope, &planned, source)?;
         let unit = AppendUnitOfWork::new(stored, command.compute_context);
         let outcome = self
             .commit_unit(
@@ -313,20 +301,14 @@ impl<'a> AppendCoordinator<'a> {
         outcome
     }
 
-    async fn prefetch_source_content(
+    /// Admits the held Source batch against the planned prefix. Pure CPU under the scope
+    /// lock: the object was read and hash-checked in `admit_append` (ADR 0163 5.4).
+    fn admit_source_content(
         &self,
         scope: &str,
-        expected_current: &[StoredEvent],
         planned: &[StoredEvent],
         source: Option<&crate::source_content::SourceContentAppendContext<'_>>,
-        guard: tokio::sync::OwnedMutexGuard<()>,
-    ) -> Result<
-        (
-            tokio::sync::OwnedMutexGuard<()>,
-            Option<crate::source_content::ProtectedSourceMembersReady>,
-        ),
-        StackError,
-    > {
+    ) -> Result<Option<crate::source_content::ProtectedSourceMembersReady>, StackError> {
         let Some(source) = source else {
             if let Some(composition) = &self.state.source_content {
                 composition.require_publication_purpose(
@@ -336,7 +318,7 @@ impl<'a> AppendCoordinator<'a> {
                     self.state.native_closeout.as_ref(),
                 )?;
             }
-            return Ok((guard, None));
+            return Ok(None);
         };
         diag::mark(true, Stage::FinalGuard, Outcome::Enter);
         let composition = self
@@ -360,70 +342,19 @@ impl<'a> AppendCoordinator<'a> {
             ));
         }
         diag::mark(true, Stage::FinalGuard, Outcome::ReturnedOk);
-        // The externally awaited read cannot hold Trellis's serialization lock.
-        drop(guard);
-        diag::mark(true, Stage::CurrentAuthority, Outcome::Enter);
-        let before = diag::observed(
-            true,
-            Stage::CurrentAuthority,
-            source.current_permission(self.state, scope).await,
-        )?;
-        let caller = crate::CompletionCallerContext::from_headers(source.headers)?;
-        let request = crate::SourceContentRequest {
-            selection: source.selection,
-            scope: scope.as_bytes(),
-            events: planned,
-            caller: &caller,
-        };
         diag::mark(true, Stage::ContentRead, Outcome::Enter);
         let protected = diag::observed(
             true,
             Stage::ContentRead,
-            crate::source_content::read_admitted(
-                composition,
+            crate::source_content::admit_batch(
+                scope.as_bytes(),
+                planned,
+                &source.admitted.claim.selection,
+                &source.admitted.batch,
+                composition.batch_checker.as_ref(),
                 self.state.native_closeout.as_ref(),
-                &request,
-            )
-            .await,
+            ),
         )?;
-        diag::mark(true, Stage::CurrentAuthority, Outcome::Enter);
-        if diag::observed(
-            true,
-            Stage::CurrentAuthority,
-            source.current_permission(self.state, scope).await,
-        )? != before
-        {
-            diag::mark(true, Stage::CurrentAuthority, Outcome::Refused);
-            return Err(StackError::conflict(
-                "Source append authority changed during content read",
-            ));
-        }
-        diag::mark(true, Stage::Reacquire, Outcome::Enter);
-        let guard = self.state.scope_locks.lock(scope.as_bytes()).await;
-        diag::mark(true, Stage::Reacquire, Outcome::ReturnedOk);
-        // Match maintained completion admission: authority may change while waiting
-        // for the scope lock. This bounded authentication/grant check may consult
-        // OIDC, but no owning selection or content callback runs under the lock.
-        diag::mark(true, Stage::CurrentAuthority, Outcome::Enter);
-        let current = diag::observed(
-            true,
-            Stage::CurrentAuthority,
-            source.current_permission(self.state, scope).await,
-        )?;
-        diag::mark(true, Stage::ExactPrefix, Outcome::Enter);
-        if current != before
-            || diag::observed(
-                true,
-                Stage::ExactPrefix,
-                self.state.repository.list_scope(scope.as_bytes()).await,
-            )? != expected_current
-        {
-            diag::mark(true, Stage::ExactPrefix, Outcome::Refused);
-            return Err(StackError::conflict(
-                "Source append authority or exact prefix changed",
-            ));
-        }
-        diag::mark(true, Stage::FinalGuard, Outcome::Enter);
         diag::observed(
             true,
             Stage::FinalGuard,
@@ -434,7 +365,7 @@ impl<'a> AppendCoordinator<'a> {
                 self.state.native_closeout.as_ref(),
             ),
         )?;
-        Ok((guard, Some(protected)))
+        Ok(Some(protected))
     }
 
     async fn commit_unit(

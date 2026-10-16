@@ -132,13 +132,6 @@ impl StartupCompletion {
         .map_err(|_| invalid())?;
         let client_configuration =
             TrellisServiceClientConfig::new(profile.origin, profile.tenant_headers.into_config());
-        let client_configuration = if profile.source_content.is_some() {
-            client_configuration.with_timeout(
-                trellis_service_client::source_content::DEFAULT_SOURCE_CONTENT_CALLBACK_TIMEOUT,
-            )
-        } else {
-            client_configuration
-        };
         let client = TrellisServiceClient::new(client_configuration)
             .map_err(|_| invalid())?
             .with_token_provider(Arc::new(provider))
@@ -202,8 +195,6 @@ impl StartupCompletion {
             (Some(configuration), Some(guard)) => Some(configuration.compose(
                 guard,
                 &adapters.source_content,
-                client.clone(),
-                tenant.clone(),
                 if operator.is_some() {
                     Some(trusted)
                 } else {
@@ -602,6 +593,7 @@ mod tests {
         private(&directory.path().join("owning.json"), &owning);
         let mut selected = profile();
         selected["sourceContent"] = json!({"pins":{"providerSelectionHash":vec![1u8;32],"nativePolicyHash":vec![2u8;32],"recipientPolicyHash":vec![3u8;32]},
+            "publisher":"wos-machine","objectStore":{"bucket":"b","endpoint":null,"region":null,"prefix":"p"},
             "nativeHostSelectionFile":"owning.json","nativeHostSelectionSha256":stack_common_hash::sha256_prefixed(&owning)});
         private(&service, &serde_json::to_vec(&selected).unwrap());
         let loaded = StartupCompletion::load_selected(

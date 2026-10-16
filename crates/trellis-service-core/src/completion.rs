@@ -746,6 +746,7 @@ async fn authorize(
         payload: serde_json::to_value(request).map_err(|_| invalid())?,
         compute_context: crate::append::default_public_compute_context(),
         client_attestation: None,
+        source_content: None,
     };
     body.validate()?;
     let append_permit = crate::auth::authorize_action(

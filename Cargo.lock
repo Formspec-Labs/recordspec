@@ -4046,6 +4046,7 @@ dependencies = [
  "integrity-seam",
  "integrity-verify",
  "jsonwebtoken",
+ "object_store",
  "serde",
  "serde_json",
  "sha2",

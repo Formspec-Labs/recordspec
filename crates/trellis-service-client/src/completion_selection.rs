@@ -319,6 +319,35 @@ impl CompletionSelectionResponse {
 }
 
 impl crate::TrellisServiceClient {
+    pub(crate) fn validate_current_completion_origin(&self) -> Result<(), StackError> {
+        let origin = reqwest::Url::parse(&self.config.endpoint).map_err(|_| {
+            StackError::unavailable("completion selection origin or provider is invalid")
+        })?;
+        let local = origin
+            .host_str()
+            .and_then(|host| {
+                host.trim_matches(['[', ']'])
+                    .parse::<std::net::IpAddr>()
+                    .ok()
+            })
+            .is_some_and(|ip| ip.is_loopback());
+        if self.token_provider.is_none()
+            || !origin.username().is_empty()
+            || origin.password().is_some()
+            || origin.path() != "/"
+            || origin.query().is_some()
+            || origin.fragment().is_some()
+            || !(origin.scheme() == "https" || (origin.scheme() == "http" && local))
+        {
+            return Err(StackError::unavailable(
+                "completion selection origin or provider is invalid",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl crate::TrellisServiceClient {
     /// Requests selection from the fixed configured owning-service origin.
     ///
     /// Requires the independently configured current machine provider. The person

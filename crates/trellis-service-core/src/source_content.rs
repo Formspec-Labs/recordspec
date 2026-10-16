@@ -2,127 +2,150 @@
 // Rust guideline compliant 2026-02-21
 
 use std::collections::BTreeSet;
-use std::io::{self, Write};
 
 use async_trait::async_trait;
-use integrity_cbor::{Value, decode_cbor_value, domain_separated_sha256, sha256_bytes};
+use integrity_cbor::{decode_cbor_value, domain_separated_sha256, sha256_bytes};
 use serde::Deserialize;
 use stack_common_error::StackError;
 use trellis_export_writer::ExportEvidenceMember;
 use trellis_server_ports::{CloseoutRule, CloseoutSource, NativeCloseout};
 use trellis_types::StoredEvent;
 
-use crate::CompletionCallerContext;
+use std::sync::Arc;
+use std::time::Duration;
+
+use stack_common_http::tenant::TenantScope;
+use trellis_server_ports::{ArtifactRef, S3CompatibleArtifactStore, source_content_object_key};
 
 // Match the owner's encoded auxiliary/read and final archive budget.
-const MAX_BATCH_BYTES: usize = 16 * 1024 * 1024;
-const MAX_RECORDS: usize = 32;
+const MAX_BATCH_BYTES: usize =
+    trellis_service_client::source_content::MAX_PREPARED_SOURCE_CONTENT_BYTES;
+use trellis_service_client::source_content::MAX_SOURCE_CONTENT_RECORDS as MAX_RECORDS;
+
+/// Whole-append budget the object read draws from (ADR 0163 5.1: "the append's remaining budget").
+pub(crate) const APPEND_BUDGET: Duration = Duration::from_secs(120);
 
 #[doc(inline)]
 pub use trellis_service_client::source_content::{
-    PreparedSourceContentBatchV1, PreparedSourceContentRecordV1, SourceContentIdentityV1,
-    SourceContentOccurrenceV1, SourceContentRecordPins, SourceContentRoleV1,
-    SourceContentSelection,
+    PreparedSourceContentBatchV1, PreparedSourceContentRecordV1, SourceContentClaim,
+    SourceContentIdentityV1, SourceContentOccurrenceV1, SourceContentRecordPins,
+    SourceContentRoleV1, SourceContentSelection,
 };
 
-/// Request-local qualified context for final Source publication.
-pub struct SourceContentRequest<'a> {
-    pub selection: &'a SourceContentSelection,
-    pub scope: &'a [u8],
-    pub events: &'a [StoredEvent],
-    pub caller: &'a CompletionCallerContext<'a>,
+/// Stable refusal codes of ADR 0163 section 8. The code is the problem `title`; the
+/// HTTP status and `INFRA` code follow the kind of refusal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SourceContentRefusal {
+    /// The object cannot be read inside the budget: absent, store down or slow (503).
+    ObjectMissing,
+    /// The stored bytes are not the bytes the claim names (422).
+    HashMismatch,
+    /// The claim or object disagrees with the ledger or with itself (409).
+    ClaimDiffers,
+    /// The append principal is not the configured WOS Source publisher (403).
+    PublisherMismatch,
+    /// The claim's provider pins are not the configured pins (409).
+    PinsDiffer,
 }
 
-impl std::fmt::Debug for SourceContentRequest<'_> {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("SourceContentRequest")
-            .field("selection", &self.selection)
-            .field("scope", &self.scope)
-            .field("event_count", &self.events.len())
-            .field("caller", &self.caller)
-            .finish()
+impl SourceContentRefusal {
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::ObjectMissing => "source-content.object-missing",
+            Self::HashMismatch => "source-content.hash-mismatch",
+            Self::ClaimDiffers => "source-content.claim-differs",
+            Self::PublisherMismatch => "source-content.publisher-mismatch",
+            Self::PinsDiffer => "source-content.pins-differ",
+        }
+    }
+
+    pub(crate) fn error(self) -> StackError {
+        let (infra, status) = match self {
+            Self::ObjectMissing => ("INFRA-5030", http::StatusCode::SERVICE_UNAVAILABLE),
+            Self::HashMismatch => ("INFRA-4220", http::StatusCode::UNPROCESSABLE_ENTITY),
+            Self::ClaimDiffers | Self::PinsDiffer => ("INFRA-4090", http::StatusCode::CONFLICT),
+            Self::PublisherMismatch => ("INFRA-4030", http::StatusCode::FORBIDDEN),
+        };
+        StackError::new(
+            stack_common_error::ErrorCode::new(infra).expect("static error code is valid"),
+            status,
+            self.code(),
+        )
     }
 }
 
-/// Resolves a locator using current configured owner authority and native facts.
-pub struct SourceContentSelectionRequest<'a> {
-    pub preparation_key: &'a str,
-    pub scope: &'a str,
-    pub prefix: &'a [StoredEvent],
-    pub append_body: &'a trellis_service_client::SubstrateAppendBody,
-    pub caller: &'a CompletionCallerContext<'a>,
-    pub tenant: &'a stack_common_http::tenant::TenantScope,
-}
-impl std::fmt::Debug for SourceContentSelectionRequest<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SourceContentSelectionRequest")
-            .field("preparation_key", &self.preparation_key)
-            .field("scope", &self.scope)
-            .field("prefix_count", &self.prefix.len())
-            .field("caller", &self.caller)
-            .finish()
-    }
+/// A claim whose object was read, hash-checked and decoded during admission.
+#[derive(Debug)]
+pub(crate) struct AdmittedSourceContent {
+    pub(crate) claim: SourceContentClaim,
+    pub(crate) batch: PreparedSourceContentBatchV1,
 }
 
-/// Resolves independent selection before reading the exact committed first bytes.
+/// Reads the prepared batch object the claim names, from Trellis's own derived key.
 #[async_trait]
-pub trait SourceContentSelectionResolver: Send + Sync {
-    /// Qualifies locator, actual native body/prefix and independently configured pins.
+pub trait SourceContentObjectReader: Send + Sync {
+    /// Reads `claim`'s object under `tenant`, verifies its SHA-256 and decodes it.
+    ///
+    /// The key is derived from `tenant` and the claim's preparation key only; nothing in
+    /// the claim can name another object. The read is bounded by the claimed size and `budget`.
     ///
     /// # Errors
-    /// Refuses foreign, changed, revoked, or unavailable owning selections.
-    async fn select(
-        &self,
-        request: &SourceContentSelectionRequest<'_>,
-    ) -> Result<SourceContentSelection, StackError>;
-}
-
-// The header is only a locator. It supplies neither provider URLs nor authority.
-pub(crate) const PREPARATION_KEY_HEADER: &str =
-    trellis_service_client::source_content::SOURCE_CONTENT_PREPARATION_KEY_HEADER;
-
-pub(crate) fn preparation_key(headers: &axum::http::HeaderMap) -> Result<Option<&str>, StackError> {
-    let mut values = headers.get_all(PREPARATION_KEY_HEADER).iter();
-    let first = values.next();
-    if values.next().is_some() {
-        return Err(StackError::bad_request(
-            "Source preparation locator is ambiguous",
-        ));
-    }
-    first
-        .map(|value| {
-            let text = value
-                .to_str()
-                .map_err(|_| StackError::bad_request("Source preparation locator invalid"))?;
-            if text.is_empty()
-                || text.len() > 256
-                || !text.is_ascii()
-                || text
-                    .bytes()
-                    .any(|b| b.is_ascii_whitespace() || b.is_ascii_control())
-            {
-                return Err(StackError::bad_request(
-                    "Source preparation locator invalid",
-                ));
-            }
-            Ok(text)
-        })
-        .transpose()
-}
-
-/// Reads existing committed content with current owning read authority.
-#[async_trait]
-pub trait SourceContentContributor: Send + Sync {
-    /// Reads the exact retained batch; preparation and writes are forbidden here.
-    ///
-    /// # Errors
-    /// Refuses unavailable, foreign, revoked, incomplete, or changed selections.
+    /// `source-content.object-missing` when the read fails or times out,
+    /// `source-content.hash-mismatch` when the bytes differ from the claim's hash,
+    /// `source-content.claim-differs` when they do not decode to the batch the key names.
     async fn read(
         &self,
-        request: &SourceContentRequest<'_>,
+        tenant: &TenantScope,
+        claim: &SourceContentClaim,
+        budget: Duration,
     ) -> Result<PreparedSourceContentBatchV1, StackError>;
+}
 
+/// [`SourceContentObjectReader`] over the artifact store with this cell's read credential.
+pub struct StoreSourceContentReader {
+    store: S3CompatibleArtifactStore,
+}
+
+impl StoreSourceContentReader {
+    #[must_use]
+    pub fn new(store: S3CompatibleArtifactStore) -> Self {
+        Self { store }
+    }
+}
+
+#[async_trait]
+impl SourceContentObjectReader for StoreSourceContentReader {
+    async fn read(
+        &self,
+        tenant: &TenantScope,
+        claim: &SourceContentClaim,
+        budget: Duration,
+    ) -> Result<PreparedSourceContentBatchV1, StackError> {
+        let object: ArtifactRef = self.store.artifact_ref_for_key(&source_content_object_key(
+            tenant,
+            &claim.selection.preparation_key,
+        )?)?;
+        let max = usize::try_from(claim.size)
+            .map_err(|_| StackError::bad_request("Source content claim invalid"))?;
+        let bytes = self
+            .store
+            .get_bounded(&object, max, budget)
+            .await
+            .map_err(|_| SourceContentRefusal::ObjectMissing.error())?;
+        if hex::encode(sha256_bytes(&bytes)) != claim.hash {
+            return Err(SourceContentRefusal::HashMismatch.error());
+        }
+        let batch: PreparedSourceContentBatchV1 = serde_json::from_slice(&bytes)
+            .map_err(|_| SourceContentRefusal::ClaimDiffers.error())?;
+        if source_content_batch_key(&batch)? != claim.selection.preparation_key {
+            return Err(SourceContentRefusal::ClaimDiffers.error());
+        }
+        Ok(batch)
+    }
+}
+
+/// The owner's parsers cross-check a batch against its selection.
+pub trait SourceContentBatchChecker: Send + Sync {
     /// Cross-checks the returned catalogs and every record with the owner's parsers.
     ///
     /// # Errors
@@ -179,34 +202,32 @@ pub trait StructuralSourcePublicationVerifier: Send + Sync {
     fn verify(&self, zip: &[u8]) -> Result<(), StackError>;
 }
 
-/// Explicit selected read and verification dependencies, without reader write authority.
+/// Configured Source-content admission and verification dependencies.
 #[derive(Clone)]
 pub struct SourceContentComposition {
-    pub selection_resolver: std::sync::Arc<dyn SourceContentSelectionResolver>,
-    pub contributor: std::sync::Arc<dyn SourceContentContributor>,
-    pub final_prefix_guard: std::sync::Arc<dyn SourceContentFinalPrefixGuard>,
-    pub structural: std::sync::Arc<dyn StructuralSourcePublicationVerifier>,
+    pub object_reader: Arc<dyn SourceContentObjectReader>,
+    pub batch_checker: Arc<dyn SourceContentBatchChecker>,
+    pub final_prefix_guard: Arc<dyn SourceContentFinalPrefixGuard>,
+    pub structural: Arc<dyn StructuralSourcePublicationVerifier>,
+    pub pins: ConfiguredSourceContentPins,
+    /// The only principal allowed to append a Source closeout (the WOS machine).
+    pub publisher: String,
 }
 
 /// Startup inputs the owner adapter needs to build its Source-content ports.
 pub struct SourceContentInputs {
-    pub client: trellis_service_client::TrellisServiceClient,
-    pub tenant: stack_common_http::tenant::TenantScope,
-    pub pins: ConfiguredSourceContentPins,
     pub authorities: Option<integrity_verify::trellis::CertificateAuthorityRegistry>,
-    pub closeout: std::sync::Arc<dyn NativeCloseout>,
 }
 
-/// The owner adapter's ports; the server adds its own final-prefix guard.
+/// The owner adapter's ports; the server adds its own reader, guard and pins.
 pub struct SourceContentParts {
-    pub selection_resolver: std::sync::Arc<dyn SourceContentSelectionResolver>,
-    pub contributor: std::sync::Arc<dyn SourceContentContributor>,
-    pub structural: std::sync::Arc<dyn StructuralSourcePublicationVerifier>,
+    pub batch_checker: Arc<dyn SourceContentBatchChecker>,
+    pub structural: Arc<dyn StructuralSourcePublicationVerifier>,
 }
 
 /// Builds the owner adapter's Source-content ports from startup inputs.
 pub type SourceContentFactory =
-    std::sync::Arc<dyn Fn(SourceContentInputs) -> SourceContentParts + Send + Sync>;
+    Arc<dyn Fn(SourceContentInputs) -> SourceContentParts + Send + Sync>;
 impl std::fmt::Debug for SourceContentComposition {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("SourceContentComposition { selected read and verification ports }")
@@ -253,45 +274,8 @@ pub(crate) struct ProtectedSourceMembersReady {
     members: Vec<ExportEvidenceMember>,
 }
 
-struct EncodedBound(usize);
-impl Write for EncodedBound {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.0 = self
-            .0
-            .checked_add(bytes.len())
-            .filter(|n| *n <= MAX_BATCH_BYTES)
-            .ok_or_else(|| io::Error::other("Source batch encoded size limit"))?;
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
 fn refused() -> StackError {
-    StackError::conflict("committed Source content selection differs")
-}
-
-pub(crate) async fn read_admitted(
-    composition: &SourceContentComposition,
-    closeout: &dyn NativeCloseout,
-    request: &SourceContentRequest<'_>,
-) -> Result<ProtectedSourceMembersReady, StackError> {
-    if request.caller.person_authorization().is_none() {
-        return Err(StackError::unavailable(
-            "qualified Source content caller is absent",
-        ));
-    }
-    validate_prefix(request.scope, request.events, request.selection, closeout)?;
-    let batch = composition.contributor.read(request).await?;
-    admit_batch(
-        request.scope,
-        request.events,
-        request.selection,
-        batch,
-        composition.contributor.as_ref(),
-        closeout,
-    )
+    SourceContentRefusal::ClaimDiffers.error()
 }
 
 fn validate_prefix(
@@ -348,18 +332,18 @@ pub fn source_content_batch_key(
     stack_common_hash::canonical_json_hash(&value).map_err(|_| refused())
 }
 
-fn admit_batch(
+/// Pure admission of the held batch against the planned ledger prefix; no I/O.
+pub(crate) fn admit_batch(
     scope: &[u8],
     events: &[StoredEvent],
     selected: &SourceContentSelection,
-    batch: PreparedSourceContentBatchV1,
-    contributor: &dyn SourceContentContributor,
+    batch: &PreparedSourceContentBatchV1,
+    checker: &dyn SourceContentBatchChecker,
     closeout: &dyn NativeCloseout,
 ) -> Result<ProtectedSourceMembersReady, StackError> {
     validate_prefix(scope, events, selected, closeout)?;
-    serde_json::to_writer(&mut EncodedBound(0), &batch).map_err(|_| refused())?;
     if batch.version != 1
-        || source_content_batch_key(&batch)? != selected.preparation_key
+        || source_content_batch_key(batch)? != selected.preparation_key
         || batch.selection != selected.identity
         || batch.records.is_empty()
         || batch.records.len() > MAX_RECORDS
@@ -369,7 +353,10 @@ fn admit_batch(
     {
         return Err(refused());
     }
-    contributor.check_batch(selected, &batch)?;
+    // The owner's parser names its own reason; the stable code is the claim's.
+    checker
+        .check_batch(selected, batch)
+        .map_err(|error| refused().with_detail(error.title().to_owned()))?;
     let mut records = BTreeSet::new();
     let mut members = Vec::with_capacity(batch.records.len() + 2);
     for (record, pins) in batch.records.iter().zip(&selected.record_pins) {
@@ -410,10 +397,10 @@ fn admit_batch(
         });
     }
     members.push(ExportEvidenceMember::IntakeHandoffs {
-        bytes: batch.intake_handoffs,
+        bytes: batch.intake_handoffs.clone(),
     });
     members.push(ExportEvidenceMember::SignatureAffirmations {
-        bytes: batch.source_signed_tasks,
+        bytes: batch.source_signed_tasks.clone(),
     });
     Ok(ProtectedSourceMembersReady {
         selection: selected.clone(),
@@ -545,6 +532,7 @@ pub(crate) fn archive_bound(zip: &[u8]) -> Result<(), StackError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use integrity_cbor::Value;
     fn catalog(values: Vec<Value>) -> Vec<u8> {
         integrity_cbor::encode_canonical_cbor_value(&Value::Array(values)).unwrap()
     }
@@ -570,40 +558,54 @@ mod tests {
             .is_err()
         );
     }
-    #[test]
-    fn encoded_bound_counts_json_byte_array_overhead() {
-        let mut bounded = EncodedBound(MAX_BATCH_BYTES - 2);
-        assert!(serde_json::to_writer(&mut bounded, &vec![255u8; 1]).is_err());
-    }
 }
 
-/// Borrowed current append authority for one selected closeout attempt.
-///
-/// Selection comes from the owning service's qualified reply. Credentials remain
-/// request-local and never enter commands, catalogs, state, or retained rows.
+/// The admitted closeout append: its body and the claim whose object admission already read.
 pub(crate) struct SourceContentAppendContext<'a> {
-    pub(crate) selection: &'a SourceContentSelection,
-    pub(crate) headers: &'a axum::http::HeaderMap,
-    pub(crate) tenant: &'a stack_common_http::tenant::TenantScope,
+    pub(crate) admitted: &'a AdmittedSourceContent,
     pub(crate) body: &'a trellis_service_client::SubstrateAppendBody,
 }
 
-impl SourceContentAppendContext<'_> {
-    pub(crate) async fn current_permission(
+impl SourceContentComposition {
+    /// Admission steps 1-3 of ADR 0163 5.4 for a body that carries a claim: the append
+    /// principal, the configured pins, the closeout body, then the object read.
+    ///
+    /// Runs before the HTTP replay decision, so every refusal here is current and unrecorded.
+    pub(crate) async fn admit_claim(
         &self,
-        state: &crate::TrellisServerState,
-        scope: &str,
-    ) -> Result<trellis_server_ports::AuthorizedScope, StackError> {
-        let identity = state.authenticate(self.headers).await?;
-        crate::auth::authorize_action(
-            state,
-            &identity,
-            self.tenant,
-            scope,
-            trellis_server_ports::ScopeAction::Append,
-            Some(self.body),
-        )
-        .await
+        closeout: &dyn NativeCloseout,
+        tenant: &TenantScope,
+        principal: &str,
+        body: &trellis_service_client::SubstrateAppendBody,
+        started: std::time::Instant,
+    ) -> Result<AdmittedSourceContent, StackError> {
+        let claim = body
+            .source_content
+            .as_ref()
+            .ok_or_else(|| StackError::bad_request("Source content claim absent"))?;
+        if principal != self.publisher {
+            return Err(SourceContentRefusal::PublisherMismatch.error());
+        }
+        let identity = &claim.selection.identity;
+        if identity.provider_selection_hash != self.pins.provider_selection_hash
+            || identity.native_policy_hash != self.pins.native_policy_hash
+            || identity.recipient_policy_hash != self.pins.recipient_policy_hash
+        {
+            return Err(SourceContentRefusal::PinsDiffer.error());
+        }
+        closeout.validate(CloseoutSource::Append(body), identity)?;
+        let batch = self
+            .object_reader
+            .read(
+                tenant,
+                claim,
+                APPEND_BUDGET.saturating_sub(started.elapsed()),
+            )
+            .await?;
+        Ok(AdmittedSourceContent {
+            claim: claim.clone(),
+            batch,
+        })
     }
 }
 
