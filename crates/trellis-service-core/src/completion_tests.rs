@@ -1081,12 +1081,13 @@ async fn completion_native_record_binder_requires_exact_one_to_one_census() {
         payload: payload.clone(),
     };
     assert_eq!(
-        completion_record_bindings(&events, &[exact], &vocabulary).unwrap(),
+        completion_record_bindings(&events, "case_completion", &[exact], &vocabulary).unwrap(),
         vec![*events[0].canonical_event_hash().unwrap()]
     );
-    assert!(completion_record_bindings(&events, &[], &vocabulary).is_err());
+    assert!(completion_record_bindings(&events, "case_completion", &[], &vocabulary).is_err());
     assert!(completion_record_bindings(
         &events,
+        "case_completion",
         &[CompletionRecord {
             event_type,
             payload: b"{}".to_vec()
@@ -1098,5 +1099,5 @@ async fn completion_native_record_binder_requires_exact_one_to_one_census() {
         event_type: vocabulary[0].clone(),
         payload: payload.clone(),
     };
-    assert!(completion_record_bindings(&events, &[duplicate(), duplicate()], &vocabulary).is_err());
+    assert!(completion_record_bindings(&events, "case_completion", &[duplicate(), duplicate()], &vocabulary).is_err());
 }

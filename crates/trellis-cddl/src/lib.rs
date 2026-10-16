@@ -3,8 +3,12 @@
 
 #![forbid(unsafe_code)]
 
+mod completion_selection;
 mod external_attachment;
 #[doc(inline)]
+pub use completion_selection::{
+    CompletionRecord, completion_record_bindings, validate_completion_prefix,
+};
 pub use external_attachment::{
     ATTACHMENT_BINDING_EXTENSION, EXTERNAL_ATTACHMENT_PROFILE, PROFILE_EXTENSION,
     ParsedExternalAttachment, ParsedExternalAttachmentWrap, parse_external_attachment_profile,

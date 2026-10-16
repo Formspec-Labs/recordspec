@@ -41,7 +41,6 @@ mod append;
 mod artifacts;
 mod auth;
 mod completion;
-mod completion_selection;
 mod reconciliation;
 mod source_content;
 mod source_content_startup;

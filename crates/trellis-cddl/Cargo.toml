@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 ciborium = "0.2"
+integrity-cbor = { path = "../../../integrity-stack/crates/integrity-cbor" }
 trellis-types = { path = "../trellis-types" }
 
 [dev-dependencies]
