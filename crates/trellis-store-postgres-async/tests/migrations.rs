@@ -1,7 +1,7 @@
 mod support;
 
 use stack_common_postgres::testing::EphemeralCluster;
-use trellis_store_postgres_async::{MigrationError, run_migrations};
+use trellis_store_postgres_async::{MigrationError, declared_migration_versions, run_migrations};
 
 #[tokio::test]
 async fn migrations_apply_idempotently() {
@@ -16,7 +16,7 @@ async fn migrations_apply_idempotently() {
             .fetch_all(&pool)
             .await
             .unwrap();
-    assert_eq!(versions, vec![1, 2, 3, 4, 5]);
+    assert_eq!(versions, declared_migration_versions());
 }
 
 #[tokio::test]

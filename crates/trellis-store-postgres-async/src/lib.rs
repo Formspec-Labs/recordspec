@@ -22,6 +22,6 @@ pub use bundle_publications::{
     reserve_bundle_publication,
 };
 #[doc(inline)]
-pub use migrations::{MigrationError, run_migrations};
+pub use migrations::{MigrationError, declared_migration_versions, run_migrations};
 #[doc(inline)]
 pub use pool::{PoolError, build_pool};

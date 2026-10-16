@@ -98,6 +98,18 @@ CREATE TABLE trellis_external_attachments (
     },
 ];
 
+/// Versions declared by this binary, in application order.
+///
+/// Tests derive the expected ledger from this so adding a migration cannot
+/// leave a hand-written version list behind.
+#[must_use]
+pub fn declared_migration_versions() -> Vec<i32> {
+    MIGRATIONS
+        .iter()
+        .map(|migration| migration.version)
+        .collect()
+}
+
 /// Error returned by async migration setup.
 #[derive(Debug, thiserror::Error)]
 pub enum MigrationError {
