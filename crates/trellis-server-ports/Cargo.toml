@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 async-trait = "0.1"
+integrity-cbor = { path = "../../../integrity-stack/crates/integrity-cbor" }
 object_store = { version = "0.11", default-features = false, features = ["aws"] }
 stack-common-auth = { path = "../../../stack-common/crates/stack-common-auth" }
 stack-common-http = { path = "../../../stack-common/crates/stack-common-http" }
@@ -14,7 +15,9 @@ stack-common-error = { path = "../../../stack-common/crates/stack-common-error",
 serde_json = "1"
 stack-common-object-store = { path = "../../../stack-common/crates/stack-common-object-store" }
 stack-common-postgres = { path = "../../../stack-common/crates/stack-common-postgres", default-features = false, features = ["pool"] }
+trellis-cddl = { path = "../trellis-cddl" }
 trellis-core = { path = "../trellis-core" }
+trellis-export-writer = { path = "../trellis-export-writer" }
 trellis-service-client = { path = "../trellis-service-client" }
 trellis-types = { path = "../trellis-types" }
 

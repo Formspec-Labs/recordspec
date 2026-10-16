@@ -9,9 +9,12 @@
 //! consumers (receipts, event-type catalog projection, dispatch) consult.
 //!
 //! Generic Trellis service modules must not depend on this crate; only the
-//! Trellis composition root wires it in.
+//! Trellis composition root wires it in (enforced by `deny.toml`).
 
 #![forbid(unsafe_code)]
+
+mod native_closeout;
+pub use native_closeout::WosNativeCloseout;
 
 use async_trait::async_trait;
 use stack_common_error::StackError;

@@ -30,6 +30,11 @@ mod attachment;
 pub use attachment::{
     AdmittedDescriptor, AttachmentBinding, AttachmentLimits, ExternalAttachmentAdmission,
 };
+pub mod event_codec;
+mod export_profile;
+pub use export_profile::{ExportProfile, ExportProfileMembers, SigningFact};
+mod native_closeout;
+pub use native_closeout::NativeCloseout;
 
 /// Ledger scope bytes.
 pub type ScopeId = Vec<u8>;
