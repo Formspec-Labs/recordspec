@@ -7,7 +7,7 @@ use integrity_cbor::{
     Value, decode_cbor_value, domain_separated_sha256, map_lookup_bytes, map_lookup_map,
     map_lookup_optional_value, map_lookup_text, sha256_bytes,
 };
-use stack_common_error::StackError;
+use stack_common_error::{ErrorCode, StackError};
 use stack_common_http::tenant::TenantScope;
 use trellis_export_writer::TrellisTimestamp;
 use trellis_server_ports::{ArtifactRef, ScopeAction};
@@ -199,6 +199,14 @@ pub async fn seal_completion(
     let selected = SelectedCompletion::try_from(&request.selection)?;
     validate_selection(&selected)?;
     let principal = authorize(state, headers, tenant, scope, request).await?;
+    // Before anything is reserved or signed: only the configured publisher may seal.
+    if state.completion_publisher.as_deref() != Some(principal.as_str()) {
+        return Err(StackError::new(
+            ErrorCode::new("INFRA-4030").expect("static error code is valid"),
+            axum::http::StatusCode::FORBIDDEN,
+            "completion seal requires the configured publisher",
+        ));
+    }
     state
         .reserve_completion_request(tenant, &principal, scope, request)
         .await?;

@@ -88,6 +88,8 @@ impl AuthenticatedRequest {
 #[derive(Clone)]
 pub struct TrellisServerState {
     pub(crate) completion: Option<Arc<dyn crate::CompletionSigner>>,
+    /// The one principal that may seal and publish Source content (the WOS machine).
+    pub(crate) completion_publisher: Option<String>,
     pub(crate) external_attachment_recipients:
         Option<Arc<dyn crate::ExternalAttachmentRecipientSelector>>,
     pub(crate) external_attachment_admission:
@@ -135,6 +137,7 @@ impl TrellisServerState {
     ) -> Self {
         Self {
             completion: None,
+            completion_publisher: None,
             external_attachment_recipients: None,
             external_attachment_admission: adapters.external_attachment_admission,
             external_attachment_random: Arc::new(integrity_seam::OsSecureRandom),
@@ -158,10 +161,16 @@ impl TrellisServerState {
         }
     }
 
-    /// Selects the separate operator signer that enables the completion seal.
+    /// Selects the separate operator signer that enables the completion seal, and the only
+    /// principal allowed to ask for it: the signer attests whatever selection that caller sent.
     #[must_use]
-    pub fn with_completion(mut self, signer: Arc<dyn crate::CompletionSigner>) -> Self {
+    pub fn with_completion(
+        mut self,
+        signer: Arc<dyn crate::CompletionSigner>,
+        publisher: impl Into<String>,
+    ) -> Self {
         self.completion = Some(signer);
+        self.completion_publisher = Some(publisher.into());
         self
     }
 

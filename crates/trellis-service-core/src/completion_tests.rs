@@ -58,6 +58,8 @@ fn fixture_key(label: i64) -> [u8; 32] {
         .try_into()
         .unwrap()
 }
+/// The principal `MappedAuthorizer` admits and the configured publisher the seal pins.
+const PUBLISHER: &str = "internal-operator";
 struct Signer {
     calls: AtomicUsize,
     corrupt: bool,
@@ -82,7 +84,8 @@ async fn fixture() -> (
     stack_common_http::tenant::TenantScope,
     CompletionRequest,
 ) {
-    let state = test_state().with_scope_authorizer(Arc::new(MappedAuthorizer));
+    let state = test_state().with_scope_authorizer(Arc::new(MappedAuthorizer))
+    .with_completion(Arc::new(Signer { calls: AtomicUsize::new(0), corrupt: false }), PUBLISHER);
     let body: SubstrateAppendBody = serde_json::from_slice(&signature_affirmation_append_body(
         "completion-signing-evidence",
     ))
@@ -145,6 +148,7 @@ async fn completion_postgres_reopened_state_retries_exact_retained_bytes() {
         crate::test_adapters::adapters(),
     )
     .with_scope_authorizer(Arc::new(MappedAuthorizer))
+    .with_completion(Arc::new(Signer { calls: AtomicUsize::new(0), corrupt: false }), PUBLISHER)
     .with_artifact_store(artifacts.clone())
     .with_bundle_index(Arc::new(crate::event_repository::PostgresBundleIndex::new(
         pool.clone(),
@@ -191,6 +195,7 @@ async fn completion_postgres_reopened_state_retries_exact_retained_bytes() {
         crate::test_adapters::adapters(),
     )
     .with_scope_authorizer(Arc::new(MappedAuthorizer))
+    .with_completion(Arc::new(Signer { calls: AtomicUsize::new(0), corrupt: false }), PUBLISHER)
     .with_artifact_store(artifacts.clone())
     .with_bundle_index(Arc::new(crate::event_repository::PostgresBundleIndex::new(
         reopened_pool.clone(),
@@ -248,6 +253,7 @@ async fn completion_postgres_reopened_state_retries_exact_retained_bytes() {
         crate::test_adapters::adapters(),
     )
     .with_scope_authorizer(Arc::new(MappedAuthorizer))
+    .with_completion(Arc::new(Signer { calls: AtomicUsize::new(0), corrupt: false }), PUBLISHER)
     .with_artifact_store(artifacts.clone())
     .with_bundle_index(Arc::new(crate::event_repository::PostgresBundleIndex::new(
         reopened_pool.clone(),
@@ -661,6 +667,7 @@ async fn completion_retry_with_a_different_selection_is_a_changed_retry() {
         crate::test_adapters::adapters(),
     )
     .with_scope_authorizer(Arc::new(MappedAuthorizer))
+    .with_completion(Arc::new(Signer { calls: AtomicUsize::new(0), corrupt: false }), PUBLISHER)
     .with_artifact_store(state.artifact_store.clone())
     .with_bundle_index(state.bundles.clone());
     for edit in 0..4 {
@@ -1009,10 +1016,13 @@ fn completion_post(request: &CompletionRequest) -> axum::http::Request<axum::bod
 async fn completion_route_commits_one_event_and_ignores_the_retired_person_header() {
     use tower::ServiceExt;
     let (state, _, _, request) = fixture().await;
-    let state = state.with_completion(Arc::new(Signer {
-        calls: AtomicUsize::new(0),
-        corrupt: false,
-    }));
+    let state = state.with_completion(
+        Arc::new(Signer {
+            calls: AtomicUsize::new(0),
+            corrupt: false,
+        }),
+        PUBLISHER,
+    );
     let app = router(state.clone()).unwrap();
     let mut with_header = completion_post(&request);
     with_header.headers_mut().insert(
@@ -1041,7 +1051,8 @@ async fn completion_route_commits_one_event_and_ignores_the_retired_person_heade
 #[tokio::test]
 async fn completion_route_without_a_signer_is_unavailable() {
     use tower::ServiceExt;
-    let (state, _, _, request) = fixture().await;
+    let (_, _, _, request) = fixture().await;
+    let state = test_state().with_scope_authorizer(Arc::new(MappedAuthorizer));
     let response = router(state)
         .unwrap()
         .oneshot(completion_post(&request))
@@ -1080,10 +1091,13 @@ async fn completion_route_body_limit_admits_the_worst_case_selection_and_no_more
     request.validate().unwrap();
     let size = serde_json::to_vec(&request).unwrap().len();
     assert!(size < 1024 * 1024 && size > 800 * 1024, "{size}");
-    let app = router(state.with_completion(Arc::new(Signer {
-        calls: AtomicUsize::new(0),
-        corrupt: false,
-    })))
+    let app = router(state.with_completion(
+        Arc::new(Signer {
+            calls: AtomicUsize::new(0),
+            corrupt: false,
+        }),
+        PUBLISHER,
+    ))
     .unwrap();
     // Admitted by the limit; refused later because the head is not this ledger's.
     let response = app.clone().oneshot(completion_post(&request)).await.unwrap();
@@ -1214,4 +1228,29 @@ async fn completion_reconcile_route_takes_the_certificate_id_identity() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn only_the_configured_publisher_may_seal() {
+    let (state, headers, tenant, request) = fixture().await;
+    let signer = Signer {
+        calls: AtomicUsize::new(0),
+        corrupt: false,
+    };
+    let other = state.clone().with_completion(
+        Arc::new(Signer {
+            calls: AtomicUsize::new(0),
+            corrupt: false,
+        }),
+        "another-principal",
+    );
+    let error = seal_completion(&other, &headers, &tenant, "case_completion", &request, &signer)
+        .await
+        .unwrap_err();
+    assert_eq!(error.status(), axum::http::StatusCode::FORBIDDEN);
+    assert_eq!(signer.calls.load(Ordering::SeqCst), 0, "nothing was signed");
+    // Refused before anything was reserved, so the real publisher still seals the same request.
+    seal_completion(&state, &headers, &tenant, "case_completion", &request, &signer)
+        .await
+        .unwrap();
 }

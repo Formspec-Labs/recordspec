@@ -54,7 +54,9 @@ impl StartupCompletion {
             Some(path) => serde_json::from_slice(&read_private(path)?).map_err(|_| invalid())?,
             None => Vec::new(),
         };
-        if (operator.is_some() && rows.is_empty()) || rows.len() > 8 {
+        // The operator key signs whatever selection the caller sent, so the seal needs the one
+        // configured publisher, which the Source-content file names.
+        if (operator.is_some() && (rows.is_empty() || source.is_none())) || rows.len() > 8 {
             return Err(invalid());
         }
         let mut authorities = BTreeSet::new();
@@ -124,7 +126,11 @@ impl StartupCompletion {
 
     pub(crate) fn apply(self, state: TrellisServerState) -> TrellisServerState {
         let state = match self.signer {
-            Some(signer) => state.with_completion(Arc::new(signer)),
+            Some(signer) => match self.source_content.as_ref() {
+                // `load` refused an operator file without the Source-content file naming it.
+                Some(source) => state.with_completion(Arc::new(signer), source.publisher.clone()),
+                None => state,
+            },
             None => state,
         };
         match self.source_content {
@@ -193,6 +199,24 @@ mod tests {
     fn adapters() -> ServerAdapters {
         crate::test_adapters::adapters()
     }
+    /// A valid Source-content file naming the publisher the seal pins.
+    fn source_file(directory: &Path) -> PathBuf {
+        let source = directory.join("source.json");
+        let owning = serde_json::to_vec(&json!({"closeoutRecord":{"recordKind":serde_json::to_value(wos_events::ProvenanceKind::OnEntry).unwrap(),"event":"neutral.closeout","tests":[]}})).unwrap();
+        private(&directory.join("owning.json"), &owning);
+        private(
+            &source,
+            &serde_json::to_vec(&json!({
+                "pins":{"providerSelectionHash":vec![1u8;32],"nativePolicyHash":vec![2u8;32],"recipientPolicyHash":vec![3u8;32]},
+                "publisher":"wos-machine",
+                "objectStore":{"bucket":"b","endpoint":null,"region":null,"prefix":"p"},
+                "nativeHostSelectionFile":"owning.json",
+                "nativeHostSelectionSha256":stack_common_hash::sha256_prefixed(&owning)
+            }))
+            .unwrap(),
+        );
+        source
+    }
 
     #[test]
     fn completion_startup_loads_only_explicit_valid_operator_keys() {
@@ -208,19 +232,23 @@ mod tests {
             .public_key;
         private(&directory.path().join("key.cose"), &key);
         let row = json!({"authority":"test-operator", "authorityClass":"prior", "publicKey":public, "validFrom":[0,0], "validUntil":[20000,0], "coseKeyFile":"key.cose"});
+        let source = source_file(directory.path());
         let loads = |rows: Value| {
             private(&operator, &serde_json::to_vec(&rows).unwrap());
-            StartupCompletion::load(None, Some(&operator), &adapters())
+            StartupCompletion::load(Some(&source), Some(&operator), &adapters())
         };
         assert!(loads(json!([row.clone()])).unwrap().signer.is_some());
         assert!(loads(json!([row.clone(), row.clone()])).is_err());
         let mut mismatch = row.clone();
         mismatch["publicKey"] = json!(vec![0u8; 32]);
         assert!(loads(json!([mismatch])).is_err());
-        let mut interval = row;
+        let mut interval = row.clone();
         interval["validUntil"] = json!([0, 0]);
         assert!(loads(json!([interval])).is_err());
         assert!(loads(json!([])).is_err());
+        // The operator key signs whatever the caller selected: no publisher, no seal.
+        private(&operator, &serde_json::to_vec(&json!([row])).unwrap());
+        assert!(StartupCompletion::load(None, Some(&operator), &adapters()).is_err());
     }
 
     #[test]
