@@ -909,11 +909,16 @@ fn event_type_registry_cbor(
         let map_entry = text_map(vec![
             (
                 "privacy_class",
-                Value::Text(if entry.event_type == trellis_admission_formspec::accepted_attachment::ACCEPTED_ATTACHMENT_EVENT {
-                    "privateAttachment"
-                } else {
-                    "publicMetadata"
-                }.to_string()),
+                Value::Text(
+                    if entry.privacy_class
+                        == trellis_server_ports::EventPrivacyClass::PrivateAttachment
+                    {
+                        "privateAttachment"
+                    } else {
+                        "publicMetadata"
+                    }
+                    .to_string(),
+                ),
             ),
             (
                 "binding_family",

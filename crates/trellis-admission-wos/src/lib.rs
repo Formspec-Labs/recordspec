@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use stack_common_error::StackError;
 use trellis_server_ports::{
     AdmissionEvent, AdmittedEvent, BudgetReviewRecord, DirectSubmitPolicy, EventAdmissionPolicy,
-    EventFamilyId, EventTypeSpec, SchemaRef,
+    EventFamilyId, EventPrivacyClass, EventTypeSpec, SchemaRef,
 };
 use trellis_types::ArtifactType;
 use wos_events::{
@@ -82,6 +82,7 @@ pub fn wos_event_type_specs() -> Vec<EventTypeSpec> {
                     .expect("wos-events schema refs are URI-like by construction"),
                 artifact_type: ArtifactType::Event,
                 direct_submit: DirectSubmitPolicy::ServiceOnly,
+                privacy_class: EventPrivacyClass::PublicMetadata,
                 budget_review: BudgetReviewRecord {
                     reviewer: "wos-events::WOS_CANONICAL_EVENT_LITERALS".to_string(),
                     plaintext_fields: vec!["eventType".to_string()],

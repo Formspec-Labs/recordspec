@@ -25,7 +25,7 @@ integrity-cbor = { path = "../../../integrity-stack/crates/integrity-cbor", feat
 integrity-cose = { path = "../../../integrity-stack/crates/integrity-cose" }
 integrity-verify = { path = "../../../integrity-stack/crates/integrity-verify" }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] }
 sqlx = { version = "0.8", features = ["postgres", "runtime-tokio-rustls"] }
 sha2 = "0.10"
 stack-common-auth = { path = "../../../stack-common/crates/stack-common-auth", features = ["oidc"] }

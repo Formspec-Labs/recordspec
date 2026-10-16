@@ -98,6 +98,8 @@ pub struct TrellisServerState {
     )>,
     pub(crate) external_attachment_recipients:
         Option<Arc<dyn crate::ExternalAttachmentRecipientSelector>>,
+    pub(crate) external_attachment_admission:
+        Arc<dyn trellis_server_ports::ExternalAttachmentAdmission>,
     pub(crate) external_attachment_random: Arc<dyn integrity_seam::SecureRandom>,
     pub(crate) repository: Arc<dyn EventRepository>,
     pub(crate) artifact_store: Arc<dyn ArtifactStore<Error = StackError>>,
@@ -141,6 +143,8 @@ impl TrellisServerState {
         Self {
             completion: None,
             external_attachment_recipients: None,
+            external_attachment_admission:
+                crate::composition::default_external_attachment_admission(),
             external_attachment_random: Arc::new(integrity_seam::OsSecureRandom),
             repository,
             artifact_store: Arc::new(InMemoryArtifactStore::default()),

@@ -96,7 +96,7 @@ impl crate::ExternalAttachmentRecipientSelector for Recipients {
     async fn select(
         &self,
         _permit: &AuthorizedScope,
-        _descriptor: &trellis_admission_formspec::accepted_attachment::AcceptedAttachmentDescriptor,
+        _descriptor: &dyn trellis_server_ports::AdmittedAttachment,
     ) -> Result<Vec<crate::ExternalAttachmentRecipient>, StackError> {
         // Public X25519 key derived from fixture seed [17;32]; not production key material.
         let mut public: [u8; 32] =

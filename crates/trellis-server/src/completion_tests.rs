@@ -137,7 +137,6 @@ async fn fixture() -> (
 }
 
 #[tokio::test]
-#[ignore = "Disposable TLS PostgreSQL qualification; run under the shared native supervisor"]
 async fn completion_postgres_reopened_state_retries_exact_retained_bytes() {
     let (template, headers, tenant, request) = fixture().await;
     let cluster = stack_common_postgres::testing::EphemeralCluster::start_required();

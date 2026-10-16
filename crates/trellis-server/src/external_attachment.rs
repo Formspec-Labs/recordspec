@@ -8,12 +8,10 @@ use integrity_cbor::{
 };
 use stack_common_error::StackError;
 use stack_common_http::tenant::TenantScope;
-use trellis_admission_formspec::accepted_attachment::{
-    ACCEPTED_ATTACHMENT_EVENT, ATTACHMENT_BINDING_EXTENSION, PreparedAcceptedAttachment,
-};
+use trellis_cddl::ATTACHMENT_BINDING_EXTENSION;
 use trellis_core::external_attachment::ExternalAttachmentAppend;
 use trellis_export_writer::ExportEvidenceMember;
-use trellis_server_ports::{ComputeSensitivity, ScopeAction};
+use trellis_server_ports::{ComputeSensitivity, PreparedAttachment, ScopeAction};
 use trellis_service_client::{SubstrateAppendBody, SubstrateAppendResult};
 use trellis_types::{ArtifactType, StoredEvent};
 
@@ -43,7 +41,7 @@ pub async fn append_prepared_external_attachment(
     headers: &HeaderMap,
     tenant: &TenantScope,
     authorization: &SubstrateAppendBody,
-    prepared: &PreparedAcceptedAttachment<'_>,
+    prepared: &dyn PreparedAttachment,
     mut input: ExternalAttachmentAppend,
     recipient_policy: &ExternalAttachmentRecipientPolicy,
 ) -> Result<SubstrateAppendResult, StackError> {
@@ -53,14 +51,13 @@ pub async fn append_prepared_external_attachment(
     let identity = state.authenticate(headers).await?;
     authorization.validate()?;
     crate::http::validate_idempotency_header(headers, &authorization.idempotency_key)?;
-    if authorization.event_type != ACCEPTED_ATTACHMENT_EVENT
-        || input.header.event_type != ACCEPTED_ATTACHMENT_EVENT
+    let event_type = prepared.event_type();
+    if authorization.event_type != event_type
+        || input.header.event_type != event_type
         || authorization.client_attestation.is_some()
         || authorization.idempotency_key.as_bytes() != input.idempotency_key
         || input.header.classification != "x-trellis-service/private-attachment"
-        || serde_json::to_value(prepared.descriptor())
-            .map_err(|_| StackError::internal("descriptor encoding failed"))?
-            != authorization.payload
+        || prepared.payload()? != authorization.payload
         || input.scope != prepared.scope()
         || input.expected_head != prepared.expected_head()
         || input.preparation_identity != prepared.replay_digest()
@@ -139,7 +136,7 @@ pub async fn append_prepared_external_attachment(
         retained.event(),
         prior,
         ArtifactType::Event,
-        ACCEPTED_ATTACHMENT_EVENT,
+        event_type,
         &bundle,
         true,
     )
