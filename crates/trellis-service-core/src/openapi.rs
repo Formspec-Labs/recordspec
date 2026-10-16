@@ -141,10 +141,12 @@ mod tests {
     /// `cargo run -q -p trellis-server --bin emit_openapi > specs/trellis-server.openapi.json`.
     #[test]
     fn committed_openapi_document_equals_the_generated_one() {
-        let committed = include_str!("../../../specs/trellis-server.openapi.json");
-        let generated = TrellisServerOpenApi::openapi().to_pretty_json().unwrap();
+        // Compare parsed values, not bytes: feature unification may reorder serialization.
+        let committed: serde_json::Value =
+            serde_json::from_str(include_str!("../../../specs/trellis-server.openapi.json"))
+                .unwrap();
         assert!(
-            committed.trim_end() == generated.trim_end(),
+            committed == serde_json::to_value(TrellisServerOpenApi::openapi()).unwrap(),
             "specs/trellis-server.openapi.json is stale; regenerate it with the command in this test's doc comment"
         );
     }
