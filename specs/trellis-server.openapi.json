@@ -292,7 +292,7 @@
             }
           },
           "400": {
-            "description": "Closed trigger refused"
+            "description": "Closed trigger or selection refused"
           },
           "401": {
             "description": "Current authentication refused"
@@ -640,15 +640,23 @@
       },
       "AppendReconciliationRequest": {
         "type": "object",
-        "description": "Exact key, event type and canonical payload hash to reconcile.\n\nActor, compute disclosure and the original HTTP body digest are not retained replay identity.",
+        "description": "Exact retained identity to reconcile: an event type and idempotency key, plus either the\ncanonical payload hash or, for the completion seal, the certificate id.\n\nThe seal's payload is the HTML Trellis renders, so its caller cannot compute a content\nhash: a [`COMPLETION_EVENT`] lookup names the `certificateId` instead, and every other event\ntype names the `contentHash`. Exactly one of the two is present. Actor, compute disclosure,\nthe Source-content claim and the original HTTP body digest are not retained replay identity.",
         "required": [
           "eventType",
-          "idempotencyKey",
-          "contentHash"
+          "idempotencyKey"
         ],
         "properties": {
+          "certificateId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "contentHash": {
-            "type": "array",
+            "type": [
+              "array",
+              "null"
+            ],
             "items": {
               "type": "integer",
               "format": "int32",
@@ -680,14 +688,41 @@
           }
         }
       },
+      "CompletionAttestor": {
+        "type": "object",
+        "description": "Public operator authority the owner requires to attest the certificate.",
+        "required": [
+          "authority",
+          "authorityClass",
+          "publicKey"
+        ],
+        "properties": {
+          "authority": {
+            "type": "string"
+          },
+          "authorityClass": {
+            "type": "string"
+          },
+          "publicKey": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        },
+        "additionalProperties": false
+      },
       "CompletionRequest": {
         "type": "object",
-        "description": "Manual trigger for an exact prefix. Trusted completion facts come from the product.",
+        "description": "Seal trigger for an exact prefix, carrying the product's selection.",
         "required": [
           "idempotencyKey",
           "certificateId",
           "expectedHead",
-          "signingEvents"
+          "signingEvents",
+          "selection"
         ],
         "properties": {
           "certificateId": {
@@ -704,6 +739,9 @@
           "idempotencyKey": {
             "type": "string"
           },
+          "selection": {
+            "$ref": "#/components/schemas/CompletionSelection"
+          },
           "signingEvents": {
             "type": "array",
             "items": {
@@ -713,6 +751,95 @@
                 "format": "int32",
                 "minimum": 0
               }
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "CompletionSelection": {
+        "type": "object",
+        "description": "Owning facts from one current, complete, consistently read case snapshot.\n\nThe product computes this under its own permission checks and sends it in the seal\nbody. `workflow_status` describes processing disposition and does not imply approval.",
+        "required": [
+          "selectionRevision",
+          "caseRef",
+          "workflowRef",
+          "workflowStatus",
+          "completedAt",
+          "signerLabels",
+          "requiredAttestors"
+        ],
+        "properties": {
+          "caseRef": {
+            "type": "string"
+          },
+          "completedAt": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "description": "`[unix seconds, subsecond nanoseconds]`."
+          },
+          "impactLevel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requiredAttestors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CompletionAttestor"
+            }
+          },
+          "selectionRevision": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "description": "Hash of the owning service's case snapshot; informational for Trellis."
+          },
+          "signerLabels": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CompletionSignerLabel"
+            }
+          },
+          "workflowRef": {
+            "type": "string"
+          },
+          "workflowStatus": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CompletionSignerLabel": {
+        "type": "object",
+        "description": "Disclosure label for one retained signing event.",
+        "required": [
+          "signingEvent",
+          "displayName"
+        ],
+        "properties": {
+          "displayName": {
+            "type": "string"
+          },
+          "displayRole": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "signingEvent": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
             }
           }
         },
@@ -862,6 +989,298 @@
           "verificationFailed"
         ]
       },
+      "SourceContentClaim": {
+        "type": "object",
+        "description": "What WOS asserts about the batch object it wrote, built once at record build.\n\nEvery append attempt sends it unchanged in `SubstrateAppendBody::source_content`. The\nobject's address is not part of it: Trellis derives the key from its own tenant scope and\n`selection.preparation_key`. `hash` guards the stored bytes and `preparation_key` their meaning.",
+        "required": [
+          "hash",
+          "size",
+          "selection"
+        ],
+        "properties": {
+          "hash": {
+            "type": "string",
+            "description": "Lowercase hex SHA-256 of the exact stored object bytes."
+          },
+          "selection": {
+            "$ref": "#/components/schemas/SourceContentSelection"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Byte length of the stored object; bounds the read.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "SourceContentIdentityV1": {
+        "type": "object",
+        "description": "Exact native and independently selected provider identity for a committed batch.",
+        "required": [
+          "caseLedgerId",
+          "processId",
+          "nativePrefixDigest",
+          "reservedCloseoutRecordId",
+          "reservedNativeCloseoutRecordSha256",
+          "providerSelectionHash",
+          "nativePolicyHash",
+          "recipientPolicyHash",
+          "recipientSetSha256",
+          "workflowUrl",
+          "workflowVersion",
+          "tenantId",
+          "workspaceId",
+          "environmentId",
+          "cellId",
+          "sourceId",
+          "serviceBindingId"
+        ],
+        "properties": {
+          "caseLedgerId": {
+            "type": "string"
+          },
+          "cellId": {
+            "type": "string"
+          },
+          "environmentId": {
+            "type": "string"
+          },
+          "nativePolicyHash": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          "nativePrefixDigest": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          "processId": {
+            "type": "string"
+          },
+          "providerSelectionHash": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          "recipientPolicyHash": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          "recipientSetSha256": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "description": "WOS-derived digest of the canonical sorted actual recipient IDs and public keys.\n\nThis required identity field distinguishes key rotation under the same\nrecipient policy. Trellis carries and compares the owning digest; it\nneither computes the recipient-set algorithm nor grants read authority."
+          },
+          "reservedCloseoutRecordId": {
+            "type": "string"
+          },
+          "reservedNativeCloseoutRecordSha256": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          "serviceBindingId": {
+            "type": "string"
+          },
+          "sourceId": {
+            "type": "string"
+          },
+          "tenantId": {
+            "type": "string"
+          },
+          "workflowUrl": {
+            "type": "string"
+          },
+          "workflowVersion": {
+            "type": "string"
+          },
+          "workspaceId": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SourceContentRecordPins": {
+        "type": "object",
+        "description": "Independently admitted public identity for one protected record.",
+        "required": [
+          "role",
+          "occurrenceEventHash",
+          "sourcePublicationHash",
+          "publicSigningPolicyHash",
+          "evaluationRegistrationHash",
+          "recordSha256",
+          "memberContentHash",
+          "locatorSha256"
+        ],
+        "properties": {
+          "evaluationRegistrationHash": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          "locatorSha256": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          "memberContentHash": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          "occurrenceEventHash": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          "publicSigningPolicyHash": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          "recordSha256": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          "responseId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "role": {
+            "$ref": "#/components/schemas/SourceContentRoleV1"
+          },
+          "sourcePublicationHash": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "SourceContentRoleV1": {
+        "type": "string",
+        "description": "Owning content family within the retained batch.",
+        "enum": [
+          "originalResponse",
+          "correctionResponse",
+          "taskProofPackage"
+        ]
+      },
+      "SourceContentSelection": {
+        "type": "object",
+        "description": "Independently admitted selection, never decoded from the returned batch.",
+        "required": [
+          "preparationKey",
+          "identity",
+          "nativePrefixEventHashes",
+          "orderedPhotoEventHashes",
+          "intakeCatalogSha256",
+          "taskCatalogSha256",
+          "recordPins"
+        ],
+        "properties": {
+          "identity": {
+            "$ref": "#/components/schemas/SourceContentIdentityV1"
+          },
+          "intakeCatalogSha256": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          "nativePrefixEventHashes": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              }
+            },
+            "description": "Complete ordered authenticated prefix before selected photos and closeout.\nIncludes independently bound WOS and Source events in their original order.\n`identity.native_prefix_digest` binds this entire prefix; the selected photo\nevents and reserved closeout follow it."
+          },
+          "orderedPhotoEventHashes": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              }
+            }
+          },
+          "preparationKey": {
+            "type": "string"
+          },
+          "recordPins": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SourceContentRecordPins"
+            },
+            "description": "Exact public inventory admitted by the existing owning selection."
+          },
+          "taskCatalogSha256": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        },
+        "additionalProperties": false
+      },
       "SubstrateAppendBody": {
         "type": "object",
         "description": "JSON body for `POST /v1/scopes/{scope}/events`.",
@@ -930,7 +1349,18 @@
           "idempotencyKey": {
             "type": "string"
           },
-          "payload": {}
+          "payload": {},
+          "sourceContent": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SourceContentClaim",
+                "description": "Claim about the prepared Source-content batch object (ADR 0163): the object's hash and\nsize and the selection WOS derived. Trellis reads the object from its own derived key,\nso no address or credential travels. The reconcile lookup identity ignores it."
+              }
+            ]
+          }
         }
       },
       "SubstrateAppendResult": {
