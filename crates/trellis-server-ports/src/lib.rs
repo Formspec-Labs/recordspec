@@ -35,6 +35,8 @@ mod export_profile;
 pub use export_profile::{ExportProfile, ExportProfileMembers, ExportVerdict, SigningFact};
 mod native_closeout;
 pub use native_closeout::{CloseoutRule, CloseoutSource, NativeCloseout};
+mod source_content_object;
+pub use source_content_object::source_content_object_key;
 
 /// Ledger scope bytes.
 pub type ScopeId = Vec<u8>;
@@ -301,6 +303,33 @@ impl S3CompatibleArtifactStore {
         }
     }
 
+    /// The locator this store assigns to `key`: the one derivation writers and readers share.
+    ///
+    /// # Errors
+    /// Refuses an empty key.
+    pub fn artifact_ref_for_key(&self, key: &str) -> Result<ArtifactRef, StackError> {
+        Ok(ArtifactRef::new(
+            self.uri_for_location(&self.location_for_key(key)?),
+        ))
+    }
+
+    /// Resolves a locator to an object location, refusing other buckets and prefixes.
+    fn selected_location(&self, artifact_ref: &ArtifactRef) -> Result<String, StackError> {
+        let location =
+            stack_common_object_store::parse_s3_object_uri(&self.config, &artifact_ref.uri)?;
+        let prefix = self.prefix.trim_matches('/');
+        if !prefix.is_empty()
+            && !location
+                .strip_prefix(prefix)
+                .is_some_and(|rest| rest.starts_with('/'))
+        {
+            return Err(StackError::bad_request(
+                "artifact lies outside selected prefix",
+            ));
+        }
+        Ok(location)
+    }
+
     /// Reads an exact artifact within byte and total elapsed-time limits.
     ///
     /// Uses the existing configured store and refuses objects outside its prefix.
@@ -317,18 +346,7 @@ impl S3CompatibleArtifactStore {
         max_bytes: usize,
         read_budget: std::time::Duration,
     ) -> Result<Vec<u8>, StackError> {
-        let location =
-            stack_common_object_store::parse_s3_object_uri(&self.config, &artifact_ref.uri)?;
-        let prefix = self.prefix.trim_matches('/');
-        if !prefix.is_empty()
-            && !location
-                .strip_prefix(prefix)
-                .is_some_and(|rest| rest.starts_with('/'))
-        {
-            return Err(StackError::bad_request(
-                "artifact lies outside selected prefix",
-            ));
-        }
+        let location = self.selected_location(artifact_ref)?;
         let store = self.object_store()?;
         stack_common_object_store::read_object_bytes_bounded(
             store.as_ref(),
@@ -337,6 +355,22 @@ impl S3CompatibleArtifactStore {
             read_budget,
         )
         .await
+    }
+
+    /// Deletes an artifact; an already absent object is success.
+    ///
+    /// # Errors
+    /// Refuses wrong bucket/prefix and backend failures other than absence.
+    pub async fn delete(&self, artifact_ref: &ArtifactRef) -> Result<(), StackError> {
+        let location = self.selected_location(artifact_ref)?;
+        match self
+            .object_store()?
+            .delete(&object_store::path::Path::from(location.as_str()))
+            .await
+        {
+            Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
+            Err(_) => Err(StackError::unavailable("artifact delete failed")),
+        }
     }
 
     fn location_for_key(&self, key: &str) -> Result<String, StackError> {
@@ -1159,6 +1193,30 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn delete_removes_the_object_and_treats_absence_as_success() {
+        let store = S3CompatibleArtifactStore::from_object_store_for_test(
+            S3ObjectConfig {
+                bucket: "proof-bundles".into(),
+                endpoint: None,
+                region: None,
+            },
+            "pfx/",
+            Arc::new(object_store::memory::InMemory::new()),
+        );
+        let artifact = store.put("case/a", b"bytes").await.unwrap();
+        assert_eq!(
+            store.artifact_ref_for_key("case/a").unwrap().uri,
+            artifact.uri
+        );
+        store.delete(&artifact).await.unwrap();
+        assert_eq!(store.get(&artifact).await.unwrap(), None);
+        store.delete(&artifact).await.unwrap();
+        for uri in ["s3://other/pfx/a", "s3://proof-bundles/pfx-other/a"] {
+            assert!(store.delete(&ArtifactRef::new(uri)).await.is_err());
+        }
     }
 
     #[tokio::test]
