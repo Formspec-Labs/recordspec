@@ -664,7 +664,9 @@ fn invalid() -> StackError {
     StackError::conflict("completion certificate evidence invalid")
 }
 pub(crate) fn event_type_spec() -> trellis_server_ports::EventTypeSpec {
-    use trellis_server_ports::{BudgetReviewRecord, DirectSubmitPolicy, EventFamilyId, SchemaRef};
+    use trellis_server_ports::{
+        BudgetReviewRecord, DirectSubmitPolicy, EventFamilyId, EventPrivacyClass, SchemaRef,
+    };
     trellis_server_ports::EventTypeSpec {
         event_type: COMPLETION_EVENT.into(),
         event_family: EventFamilyId::new("trellis.certificate-of-completion")
@@ -675,6 +677,7 @@ pub(crate) fn event_type_spec() -> trellis_server_ports::EventTypeSpec {
         .expect("literal schema reference"),
         artifact_type: trellis_types::ArtifactType::Event,
         direct_submit: DirectSubmitPolicy::ServiceOnly,
+        privacy_class: EventPrivacyClass::PublicMetadata,
         budget_review: BudgetReviewRecord {
             reviewer: "trellis-server::completion::v1".into(),
             considered: true,

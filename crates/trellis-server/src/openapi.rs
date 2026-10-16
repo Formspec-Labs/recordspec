@@ -41,7 +41,6 @@ use utoipa::{OpenApi, ToSchema};
         trellis_service_client::CompletionRequest,
         crate::external_transport::WireRequest,
         crate::external_transport::WireActor,
-        trellis_admission_formspec::accepted_attachment::AcceptedAttachmentDescriptor,
         ClientAttestation,
         ComputeContext,
         ComputeSensitivity,

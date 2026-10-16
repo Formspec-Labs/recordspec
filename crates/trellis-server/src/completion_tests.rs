@@ -137,11 +137,10 @@ async fn fixture() -> (
 }
 
 #[tokio::test]
-#[ignore = "Disposable TLS PostgreSQL qualification; run under the shared native supervisor"]
 async fn completion_postgres_reopened_state_retries_exact_retained_bytes() {
     let (template, headers, tenant, request) = fixture().await;
-    let cluster = postgres_support::TestCluster::start_without_migrations();
-    let pool = cluster.tls_pool(2).await;
+    let cluster = stack_common_postgres::testing::EphemeralCluster::start_required();
+    let pool = postgres_support::tls_pool(&cluster, 2).await;
     trellis_store_postgres_async::run_migrations(&pool)
         .await
         .unwrap();
@@ -200,7 +199,7 @@ async fn completion_postgres_reopened_state_retries_exact_retained_bytes() {
     drop(state);
     pool.close().await;
 
-    let reopened_pool = cluster.tls_pool(2).await;
+    let reopened_pool = postgres_support::tls_pool(&cluster, 2).await;
     let reopened = TrellisServerState::new(
         Arc::new(PostgresEventRepository::new(reopened_pool.clone())),
         test_signing_key(),

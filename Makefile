@@ -8,7 +8,10 @@ SCRIPTS_DIR = scripts
 VECTORS_DIR = fixtures/vectors
 
 # Basic configuration
-PYTHON ?= $(if $(wildcard $(CURDIR)/$(TRELLIS_PY_DIR)/.venv/bin/python),$(CURDIR)/$(TRELLIS_PY_DIR)/.venv/bin/python,python3)
+# Python checks run through uv against trellis-py's lockfile (a locked, isolated
+# environment, so a global interpreter's pytest plugins never load). Override
+# PYTHON to use another interpreter.
+PYTHON ?= uv run --frozen --extra dev --project $(CURDIR)/$(TRELLIS_PY_DIR) python
 CARGO = cargo
 PYTEST = $(PYTHON) -m pytest
 
@@ -47,8 +50,8 @@ test-rust:
 test-python:
 	@echo "Running Python conformance tests..."
 	cd $(TRELLIS_PY_DIR) && PYTHONPATH=src $(PYTHON) -m trellis_py.conformance --vectors ../$(VECTORS_DIR)
-	@echo "Checking for Python unit tests..."
-	-cd $(TRELLIS_PY_DIR) && $(PYTEST) -q
+	@echo "Running Python unit tests..."
+	cd $(TRELLIS_PY_DIR) && $(PYTEST) -q
 
 test-scripts:
 	@echo "Running script tests..."

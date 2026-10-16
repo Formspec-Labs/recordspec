@@ -184,7 +184,7 @@ impl crate::ExternalAttachmentRecipientSelector for ScopedAttachmentRecipients {
     async fn select(
         &self,
         permit: &AuthorizedScope,
-        _descriptor: &trellis_admission_formspec::accepted_attachment::AcceptedAttachmentDescriptor,
+        _descriptor: &serde_json::Value,
     ) -> Result<Vec<crate::ExternalAttachmentRecipient>, StackError> {
         if permit.action != ScopeAction::Append || permit.tenant_scope != self.tenant_scope {
             return Err(attachment_denied());

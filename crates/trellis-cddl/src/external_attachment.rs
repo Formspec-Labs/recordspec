@@ -9,7 +9,8 @@ use trellis_types::{Value, encode_canonical_cbor_value, idempotency_key_length_i
 pub const PROFILE_EXTENSION: &str = "trellis.payload-protection-profile.v1";
 /// Exact suite 1 external attachment protection profile identifier.
 pub const EXTERNAL_ATTACHMENT_PROFILE: &str = "trellis.external-attachment-suite1.v1";
-const BINDING_EXTENSION: &str = "trellis.evidence-attachment-binding.v1";
+/// ADR 0072 evidence attachment-binding key in the outer event extensions.
+pub const ATTACHMENT_BINDING_EXTENSION: &str = "trellis.evidence-attachment-binding.v1";
 
 /// Structurally checked recipient wrapping material, without cryptographic verification.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -281,7 +282,7 @@ pub fn parse_external_attachment_profile(
             "profile requires matching external InExport payload reference",
         ));
     }
-    let binding = map(field(extensions, BINDING_EXTENSION)?)?;
+    let binding = map(field(extensions, ATTACHMENT_BINDING_EXTENSION)?)?;
     closed(
         binding,
         &[
@@ -425,7 +426,7 @@ mod tests {
                 m(vec![
                     (PROFILE_EXTENSION, t(EXTERNAL_ATTACHMENT_PROFILE)),
                     (
-                        BINDING_EXTENSION,
+                        ATTACHMENT_BINDING_EXTENSION,
                         m(vec![
                             ("attachment_id", t("logical")),
                             ("slot_path", t("/file")),
@@ -505,7 +506,7 @@ mod tests {
         assert!(parse(&e).is_err());
         let mut e = event();
         set(
-            child(child(&mut e, "extensions"), BINDING_EXTENSION),
+            child(child(&mut e, "extensions"), ATTACHMENT_BINDING_EXTENSION),
             "attachment_sha256",
             t(&format!("sha256:{}", "AB".repeat(32))),
         );
@@ -564,7 +565,7 @@ mod tests {
     fn rejects_invalid_pointer_and_event_identity() {
         let mut e = event();
         set(
-            child(child(&mut e, "extensions"), BINDING_EXTENSION),
+            child(child(&mut e, "extensions"), ATTACHMENT_BINDING_EXTENSION),
             "slot_path",
             t("/file~2"),
         );

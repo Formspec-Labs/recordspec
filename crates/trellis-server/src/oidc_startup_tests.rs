@@ -536,7 +536,7 @@ async fn oidc_startup_composes_selected_attachment_recipients() {
         action: trellis_server_ports::ScopeAction::Append,
     };
     let recipients = selector
-        .select(&permit, &attachment_descriptor())
+        .select(&permit, &serde_json::to_value(attachment_descriptor()).unwrap())
         .await
         .unwrap();
     assert_eq!(recipients.len(), 1);
@@ -658,7 +658,7 @@ async fn oidc_startup_attachment_selection_requires_exact_admitted_append_permis
             _ => permit.action = trellis_server_ports::ScopeAction::Read,
         }
         let error = selector
-            .select(&permit, &attachment_descriptor())
+            .select(&permit, &serde_json::to_value(attachment_descriptor()).unwrap())
             .await
             .err()
             .expect("mismatched permission refused");

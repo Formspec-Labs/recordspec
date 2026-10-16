@@ -384,6 +384,13 @@ pub fn default_admission_policy() -> Arc<dyn EventAdmissionPolicy<Error = StackE
     )
 }
 
+/// Returns the protected-attachment admission adapter the default server installs.
+#[must_use]
+pub(crate) fn default_external_attachment_admission()
+-> Arc<dyn trellis_server_ports::ExternalAttachmentAdmission> {
+    Arc::new(trellis_admission_formspec::accepted_attachment::FormspecAttachmentAdmission)
+}
+
 /// Returns the combined event-type specifications the catalog projects.
 ///
 /// Sourced from the admission adapters (`trellis-admission-wos`,

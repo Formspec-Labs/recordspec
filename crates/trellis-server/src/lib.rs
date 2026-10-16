@@ -59,9 +59,7 @@ pub use source_content::{
 mod event_repository;
 mod external_attachment;
 mod external_transport;
-pub use external_attachment::{
-    ExternalAttachmentRecipientPolicy, append_prepared_external_attachment,
-};
+pub(crate) use external_attachment::ExternalAttachmentRecipientPolicy;
 pub use external_transport::{ExternalAttachmentRecipient, ExternalAttachmentRecipientSelector};
 mod completion_startup;
 mod export_profile;
@@ -909,11 +907,16 @@ fn event_type_registry_cbor(
         let map_entry = text_map(vec![
             (
                 "privacy_class",
-                Value::Text(if entry.event_type == trellis_admission_formspec::accepted_attachment::ACCEPTED_ATTACHMENT_EVENT {
-                    "privateAttachment"
-                } else {
-                    "publicMetadata"
-                }.to_string()),
+                Value::Text(
+                    if entry.privacy_class
+                        == trellis_server_ports::EventPrivacyClass::PrivateAttachment
+                    {
+                        "privateAttachment"
+                    } else {
+                        "publicMetadata"
+                    }
+                    .to_string(),
+                ),
             ),
             (
                 "binding_family",
@@ -1398,6 +1401,32 @@ mod tests {
             ArtifactType::Event,
             "Formspec Response Actions appends must project artifactType=event"
         );
+    }
+
+    #[test]
+    fn event_type_registry_cbor_maps_privacy_class_to_published_label() {
+        let catalog = composition::EventTypeCatalog::default_stack();
+        let decoded = integrity_cbor::decode_cbor_value(
+            &event_type_registry_cbor(&catalog).expect("encode event-type registry"),
+        )
+        .expect("decode registry");
+        let types = integrity_cbor::map_lookup_map(decoded.as_map().unwrap(), "event_types")
+            .expect("event_types");
+        let privacy = |event_type: &str| {
+            let entry = integrity_cbor::map_lookup_map(types, event_type).expect("registered type");
+            match integrity_cbor::map_lookup_optional_value(entry, "privacy_class") {
+                Some(Value::Text(label)) => label.clone(),
+                other => panic!("privacy_class {other:?}"),
+            }
+        };
+        let private = catalog
+            .entries()
+            .find(|entry| {
+                entry.privacy_class == trellis_server_ports::EventPrivacyClass::PrivateAttachment
+            })
+            .expect("a private-attachment type is registered");
+        assert_eq!(privacy(&private.event_type), "privateAttachment");
+        assert_eq!(privacy(FORMSPEC_RESPONSE_SUBMITTED), "publicMetadata");
     }
 
     #[test]

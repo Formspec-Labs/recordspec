@@ -646,8 +646,8 @@ mod tests {
     }
     #[tokio::test]
     async fn postgres_retention_recovers_on_new_repository_and_exact_retry_after_head_advance() {
-        let cluster = support::TestCluster::start_without_migrations();
-        let pool = cluster.tls_pool(4).await;
+        let cluster = stack_common_postgres::testing::EphemeralCluster::start_required();
+        let pool = support::tls_pool(&cluster, 4).await;
         trellis_store_postgres_async::run_migrations(&pool)
             .await
             .unwrap();
@@ -703,8 +703,8 @@ mod tests {
     }
     #[tokio::test]
     async fn postgres_body_insert_failure_rolls_back_signed_event_and_body() {
-        let cluster = support::TestCluster::start_without_migrations();
-        let pool = cluster.tls_pool(4).await;
+        let cluster = stack_common_postgres::testing::EphemeralCluster::start_required();
+        let pool = support::tls_pool(&cluster, 4).await;
         trellis_store_postgres_async::run_migrations(&pool)
             .await
             .unwrap();
@@ -737,8 +737,8 @@ mod tests {
     }
     #[tokio::test]
     async fn postgres_cross_instance_appends_share_scope_lock_and_reject_stale_head() {
-        let cluster = support::TestCluster::start_without_migrations();
-        let pool = cluster.tls_pool(4).await;
+        let cluster = stack_common_postgres::testing::EphemeralCluster::start_required();
+        let pool = support::tls_pool(&cluster, 4).await;
         trellis_store_postgres_async::run_migrations(&pool)
             .await
             .unwrap();

@@ -2,33 +2,15 @@
 //! Invokes native protected append through maintained identity and permission checks.
 
 use crate::TrellisServerState;
-use axum::http::HeaderMap;
 use integrity_cbor::{
     Value, decode_cbor_value, encode_canonical_cbor_value, map_lookup_optional_value,
 };
 use stack_common_error::StackError;
-use stack_common_http::tenant::TenantScope;
-use trellis_admission_formspec::accepted_attachment::{
-    ACCEPTED_ATTACHMENT_EVENT, ATTACHMENT_BINDING_EXTENSION, PreparedAcceptedAttachment,
-};
-use trellis_core::external_attachment::ExternalAttachmentAppend;
+use trellis_cddl::ATTACHMENT_BINDING_EXTENSION;
 use trellis_export_writer::ExportEvidenceMember;
-use trellis_server_ports::{ComputeSensitivity, ScopeAction};
-use trellis_service_client::{SubstrateAppendBody, SubstrateAppendResult};
-use trellis_types::{ArtifactType, StoredEvent};
+use trellis_server_ports::ComputeSensitivity;
+use trellis_types::StoredEvent;
 
-/// Appends an owning service's prepared accepted attachment and publishes its export.
-///
-/// The caller supplies Source evidence selected by its trusted composition and
-/// an already protected result. The preparation does not grant Source authority
-/// or recipient permission. Credentials and case scope use the existing server
-/// authorizer; every retry checks current permission before durable replay.
-/// This composition API introduces no live HTTP route.
-///
-/// # Errors
-/// Refuses missing permission, changed preparation, stale head, conflicting replay,
-/// storage failure or export verification/publication failure. Publication failure
-/// leaves the atomic committed operation available for an authorized retry.
 /// Trusted owning-composition recipient custody selection.
 ///
 /// The caller obtains these IDs from its authenticated reader/key registry.
@@ -36,113 +18,6 @@ use trellis_types::{ArtifactType, StoredEvent};
 pub struct ExternalAttachmentRecipientPolicy {
     pub designated_readers: Vec<Vec<u8>>,
     pub operator_recipients: Vec<Vec<u8>>,
-}
-
-pub async fn append_prepared_external_attachment(
-    state: &TrellisServerState,
-    headers: &HeaderMap,
-    tenant: &TenantScope,
-    authorization: &SubstrateAppendBody,
-    prepared: &PreparedAcceptedAttachment<'_>,
-    mut input: ExternalAttachmentAppend,
-    recipient_policy: &ExternalAttachmentRecipientPolicy,
-) -> Result<SubstrateAppendResult, StackError> {
-    let scope = std::str::from_utf8(&input.scope)
-        .map_err(|_| StackError::bad_request("attachment scope must be UTF-8"))?;
-    crate::http::validate_scope(scope)?;
-    let identity = state.authenticate(headers).await?;
-    authorization.validate()?;
-    crate::http::validate_idempotency_header(headers, &authorization.idempotency_key)?;
-    if authorization.event_type != ACCEPTED_ATTACHMENT_EVENT
-        || input.header.event_type != ACCEPTED_ATTACHMENT_EVENT
-        || authorization.client_attestation.is_some()
-        || authorization.idempotency_key.as_bytes() != input.idempotency_key
-        || input.header.classification != "x-trellis-service/private-attachment"
-        || serde_json::to_value(prepared.descriptor())
-            .map_err(|_| StackError::internal("descriptor encoding failed"))?
-            != authorization.payload
-        || input.scope != prepared.scope()
-        || input.expected_head != prepared.expected_head()
-        || input.preparation_identity != prepared.replay_digest()
-        || input.ciphertext != prepared.ciphertext()
-        || input.extensions
-            != decode_cbor_value(&prepared.extensions_cbor()?)
-                .map_err(|_| StackError::bad_request("prepared binding unreadable"))?
-    {
-        return Err(StackError::bad_request(
-            "native attachment preparation or service metadata mismatch",
-        ));
-    }
-    crate::auth::authorize_action(
-        state,
-        &identity,
-        tenant,
-        scope,
-        ScopeAction::Append,
-        Some(authorization),
-    )
-    .await?;
-    let selected = custody_selection(&input.key_bag, recipient_policy)?;
-    if authorization.compute_context.sensitivity != selected {
-        return Err(StackError::bad_request(
-            "compute declaration differs from trusted recipient custody",
-        ));
-    }
-    let scope = scope.to_owned();
-    let _guard = state.scope_locks.lock(scope.as_bytes()).await;
-    let now = crate::now_timestamp()?;
-    if !state.signing_key.is_active_at(now) {
-        return Err(StackError::bad_request(
-            "signing key inactive at append time",
-        ));
-    }
-    input.header.authored_at_seconds = now.unix_secs;
-    input.header.authored_at_nanos = now.subsec_nanos;
-    let retained = state
-        .repository
-        .append_external_attachment(
-            input,
-            &state.signing_key.core_key(),
-            &authorization.compute_context,
-        )
-        .await?;
-    let events = state.repository.list_scope(scope.as_bytes()).await?;
-    let update_head = events
-        .last()
-        .is_some_and(|event| event.sequence() == retained.event().sequence());
-    let prefix = events
-        .into_iter()
-        .filter(|event| event.sequence() <= retained.event().sequence())
-        .collect::<Vec<_>>();
-    let prior = retained
-        .event()
-        .sequence()
-        .checked_sub(1)
-        .map(|seq| {
-            prefix
-                .iter()
-                .find(|event| event.sequence() == seq)
-                .ok_or_else(|| StackError::internal("retained attachment predecessor missing"))
-                .and_then(|event| crate::event_hash(scope.as_bytes(), event))
-        })
-        .transpose()?;
-    let bundle = crate::publish_bundle(
-        state,
-        scope.as_bytes(),
-        &prefix,
-        update_head,
-        &authorization.compute_context,
-    )
-    .await?;
-    crate::append_result_for_event(
-        &scope,
-        retained.event(),
-        prior,
-        ArtifactType::Event,
-        ACCEPTED_ATTACHMENT_EVENT,
-        &bundle,
-        true,
-    )
 }
 
 /// Collects exact retained bodies and chain-derived attachment catalog entries.

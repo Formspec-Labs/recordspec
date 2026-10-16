@@ -17,7 +17,10 @@ use serde::{Deserialize, Serialize};
 use stack_common_error::StackError;
 use stack_common_hash::sha256_prefixed;
 use trellis_cddl::{canonical_event_hash_preimage, parse_canonical_event};
-use trellis_server_ports::{AdmittedEvent, DirectSubmitPolicy, EventFamilyId, SchemaRef};
+use trellis_server_ports::{
+    AdmittedDescriptor, AdmittedEvent, AttachmentBinding, DirectSubmitPolicy, EventFamilyId,
+    EventPrivacyClass, ExternalAttachmentAdmission, SchemaRef,
+};
 use trellis_types::ArtifactType;
 use trellis_types::{CONTENT_DOMAIN, EVENT_DOMAIN, StoredEvent};
 
@@ -25,8 +28,8 @@ use trellis_types::{CONTENT_DOMAIN, EVENT_DOMAIN, StoredEvent};
 pub const ACCEPTED_ATTACHMENT_EVENT: &str = "substrate.append.accepted_attachment_binding";
 /// Producer-owned family for accepted-filing attachment bindings.
 pub const ACCEPTED_ATTACHMENT_FAMILY: &str = "formspec.accepted_attachment";
-/// Existing ADR-0072 binding key in the outer event extensions.
-pub const ATTACHMENT_BINDING_EXTENSION: &str = "trellis.evidence-attachment-binding.v1";
+use trellis_cddl::ATTACHMENT_BINDING_EXTENSION;
+use trellis_server_ports::AttachmentLimits;
 // Descriptors are metadata, independent of the selected binary payload limit.
 const MAX_DESCRIPTOR_BYTES: usize = 64 * 1024;
 
@@ -61,15 +64,6 @@ pub struct AcceptedAttachmentDescriptor {
     #[serde(deserialize_with = "required_nullable")]
     #[schema(required = true)]
     pub prior_binding_hash: Option<String>,
-}
-
-/// Deployment-selected finite input bounds.
-#[derive(Clone, Copy, Debug)]
-pub struct AttachmentLimits {
-    pub original_bytes: usize,
-    pub ciphertext_bytes: usize,
-    pub prior_events: usize,
-    pub prior_event_bytes: usize,
 }
 
 /// Validated binding and exact borrowed ciphertext for an owning typed author.
@@ -495,6 +489,45 @@ impl PreparedAcceptedAttachment<'_> {
     }
 }
 
+/// Formspec accepted-attachment adapter for the generic protected-attachment transport.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FormspecAttachmentAdmission;
+
+impl ExternalAttachmentAdmission for FormspecAttachmentAdmission {
+    fn event_type(&self) -> &'static str {
+        ACCEPTED_ATTACHMENT_EVENT
+    }
+
+    fn admit(&self, descriptor_json: &str) -> Result<AdmittedDescriptor, StackError> {
+        let descriptor = AcceptedAttachmentDescriptor::decode(descriptor_json.as_bytes())?;
+        Ok(AdmittedDescriptor {
+            payload: serde_json::to_value(&descriptor)
+                .map_err(|_| StackError::internal("descriptor encode failed"))?,
+            byte_length: descriptor.byte_length,
+            attachment_sha256: descriptor.attachment_sha256,
+        })
+    }
+
+    fn bind(
+        &self,
+        payload: &serde_json::Value,
+        scope: &[u8],
+        original: &[u8],
+        ciphertext: &[u8],
+        prior: &[StoredEvent],
+        limits: AttachmentLimits,
+    ) -> Result<AttachmentBinding, StackError> {
+        let descriptor: AcceptedAttachmentDescriptor = serde_json::from_value(payload.clone())
+            .map_err(|_| invalid("invalid closed accepted attachment descriptor"))?;
+        let prepared = descriptor.prepare(scope, original, ciphertext, prior, limits)?;
+        Ok(AttachmentBinding {
+            extensions_cbor: prepared.extensions_cbor()?,
+            replay_digest: prepared.replay_digest(),
+            expected_head: prepared.expected_head(),
+        })
+    }
+}
+
 /// Registers the dedicated typed operation without enabling the ordinary JSON router.
 #[must_use]
 pub fn accepted_attachment_event_type_spec() -> trellis_server_ports::EventTypeSpec {
@@ -503,6 +536,7 @@ pub fn accepted_attachment_event_type_spec() -> trellis_server_ports::EventTypeS
         ACCEPTED_ATTACHMENT_FAMILY,
         "trellis-server::external_transport::v1",
     );
+    spec.privacy_class = EventPrivacyClass::PrivateAttachment;
     spec.budget_review.plaintext_fields = [
         "ledger_scope",
         "idempotency_key",

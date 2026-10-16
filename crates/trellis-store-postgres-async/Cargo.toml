@@ -12,5 +12,5 @@ thiserror = "1"
 trellis-types = { path = "../trellis-types" }
 
 [dev-dependencies]
-tempfile = "3.14"
+stack-common-postgres = { path = "../../../stack-common/crates/stack-common-postgres", default-features = false, features = ["migrations", "pool", "testing"] }
 tokio = { version = "1", features = ["full", "macros", "test-util"] }

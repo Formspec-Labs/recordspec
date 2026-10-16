@@ -36,8 +36,8 @@ async fn reconciliation_snapshot_overrides_repeatable_read_pool_default() {
 }
 
 async fn serialized_snapshot(repeatable_read_default: bool) {
-    let cluster = support::TestCluster::start_without_migrations();
-    let pool = cluster.tls_pool(3).await;
+    let cluster = stack_common_postgres::testing::EphemeralCluster::start_required();
+    let pool = support::tls_pool(&cluster, 3).await;
     run_migrations(&pool).await.unwrap();
     if repeatable_read_default {
         // Hold every pool connection while setting its session default so the
@@ -98,8 +98,8 @@ async fn serialized_snapshot(repeatable_read_default: bool) {
 
 #[tokio::test]
 async fn reconciliation_snapshot_concurrent_same_key_has_one_commit_and_changed_bytes_conflict() {
-    let cluster = support::TestCluster::start_without_migrations();
-    let pool = cluster.tls_pool(4).await;
+    let cluster = stack_common_postgres::testing::EphemeralCluster::start_required();
+    let pool = support::tls_pool(&cluster, 4).await;
     run_migrations(&pool).await.unwrap();
     let repository = PostgresEventRepository::new(pool.clone());
     let scope = b"neutral-same-key";

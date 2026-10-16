@@ -1,6 +1,6 @@
 mod support;
 
-use support::TestCluster;
+use stack_common_postgres::testing::EphemeralCluster;
 use trellis_store_postgres_async::{
     BundlePublicationError, BundlePublicationIdentity, BundlePublicationRecord,
     get_bundle_publication_by_digest, get_bundle_publication_by_seal, publish_bundle_publication,
@@ -9,8 +9,8 @@ use trellis_store_postgres_async::{
 
 #[tokio::test]
 async fn reserve_bundle_publication_is_idempotent_and_rejects_identity_conflicts() {
-    let cluster = TestCluster::start_without_migrations();
-    let pool = cluster.tls_pool(4).await;
+    let cluster = EphemeralCluster::start_required();
+    let pool = support::tls_pool(&cluster, 4).await;
     run_migrations(&pool).await.unwrap();
 
     let identity = bundle_identity("scope-a", 1, "sha256:checkpoint-a", "sha256:attempt-a");
@@ -43,8 +43,8 @@ async fn reserve_bundle_publication_is_idempotent_and_rejects_identity_conflicts
 
 #[tokio::test]
 async fn publish_bundle_publication_records_artifact_ref_once() {
-    let cluster = TestCluster::start_without_migrations();
-    let pool = cluster.tls_pool(4).await;
+    let cluster = EphemeralCluster::start_required();
+    let pool = support::tls_pool(&cluster, 4).await;
     run_migrations(&pool).await.unwrap();
 
     let identity = bundle_identity("scope-b", 1, "sha256:checkpoint-d", "sha256:attempt-d");
@@ -102,9 +102,9 @@ fn bundle_identity(
 
 #[tokio::test]
 async fn if034_062_published_seal_lookup_hides_reservations_and_pins_exact_scope() {
-    // Uses the maintained attempt-private TLS TestCluster, never a selected service DB.
-    let cluster = TestCluster::start_without_migrations();
-    let pool = cluster.tls_pool(4).await;
+    // Uses the maintained attempt-private TLS EphemeralCluster, never a selected service DB.
+    let cluster = EphemeralCluster::start_required();
+    let pool = support::tls_pool(&cluster, 4).await;
     run_migrations(&pool).await.unwrap();
     let identity = bundle_identity(
         "if034-062-seal",

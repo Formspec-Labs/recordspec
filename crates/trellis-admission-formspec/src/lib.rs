@@ -20,7 +20,7 @@ use stack_common_error::StackError;
 use stack_common_hash::{canonical_json_hash, sha256_prefixed};
 use trellis_server_ports::{
     AdmissionEvent, AdmittedEvent, BudgetReviewRecord, DirectSubmitPolicy, EventAdmissionPolicy,
-    EventFamilyId, EventTypeSpec, SchemaRef,
+    EventFamilyId, EventPrivacyClass, EventTypeSpec, SchemaRef,
 };
 use trellis_types::ArtifactType;
 
@@ -276,6 +276,7 @@ fn formspec_event_type_spec(
             .expect("formspec schema refs are URI-like by construction"),
         artifact_type: ArtifactType::Event,
         direct_submit: DirectSubmitPolicy::ServiceOnly,
+        privacy_class: EventPrivacyClass::PublicMetadata,
         budget_review: BudgetReviewRecord {
             reviewer: reviewer.to_string(),
             plaintext_fields: vec!["eventType".to_string()],

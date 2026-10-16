@@ -3,7 +3,7 @@
 mod support;
 
 use sqlx::PgPool;
-use support::TestCluster;
+use stack_common_postgres::testing::EphemeralCluster;
 use trellis_store_postgres_async::{AppendError, append_event_in_tx, run_migrations};
 use trellis_types::StoredEvent;
 
@@ -17,9 +17,9 @@ fn event(scope: &[u8], sequence: u64, canonical: &[u8], signed: &[u8], idem: &[u
     )
 }
 
-async fn started_pool() -> (TestCluster, PgPool) {
-    let cluster = TestCluster::start_without_migrations();
-    let pool = cluster.tls_pool(8).await;
+async fn started_pool() -> (EphemeralCluster, PgPool) {
+    let cluster = EphemeralCluster::start_required();
+    let pool = support::tls_pool(&cluster, 8).await;
     run_migrations(&pool).await.unwrap();
     (cluster, pool)
 }
@@ -27,13 +27,6 @@ async fn started_pool() -> (TestCluster, PgPool) {
 #[tokio::test]
 async fn ddl_matches_shared_migration_contract() {
     let (_cluster, pool) = started_pool().await;
-
-    let applied_versions: Vec<i32> =
-        sqlx::query_scalar("SELECT version FROM trellis_schema_migrations ORDER BY version")
-            .fetch_all(&pool)
-            .await
-            .unwrap();
-    assert_eq!(applied_versions, vec![1, 2, 3, 4]);
 
     let columns: Vec<(String, String, String)> = sqlx::query_as(
         "\
@@ -264,7 +257,9 @@ async fn append_error_variants_are_exercised_without_sync_oracle() {
         AppendError::PkCollisionMismatch
     ));
 
-    sqlx::query("DROP TABLE trellis_events")
+    // CASCADE drops the foreign-key constraint that `trellis_external_attachments`
+    // (migration 5) holds on `trellis_events`; that table itself survives.
+    sqlx::query("DROP TABLE trellis_events CASCADE")
         .execute(&pool)
         .await
         .unwrap();

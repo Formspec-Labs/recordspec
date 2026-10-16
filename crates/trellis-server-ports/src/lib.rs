@@ -26,6 +26,11 @@ pub use trellis_core::LedgerStore;
 pub use trellis_service_client::{ComputeContext, ComputeSensitivity};
 use trellis_types::{ArtifactType, StoredEvent};
 
+mod attachment;
+pub use attachment::{
+    AdmittedDescriptor, AttachmentBinding, AttachmentLimits, ExternalAttachmentAdmission,
+};
+
 /// Ledger scope bytes.
 pub type ScopeId = Vec<u8>;
 
@@ -983,6 +988,8 @@ pub struct EventTypeSpec {
     /// Substrate structural role (ADR 0109) — always [`ArtifactType::Event`].
     pub artifact_type: ArtifactType,
     pub direct_submit: DirectSubmitPolicy,
+    /// Whether the registry publishes this type as public metadata or a private attachment.
+    pub privacy_class: EventPrivacyClass,
     pub budget_review: BudgetReviewRecord,
 }
 
@@ -995,6 +1002,16 @@ pub struct EventTypeRef {
     /// Substrate structural role (ADR 0109) — always [`ArtifactType::Event`].
     pub artifact_type: ArtifactType,
     pub direct_submit: DirectSubmitPolicy,
+    pub privacy_class: EventPrivacyClass,
+}
+
+/// Privacy class the event-type registry publishes for a registered type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EventPrivacyClass {
+    /// Payload fields are public metadata.
+    PublicMetadata,
+    /// Payload is a protected attachment readable only by selected recipients.
+    PrivateAttachment,
 }
 
 /// Registration-time budget review failure.
@@ -1051,6 +1068,7 @@ impl EventTypeRegistry for ReviewGateEventTypeRegistry {
             schema_ref: spec.schema_ref,
             artifact_type: spec.artifact_type,
             direct_submit: spec.direct_submit,
+            privacy_class: spec.privacy_class,
         };
         self.entries
             .insert(event_ref.event_type.clone(), event_ref.clone());
@@ -1125,10 +1143,12 @@ mod tests {
                 .unwrap(),
             b"sealed bytes"
         );
-        assert!(store
-            .get_bounded(&artifact, 11, std::time::Duration::from_secs(1))
-            .await
-            .is_err());
+        assert!(
+            store
+                .get_bounded(&artifact, 11, std::time::Duration::from_secs(1))
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -1159,22 +1179,28 @@ mod tests {
             assert_eq!(error.code().as_str(), "INFRA-4000");
         }
         let artifact = store.put("case/a", b"bytes").await.unwrap();
-        assert!(store
-            .get_bounded(&artifact, 0, std::time::Duration::from_secs(1))
-            .await
-            .is_err());
-        assert!(store
-            .get_bounded(&artifact, 12, std::time::Duration::ZERO)
-            .await
-            .is_err());
-        assert!(store
-            .get_bounded(
-                &ArtifactRef::new("s3://proof-bundles/pfx/missing"),
-                12,
-                std::time::Duration::from_secs(1)
-            )
-            .await
-            .is_err());
+        assert!(
+            store
+                .get_bounded(&artifact, 0, std::time::Duration::from_secs(1))
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .get_bounded(&artifact, 12, std::time::Duration::ZERO)
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .get_bounded(
+                    &ArtifactRef::new("s3://proof-bundles/pfx/missing"),
+                    12,
+                    std::time::Duration::from_secs(1)
+                )
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -1271,12 +1297,14 @@ mod tests {
         runtime.record_event(event(b"case-1", 1));
         runtime.record_event(event(b"case-2", 0));
 
-        assert!(runtime
-            .watermark("case-view", b"case-1", 0)
-            .await
-            .expect_err("unregistered projection")
-            .to_string()
-            .contains("not registered"));
+        assert!(
+            runtime
+                .watermark("case-view", b"case-1", 0)
+                .await
+                .expect_err("unregistered projection")
+                .to_string()
+                .contains("not registered")
+        );
 
         runtime
             .register(ProjectionRegistration {
@@ -1343,11 +1371,13 @@ mod tests {
             .await
             .expect("bind v2");
 
-        assert!(binder
-            .resolve(b"case-1", "wos.kernel.case_created", 1)
-            .await
-            .expect("resolve")
-            .is_none());
+        assert!(
+            binder
+                .resolve(b"case-1", "wos.kernel.case_created", 1)
+                .await
+                .expect("resolve")
+                .is_none()
+        );
         assert_eq!(
             binder
                 .resolve(b"case-1", "wos.kernel.case_created", 4)
@@ -1383,6 +1413,7 @@ mod tests {
                 schema_ref: schema.clone(),
                 artifact_type: ArtifactType::Event,
                 direct_submit: DirectSubmitPolicy::ServiceOnly,
+                privacy_class: EventPrivacyClass::PublicMetadata,
                 budget_review: BudgetReviewRecord {
                     reviewer: "".to_string(),
                     plaintext_fields: vec![],
@@ -1399,6 +1430,7 @@ mod tests {
                 schema_ref: schema,
                 artifact_type: ArtifactType::Event,
                 direct_submit: DirectSubmitPolicy::ServiceOnly,
+                privacy_class: EventPrivacyClass::PublicMetadata,
                 budget_review: BudgetReviewRecord {
                     reviewer: "security-review".to_string(),
                     plaintext_fields: vec!["eventType".to_string()],

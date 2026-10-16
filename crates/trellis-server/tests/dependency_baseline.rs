@@ -237,8 +237,13 @@ fn service_client_contains_wos_imports_to_extension_helper_module() {
 }
 
 /// Reads every `*.rs` file under `trellis-server/src/` that is NOT on
-/// [`GENERIC_SERVER_DENYLIST`]. Adding a new generic module automatically
-/// falls under the gate.
+/// [`GENERIC_SERVER_DENYLIST`] and is not a test-only module. Adding a new
+/// generic module automatically falls under the gate.
+///
+/// A `<name>_tests.rs` file is test-only when another source file mentions it
+/// after that file's first test marker, i.e. it is `include!`d inside a test
+/// module that [`strip_test_modules`] would cut. The inclusion is checked, not
+/// assumed from the name, so a production module cannot hide behind the suffix.
 fn read_generic_server_files() -> Vec<(String, String)> {
     let server_root = trellis_root()
         .join("crates")
@@ -259,12 +264,19 @@ fn read_generic_server_files() -> Vec<(String, String)> {
         if !file_name.ends_with(".rs") {
             continue;
         }
-        if GENERIC_SERVER_DENYLIST.contains(&file_name.as_str()) {
-            continue;
-        }
         let source = fs::read_to_string(&path).unwrap_or_else(|err| panic!("read {path:?}: {err}"));
         files.push((file_name, source));
     }
+    let test_only: Vec<String> = files
+        .iter()
+        .filter(|(name, _)| {
+            name.ends_with("_tests.rs") && included_only_in_test_modules(name, &files)
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+    files.retain(|(name, _)| {
+        !GENERIC_SERVER_DENYLIST.contains(&name.as_str()) && !test_only.contains(name)
+    });
     // Include the bin entrypoint when it exists; it's a generic production
     // module that wires `state_from_env` + `router`.
     let bin_path = server_root.join("bin");
@@ -289,6 +301,23 @@ fn read_generic_server_files() -> Vec<(String, String)> {
         }
     }
     files
+}
+
+/// True when every other source file that mentions `file_name` does so after
+/// its own first test marker, and at least one does.
+fn included_only_in_test_modules(file_name: &str, files: &[(String, String)]) -> bool {
+    let mut included = false;
+    for (other, source) in files {
+        if other == file_name {
+            continue;
+        }
+        let production_end = test_marker_offset(source).unwrap_or(source.len());
+        if source[..production_end].contains(file_name) {
+            return false;
+        }
+        included |= source[production_end..].contains(file_name);
+    }
+    included
 }
 
 /// Returns the dependency block of every dependency table, ignoring dev/build
@@ -345,15 +374,24 @@ fn normal_dependency_section(manifest: &str) -> String {
 /// brace counter, which would mis-handle string literals or comments
 /// containing `{` / `}`.
 fn strip_test_modules(source: &str) -> String {
-    match source.find("#[cfg(test)]") {
-        Some(start) => {
-            // Anchor on the start of the line containing the marker so trailing
-            // production code on the same line is preserved (rare but valid).
-            let line_start = source[..start].rfind('\n').map_or(0, |idx| idx + 1);
-            source[..line_start].to_string()
-        }
+    match test_marker_offset(source) {
+        Some(start) => source[..start].to_string(),
         None => source.to_string(),
     }
+}
+
+/// Byte offset of the start of the first line that gates the rest of a file
+/// to test builds: `#[cfg(test)]` or a `#[cfg(all(test, ...))]` variant.
+fn test_marker_offset(source: &str) -> Option<usize> {
+    let mut offset = 0;
+    for line in source.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("#[cfg(test)]") || trimmed.starts_with("#[cfg(all(test") {
+            return Some(offset);
+        }
+        offset += line.len();
+    }
+    None
 }
 
 fn read_manifest(crate_name: &str) -> String {
