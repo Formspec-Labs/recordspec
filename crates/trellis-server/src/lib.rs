@@ -1024,6 +1024,7 @@ fn hex_digit(value: u8) -> char {
 
 #[cfg(test)]
 mod tests {
+    use stack_common_typeid::testing::fixture_minter;
     mod reconciliation_tests {
         include!("reconciliation_tests.rs");
     }
@@ -3046,7 +3047,7 @@ mod tests {
     }
 
     fn append_body(idempotency_key: &str) -> Vec<u8> {
-        let mut record = ProvenanceRecord::blank(ProvenanceKind::CaseCreated);
+        let mut record = ProvenanceRecord::blank(&fixture_minter(), ProvenanceKind::CaseCreated);
         record.id = format!("prov-{idempotency_key}");
         let body = SubstrateAppendBody {
             event_type: "wos.kernel.case_created".to_string(),
@@ -3076,46 +3077,49 @@ mod tests {
         profile_ref: Option<&str>,
         profile_key: Option<&str>,
     ) -> Vec<u8> {
-        let mut record = ProvenanceRecord::signature_affirmation(SignatureAffirmationInput {
-            signer_id: "applicant",
-            role_id: "role-applicant-signer",
-            role: "applicant",
-            document_id: "benefits-application",
-            signing_act_id: "signing-act-server-test",
-            document_ref: serde_json::json!({
-                "documentId": "benefits-application",
-                "locale": "en-US"
-            }),
-            document_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            presentation_hash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            document_hash_algorithm: "sha-256",
-            source_signature_system: "formspec",
-            source_signature_id: "sig-server-test",
-            signed_payload_digest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-            signed_payload_digest_algorithm: "sha-256",
-            signing_intent,
-            signed_at: "2026-05-16T18:31:00Z",
-            identity_binding: serde_json::json!({
-                "kind": "subjectRef",
-                "ref": "applicant"
-            }),
-            consent_reference: serde_json::json!({
-                "textRef": "consent-v1",
-                "acceptedAt": "2026-05-16T18:30:00Z"
-            }),
-            signature_provider: "formspec-local",
-            ceremony_id: "ceremony-server-test",
-            profile_ref,
-            profile_key,
-            source_response_ref: "formspec://responses/resp-server-test",
-            signer_authority: None,
-            custody_hook_eligible: true,
-            primitive_verification: serde_json::json!({
-                "status": "verified"
-            }),
-            verification_receipt: None,
-            witnessed_signature_ref: None,
-        });
+        let mut record = ProvenanceRecord::signature_affirmation(
+            &fixture_minter(),
+            SignatureAffirmationInput {
+                signer_id: "applicant",
+                role_id: "role-applicant-signer",
+                role: "applicant",
+                document_id: "benefits-application",
+                signing_act_id: "signing-act-server-test",
+                document_ref: serde_json::json!({
+                    "documentId": "benefits-application",
+                    "locale": "en-US"
+                }),
+                document_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                presentation_hash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                document_hash_algorithm: "sha-256",
+                source_signature_system: "formspec",
+                source_signature_id: "sig-server-test",
+                signed_payload_digest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                signed_payload_digest_algorithm: "sha-256",
+                signing_intent,
+                signed_at: "2026-05-16T18:31:00Z",
+                identity_binding: serde_json::json!({
+                    "kind": "subjectRef",
+                    "ref": "applicant"
+                }),
+                consent_reference: serde_json::json!({
+                    "textRef": "consent-v1",
+                    "acceptedAt": "2026-05-16T18:30:00Z"
+                }),
+                signature_provider: "formspec-local",
+                ceremony_id: "ceremony-server-test",
+                profile_ref,
+                profile_key,
+                source_response_ref: "formspec://responses/resp-server-test",
+                signer_authority: None,
+                custody_hook_eligible: true,
+                primitive_verification: serde_json::json!({
+                    "status": "verified"
+                }),
+                verification_receipt: None,
+                witnessed_signature_ref: None,
+            },
+        );
         record.id = format!("prov-{idempotency_key}");
         record.timestamp = "2026-05-16T18:31:00Z".to_string();
         let event_type = ProvenanceKind::SignatureAffirmation
@@ -3154,6 +3158,7 @@ mod tests {
             serde_json::Value::String("urn:formspec:sig-method:unknown@1".to_string()),
         );
         let mut record = ProvenanceRecord::signature_admission_failed(
+            &fixture_minter(),
             SignatureAdmissionFailedInput {
                 reason,
                 response_id: "resp-rejected-server-test",

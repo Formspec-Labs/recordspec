@@ -8,6 +8,7 @@
 //! be accepted by the other.
 
 use stack_common_error::StackError;
+use stack_common_typeid::testing::fixture_minter;
 use trellis_admission_formspec::{
     FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH, FORMSPEC_RESPONSE_SUBMITTED,
     FormspecAppendAdmissionPolicy,
@@ -20,7 +21,7 @@ use trellis_types::ArtifactType;
 use wos_events::{ProvenanceKind, ProvenanceRecord, WOS_CANONICAL_EVENT_LITERALS};
 
 fn wos_payload(kind: ProvenanceKind, id: &str) -> Vec<u8> {
-    let mut record = ProvenanceRecord::blank(kind);
+    let mut record = ProvenanceRecord::blank(&fixture_minter(), kind);
     record.id = id.to_string();
     serde_json::to_vec(&record).expect("serialize wos record")
 }

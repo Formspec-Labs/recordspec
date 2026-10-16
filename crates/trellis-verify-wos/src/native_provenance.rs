@@ -44,10 +44,11 @@ mod tests {
         RecordValidator, RelyingPartyResult, TrellisTimestamp, VerdictState,
     };
     use serde_json::{Value, json};
+    use stack_common_typeid::testing::fixture_minter;
     use wos_events::{ProvenanceKind, ProvenanceRecord, WOS_CANONICAL_EVENT_LITERALS};
 
     fn payload(kind: ProvenanceKind) -> Value {
-        let mut record = ProvenanceRecord::blank(kind);
+        let mut record = ProvenanceRecord::blank(&fixture_minter(), kind);
         record.timestamp = "2026-10-09T12:00:00Z".into();
         record.audit_layer = Some("facts".into());
         record.definition_version = Some("0.3.0".into());

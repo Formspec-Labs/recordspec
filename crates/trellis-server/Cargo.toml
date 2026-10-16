@@ -53,6 +53,7 @@ utoipa = "5"
 wos-events = { path = "../../../work-spec/crates/wos-events" }
 
 [dev-dependencies]
+stack-common-typeid = { path = "../../../stack-common/crates/stack-common-typeid", features = ["testing"] }
 jsonwebtoken = "9"
 tempfile = "3"
 integrity-seam = { path = "../../../integrity-stack/crates/integrity-seam" }

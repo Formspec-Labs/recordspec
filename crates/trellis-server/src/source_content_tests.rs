@@ -1,5 +1,6 @@
 // Neutral composition regressions; these mocks do not qualify Source cryptography.
 // Rust guideline compliant 2026-02-21
+use stack_common_typeid::testing::fixture_minter;
 use super::*;
 use crate::source_content::*;
 use serde_json::json;
@@ -198,7 +199,7 @@ fn source_content_locator_is_optional_closed_and_does_not_grant_authority() {
 }
 
 fn neutral_native_body(key: &str, event: &str) -> SubstrateAppendBody {
-    let mut original = wos_events::ProvenanceRecord::state_entered("Neutral");
+    let mut original = wos_events::ProvenanceRecord::state_entered(&fixture_minter(), "Neutral");
     original.timestamp = "2026-10-09T14:00:00.123Z".into();
     original.definition_version = Some("1.0.0".into());
     original.audit_layer = Some("facts".into());
@@ -409,7 +410,7 @@ async fn committed_original_fixture() -> (
     };
     let state = test_state();
     let mut intake_record =
-        wos_events::ProvenanceRecord::blank(wos_events::ProvenanceKind::IntakeAccepted);
+        wos_events::ProvenanceRecord::blank(&fixture_minter(), wos_events::ProvenanceKind::IntakeAccepted);
     intake_record.timestamp = "2026-10-09T14:00:00.123Z".into();
     intake_record.definition_version = Some("1.0.0".into());
     intake_record.event = Some("wos.kernel.intake_accepted".into());

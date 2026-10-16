@@ -1,6 +1,7 @@
 // Rust guideline compliant 2026-02-21
 //! Controlled catalog/native/reader routing tests; no Source or HPKE proof claim.
 use super::*;
+use stack_common_typeid::testing::fixture_minter;
 use std::collections::BTreeMap;
 use wos_events::ProvenanceRecord;
 
@@ -12,14 +13,14 @@ struct Fixture {
     pins: SourceTaskResponsePinsV1,
 }
 fn fixture(family: SourceTaskFamily) -> Fixture {
-    let mut created = ProvenanceRecord::blank(ProvenanceKind::TaskCreated);
+    let mut created = ProvenanceRecord::blank(&fixture_minter(), ProvenanceKind::TaskCreated);
     created.timestamp = "2026-10-13T00:00:00Z".into();
     created.audit_layer = Some("facts".into());
     created.definition_version = Some("1".into());
     created.data = Some(
         serde_json::json!({"taskId":"task","details":{"taskRef":"correction","assignedActor":"actor:human:owner"}}),
     );
-    let mut completed = ProvenanceRecord::blank(ProvenanceKind::TaskCompleted);
+    let mut completed = ProvenanceRecord::blank(&fixture_minter(), ProvenanceKind::TaskCompleted);
     completed.timestamp = "2026-10-13T00:01:00Z".into();
     completed.audit_layer = Some("facts".into());
     completed.definition_version = Some("1".into());
