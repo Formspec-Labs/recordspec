@@ -1095,3 +1095,123 @@ async fn completion_route_body_limit_admits_the_worst_case_selection_and_no_more
     let response = app.oneshot(oversized).await.unwrap();
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
 }
+
+use trellis_service_client::{AppendReconciliation, AppendReconciliationRequest};
+
+fn seal_lookup(request: &CompletionRequest) -> AppendReconciliationRequest {
+    AppendReconciliationRequest::for_completion(&request.idempotency_key, &request.certificate_id)
+        .unwrap()
+}
+
+#[tokio::test]
+async fn completion_reconcile_by_certificate_id_is_absent_then_committed_without_effects() {
+    let (mut state, headers, tenant, request) = fixture().await;
+    let signer = Signer {
+        calls: AtomicUsize::new(0),
+        corrupt: false,
+    };
+    let lookup = seal_lookup(&request);
+    let before = state.repository.list_scope(b"case_completion").await.unwrap();
+    let head = format!(
+        "sha256:{}",
+        hex::encode(before.last().unwrap().canonical_event_hash().unwrap())
+    );
+    assert_eq!(
+        crate::reconciliation::reconcile(&state, "case_completion", &lookup).await,
+        AppendReconciliation::Absent {
+            event_count: 1,
+            last_event_hash: Some(head)
+        }
+    );
+    let sealed = seal_completion(&state, &headers, &tenant, "case_completion", &request, &signer)
+        .await
+        .unwrap();
+    let committed = state.repository.list_scope(b"case_completion").await.unwrap();
+    // From here the artifact store refuses every write: reconcile must never publish.
+    state.artifact_store = Arc::new(super::reconciliation_tests::ReadOnlyArtifacts(
+        state.artifact_store.clone(),
+    ));
+    assert_eq!(
+        crate::reconciliation::reconcile(&state, "case_completion", &lookup).await,
+        AppendReconciliation::Committed { receipt: sealed }
+    );
+    assert_eq!(signer.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        state.repository.list_scope(b"case_completion").await.unwrap(),
+        committed
+    );
+}
+
+#[tokio::test]
+async fn completion_reconcile_same_key_other_certificate_or_event_type_is_a_conflict() {
+    let (state, headers, tenant, request) = fixture().await;
+    let signer = Signer {
+        calls: AtomicUsize::new(0),
+        corrupt: false,
+    };
+    seal_completion(&state, &headers, &tenant, "case_completion", &request, &signer)
+        .await
+        .unwrap();
+    let other_certificate = AppendReconciliationRequest::for_completion(
+        &request.idempotency_key,
+        "urn:test:another-certificate",
+    )
+    .unwrap();
+    assert_eq!(
+        crate::reconciliation::reconcile(&state, "case_completion", &other_certificate).await,
+        AppendReconciliation::Conflict
+    );
+    // The key of the signature-affirmation evidence event holds another event type.
+    let other_type =
+        AppendReconciliationRequest::for_completion("completion-signing-evidence", "urn:test:certificate")
+            .unwrap();
+    assert_eq!(
+        crate::reconciliation::reconcile(&state, "case_completion", &other_type).await,
+        AppendReconciliation::Conflict
+    );
+}
+
+#[tokio::test]
+async fn completion_reconcile_route_takes_the_certificate_id_identity() {
+    use tower::ServiceExt;
+    let (state, headers, tenant, request) = fixture().await;
+    seal_completion(
+        &state,
+        &headers,
+        &tenant,
+        "case_completion",
+        &request,
+        &Signer {
+            calls: AtomicUsize::new(0),
+            corrupt: false,
+        },
+    )
+    .await
+    .unwrap();
+    let lookup = serde_json::to_vec(&seal_lookup(&request)).unwrap();
+    let response = router(state.clone())
+        .unwrap()
+        .oneshot(post_request(
+            "/v1/scopes/case_completion/events/reconcile",
+            lookup,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["status"], "committed");
+    assert_eq!(body["receipt"]["verificationReceipt"]["eventType"], COMPLETION_EVENT);
+    // A completion lookup that names a content hash is not a valid identity.
+    let both = serde_json::json!({"eventType": COMPLETION_EVENT, "idempotencyKey": "k",
+        "contentHash": vec![0u8; 32], "certificateId": "c"});
+    let response = router(state)
+        .unwrap()
+        .oneshot(post_request(
+            "/v1/scopes/case_completion/events/reconcile",
+            serde_json::to_vec(&both).unwrap(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}

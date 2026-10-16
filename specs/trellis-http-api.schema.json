@@ -584,12 +584,52 @@
           },
           "minItems": 32,
           "maxItems": 32
+        },
+        "certificateId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "description": "Certificate id of the seal; only with the completion event type."
         }
       },
       "required": [
         "eventType",
-        "idempotencyKey",
-        "contentHash"
+        "idempotencyKey"
+      ],
+      "description": "Retained identity to reconcile. The completion event names certificateId (the seal's payload hash is not knowable to its caller); every other event type names contentHash. Exactly one is present.",
+      "oneOf": [
+        {
+          "properties": {
+            "eventType": {
+              "const": "trellis.certificate-of-completion.v2"
+            }
+          },
+          "required": [
+            "certificateId"
+          ],
+          "not": {
+            "required": [
+              "contentHash"
+            ]
+          }
+        },
+        {
+          "properties": {
+            "eventType": {
+              "not": {
+                "const": "trellis.certificate-of-completion.v2"
+              }
+            }
+          },
+          "required": [
+            "contentHash"
+          ],
+          "not": {
+            "required": [
+              "certificateId"
+            ]
+          }
+        }
       ]
     },
     "AppendReconciliation": {

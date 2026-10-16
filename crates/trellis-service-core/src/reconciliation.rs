@@ -104,6 +104,28 @@ mod tests {
     }
 }
 
+/// Checks the stored event against the lookup's identity: the content hash, or for the
+/// completion seal its certificate id.
+fn matches_identity(
+    event: &StoredEvent,
+    request: &AppendReconciliationRequest,
+) -> Result<(), StackError> {
+    if let Some(content_hash) = request.content_hash {
+        return crate::validate_existing_replay(event, &request.event_type, content_hash);
+    }
+    if crate::event_summary(event)?.event_type != request.event_type {
+        return Err(StackError::conflict(
+            "idempotency key reused with a different event type",
+        ));
+    }
+    if Some(crate::completion::committed_certificate_id(event)?) != request.certificate_id {
+        return Err(StackError::conflict(
+            "idempotency key reused with a different certificate id",
+        ));
+    }
+    Ok(())
+}
+
 /// Reconciles without append, Source prefetch, publication reservation or artifact writes.
 pub(crate) async fn reconcile(
     state: &TrellisServerState,
@@ -170,9 +192,7 @@ pub(crate) async fn reconcile(
         return unknown(ReconciliationUnknown::VerificationFailed);
     }
     // Only valid retained cryptographic evidence can establish a semantic key conflict.
-    if let Err(error) =
-        crate::validate_existing_replay(event, &request.event_type, request.content_hash)
-    {
+    if let Err(error) = matches_identity(event, request) {
         return if error.status() == http::StatusCode::CONFLICT {
             AppendReconciliation::Conflict
         } else {

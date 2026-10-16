@@ -46,7 +46,8 @@ async fn reconciliation_client_uses_dedicated_encoded_route_and_current_tenant()
     let lookup = AppendReconciliationRequest {
         event_type: "neutral.event".into(),
         idempotency_key: "neutral-key".into(),
-        content_hash: [0; 32],
+        content_hash: Some([0; 32]),
+        certificate_id: None,
     };
     assert_eq!(
         client
@@ -76,7 +77,8 @@ async fn reconciliation_client_refuses_malformed_or_unverified_receipts() {
         let lookup = AppendReconciliationRequest {
             event_type: "neutral.event".into(),
             idempotency_key: "neutral-key".into(),
-            content_hash: [0; 32],
+            content_hash: Some([0; 32]),
+            certificate_id: None,
         };
         assert!(
             client
@@ -85,4 +87,41 @@ async fn reconciliation_client_refuses_malformed_or_unverified_receipts() {
                 .is_err()
         );
     }
+}
+
+#[test]
+fn completion_lookup_names_the_certificate_id_and_every_other_type_the_hash() {
+    let seal = AppendReconciliationRequest::for_completion("seal-key", "urn:cert:1").unwrap();
+    let value = serde_json::to_value(&seal).unwrap();
+    assert_eq!(
+        value,
+        serde_json::json!({
+            "eventType": COMPLETION_EVENT,
+            "idempotencyKey": "seal-key",
+            "certificateId": "urn:cert:1"
+        })
+    );
+    assert_eq!(
+        serde_json::from_value::<AppendReconciliationRequest>(value).unwrap(),
+        seal
+    );
+    let mut hashed = seal.clone();
+    hashed.content_hash = Some([1; 32]);
+    assert!(hashed.validate().is_err(), "both identities");
+    let mut bare = seal.clone();
+    bare.certificate_id = None;
+    assert!(bare.validate().is_err(), "neither identity");
+    assert!(AppendReconciliationRequest::for_completion("k", "  ").is_err());
+    let mut other = seal;
+    other.event_type = "neutral.event".into();
+    other.certificate_id = Some("urn:cert:1".into());
+    assert!(other.validate().is_err(), "certificate id on another type");
+    // A seal body has no knowable payload hash, so the hash builder refuses it.
+    let body: SubstrateAppendBody = serde_json::from_value(serde_json::json!({
+        "eventType": COMPLETION_EVENT, "idempotencyKey": "seal-key",
+        "actor":{"kind":"service","subject":"s"}, "payload":{},
+        "computeContext":{"declarationId":"d","actor":"s","sensitivity":"publicMetadata"}
+    }))
+    .unwrap();
+    assert!(AppendReconciliationRequest::from_append_body(&body).is_err());
 }

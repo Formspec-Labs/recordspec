@@ -888,13 +888,17 @@ pub(crate) fn validate_commit(
     {
         return Err(StackError::conflict("completion snapshot head changed"));
     }
+    refuse_certificate_collision(events, &committed_certificate_id(event)?)
+}
+
+/// The certificate id a committed completion event carries.
+pub(crate) fn committed_certificate_id(event: &StoredEvent) -> Result<String, StackError> {
+    let value = decode_cbor_value(event.canonical_event()).map_err(crate::cbor_bad_request)?;
     let certificate = map_lookup_map(
-        map_lookup_map(root, "extensions").map_err(crate::cbor_bad_request)?,
+        map_lookup_map(value.as_map().ok_or_else(invalid)?, "extensions")
+            .map_err(crate::cbor_bad_request)?,
         COMPLETION_EVENT,
     )
     .map_err(crate::cbor_bad_request)?;
-    refuse_certificate_collision(
-        events,
-        &map_lookup_text(certificate, "certificate_id").map_err(crate::cbor_bad_request)?,
-    )
+    map_lookup_text(certificate, "certificate_id").map_err(crate::cbor_bad_request)
 }
