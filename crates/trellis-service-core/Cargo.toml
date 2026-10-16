@@ -34,6 +34,7 @@ stack-common-error = { path = "../../../stack-common/crates/stack-common-error" 
 stack-common-hash = { path = "../../../stack-common/crates/stack-common-hash" }
 stack-common-http = { path = "../../../stack-common/crates/stack-common-http" }
 stack-common-idempotency = { path = "../../../stack-common/crates/stack-common-idempotency", default-features = false, features = ["replay"] }
+stack-common-posture = { path = "../../../stack-common/crates/stack-common-posture" }
 stack-common-private-file = { path = "../../../stack-common/crates/stack-common-private-file" }
 stack-common-ops = { path = "../../../stack-common/crates/stack-common-ops" }
 time = { version = "0.3", features = ["formatting"] }

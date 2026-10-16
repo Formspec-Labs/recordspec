@@ -3385,6 +3385,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "stack-common-posture"
+version = "0.1.0"
+
+[[package]]
 name = "stack-common-private-file"
 version = "0.1.0"
 dependencies = [
@@ -4053,6 +4057,7 @@ dependencies = [
  "stack-common-idempotency",
  "stack-common-ops",
  "stack-common-postgres",
+ "stack-common-posture",
  "stack-common-private-file",
  "stack-common-typeid",
  "tempfile",

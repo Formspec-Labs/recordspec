@@ -69,6 +69,7 @@ mod completion_startup;
 mod http;
 mod oidc_startup;
 pub mod openapi;
+mod posture;
 mod state;
 #[cfg(test)]
 mod test_adapters;
@@ -174,6 +175,12 @@ impl ServerSigningKey {
             },
             valid_to: None,
         })
+    }
+
+    /// Lowercase hex of the 16-byte key id derived from the public key: the key's fingerprint.
+    #[must_use]
+    pub fn kid_hex(&self) -> String {
+        hex::encode(self.export_key.kid())
     }
 
     #[must_use]
