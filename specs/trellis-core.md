@@ -2006,7 +2006,12 @@ VERIFY(E) -> VerificationReport
    aggregate response_ref, or ambiguous v1/v2 dispatch. For EVERY indexed
    signing event, the selected consumer resolver MUST return a readable response
    proof and principal; its digest, principal and exact event timestamp MUST
-   match that row. Missing or unrecognized proof fails `signing_event_unresolved`;
+   match that row. A principal is a text string compared exactly (no
+   trimming); a missing or empty principal, like a missing or unrecognized
+   proof, fails `signing_event_unresolved` and skips that row's other checks,
+   while a present but different principal fails
+   `certificate_chain_summary_mismatch`. Response digests are raw hex as the
+   WOS and Formspec record schemas pin them (no `sha256:` prefix);
    malformed digest fails `malformed_response_digest`; wrong digest fails
    `response_ref_mismatch`. A matching row cannot compensate for another row's
    failure. External operator trust MUST allow the exact certificate event
@@ -2069,7 +2074,13 @@ VERIFY(E) -> VerificationReport
         `trellis-transition-attestation-v1` (§9.8) — same domain shared
         with §A.5 posture-transition attestations and ADR 0005 erasure
         evidence. Invalid signature flips `integrity_verified = false`
-        with `attestation_insufficient` (existing code reused).
+        with `attestation_insufficient` (existing code reused). An
+        `authority_class` other than `"prior"` / `"new"` (Companion A.5) also
+        fails `attestation_insufficient`. Each outcome records
+        `attestation_authority`: `"unchecked"` when no external operator trust
+        registry was selected (attestation shape never establishes authority),
+        `"verified"` when every row verified under the selected registry,
+        `"failed"` otherwise.
      4. Resolve `presentation_artifact.attachment_id` via the ADR 0072
         attachment-binding lineage. A conformant export that includes
         this certificate event MUST ship resolvable attachment bytes
@@ -2108,7 +2119,8 @@ VERIFY(E) -> VerificationReport
         Each entry carries `certificate_id`, `completed_at`,
         `signer_count`, `attachment_resolved`,
         `all_signing_events_resolved`, `chain_summary_consistent`,
-        `failures` (array of localizable failure codes).
+        `attestation_authority`, `failures` (array of localizable failure
+        codes).
 
    `integrity_verified = false` if any certificate-of-completion entry
    has `chain_summary_consistent = false`, `attachment_resolved = false`,
@@ -2375,6 +2387,7 @@ CertificateOfCompletionOutcome = {
   attachment_resolved:           bool,
   all_signing_events_resolved:   bool,
   chain_summary_consistent:      bool,
+  attestation_authority:         "unchecked" / "verified" / "failed",
   failures:                      [* tstr],
 }
 
@@ -3393,6 +3406,7 @@ CertificateOfCompletionOutcome = {
   attachment_resolved:           bool,
   all_signing_events_resolved:   bool,
   chain_summary_consistent:      bool,
+  attestation_authority:         "unchecked" / "verified" / "failed",
   failures:                      [* tstr],
 }
 
