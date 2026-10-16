@@ -3123,7 +3123,7 @@ mod tests {
                 document_hash_algorithm: "sha-256",
                 source_signature_system: "formspec",
                 source_signature_id: "sig-server-test",
-                signed_payload_digest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                signed_payload_digest: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
                 signed_payload_digest_algorithm: "sha-256",
                 signing_intent,
                 signed_at: "2026-05-16T18:31:00Z",
@@ -3191,7 +3191,7 @@ mod tests {
             SignatureAdmissionFailedInput {
                 reason,
                 response_id: "resp-rejected-server-test",
-                signed_payload_digest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                signed_payload_digest: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
                 signature_id: "sig-rejected-server-test",
                 signing_intent,
                 signer_id: Some("applicant"),

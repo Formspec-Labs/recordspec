@@ -2,9 +2,9 @@
 
 - scope (manifest.scope): `case_completion`
 - tree_size (manifest.tree_size): `3`
-- tree_head_hash (checkpoint[2].tree_head_hash): `ab32c3a1336c604b0f17ac6f4dc8da2ba8409891abcb3df9cf2329ea398d1fc7`
-- head_checkpoint_digest: `980ec8b5edeacb48ee15ef6dbe239422fa3aedc7d3ab27fe5410cfdb2a1a0641`
-- registry_digest: `53f447c0c75b353bf4632e42bc23719f499e77a13ddca86bcc3f7c0d5f0ae6d0`
+- tree_head_hash (checkpoint[2].tree_head_hash): `aff3a2ef5cef677771e3e15c89a4842576736aae96edd0886e378c2ac9a28323`
+- head_checkpoint_digest: `dcd7c0fbc32d8ee23230ebcdeef202554f3ec8b6e66f202f732e907456908a4d`
+- registry_digest: `1b2dd29c1fab2bb8b22a293638075eb955c7505844bc6ecfa1044950e24a5608`
 
 ## Posture Declaration (manifest.posture_declaration)
 ```json

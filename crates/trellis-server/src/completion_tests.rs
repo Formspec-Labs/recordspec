@@ -437,7 +437,7 @@ async fn completion_binds_two_distinct_signed_responses_in_one_certificate() {
     ))
     .unwrap();
     body.payload["data"]["signedPayloadDigest"] =
-        serde_json::json!(format!("sha256:{}", "dd".repeat(32)));
+        serde_json::json!("dd".repeat(32));
     body.payload["data"]["signingActId"] = serde_json::json!("signing-act-second-response");
     body.payload["data"]["sourceSignatureId"] = serde_json::json!("sig-second-response");
     body.payload["data"]["ceremonyId"] = serde_json::json!("ceremony-second-response");

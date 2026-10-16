@@ -62,9 +62,8 @@ impl ResponseProofResolver for WosFormspecResolver {
             && algorithm == "sha-256"
             && let Ok(digest) = map_lookup_text(data, "signedPayloadDigest")
         {
-            // WOS carries Formspec's canonical `sha256:` digest unchanged.
-            // Preserve legacy raw hex while rejecting malformed declared digests.
-            return match parse_sha256_hex(digest.strip_prefix("sha256:").unwrap_or(&digest)) {
+            // The record schemas pin raw hex; anything else declared is malformed.
+            return match parse_sha256_hex(&digest) {
                 Some(response_hash) => Ok(Some(CertificateResponseProof { response_hash })),
                 None => Err(ResolverError::MalformedResponseDigest(format!(
                     "signedPayloadDigest {digest:?} does not match sha-256 hex format \
@@ -92,7 +91,7 @@ mod tests {
     use super::*;
     #[test]
     fn canonical_and_legacy_sha256_digests_resolve_but_malformed_declared_digest_refuses() {
-        for digest in ["cc".repeat(32), format!("sha256:{}", "cc".repeat(32))] {
+        for digest in ["cc".repeat(32)] {
             let bytes=integrity_cbor::json_to_dcbor_bytes(&serde_json::json!({"data":{"signerId":"actual-signer","signedPayloadDigestAlgorithm":"sha-256","signedPayloadDigest":digest}}),&[]).unwrap();
             assert_eq!(
                 WosFormspecResolver
@@ -109,6 +108,8 @@ mod tests {
         }
         let bytes=integrity_cbor::json_to_dcbor_bytes(&serde_json::json!({"data":{"signedPayloadDigestAlgorithm":"sha-256","signedPayloadDigest":"sha256:broken"}}),&[]).unwrap();
         assert!(WosFormspecResolver.resolve(&bytes).is_err());
+        let prefixed=integrity_cbor::json_to_dcbor_bytes(&serde_json::json!({"data":{"signedPayloadDigestAlgorithm":"sha-256","signedPayloadDigest":format!("sha256:{}","cc".repeat(32))}}),&[]).unwrap();
+        assert!(WosFormspecResolver.resolve(&prefixed).is_err());
     }
 }
 
