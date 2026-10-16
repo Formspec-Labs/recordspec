@@ -14,8 +14,10 @@ use trellis_admission_formspec::accepted_attachment::{
 use trellis_admission_formspec::{FormspecAppendAdmissionPolicy, formspec_event_type_specs};
 use trellis_admission_wos::{WosEventAdmissionPolicy, WosNativeCloseout, wos_event_type_specs};
 use trellis_export_profile_wos::WosExportProfile;
-use trellis_server::{AdmissionRouter, ServerAdapters, TenantHeaders};
 use trellis_server_ports::{EventAdmissionPolicy, EventTypeSpec, NativeCloseout};
+use trellis_service_core::{AdmissionRouter, ServerAdapters, TenantHeaders};
+
+use crate::source_content::source_content_parts;
 
 /// The shipped WOS and Formspec adapters, accepting the given tenant headers.
 #[must_use]
@@ -25,6 +27,8 @@ pub fn adapters(tenant_headers: TenantHeaders) -> ServerAdapters {
         event_type_specs: default_event_type_specs(),
         external_attachment_admission: Arc::new(FormspecAttachmentAdmission),
         export_profile: Arc::new(WosExportProfile),
+        native_closeout: native_closeout(),
+        source_content: Arc::new(source_content_parts),
         tenant_headers,
     }
 }

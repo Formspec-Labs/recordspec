@@ -18,7 +18,7 @@
 //!
 //! Ordinary event producers post through [`SubstrateClient::append_event`]
 //! (`POST /v1/scopes/{scope}/events`). The Trellis admission composition root
-//! (`trellis-server::composition::DefaultAdmissionPolicy`) routes the request
+//! (`trellis-server::composition::default_admission_policy`) routes the request
 //! to one of two adapters before append commits:
 //!
 //! - **WOS provenance** — construct via [`wos_provenance_append_request`]
@@ -102,13 +102,13 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Formspec aggregate append `eventType` literal admitted at the Trellis HTTP edge.
 ///
-/// `trellis-server` re-exports this value as `FORMSPEC_RESPONSE_SUBMITTED`. The Trellis HTTP JSON
+/// `trellis-admission-formspec` declares the same literal as `FORMSPEC_RESPONSE_SUBMITTED`. The Trellis HTTP JSON
 /// schema `$defs.EventType` enum must include the same literal (see `check-http-api-schema.py`).
 pub const FORMSPEC_APPEND_EVENT_TYPE_LITERAL: &str = "substrate.append.response_submitted";
 
 /// Formspec Response Actions session operation-batch append `eventType` literal.
 ///
-/// `trellis-server` re-exports this value as `FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH`.
+/// `trellis-admission-formspec` declares the same literal as `FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH`.
 /// The Trellis HTTP JSON schema `$defs.EventType` enum must include the same literal.
 pub const FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH_EVENT_TYPE_LITERAL: &str =
     "substrate.append.response_action_session_op_batch";

@@ -35,7 +35,16 @@ impl SourceContentContributor for NeutralPorts {
             "neutral content deliberately unavailable",
         ))
     }
+
+    fn check_batch(
+        &self,
+        selected: &SourceContentSelection,
+        batch: &PreparedSourceContentBatchV1,
+    ) -> Result<(), StackError> {
+        trellis_export_profile_wos::check_source_content_batch(selected, batch)
+    }
 }
+
 impl SourceContentFinalPrefixGuard for NeutralPorts {
     fn classify(
         &self,
@@ -61,14 +70,9 @@ impl SourceContentFinalPrefixGuard for NeutralPorts {
     }
 }
 impl StructuralSourcePublicationVerifier for NeutralPorts {
-    fn verify(
-        &self,
-        zip: &[u8],
-    ) -> Result<trellis_verify_wos::SourceContentPublicationReport, StackError> {
+    fn verify(&self, zip: &[u8]) -> Result<(), StackError> {
         self.structural_calls.fetch_add(1, Ordering::SeqCst);
-        Ok(trellis_verify_wos::verify_source_content_publication(
-            zip, None,
-        ))
+        trellis_export_profile_wos::verify_source_content_export(zip, None)
     }
 }
 fn selected(final_prefix: bool) -> (SourceContentComposition, Arc<NeutralPorts>) {
@@ -83,7 +87,6 @@ fn selected(final_prefix: bool) -> (SourceContentComposition, Arc<NeutralPorts>)
             contributor: ports.clone(),
             final_prefix_guard: ports.clone(),
             structural: ports.clone(),
-            closeout: crate::test_adapters::closeout(),
         },
         ports,
     )
@@ -174,7 +177,7 @@ async fn source_content_ordinary_publication_keeps_prior_profile_gate_and_never_
         .unwrap_err();
     assert_eq!(
         error.title(),
-        "published export bundle failed WOS/Formspec profile verification"
+        "published export bundle failed profile verification"
     );
     assert_eq!(ports.reads.load(Ordering::SeqCst), 0);
     assert_eq!(ports.structural_calls.load(Ordering::SeqCst), 0);
@@ -218,9 +221,8 @@ fn neutral_native_body(key: &str, event: &str) -> SubstrateAppendBody {
 }
 fn real_guard() -> ConfiguredNativeCloseoutGuard {
     let kind = serde_json::to_value(wos_events::ProvenanceKind::OnEntry).unwrap();
-    let rule = serde_json::from_value(json!({"recordKind":kind,"event":"neutral.closeout",
-        "tests":[{"test":"equals","pointer":"/data/closed","value":true}]}))
-    .unwrap();
+    let rule = json!({"closeoutRecord":{"recordKind":kind,"event":"neutral.closeout",
+        "tests":[{"test":"equals","pointer":"/data/closed","value":true}]}});
     ConfiguredNativeCloseoutGuard::new(crate::test_adapters::closeout(), [17; 32], rule).unwrap()
 }
 
@@ -365,7 +367,16 @@ impl SourceContentContributor for CommittedOriginal {
         }
         Ok(self.batch.clone())
     }
+
+    fn check_batch(
+        &self,
+        selected: &SourceContentSelection,
+        batch: &PreparedSourceContentBatchV1,
+    ) -> Result<(), StackError> {
+        trellis_export_profile_wos::check_source_content_batch(selected, batch)
+    }
 }
+
 // This authority changes only after the pre-lock check, while the append waits.
 struct LockWaitAuthority {
     calls: AtomicUsize,
@@ -666,7 +677,6 @@ fn original_composition(contributor: Arc<CommittedOriginal>) -> SourceContentCom
         contributor,
         final_prefix_guard: Arc::new(real_guard()),
         structural: verifier,
-        closeout: crate::test_adapters::closeout(),
     }
 }
 fn source_headers_tenant() -> (

@@ -33,17 +33,15 @@ async fn source_diagnostics_prewrite_policy_refusal_leaves_repository_empty() {
     );
 }
 #[tokio::test]
-async fn source_diagnostics_write_ok_zip_failure_preserves_event_and_original_error() {
+async fn source_diagnostics_write_ok_zip_failure_preserves_event_and_is_retryable() {
     let state = test_state().with_artifact_store(Arc::new(ConflictOnImmutableArtifactStore));
     let error = state
         .append_coordinator()
         .append(synthetic_command("synthetic-publish-refusal"))
         .await
         .unwrap_err();
-    assert_eq!(
-        error.title(),
-        "artifact key already exists with different bytes"
-    );
+    // The event is durable, so the client-class publication refusal surfaces as retryable.
+    assert!(error.status().is_server_error());
     assert_eq!(
         state
             .repository

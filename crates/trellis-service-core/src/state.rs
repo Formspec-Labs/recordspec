@@ -14,9 +14,8 @@ use stack_common_auth::JwtVerifier;
 use stack_common_auth::{AccessTokenVerifier, VerifiedAccessIdentity};
 use stack_common_error::{ErrorCode, StackError};
 use stack_common_http::idempotency::{
-    HttpIdempotencyState, IdempotencyCall, IdempotencyClaim, IdempotencyDecision,
-    IdempotencyDriverError, IdempotencyFailure, IdempotencyOperation,
-    IdempotencyResponseDisposition,
+    HttpIdempotencyState, IdempotencyCall, IdempotencyDecision, IdempotencyDriverError,
+    IdempotencyFailure, IdempotencyOperation,
 };
 use stack_common_http::problem_response;
 use stack_common_http::tenant::{HeaderConfig, TenantHeaderConfigProvider, TenantScope};
@@ -112,6 +111,7 @@ pub struct TrellisServerState {
     /// True while the built-in [`AllowAllScopeAuthorizer`] from [`Self::new`] is still installed.
     scope_authorizer_allow_all: bool,
     pub(crate) append_runner: Arc<dyn AppendRunner>,
+    pub(crate) native_closeout: Arc<dyn NativeCloseout>,
     /// Event-type catalog snapshot built from registered admission specs at
     /// startup; the catalog projection routes consult this and never re-parse
     /// literals or hand-build constants.
@@ -156,6 +156,7 @@ impl TrellisServerState {
             append_runner: Arc::new(DefaultAppendRunner),
             event_type_catalog: Arc::new(EventTypeCatalog::from_specs(adapters.event_type_specs)),
             export_profile: adapters.export_profile,
+            native_closeout: adapters.native_closeout,
             source_content: None,
         }
     }
@@ -454,45 +455,6 @@ impl HttpIdempotencyState for TrellisServerState {
             .map_err(IdempotencyDriverError::store)
     }
 
-    fn http_idempotency_response_disposition(
-        &self,
-        call: &IdempotencyCall,
-        response: &Response,
-    ) -> IdempotencyResponseDisposition {
-        if native_replay_call(call)
-            && response
-                .extensions()
-                .get::<crate::external_transport::RetryableStorageAttempt>()
-                .is_some()
-        {
-            IdempotencyResponseDisposition::RetryableAttempt
-        } else {
-            IdempotencyResponseDisposition::Replay
-        }
-    }
-
-    async fn finish_http_idempotency_attempt(
-        &self,
-        call: &IdempotencyCall,
-        claim: Option<&IdempotencyClaim>,
-        disposition: IdempotencyResponseDisposition,
-        response: StoredResponse,
-    ) -> Result<(), IdempotencyDriverError<Self::Error>> {
-        if claim.is_some() {
-            return Err(IdempotencyDriverError::store(StackError::unavailable(
-                "unexpected HTTP replay claim",
-            )));
-        }
-        if native_replay_call(call)
-            && disposition == IdempotencyResponseDisposition::RetryableAttempt
-        {
-            // Reservation already retained the exact fingerprint. Failed storage attempts
-            // leave response=None; completion never overwrites a concurrent success.
-            return Ok(());
-        }
-        self.record_http_idempotency_response(call, response).await
-    }
-
     fn idempotency_failure_response(&self, failure: IdempotencyFailure) -> Response {
         let error = match failure {
             IdempotencyFailure::MissingKey => StackError::bad_request("idempotency key required"),
@@ -524,14 +486,9 @@ fn tenant_replay_scope(tenant_headers: &TenantHeaders, call: &IdempotencyCall) -
         return format!("{}:{}{}", partition.len(), partition, call.request.scope);
     }
     let tenant = tenant_headers
-        .tenant_header_names()
-        .find_map(|name| header_value(&call.headers, name))
-        .unwrap_or("unknown-tenant");
+        .extract(&call.headers)
+        .map_or_else(|_| "unknown-tenant".to_owned(), |scope| scope.tenant);
     format!("{tenant}:{}", call.request.scope)
-}
-
-fn header_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
-    headers.get(name).and_then(|value| value.to_str().ok())
 }
 
 /// Builds a server state from environment variables.
@@ -545,7 +502,7 @@ fn header_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 ///
 /// Optional:
 /// - `TRELLIS_STORAGE=memory` (in-memory repository; skips `TRELLIS_DATABASE_URL`)
-/// - `TRELLIS_WOS_COMPLETION_CONFIG_FILE` and `TRELLIS_COMPLETION_OPERATOR_CONFIG_FILE` (paired)
+/// - `TRELLIS_COMPLETION_CONFIG_FILE` and `TRELLIS_COMPLETION_OPERATOR_CONFIG_FILE` (paired)
 /// - `TRELLIS_SIGNING_KEY_VALID_TO_UNIX_SECS`
 /// - `TRELLIS_ARTIFACT_BUCKET`
 /// - `TRELLIS_ARTIFACT_PREFIX`
@@ -555,15 +512,12 @@ fn header_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 /// # Errors
 /// Returns an error when OIDC configuration is missing or invalid, legacy auth
 /// environment settings are supplied, or signing-key/backend setup fails.
-pub async fn state_from_env(
-    adapters: ServerAdapters,
-    native_closeout: Arc<dyn NativeCloseout>,
-) -> Result<TrellisServerState, StackError> {
+pub async fn state_from_env(adapters: ServerAdapters) -> Result<TrellisServerState, StackError> {
     // Qualify required authentication before reading signing keys or opening storage.
     let authentication = StartupAuth::from_env()?;
     let completion = crate::completion_startup::StartupCompletion::from_env(
         authentication.tenant_scope(),
-        native_closeout,
+        &adapters,
     )?;
     let trellis_storage_is_memory = matches!(env::var("TRELLIS_STORAGE").as_deref(), Ok("memory"));
 
@@ -729,12 +683,11 @@ impl ExportProfile for VerifierOverride {
         self.inner.profile_members(scope, events, generated_at)
     }
 
-    fn substrate_verified(&self, zip: &[u8]) -> bool {
-        self.inner.substrate_verified(zip)
-    }
-
-    fn profile_verified(&self, zip: &[u8]) -> bool {
-        (self.verifier)(zip)
+    fn verify(&self, zip: &[u8]) -> trellis_server_ports::ExportVerdict {
+        trellis_server_ports::ExportVerdict {
+            profile_verified: (self.verifier)(zip),
+            ..self.inner.verify(zip)
+        }
     }
 
     fn signing_facts(

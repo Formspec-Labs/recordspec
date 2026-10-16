@@ -1,7 +1,7 @@
 // Rust guideline compliant 2026-02-21
-//! Ensures OpenAPI types are reachable via `trellis_server::openapi` (TWREF-086).
+//! Ensures OpenAPI types are reachable via `trellis_service_core::openapi` (TWREF-086).
 
-use trellis_server::openapi::{TrellisServerOpenApi, assert_trellis_openapi_shape};
+use trellis_service_core::openapi::{TrellisServerOpenApi, assert_trellis_openapi_shape};
 use utoipa::OpenApi as _;
 
 #[test]

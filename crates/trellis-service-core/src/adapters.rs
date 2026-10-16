@@ -1,9 +1,9 @@
 // Rust guideline compliant 2026-02-21
 //! Domain adapters the composition root injects into the generic server.
 //!
-//! This crate names no producer (WOS, Formspec): admission, event-type
+//! This crate contains no producer-specific code: admission, event-type
 //! vocabulary, attachment descriptors, export profile and tenant headers all
-//! arrive through [`ServerAdapters`]. `trellis-server-app` assembles the
+//! arrive through [`ServerAdapters`]. `trellis-server` assembles the
 //! shipped set; `deny.toml` keeps the adapter crates out of this crate's graph.
 
 use std::collections::HashMap;
@@ -15,9 +15,11 @@ use stack_common_error::StackError;
 use stack_common_http::tenant::{HeaderConfig, TenantScope, extract_tenant};
 use trellis_server_ports::{
     AdmissionEvent, AdmittedEvent, EventAdmissionPolicy, EventType, EventTypeRef,
-    EventTypeRegistry, EventTypeSpec, ExportProfile, ExternalAttachmentAdmission,
+    EventTypeRegistry, EventTypeSpec, ExportProfile, ExternalAttachmentAdmission, NativeCloseout,
     ReviewGateEventTypeRegistry,
 };
+
+use crate::source_content::SourceContentFactory;
 
 /// Everything domain-specific the generic server needs, supplied at construction.
 #[derive(Clone)]
@@ -30,6 +32,10 @@ pub struct ServerAdapters {
     pub external_attachment_admission: Arc<dyn ExternalAttachmentAdmission>,
     /// Export-profile members, bundle verification and signing facts.
     pub export_profile: Arc<dyn ExportProfile>,
+    /// Native closeout records for Source-content selection.
+    pub native_closeout: Arc<dyn NativeCloseout>,
+    /// The owner adapter behind configured Source-content composition.
+    pub source_content: SourceContentFactory,
     /// Tenant header sets accepted on requests.
     pub tenant_headers: TenantHeaders,
 }
@@ -59,12 +65,6 @@ impl TenantHeaders {
 
     pub(crate) fn primary(&self) -> HeaderConfig {
         self.primary
-    }
-
-    pub(crate) fn tenant_header_names(&self) -> impl Iterator<Item = &'static str> + '_ {
-        std::iter::once(&self.primary)
-            .chain(&self.fallbacks)
-            .map(|config| config.tenant)
     }
 
     pub(crate) fn extract(&self, headers: &HeaderMap) -> Result<TenantScope, StackError> {
@@ -267,20 +267,43 @@ mod tests {
         );
     }
 
+    fn insert(headers: &mut HeaderMap, prefix: &str, tenant: &str, workspace: bool) {
+        headers.insert(
+            format!("x-{prefix}-tenant-id")
+                .parse::<axum::http::HeaderName>()
+                .unwrap(),
+            tenant.parse().unwrap(),
+        );
+        if workspace {
+            for part in ["workspace", "environment", "cell"] {
+                headers.insert(
+                    format!("x-{prefix}-{part}-id")
+                        .parse::<axum::http::HeaderName>()
+                        .unwrap(),
+                    "v".parse().unwrap(),
+                );
+            }
+        }
+    }
+
     #[test]
     fn tenant_headers_try_each_set_in_order() {
         let mut headers = HeaderMap::new();
-        for (name, value) in [
-            ("x-formspec-tenant-id", "t"),
-            ("x-formspec-workspace-id", "w"),
-            ("x-formspec-environment-id", "e"),
-            ("x-formspec-cell-id", "c"),
-        ] {
-            headers.insert(name, value.parse().unwrap());
-        }
+        insert(&mut headers, "formspec", "t", true);
         let wos_only = TenantHeaders::new(HeaderConfig::wos());
         assert!(wos_only.extract(&headers).is_err());
         let mixed = wos_only.or_else(HeaderConfig::formspec());
         assert_eq!(mixed.extract(&headers).unwrap().tenant, "t");
+    }
+
+    /// A partial first set never wins over a complete later set, so the replay tenant and
+    /// the authorised tenant are the same one.
+    #[test]
+    fn partial_first_set_falls_through_to_the_complete_set() {
+        let mut headers = HeaderMap::new();
+        insert(&mut headers, "wos", "wos-only", false);
+        insert(&mut headers, "formspec", "tenant-b", true);
+        let mixed = TenantHeaders::new(HeaderConfig::wos()).or_else(HeaderConfig::formspec());
+        assert_eq!(mixed.extract(&headers).unwrap().tenant, "tenant-b");
     }
 }

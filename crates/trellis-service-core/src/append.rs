@@ -17,8 +17,8 @@ use trellis_core::{AuthoredEvent, LedgerStore};
 use trellis_export_writer::PostureDeclaration as ExportPostureDeclaration;
 use trellis_export_writer::TrellisTimestamp;
 use trellis_server_ports::{
-    AdmissionEvent, AdmittedEvent, AppendUnitOfWork, ComputeContext, ComputeSensitivity,
-    DirectSubmitPolicy,
+    AdmissionEvent, AdmittedEvent, AppendUnitOfWork, CloseoutSource, ComputeContext,
+    ComputeSensitivity, DirectSubmitPolicy,
 };
 use trellis_service_client::{ClientAttestation, SubstrateAppendBody, SubstrateAppendResult};
 use trellis_types::StoredEvent;
@@ -118,17 +118,10 @@ impl<'a> AppendCoordinator<'a> {
         diag::observed(
             true,
             Stage::SelectedNative,
-            self.state
-                .source_content
-                .as_ref()
-                .ok_or_else(|| StackError::unavailable("Source content composition is absent"))
-                .and_then(|composition| {
-                    composition.closeout.validate_append(
-                        &command.event_type,
-                        &command.payload,
-                        &source.selection.identity,
-                    )
-                }),
+            self.state.native_closeout.validate(
+                CloseoutSource::Append(source.body),
+                &source.selection.identity,
+            ),
         )?;
         diag::observed(
             true,
@@ -322,7 +315,12 @@ impl<'a> AppendCoordinator<'a> {
     > {
         let Some(source) = source else {
             if let Some(composition) = &self.state.source_content {
-                composition.require_publication_purpose(scope.as_bytes(), planned, None)?;
+                composition.require_publication_purpose(
+                    scope.as_bytes(),
+                    planned,
+                    None,
+                    self.state.native_closeout.as_ref(),
+                )?;
             }
             return Ok((guard, None));
         };
@@ -367,7 +365,12 @@ impl<'a> AppendCoordinator<'a> {
         let protected = diag::observed(
             true,
             Stage::ContentRead,
-            crate::source_content::read_admitted(composition, &request).await,
+            crate::source_content::read_admitted(
+                composition,
+                self.state.native_closeout.as_ref(),
+                &request,
+            )
+            .await,
         )?;
         diag::mark(true, Stage::CurrentAuthority, Outcome::Enter);
         if diag::observed(
@@ -386,7 +389,7 @@ impl<'a> AppendCoordinator<'a> {
         diag::mark(true, Stage::Reacquire, Outcome::ReturnedOk);
         // Match maintained completion admission: authority may change while waiting
         // for the scope lock. This bounded authentication/grant check may consult
-        // OIDC, but no owning WOS selection or content callback runs under the lock.
+        // OIDC, but no owning selection or content callback runs under the lock.
         diag::mark(true, Stage::CurrentAuthority, Outcome::Enter);
         let current = diag::observed(
             true,
@@ -410,7 +413,12 @@ impl<'a> AppendCoordinator<'a> {
         diag::observed(
             true,
             Stage::FinalGuard,
-            composition.require_publication_purpose(scope.as_bytes(), planned, Some(&protected)),
+            composition.require_publication_purpose(
+                scope.as_bytes(),
+                planned,
+                Some(&protected),
+                self.state.native_closeout.as_ref(),
+            ),
         )?;
         Ok((guard, Some(protected)))
     }
@@ -460,7 +468,8 @@ impl<'a> AppendCoordinator<'a> {
                 protected,
             )
             .await,
-        )?;
+        )
+        .map_err(committed_unpublished)?;
         diag::mark(selected, Stage::Receipt, Outcome::Enter);
         let result = diag::observed(
             selected,
@@ -474,8 +483,21 @@ impl<'a> AppendCoordinator<'a> {
                 &bundle,
                 true,
             ),
-        )?;
+        )
+        .map_err(committed_unpublished)?;
         Ok(AppendOutcome { result, stored })
+    }
+}
+
+/// Maps any failure after the repository write to a retryable 5xx.
+///
+/// The event is durable, so a same-key retry must re-execute and return the committed
+/// record; a 4xx here would be cached and hide it.
+pub(crate) fn committed_unpublished(error: StackError) -> StackError {
+    if error.status().is_server_error() {
+        error
+    } else {
+        StackError::unavailable("append committed; publication incomplete, retry the same key")
     }
 }
 

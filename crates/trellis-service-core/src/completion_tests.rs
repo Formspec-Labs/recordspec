@@ -356,7 +356,8 @@ async fn completion_manual_exports_exact_html_and_retries_without_signing() {
     assert!(export_bundle_cryptographically_verified(&zip));
     assert!(crate::test_adapters::adapters()
             .export_profile
-            .profile_verified(&zip));
+            .verify(&zip)
+            .profile_verified);
     use integrity_verify::trellis::{
         CertificateAttestationAuthorityStatus, CertificateAuthorityRegistry,
         TrustedCertificateAuthority,

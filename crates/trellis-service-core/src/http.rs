@@ -17,7 +17,7 @@ use trellis_service_client::{ComputeSensitivity, SubstrateAppendBody, SubstrateA
 use crate::append;
 use crate::openapi::EventTypeRegistryView;
 use crate::state::{TrellisHealthProbe, TrellisServerState};
-use crate::{event_type_registry_view, publish_bundle, signing_key_registry_cbor};
+use crate::{event_type_registry_view, publish_bundle};
 
 /// Builds the Trellis Axum router.
 ///
@@ -233,7 +233,12 @@ pub(crate) async fn head_bundle(
         )?;
         // Retained reads preserve the existing refusal of a bare Source closeout.
         if let Some(composition) = &state.source_content {
-            composition.require_publication_purpose(scope.as_bytes(), &events, None)?;
+            composition.require_publication_purpose(
+                scope.as_bytes(),
+                &events,
+                None,
+                state.native_closeout.as_ref(),
+            )?;
         }
         let seal = u64::try_from(events.len())
             .map_err(|_| StackError::internal("event count exceeds u64"))?;
@@ -356,7 +361,7 @@ pub(crate) async fn signing_key_registry(
     headers: HeaderMap,
 ) -> Result<Response, StackError> {
     read_authorized(&state, &scope, &tenant_scope, &headers).await?;
-    let bytes = signing_key_registry_cbor(&state.signing_key.export_key())?;
+    let bytes = state.signing_key.public_key_registry_cbor()?;
     Ok(bytes_response("application/cbor", bytes))
 }
 

@@ -261,11 +261,13 @@ async fn admit(
 pub(crate) async fn append(
     State(state): State<TrellisServerState>,
     Extension(authorized): Extension<Arc<AuthorizedExternal>>,
-) -> Result<(StatusCode, Json<SubstrateAppendResult>), TransportError> {
+) -> Result<(StatusCode, Json<SubstrateAppendResult>), StackError> {
     let _guard = state.scope_locks.lock(authorized.scope.as_bytes()).await;
     let now = crate::now_timestamp()?;
     if !state.signing_key.is_active_at(now) {
-        return Err(StackError::bad_request("signing key inactive at append time").into());
+        return Err(StackError::bad_request(
+            "signing key inactive at append time",
+        ));
     }
     let factory = Factory {
         authorized: &authorized,
@@ -282,13 +284,11 @@ pub(crate) async fn append(
             &authorized.compute,
             &factory,
         )
-        .await
-        .map_err(TransportError::storage)?;
+        .await?;
     let events = state
         .repository
         .list_scope(authorized.scope.as_bytes())
-        .await
-        .map_err(TransportError::storage)?;
+        .await?;
     let update_head = events
         .last()
         .is_some_and(|event| event.sequence() == retained.event().sequence());
@@ -316,7 +316,7 @@ pub(crate) async fn append(
         &authorized.compute,
     )
     .await
-    .map_err(TransportError::storage)?;
+    .map_err(crate::append::committed_unpublished)?;
     let result = crate::append_result_for_event(
         &authorized.scope,
         retained.event(),
@@ -325,40 +325,9 @@ pub(crate) async fn append(
         state.external_attachment_admission.event_type(),
         &bundle,
         true,
-    )?;
+    )
+    .map_err(crate::append::committed_unpublished)?;
     Ok((StatusCode::CREATED, Json(result)))
-}
-
-/// Trusted handler evidence that one storage attempt may be retried.
-#[derive(Clone)]
-pub(crate) struct RetryableStorageAttempt;
-
-pub(crate) struct TransportError {
-    error: StackError,
-    retryable: bool,
-}
-impl From<StackError> for TransportError {
-    fn from(error: StackError) -> Self {
-        Self {
-            error,
-            retryable: false,
-        }
-    }
-}
-impl TransportError {
-    fn storage(error: StackError) -> Self {
-        let retryable = error.status() == StatusCode::SERVICE_UNAVAILABLE;
-        Self { error, retryable }
-    }
-}
-impl IntoResponse for TransportError {
-    fn into_response(self) -> Response {
-        let mut response = self.error.into_response();
-        if self.retryable {
-            response.extensions_mut().insert(RetryableStorageAttempt);
-        }
-        response
-    }
 }
 
 struct Factory<'a> {

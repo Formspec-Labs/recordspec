@@ -17,7 +17,6 @@ mod catalog;
 mod certificate_html;
 mod certificate_resolver;
 mod clock_semantics;
-mod completion_selection;
 mod event_types;
 mod findings;
 mod native_provenance;
@@ -42,10 +41,6 @@ mod source_publication_tests;
 
 pub use certificate_html::{CertificateHtml, certificate_html_from_export};
 pub use certificate_resolver::WosFormspecResolver;
-#[doc(inline)]
-pub use completion_selection::{
-    CompletionRecord, completion_record_bindings, validate_completion_prefix,
-};
 pub use findings::{
     WosDomainReport, WosFinding, WosLayeredVerificationReport, WosRelyingPartyVerdict,
     WosVerificationReport,

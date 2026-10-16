@@ -17,9 +17,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = ROOT / "specs" / "trellis-http-api.schema.json"
-SERVER_PATH = ROOT / "crates" / "trellis-server" / "src" / "lib.rs"
+SERVER_PATH = ROOT / "crates" / "trellis-service-core" / "src" / "lib.rs"
 # TWREF-086: Axum `.route(` calls live in `http.rs`; `lib.rs` keeps admission/constants.
-HTTP_ROUTER_PATH = ROOT / "crates" / "trellis-server" / "src" / "http.rs"
+HTTP_ROUTER_PATH = ROOT / "crates" / "trellis-service-core" / "src" / "http.rs"
 CLIENT_PATH = ROOT / "crates" / "trellis-service-client" / "src" / "lib.rs"
 # Resolve the owning source through the SAME maintained path dependency as admission.
 _ADMISSION_MANIFEST = ROOT / "crates" / "trellis-admission-wos" / "Cargo.toml"
@@ -399,7 +399,7 @@ def check_openapi_append_contract(errors: list[str]) -> None:
             "cargo",
             "test",
             "-p",
-            "trellis-server",
+            "trellis-service-core",
             "openapi_append_contract_matches_json_schema",
             "--",
             "--quiet",
@@ -411,7 +411,7 @@ def check_openapi_append_contract(errors: list[str]) -> None:
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
-        errors.append(f"OpenAPI append contract drift (run cargo test -p trellis-server): {detail}")
+        errors.append(f"OpenAPI append contract drift (run cargo test -p trellis-service-core): {detail}")
 
 
 def emit_openapi_document(errors: list[str]) -> dict | None:

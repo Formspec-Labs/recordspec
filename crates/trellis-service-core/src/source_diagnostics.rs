@@ -1,6 +1,6 @@
 //! Feature-gated fixed Source closeout stage labels; no request or error data is emitted.
 // Rust guideline compliant 2026-02-21
-#[cfg(any(feature = "test-harness", test))]
+#[cfg(any(feature = "source-diagnostics", test))]
 use std::io::Write;
 #[derive(Clone, Copy)]
 pub(crate) enum Stage {
@@ -29,7 +29,7 @@ pub(crate) enum Stage {
     Receipt,
 }
 impl Stage {
-    #[cfg(any(feature = "test-harness", test))]
+    #[cfg(any(feature = "source-diagnostics", test))]
     fn label(self) -> &'static str {
         match self {
             Self::AuthMiddleware => "auth_middleware",
@@ -66,7 +66,7 @@ pub(crate) enum Outcome {
     Uncertain,
 }
 impl Outcome {
-    #[cfg(any(feature = "test-harness", test))]
+    #[cfg(any(feature = "source-diagnostics", test))]
     fn label(self) -> &'static str {
         match self {
             Self::Enter => "enter",
@@ -76,7 +76,7 @@ impl Outcome {
         }
     }
 }
-#[cfg(any(feature = "test-harness", test))]
+#[cfg(any(feature = "source-diagnostics", test))]
 fn write_mark(writer: &mut impl Write, stage: Stage, outcome: Outcome) {
     let _ = writeln!(
         writer,
@@ -86,11 +86,11 @@ fn write_mark(writer: &mut impl Write, stage: Stage, outcome: Outcome) {
     );
 }
 pub(crate) fn mark(selected: bool, stage: Stage, outcome: Outcome) {
-    #[cfg(feature = "test-harness")]
+    #[cfg(feature = "source-diagnostics")]
     if selected {
         write_mark(&mut std::io::stderr().lock(), stage, outcome);
     }
-    #[cfg(not(feature = "test-harness"))]
+    #[cfg(not(feature = "source-diagnostics"))]
     let _ = (selected, stage, outcome);
 }
 pub(crate) fn observed<T, E>(selected: bool, stage: Stage, result: Result<T, E>) -> Result<T, E> {
