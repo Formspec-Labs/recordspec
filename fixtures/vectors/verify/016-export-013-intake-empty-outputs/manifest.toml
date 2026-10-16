@@ -1,20 +1,5 @@
-id          = "verify/016-export-013-intake-empty-outputs"
-op          = "verify"
-status      = "active"
-description = """Negative verify vector for the ADR 0073 intake-handoff export. Starts from `export/013-intake-handoffs-public-create-empty-outputs`, which keeps the archive structurally valid but emits WOS `intakeAccepted` and `caseCreated` payloads with empty `outputs` arrays so intake verification must fail during payload parsing."""
-
-[coverage]
-tr_core = ["TR-CORE-067"]
-tr_op = ["TR-OP-122"]
-
-[inputs]
-export_zip = "input-export.zip"
-
-[expected.report]
-structure_verified   = true
-integrity_verified   = false
-readability_verified = true
-first_failure_kind   = "intake_payload_invalid"
-
-[derivation]
-document = "derivation.md"
+id            = "verify/016-export-013-intake-empty-outputs"
+op            = "verify"
+status        = "deprecated"
+deprecated_at = "2026-10-16"
+description   = """Retired: the input ZIP was byte-identical to `export/013-intake-handoffs-public-create-empty-outputs`'s `expected-export.zip`, and export vectors now verify that ZIP against their own `[expected.report]`. The `intake_payload_invalid` expectation and TR-CORE-067 / TR-OP-122 coverage live in `export/013`. This tombstone preserves the `verify/016` prefix per `scripts/check-vector-renumbering.py` (R16); deprecated vectors are excluded from conformance replay and audits per `scripts/check-specs.py` F6."""

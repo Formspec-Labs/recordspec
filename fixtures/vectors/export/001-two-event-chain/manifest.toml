@@ -25,6 +25,7 @@ tr_core = [
     "TR-CORE-082",  # agency-log entries are case-ledger heads plus arrival metadata / witness signatures (extension points reserved)
     "TR-CORE-110",  # versioning + immutable interpretation material preserved for historical verification
     "TR-CORE-134",  # Export Generator packages canonical records + verification material for offline verification
+    "TR-CORE-145",  # interop_sidecars absent (envelope reservation; sibling null / [] cases are export/011, export/012)
 ]
 tr_op = [
     "TR-OP-071",  # selective disclosure via disclosure/export artifacts (not overloading canonical records)

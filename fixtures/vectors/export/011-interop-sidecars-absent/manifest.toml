@@ -1,5 +1,0 @@
-id            = "export/011-interop-sidecars-absent"
-op            = "export"
-status        = "deprecated"
-deprecated_at = "2026-10-16"
-description   = """Retired: this vector reused `export/001`'s chain with a hand-built manifest that carried bare-integer timestamps (rejected since ADR 0069 D-2.1), and was never verified by either conformance runner. Regenerated from the `export/001` base it would be byte-identical to `export/001`, whose manifest already omits `interop_sidecars`, so `export/001` now carries the "absent field is accepted" posture (TR-CORE-145). This tombstone preserves the `export/011` prefix per `scripts/check-vector-renumbering.py` (R16); deprecated vectors are excluded from Rust + Python conformance replay and from coverage / invariant audits per `scripts/check-specs.py` F6."""

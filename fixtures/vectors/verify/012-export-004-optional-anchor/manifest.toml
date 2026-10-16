@@ -1,19 +1,5 @@
-id          = "verify/012-export-004-optional-anchor"
-op          = "verify"
-status      = "active"
-description = """Happy-path verify vector for Core §19 step 8 optional external-anchor handling. Reuses `export/004-external-payload-optional-anchor` intact: payload bytes are present under `060-payloads/`, `external_anchor_required = false`, and no anchor-resolution failure is expected."""
-
-[coverage]
-tr_core = ["TR-CORE-067"]
-tr_op = ["TR-OP-041"]
-
-[inputs]
-export_zip = "input-export.zip"
-
-[expected.report]
-structure_verified   = true
-integrity_verified   = true
-readability_verified = true
-
-[derivation]
-document = "derivation.md"
+id            = "verify/012-export-004-optional-anchor"
+op            = "verify"
+status        = "deprecated"
+deprecated_at = "2026-10-16"
+description   = """Retired: the input ZIP was byte-identical to `export/004-external-payload-optional-anchor`'s `expected-export.zip`, and export vectors now verify that ZIP against their own `[expected.report]`. The TR-CORE-067 / TR-OP-041 coverage moved into `export/004`. This tombstone preserves the `verify/012` prefix per `scripts/check-vector-renumbering.py` (R16); deprecated vectors are excluded from conformance replay and audits per `scripts/check-specs.py` F6."""

@@ -9,10 +9,12 @@ tr_core = [
     "TR-CORE-063",
     "TR-CORE-064",
     "TR-CORE-065",
+    "TR-CORE-067",
     "TR-CORE-110",
     "TR-CORE-134",
 ]
 tr_op = [
+    "TR-OP-041",
     "TR-OP-073",
     "TR-OP-074",
     "TR-OP-110",

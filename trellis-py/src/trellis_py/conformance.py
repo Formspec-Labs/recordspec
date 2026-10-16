@@ -71,6 +71,16 @@ WOS_TAMPER_KINDS = {
 }
 
 
+
+def _eq(actual: Any, expected: Any, what: str) -> None:
+    """`assert actual == expected` that says what differed (values truncated)."""
+    assert actual == expected, f"{what}: got {_short(actual)}, expected {_short(expected)}"
+
+
+def _short(value: Any, limit: int = 160) -> str:
+    text = repr(value)
+    return text if len(text) <= limit else f"{text[:limit]}... ({len(text)} chars)"
+
 def _load_manifest(vector_dir: Path) -> dict[str, Any]:
     return tomllib.loads((vector_dir / "manifest.toml").read_text("utf-8"))
 
@@ -141,11 +151,11 @@ def _assert_append(root: Path, manifest: dict[str, Any]) -> None:
         art = append_event(signing_key, authored)
     except AppendError as exc:
         raise AssertionError(f"append failed: {exc}") from exc
-    assert art.author_event_hash == exp_author
-    assert art.canonical_event == exp_canonical
-    assert art.sig_structure == exp_sig
-    assert art.signed_event == exp_signed
-    assert art.append_head == exp_head
+    _eq(art.author_event_hash, exp_author, "art.author_event_hash")
+    _eq(art.canonical_event, exp_canonical, "art.canonical_event")
+    _eq(art.sig_structure, exp_sig, "art.sig_structure")
+    _eq(art.signed_event, exp_signed, "art.signed_event")
+    _eq(art.append_head, exp_head, "art.append_head")
 
 
 def _assert_export(root: Path, manifest: dict[str, Any]) -> None:
@@ -160,8 +170,8 @@ def _assert_export(root: Path, manifest: dict[str, Any]) -> None:
     actual = export_to_zip_bytes(entries)
     expected_zip = (root / expected["zip"]).read_bytes()
     if "zip_sha256" in expected:
-        assert hashlib.sha256(expected_zip).hexdigest() == expected["zip_sha256"]
-    assert actual == expected_zip
+        _eq(hashlib.sha256(expected_zip).hexdigest(), expected["zip_sha256"], "zip_sha256 pin")
+    _eq(actual, expected_zip, "rebuilt export ZIP bytes")
     # Byte-identity alone says nothing about whether the bytes are a valid
     # export: the labelled outcome is checked by running the verifier on them.
     assert "report" in expected, "export vector must declare [expected.report]"
@@ -183,19 +193,19 @@ def _assert_report_matches_zip(
         _assert_wos_report(root, expected_report, wos_report, expected_kind)
         return
     report = wos_report.trellis
-    assert report.structure_verified == expected_report["structure_verified"]
-    assert wos_report.integrity_verified == expected_report["integrity_verified"]
-    assert report.readability_verified == expected_report["readability_verified"]
+    _eq(report.structure_verified, expected_report["structure_verified"], "report.structure_verified")
+    _eq(wos_report.integrity_verified, expected_report["integrity_verified"], "wos_report.integrity_verified")
+    _eq(report.readability_verified, expected_report["readability_verified"], "report.readability_verified")
     if "posture_transition_count" in expected_report:
-        assert len(report.posture_transitions) == expected_report["posture_transition_count"]
+        _eq(len(report.posture_transitions), expected_report["posture_transition_count"], "len(report.posture_transitions)")
     if "first_failure_kind" in expected_report:
         ff = _first_failure(report)
-        assert ff is not None
-        assert ff.kind == expected_report["first_failure_kind"]
+        assert ff is not None, "expected a verification failure, report has none"
+        _eq(ff.kind, expected_report["first_failure_kind"], "ff.kind")
     if "failing_event_id" in expected_report:
         ff = _first_failure(report)
-        assert ff is not None
-        assert ff.location == expected_report["failing_event_id"]
+        assert ff is not None, "expected a verification failure, report has none"
+        _eq(ff.location, expected_report["failing_event_id"], "ff.location")
 
 
 def _first_failure(report: VerificationReport):
@@ -221,25 +231,25 @@ def _assert_wos_report(
     report: verify_wos.WosVerificationReport,
     expected_kind: str,
 ) -> None:
-    assert report.trellis.structure_verified == expected_report["structure_verified"]
-    assert report.integrity_verified == expected_report["integrity_verified"]
-    assert report.trellis.readability_verified == expected_report["readability_verified"]
+    _eq(report.trellis.structure_verified, expected_report["structure_verified"], "report.trellis.structure_verified")
+    _eq(report.integrity_verified, expected_report["integrity_verified"], "report.integrity_verified")
+    _eq(report.trellis.readability_verified, expected_report["readability_verified"], "report.trellis.readability_verified")
     # First check `wos_findings` (DomainFinding emitted from WOS validators);
     # fall back to Trellis-Core `event_failures` when the kind is a
     # Core-emitted failure routed through the WOS path because the
     # resolution required a WOS resolver (e.g. `response_ref_mismatch`).
     ff = _first_wos_failure(report)
     if ff is not None:
-        assert ff.kind == expected_kind
+        _eq(ff.kind, expected_kind, "ff.kind")
         if "failing_event_id" in expected_report:
-            assert ff.event_hash is not None
-            assert ff.event_hash.hex() == expected_report["failing_event_id"]
+            assert ff.event_hash is not None, "WOS finding carries no event hash"
+            _eq(ff.event_hash.hex(), expected_report["failing_event_id"], "ff.event_hash.hex()")
         return
     trellis_failure = _first_failure(report.trellis)
-    assert trellis_failure is not None
-    assert trellis_failure.kind == expected_kind
+    assert trellis_failure is not None, f"expected {expected_kind!r}, report has no failure"
+    _eq(trellis_failure.kind, expected_kind, "trellis_failure.kind")
     if "failing_event_id" in expected_report:
-        assert trellis_failure.location == expected_report["failing_event_id"]
+        _eq(trellis_failure.location, expected_report["failing_event_id"], "trellis_failure.location")
 
 
 def _assert_tamper(root: Path, manifest: dict[str, Any]) -> None:
@@ -275,17 +285,17 @@ def _assert_tamper(root: Path, manifest: dict[str, Any]) -> None:
             init_pd,
             pd,
         )
-    assert report.structure_verified == expected_report["structure_verified"]
-    assert report.integrity_verified == expected_report["integrity_verified"]
-    assert report.readability_verified == expected_report["readability_verified"]
+    _eq(report.structure_verified, expected_report["structure_verified"], "report.structure_verified")
+    _eq(report.integrity_verified, expected_report["integrity_verified"], "report.integrity_verified")
+    _eq(report.readability_verified, expected_report["readability_verified"], "report.readability_verified")
     if "tamper_kind" in expected_report:
         ff = _first_failure(report)
-        assert ff is not None
-        assert ff.kind == expected_report["tamper_kind"]
+        assert ff is not None, "expected a verification failure, report has none"
+        _eq(ff.kind, expected_report["tamper_kind"], "ff.kind")
     if "failing_event_id" in expected_report:
         ff = _first_failure(report)
-        assert ff is not None
-        assert ff.location == expected_report["failing_event_id"]
+        assert ff is not None, "expected a verification failure, report has none"
+        _eq(ff.location, expected_report["failing_event_id"], "ff.location")
 
 
 def _assert_projection(root: Path, manifest: dict[str, Any]) -> None:
@@ -295,12 +305,12 @@ def _assert_projection(root: Path, manifest: dict[str, Any]) -> None:
         view = cbor2.loads((root / inputs["view"]).read_bytes())
         wm = view["watermark"]
         wm_bytes = _encode_cbor_canonical(wm)
-        assert wm_bytes == (root / expected["watermark"]).read_bytes()
+        _eq(wm_bytes, (root / expected["watermark"]).read_bytes(), "wm_bytes")
         checkpoint_payload = _sign1_payload_bytes((root / inputs["checkpoint"]).read_bytes())
         cp_val = cbor2.loads(checkpoint_payload)
         checkpoint_scope = cp_val["scope"]
         checkpoint_digest = _checkpoint_digest(checkpoint_scope, checkpoint_payload)
-        assert wm["checkpoint_ref"] == checkpoint_digest
+        _eq(wm["checkpoint_ref"], checkpoint_digest, "wm[checkpoint_ref]")
         if "staff_view_decision_binding" in expected:
             fields = manifest["staff_view_decision_binding_fields"]
             ext = fields.get("extensions")
@@ -314,9 +324,11 @@ def _assert_projection(root: Path, manifest: dict[str, Any]) -> None:
                 "staff_view_ref": fields["staff_view_ref"],
                 "stale_acknowledged": fields["stale_acknowledged"],
             }
-            assert _encode_cbor_canonical(binding) == (
-                root / expected["staff_view_decision_binding"]
-            ).read_bytes()
+            _eq(
+                _encode_cbor_canonical(binding),
+                (root / expected["staff_view_decision_binding"]).read_bytes(),
+                "staff_view_decision_binding",
+            )
     if "view_rebuilt" in expected:
         chain_bytes = (root / inputs["chain"]).read_bytes()
         chain = cbor2.loads(chain_bytes)
@@ -333,8 +345,8 @@ def _assert_projection(root: Path, manifest: dict[str, Any]) -> None:
             "last_canonical_event_hash": canonical_hash,
         }
         rebuilt_bytes = _encode_cbor_canonical(rebuilt)
-        assert rebuilt_bytes == (root / expected["view_rebuilt"]).read_bytes()
-        assert rebuilt_bytes == (root / inputs["view"]).read_bytes()
+        _eq(rebuilt_bytes, (root / expected["view_rebuilt"]).read_bytes(), "rebuilt_bytes")
+        _eq(rebuilt_bytes, (root / inputs["view"]).read_bytes(), "rebuilt_bytes")
     if "cadence_report" in expected:
         cadence = manifest["cadence"]
         sizes = []
@@ -352,7 +364,7 @@ def _assert_projection(root: Path, manifest: dict[str, Any]) -> None:
             "expected_tree_sizes": required,
             "observed_tree_sizes": sizes,
         }
-        assert _encode_cbor_canonical(report) == (root / expected["cadence_report"]).read_bytes()
+        _eq(_encode_cbor_canonical(report), (root / expected["cadence_report"]).read_bytes(), "_encode_cbor_canonical(report)")
 
 
 def _assert_shred(root: Path, manifest: dict[str, Any]) -> None:
@@ -385,7 +397,7 @@ def _assert_shred(root: Path, manifest: dict[str, Any]) -> None:
     report_entries.append(("expected_post_state", post_states))
     report_entries.append(("target_content_hash", target_content_hash))
     report = dict(report_entries)
-    assert _encode_cbor_canonical(report) == (root / expected["cascade_report"]).read_bytes()
+    _eq(_encode_cbor_canonical(report), (root / expected["cascade_report"]).read_bytes(), "_encode_cbor_canonical(report)")
 
 
 def _vector_dirs(vectors_root: Path, op: str) -> list[Path]:

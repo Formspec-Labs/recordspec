@@ -1,5 +1,6 @@
 """Generate the interop-sidecar export + tamper fixtures:
 
+* `export/011-interop-sidecars-null`                — positive, `interop_sidecars: null`
 * `export/012-interop-sidecars-empty-list`          — positive, `interop_sidecars: []`
 * `export/014-interop-sidecar-c2pa-manifest`        — positive, one c2pa-manifest@v1
 * `tamper/027-interop-sidecar-populated-phase-1`    — TR-CORE-145 (locked kind)
@@ -72,6 +73,7 @@ KEY_ISSUER = ROOT / "_keys" / "issuer-001.cose_key"
 
 BASE_EXPORT_ZIP = ROOT / "export" / "001-two-event-chain" / "expected-export.zip"
 
+OUT_EXPORT_011 = ROOT / "export" / "011-interop-sidecars-null"
 OUT_EXPORT_012 = ROOT / "export" / "012-interop-sidecars-empty-list"
 OUT_EXPORT_014 = ROOT / "export" / "014-interop-sidecar-c2pa-manifest"
 OUT_TAMPER_027 = ROOT / "tamper" / "027-interop-sidecar-populated-phase-1"
@@ -205,7 +207,7 @@ def emit_signed_manifest(
 def build_export_zip(
     base_zip_bytes: bytes,
     seed: bytes,
-    sidecar_entries: list[dict],
+    sidecar_entries: list[dict] | None,
     sidecar_files: dict[str, bytes],
 ) -> bytes:
     """Re-emit the base export ZIP with `manifest.interop_sidecars =
@@ -322,6 +324,11 @@ def write_export_fixture(
             "derivation.md": derivation.encode("utf-8"),
         },
     )
+
+
+def gen_export_011(seed: bytes, base_zip: bytes) -> bytes:
+    """Positive: manifest carries `interop_sidecars: null` (present, null)."""
+    return build_export_zip(base_zip, seed, sidecar_entries=None, sidecar_files={})
 
 
 def gen_export_012(seed: bytes, base_zip: bytes) -> bytes:
@@ -468,6 +475,24 @@ tamper_kind          = "{tamper_kind}"
 def main() -> None:
     seed, _pubkey = load_seed_and_pubkey(KEY_ISSUER)
     base_zip = BASE_EXPORT_ZIP.read_bytes()
+
+    # === export/011 (positive — explicit null) ===
+    zip_011 = gen_export_011(seed, base_zip)
+    write_export_fixture(
+        OUT_EXPORT_011,
+        "011-interop-sidecars-null",
+        "Canonical positive: manifest carries interop_sidecars: null (present,\n"
+        "null; Core §28 `/ null`). Phase-1 verifier accepts a null field without\n"
+        "error per ADR 0008. Absent and empty-list are `export/001` and\n"
+        "`export/012`.",
+        zip_011,
+        "# `export/011-interop-sidecars-null` derivation\n\n"
+        "Built by `_generator/gen_interop_sidecar_c2pa_037_to_040.py` from\n"
+        "`export/001-two-event-chain`: the manifest is re-emitted with\n"
+        "`interop_sidecars: null` and re-signed under `_keys/issuer-001.cose_key`;\n"
+        "every other member is byte-identical to the base.\n\n"
+        f"`zip_sha256 = {hashlib.sha256(zip_011).hexdigest()}`\n",
+    )
 
     # === export/012 (positive — empty list) ===
     zip_012 = gen_export_012(seed, base_zip)
@@ -628,6 +653,7 @@ def main() -> None:
     write_fixture(OUT_TAMPER_044, manifest_044, {"input-export.zip": zip_044})
 
     print("Wrote:")
+    print(f"  {OUT_EXPORT_011.relative_to(ROOT)}/  zip_sha256={hashlib.sha256(zip_011).hexdigest()}")
     print(f"  {OUT_EXPORT_012.relative_to(ROOT)}/  zip_sha256={hashlib.sha256(zip_012).hexdigest()}")
     print(f"  {OUT_EXPORT_014.relative_to(ROOT)}/  zip_sha256={hashlib.sha256(zip_014).hexdigest()}")
     print(f"  {OUT_TAMPER_027.relative_to(ROOT)}/")

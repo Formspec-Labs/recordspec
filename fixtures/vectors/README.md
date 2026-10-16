@@ -21,6 +21,7 @@ Operation-first tagged union. Each vector declares its `op` in its manifest and 
 
 - **append** — `(prior_head?, signing_key, authored_event) → (canonical_event, signed_event, next_head)`. Runner byte-compares outputs against committed sibling files.
 - **verify** — `(ledger_artifact) → VerificationReport`. Runner compares report fields (`structure_verified`, `integrity_verified`, `readability_verified`) against inline expected.
+  `[expected.report]` is the **WOS-resolved relying-party verdict** (Trellis substrate plus WOS domain findings, with WOS-owned references such as completion signing events resolved), not the bare Trellis verdict. A Trellis-only verifier reports `export/015` as `integrity_verified = false` (`signing_event_unresolved`) and must compose the WOS layer before comparing. The same holds for `export` and `tamper` reports.
 - **export** — `(ledger_state) → zip_bytes`. Runner byte-compares ZIP bytes against committed expected, validates the manifest `zip_sha256` pin against the committed ZIP, and verifies the ZIP, comparing the report to the required inline `[expected.report]` (a byte-exact ZIP that does not verify to its labelled outcome fails the build).
 - **tamper** — `(tampered_artifact) → VerificationReport` where at least one `*_verified` flag is false. Runner compares failure kind + failing event id.
 

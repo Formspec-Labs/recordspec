@@ -1,20 +1,5 @@
-id          = "verify/011-export-003-transition-chain"
-op          = "verify"
-status      = "active"
-description = """Happy-path verify vector for Core §19 step 6. Reuses `export/003-three-event-transition-chain` intact so the verifier emits two clean `PostureTransitionOutcome` records in event order while preserving full archive, checkpoint, and proof integrity."""
-
-[coverage]
-tr_core = ["TR-CORE-067"]
-tr_op = ["TR-OP-041"]
-
-[inputs]
-export_zip = "input-export.zip"
-
-[expected.report]
-structure_verified   = true
-integrity_verified   = true
-readability_verified = true
-posture_transition_count = 2
-
-[derivation]
-document = "derivation.md"
+id            = "verify/011-export-003-transition-chain"
+op            = "verify"
+status        = "deprecated"
+deprecated_at = "2026-10-16"
+description   = """Retired: the input ZIP was byte-identical to `export/003-three-event-transition-chain`'s `expected-export.zip`, and export vectors now verify that ZIP against their own `[expected.report]`. The `posture_transition_count = 2` check and the TR-CORE-067 / TR-OP-041 coverage moved into `export/003`. This tombstone preserves the `verify/011` prefix per `scripts/check-vector-renumbering.py` (R16); deprecated vectors are excluded from conformance replay and audits per `scripts/check-specs.py` F6."""
