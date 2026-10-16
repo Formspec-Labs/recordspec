@@ -52,7 +52,7 @@ fn signing_key_name(inputs: &toml::value::Table) -> &str {
 
 #[tokio::test]
 async fn append_corpus_byte_parity_memory_vs_postgres() {
-    let (_cluster, pool) = started_pool("append_corpus_byte_parity_memory_vs_postgres").await;
+    let (_cluster, pool) = started_pool().await;
 
     let mut checked = 0usize;
     for dir in append_vector_dirs() {
@@ -95,8 +95,9 @@ async fn append_corpus_byte_parity_memory_vs_postgres() {
         // `001-`-style minimal events share `ledger_scope` and `sequence`);
         // truncate before each per-fixture round-trip so Postgres sees a
         // fresh write. Byte parity is the assertion under test, not
-        // multi-fixture replay (which the wider conformance suite covers).
-        sqlx::query("TRUNCATE TABLE trellis_events")
+        // multi-fixture replay (which the wider conformance suite covers). CASCADE because
+        // `trellis_external_attachments` references `trellis_events`.
+        sqlx::query("TRUNCATE TABLE trellis_events CASCADE")
             .execute(&pool)
             .await
             .unwrap();
@@ -157,7 +158,7 @@ async fn transaction_composition_atomic_with_caller_projections() {
     // roll back together. This is the architectural invariant VISION.md
     // §VIII rejection of dual-write rests on.
     let (_cluster, pool) =
-        started_pool("transaction_composition_atomic_with_caller_projections").await;
+        started_pool().await;
 
     // Composition root would create this kind of table per its own schema; we
     // model the seam with a simple side table.
@@ -210,13 +211,8 @@ async fn transaction_composition_atomic_with_caller_projections() {
     );
 }
 
-async fn started_pool(test_name: &str) -> (EphemeralCluster, PgPool) {
-    let cluster = EphemeralCluster::start().unwrap_or_else(|| {
-        panic!(
-            "{test_name} requires postgres binaries (initdb/pg_ctl) and openssl \
-             for an ephemeral TLS-required cluster"
-        )
-    });
+async fn started_pool() -> (EphemeralCluster, PgPool) {
+    let cluster = EphemeralCluster::start_required();
 
     cluster.assert_tls_contract().await;
     let pool = build_pool(&cluster.dsn(), 8).await.unwrap();
