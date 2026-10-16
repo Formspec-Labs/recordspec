@@ -471,6 +471,8 @@ Trellis Core reserves **redaction-aware commitment slots** in the envelope heade
 
 **OC-26 (MUST).** When an Operator admits a canonical record that is subject to later selective disclosure — for example, a record that may later be redacted for FOIA, sealed for child-welfare, or selectively disclosed to opposing counsel — the Operator MUST populate the redaction-aware commitment slots declared by the active binding (Core §13 (Commitment Slots Reserved)). Records appended without commitment slots populated are ineligible for later selective disclosure without envelope reissue, which is a NON-CONFORMANT path for Phase 2+.
 
+*Amended by formspec-stack ADR 0166 (`thoughts/adr/0166-real-receipt-integrity-features.md`): "the redaction-aware commitment slots declared by the active binding" reads "the binding's declared commitment carrier". That carrier is either Core §13 slots or a commitment the binding declares in the anchored payload. The Formspec response binding declares zero slots. Its payload carries `disclosureCommitment`, the SHA-256 of an RFC 9901 SD-JWT issuer JWT.*
+
 ### 13.3 Disclosure Manifest Structure
 
 **OC-27 (MUST).** A **Disclosure Manifest** is the artifact that describes, for an export or audience-specific presentation, how selective disclosure was performed. A Disclosure Manifest MUST include at least:
@@ -485,6 +487,8 @@ Trellis Core reserves **redaction-aware commitment slots** in the envelope heade
 8. `redaction_reason_class` — a classified reason (FOIA exemption, sealing order, minimization) without embedding protected content in the reason.
 9. `commitment_proofs` — proof material tying `disclosed_fields` and `committed_only_fields` to the Core-reserved commitment slots.
 
+*Amended by formspec-stack ADR 0166 (`thoughts/adr/0166-real-receipt-integrity-features.md`): in items 5 and 9, "Core §13 commitment slots" and "the Core-reserved commitment slots" read "the binding's declared commitment carrier".*
+
 ### 13.4 Disclosure Honesty
 
 **OC-28 (MUST NOT).** A Disclosure Manifest MUST NOT be presented as a rewrite of canonical truth. A disclosure-oriented artifact is derived; canonical records remain authoritative (Core §6 (Event Format)).
@@ -494,6 +498,8 @@ Trellis Core reserves **redaction-aware commitment slots** in the envelope heade
 ### 13.5 Redaction Auditability
 
 **OC-30 (MUST).** Each redaction represented by a Disclosure Manifest MUST be independently auditable: an Auditor MUST be able to verify that the commitment slots in the original canonical record match the commitments referenced by the manifest, without requiring access to the plaintext of withheld fields.
+
+*Amended by formspec-stack ADR 0166 (`thoughts/adr/0166-real-receipt-integrity-features.md`): "the commitment slots in the original canonical record" reads "the binding's declared commitment carrier in the original canonical record".*
 
 ### 13.6 Deferral
 
