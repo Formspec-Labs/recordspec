@@ -9,7 +9,6 @@ use integrity_cbor::{
 };
 use stack_common_error::StackError;
 use stack_common_http::tenant::TenantScope;
-use std::collections::BTreeSet;
 use trellis_export_writer::TrellisTimestamp;
 use trellis_server_ports::{ArtifactRef, ScopeAction};
 use trellis_service_client::SubstrateAppendResult;
@@ -21,35 +20,18 @@ const TEMPLATE: &str =
     include_str!("../../../reference/certificate-of-completion/template-v2/template.html");
 const MAX_BYTES: usize = 1024 * 1024;
 
-pub use trellis_service_client::{COMPLETION_EVENT, CompletionRequest};
+pub use trellis_service_client::{
+    COMPLETION_EVENT, CompletionAttestor, CompletionRequest, CompletionSignerLabel,
+};
 
-/// Product-owned labels for one retained signing event.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CompletionSignerLabel {
-    pub signing_event: [u8; 32],
-    pub display_name: String,
-    pub display_role: Option<String>,
-}
-
-/// Explicit operator authority and current verification key selected by deployment.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CompletionAttestor {
-    pub authority: String,
-    pub authority_class: String,
-    pub public_key: [u8; 32],
-}
-
-/// Authorized facts for the exact governed snapshot, including derived disclosure.
+/// Authorized facts for the exact governed snapshot, taken from the seal request's
+/// `selection`, which the product computed under its own permission checks.
 ///
 /// `workflow_status` describes processing disposition and does not imply approval.
 /// The product must resolve current permissions, required delivered evidence and
 /// genuine workflow completion; Trellis does not infer these from case status.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SelectedCompletion {
-    /// Hash of the owning service's complete consistent case snapshot.
-    ///
-    /// Compare on every selection recheck; this does not establish permission.
-    pub selection_revision: [u8; 32],
     pub case_ref: String,
     pub workflow_ref: String,
     pub workflow_status: String,
@@ -59,209 +41,24 @@ pub struct SelectedCompletion {
     pub required_attestors: Vec<CompletionAttestor>,
 }
 
-/// Request-local secret for independent human verification by the selected service.
-pub struct CompletionCallerContext<'a> {
-    person_authorization: Option<&'a str>,
-}
+impl TryFrom<&trellis_service_client::CompletionSelection> for SelectedCompletion {
+    type Error = StackError;
 
-impl std::fmt::Debug for CompletionCallerContext<'_> {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("CompletionCallerContext")
-            .field(
-                "person_authorization",
-                &self.person_authorization.map(|_| "[redacted]"),
-            )
-            .finish()
-    }
-}
-
-impl<'a> CompletionCallerContext<'a> {
-    pub(crate) fn from_headers(headers: &'a HeaderMap) -> Result<Self, StackError> {
-        let all_values =
-            headers.get_all(trellis_service_client::COMPLETION_CALLER_AUTHORIZATION_HEADER);
-        let mut values = all_values.iter();
-        let value = values.next();
-        if values.next().is_some() {
-            return Err(StackError::bad_request(
-                "completion caller authorization is ambiguous",
-            ));
-        }
-        let person_authorization = value
-            .map(|value| value.to_str())
-            .transpose()
-            .map_err(|_| StackError::bad_request("completion caller authorization is invalid"))?;
-        if let Some(value) = person_authorization {
-            trellis_service_client::validate_completion_caller_authorization(value)?;
-        }
+    fn try_from(
+        selection: &trellis_service_client::CompletionSelection,
+    ) -> Result<Self, StackError> {
         Ok(Self {
-            person_authorization,
+            case_ref: selection.case_ref.clone(),
+            workflow_ref: selection.workflow_ref.clone(),
+            workflow_status: selection.workflow_status.clone(),
+            completed_at: TrellisTimestamp::new(
+                selection.completed_at.0,
+                selection.completed_at.1,
+            )?,
+            impact_level: selection.impact_level.clone(),
+            signer_labels: selection.signer_labels.clone(),
+            required_attestors: selection.required_attestors.clone(),
         })
-    }
-
-    /// Returns the person credential for independent selected-service verification.
-    ///
-    /// Forward only to the fixed owning service; never persist or log this value.
-    #[must_use]
-    pub fn person_authorization(&self) -> Option<&str> {
-        self.person_authorization
-    }
-}
-
-/// Product selection for genuine completion and permission to disclose the summary.
-#[async_trait]
-pub trait CompletionSelector: Send + Sync {
-    /// Selects authorized facts for the exact retained prefix.
-    ///
-    /// # Errors
-    /// Refuses unsettled or changed completion facts, insufficient evidence or permission.
-    async fn select(
-        &self,
-        tenant: &TenantScope,
-        principal: &str,
-        caller: &CompletionCallerContext<'_>,
-        scope: &str,
-        request: &CompletionRequest,
-        prefix: &[StoredEvent],
-    ) -> Result<SelectedCompletion, StackError>;
-}
-
-/// Completion adapter for the independently selected owning service.
-///
-/// The supplied client uses the fixed owner origin and a current machine provider.
-/// The owner must independently qualify the Source case association, complete census,
-/// exact archive-to-prefix correspondence, and all current disclosure permissions.
-/// Callers release the scope lock before awaiting this external selection.
-pub struct RemoteCompletionSelector {
-    client: trellis_service_client::TrellisServiceClient,
-    tenant: Option<TenantScope>,
-}
-
-impl std::fmt::Debug for RemoteCompletionSelector {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("RemoteCompletionSelector")
-            .finish_non_exhaustive()
-    }
-}
-
-impl RemoteCompletionSelector {
-    /// Fixes the deployment tenant for the normal startup composition.
-    #[must_use]
-    pub fn for_tenant(
-        client: trellis_service_client::TrellisServiceClient,
-        tenant: TenantScope,
-    ) -> Self {
-        Self {
-            client,
-            tenant: Some(tenant),
-        }
-    }
-
-    /// Selects the existing client for one independently configured owning service.
-    #[must_use]
-    pub fn new(client: trellis_service_client::TrellisServiceClient) -> Self {
-        Self {
-            client,
-            tenant: None,
-        }
-    }
-}
-
-#[async_trait]
-impl CompletionSelector for RemoteCompletionSelector {
-    async fn select(
-        &self,
-        tenant: &TenantScope,
-        _principal: &str,
-        caller: &CompletionCallerContext<'_>,
-        scope: &str,
-        request: &CompletionRequest,
-        prefix: &[StoredEvent],
-    ) -> Result<SelectedCompletion, StackError> {
-        if self
-            .tenant
-            .as_ref()
-            .is_some_and(|expected| expected != tenant)
-        {
-            return Err(StackError::bad_request(
-                "completion deployment tenant mismatch",
-            ));
-        }
-        let person = caller.person_authorization().ok_or_else(|| {
-            StackError::unavailable("completion person authorization is required")
-        })?;
-        validate_prefix(prefix, scope)?;
-        let body =
-            trellis_service_client::completion_selection::CompletionSelectionRequest::from_prefix(
-                tenant, scope, request, prefix,
-            )?;
-        let reply = self.client.completion_selection(&body, person).await?;
-        let selected = reply.selected;
-        Ok(SelectedCompletion {
-            selection_revision: selected.selection_revision,
-            case_ref: selected.case_ref,
-            workflow_ref: selected.workflow_ref,
-            workflow_status: selected.workflow_status,
-            completed_at: TrellisTimestamp::new(selected.completed_at.0, selected.completed_at.1)?,
-            impact_level: selected.impact_level,
-            signer_labels: selected
-                .signer_labels
-                .into_iter()
-                .map(|row| CompletionSignerLabel {
-                    signing_event: row.signing_event,
-                    display_name: row.display_name,
-                    display_role: row.display_role,
-                })
-                .collect(),
-            required_attestors: selected
-                .required_attestors
-                .into_iter()
-                .map(|row| CompletionAttestor {
-                    authority: row.authority,
-                    authority_class: row.authority_class,
-                    public_key: row.public_key,
-                })
-                .collect(),
-        })
-    }
-}
-
-#[cfg(test)]
-mod startup_selection_tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn fixed_completion_tenant_is_checked_before_credentials_or_network() {
-        let tenant = TenantScope {
-            tenant: "tenant-a".into(),
-            workspace: "workspace-a".into(),
-            environment: "environment-a".into(),
-            cell: "cell-a".into(),
-        };
-        let client = trellis_service_client::TrellisServiceClient::new(
-            trellis_service_client::TrellisServiceClientConfig::new(
-                "https://unused.example",
-                stack_common_http::tenant::HeaderConfig::wos(),
-            ),
-        )
-        .unwrap();
-        let selector = RemoteCompletionSelector::for_tenant(client, tenant.clone());
-        let headers = HeaderMap::new();
-        let caller = CompletionCallerContext::from_headers(&headers).unwrap();
-        let request = CompletionRequest {
-            idempotency_key: "selection".into(),
-            certificate_id: "certificate".into(),
-            expected_head: [0; 32],
-            signing_events: vec![[1; 32]],
-        };
-        let mut changed = tenant;
-        changed.cell = "other-cell".into();
-        let error = selector
-            .select(&changed, "principal", &caller, "scope", &request, &[])
-            .await
-            .unwrap_err();
-        assert_eq!(error.title(), "completion deployment tenant mismatch");
     }
 }
 
@@ -382,8 +179,10 @@ impl CompletionSigner for CoseCompletionSigner {
 
 /// Issues a certificate through an explicitly selected product composition.
 ///
-/// Every call checks current authentication and exact scope permissions. No
-/// environment bootstrap enables this operation by default.
+/// Every call checks current authentication and exact scope permissions. The selection
+/// travels in the request and is bound by the idempotency key and `expected_head`; under
+/// its scope lock Trellis checks only the head, prefix validity, authorization and
+/// collision. No environment bootstrap enables this operation by default.
 ///
 /// # Errors
 /// Refuses absent selection, invalid evidence, changed retries or storage failures.
@@ -393,19 +192,17 @@ pub async fn seal_completion(
     tenant: &TenantScope,
     scope: &str,
     request: &CompletionRequest,
-    selector: Option<&dyn CompletionSelector>,
     signer: &dyn CompletionSigner,
 ) -> Result<SubstrateAppendResult, StackError> {
     crate::http::validate_scope(scope)?;
     request.validate()?;
+    let selected = SelectedCompletion::try_from(&request.selection)?;
+    validate_selection(&selected)?;
     let principal = authorize(state, headers, tenant, scope, request).await?;
-    let caller = CompletionCallerContext::from_headers(headers)?;
-    let selector = selector
-        .ok_or_else(|| StackError::unavailable("completion composition is not selected"))?;
     state
         .reserve_completion_request(tenant, &principal, scope, request)
         .await?;
-    let guard = state.scope_locks.lock(scope.as_bytes()).await;
+    let mut guard = state.scope_locks.lock(scope.as_bytes()).await;
     let events = state.repository.list_scope(scope.as_bytes()).await?;
     let mut expected_events = events.clone();
     validate_prefix(&events, scope)?;
@@ -428,23 +225,6 @@ pub async fn seal_completion(
     {
         return Err(StackError::conflict("completion snapshot head changed"));
     }
-    // The owning selection can read an external archive or acquire this same lock.
-    // Its result is admitted only after the exact native census is checked again.
-    drop(guard);
-    let selected = selector
-        .select(tenant, &principal, &caller, scope, request, &prefix)
-        .await?;
-    let mut guard = lock_unchanged_scope(
-        state,
-        headers,
-        tenant,
-        scope,
-        request,
-        &principal,
-        &expected_events,
-    )
-    .await?;
-    validate_selection(request, &selected)?;
     let signers = signing_summary(state, &prefix, request, &selected)?;
     let key = artifact_key(scope, &request.certificate_id);
     let (stored, html) = if let Some(event) = retained {
@@ -571,10 +351,7 @@ pub async fn seal_completion(
             tenant,
             scope,
             request,
-            selector,
             &principal,
-            &prefix,
-            &selected,
             guard,
             &expected_events,
         )
@@ -593,10 +370,7 @@ pub async fn seal_completion(
         tenant,
         scope,
         request,
-        selector,
         &principal,
-        &prefix,
-        &selected,
         guard,
         &expected_events,
     )
@@ -618,10 +392,7 @@ pub async fn seal_completion(
         tenant,
         scope,
         request,
-        selector,
         &principal,
-        &prefix,
-        &selected,
         guard,
         &expected_events,
     )
@@ -676,19 +447,8 @@ pub(crate) fn event_type_spec() -> trellis_server_ports::EventTypeSpec {
         },
     }
 }
-fn validate_selection(
-    request: &CompletionRequest,
-    selected: &SelectedCompletion,
-) -> Result<(), StackError> {
-    for text in [
-        &selected.case_ref,
-        &selected.workflow_ref,
-        &selected.workflow_status,
-    ] {
-        if text.trim().is_empty() || text.len() > 1024 {
-            return Err(invalid());
-        }
-    }
+/// Vocabulary checks Trellis owns; shape and bounds are `CompletionRequest::validate`.
+fn validate_selection(selected: &SelectedCompletion) -> Result<(), StackError> {
     if !matches!(
         selected.workflow_status.as_str(),
         "completed" | "countersigned" | "notarized" | "partially-completed"
@@ -698,34 +458,6 @@ fn validate_selection(
         .is_some_and(|v| !matches!(v.as_str(), "low" | "moderate" | "high"))
     {
         return Err(invalid());
-    }
-    if selected.signer_labels.len() != request.signing_events.len()
-        || selected.required_attestors.is_empty()
-        || selected.required_attestors.len() > 8
-    {
-        return Err(invalid());
-    }
-    let mut seen = BTreeSet::new();
-    for (hash, label) in request.signing_events.iter().zip(&selected.signer_labels) {
-        if hash != &label.signing_event
-            || label.display_name.trim().is_empty()
-            || label.display_name.len() > 1024
-            || label
-                .display_role
-                .as_ref()
-                .is_some_and(|role| role.len() > 1024)
-        {
-            return Err(invalid());
-        }
-    }
-    for authority in &selected.required_attestors {
-        if authority.authority.trim().is_empty()
-            || authority.authority.len() > 1024
-            || !matches!(authority.authority_class.as_str(), "prior" | "new")
-            || !seen.insert((&authority.authority, &authority.authority_class))
-        {
-            return Err(invalid());
-        }
     }
     Ok(())
 }
@@ -768,31 +500,19 @@ async fn authorize(
     }
     Ok(append_permit.principal)
 }
+/// Re-authorizes after any awaited work: drops the lock, then re-takes it only if the
+/// principal and the native snapshot are unchanged.
 async fn recheck(
     state: &crate::TrellisServerState,
     headers: &HeaderMap,
     tenant: &TenantScope,
     scope: &str,
     request: &CompletionRequest,
-    selector: &dyn CompletionSelector,
     principal: &str,
-    prefix: &[StoredEvent],
-    selected: &SelectedCompletion,
     guard: tokio::sync::OwnedMutexGuard<()>,
     expected_events: &[StoredEvent],
 ) -> Result<tokio::sync::OwnedMutexGuard<()>, StackError> {
     drop(guard);
-    let caller = CompletionCallerContext::from_headers(headers)?;
-    if authorize(state, headers, tenant, scope, request).await? != principal
-        || selector
-            .select(tenant, principal, &caller, scope, request, prefix)
-            .await?
-            != *selected
-    {
-        return Err(StackError::conflict(
-            "completion authority or snapshot changed",
-        ));
-    }
     lock_unchanged_scope(
         state,
         headers,
@@ -1177,38 +897,4 @@ pub(crate) fn validate_commit(
         events,
         &map_lookup_text(certificate, "certificate_id").map_err(crate::cbor_bad_request)?,
     )
-}
-
-#[cfg(test)]
-mod caller_context_tests {
-    use super::*;
-
-    #[test]
-    fn caller_context_is_optional_bounded_opaque_and_redacted() {
-        let mut headers = HeaderMap::new();
-        assert!(
-            CompletionCallerContext::from_headers(&headers)
-                .unwrap()
-                .person_authorization()
-                .is_none()
-        );
-        let name = trellis_service_client::COMPLETION_CALLER_AUTHORIZATION_HEADER;
-        headers.insert(name, "Bearer private-test-person".parse().unwrap());
-        let context = CompletionCallerContext::from_headers(&headers).unwrap();
-        assert_eq!(
-            context.person_authorization(),
-            Some("Bearer private-test-person")
-        );
-        assert!(!format!("{context:?}").contains("private-test-person"));
-        headers.append(name, "Bearer second-person".parse().unwrap());
-        assert!(CompletionCallerContext::from_headers(&headers).is_err());
-        headers.remove(name);
-        headers.insert(name, "Basic invalid".parse().unwrap());
-        assert!(CompletionCallerContext::from_headers(&headers).is_err());
-        headers.insert(
-            name,
-            format!("Bearer {}", "a".repeat(8192)).parse().unwrap(),
-        );
-        assert!(CompletionCallerContext::from_headers(&headers).is_err());
-    }
 }

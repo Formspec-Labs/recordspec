@@ -623,7 +623,6 @@ pub struct ConfiguredSourceContentPins {
 /// The owner's pinned selection document is opaque here; the injected [`NativeCloseout`] adapter owns its meaning.
 #[derive(Clone, Debug)]
 pub(crate) struct ConfiguredNativeCloseoutGuard {
-    pub(crate) closeout: std::sync::Arc<dyn NativeCloseout>,
     native_policy_hash: [u8; 32],
     rule: std::sync::Arc<dyn CloseoutRule>,
 }
@@ -635,7 +634,6 @@ impl ConfiguredNativeCloseoutGuard {
     ) -> Result<Self, StackError> {
         let rule = closeout.compile_rule(&rule)?;
         Ok(Self {
-            closeout,
             native_policy_hash,
             rule,
         })

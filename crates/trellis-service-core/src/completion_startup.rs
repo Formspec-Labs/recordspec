@@ -1,142 +1,55 @@
 // Rust guideline compliant 2026-02-21
-//! Loads independently selected completion service credentials and operator keys.
+//! Loads the completion operator signing keys and the Source-content configuration.
 
 use std::{
     collections::BTreeSet,
-    net::IpAddr,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use stack_common_auth::oidc::{
-    AccessTokenProfile, ClientAuthenticationMethod, ClientCredentialsConfig,
-    OidcAccessTokenVerifier, OidcClientCredentials, OidcDependencies, OidcTrust,
-    ReqwestAuthHttpClient, StaticClientSecret, SystemAuthClock, TransportPolicy, WorkloadAssurance,
-};
 use stack_common_error::StackError;
-use stack_common_http::tenant::{HeaderConfig, TenantScope};
 use trellis_export_writer::TrellisTimestamp;
-use trellis_service_client::{
-    TrellisServiceClient, TrellisServiceClientConfig, completion_selection::CompletionTenant,
-};
 
 use crate::{
     ServerAdapters, TrellisServerState,
-    completion::{
-        CompletionAttestor, CompletionSigner, CoseCompletionSigner, RemoteCompletionSelector,
-    },
+    completion::{CompletionAttestor, CompletionSigner, CoseCompletionSigner},
     oidc_startup::read_private,
+    source_content_startup::SourceContentStartupConfiguration,
 };
 
+const OPERATOR_CONFIG: &str = "TRELLIS_COMPLETION_OPERATOR_CONFIG_FILE";
+const SOURCE_CONTENT_CONFIG: &str = "TRELLIS_SOURCE_CONTENT_CONFIG_FILE";
+
 pub(crate) struct StartupCompletion {
-    selector: Option<RemoteCompletionSelector>,
     signer: Option<OperatorSigners>,
     source_content: Option<crate::SourceContentComposition>,
 }
 
 impl StartupCompletion {
-    pub(crate) fn from_env(
-        tenant: &TenantScope,
-        adapters: &ServerAdapters,
-    ) -> Result<Option<Self>, StackError> {
-        match (
-            std::env::var_os("TRELLIS_COMPLETION_CONFIG_FILE"),
-            std::env::var_os("TRELLIS_COMPLETION_OPERATOR_CONFIG_FILE"),
-        ) {
-            (None, None) => Ok(None),
-            (Some(service), Some(operator)) if !service.is_empty() && !operator.is_empty() => {
-                Self::load(Path::new(&service), Path::new(&operator), tenant, adapters).map(Some)
-            }
-            (Some(service), None) if !service.is_empty() => {
-                Self::load_selected(Path::new(&service), None, tenant, adapters)
-                    .map_err(|_| invalid())
-                    .map(Some)
-            }
-            _ => Err(invalid()),
+    /// Reads the two optional private configuration files named by the environment.
+    pub(crate) fn from_env(adapters: &ServerAdapters) -> Result<Option<Self>, StackError> {
+        let path = |name: &str| match std::env::var_os(name) {
+            None => Ok(None),
+            Some(value) if value.is_empty() => Err(invalid()),
+            Some(value) => Ok(Some(PathBuf::from(value))),
+        };
+        let (operator, source) = (path(OPERATOR_CONFIG)?, path(SOURCE_CONTENT_CONFIG)?);
+        if operator.is_none() && source.is_none() {
+            return Ok(None);
         }
+        // File problems surface as one fixed refusal, never as the file reader's message.
+        Self::load(source.as_deref(), operator.as_deref(), adapters)
+            .map(Some)
+            .map_err(|_| invalid())
     }
 
     fn load(
-        service: &Path,
-        operator: &Path,
-        tenant: &TenantScope,
-        adapters: &ServerAdapters,
-    ) -> Result<Self, StackError> {
-        Self::load_selected(service, Some(operator), tenant, adapters)
-    }
-
-    fn load_selected(
-        service: &Path,
+        source: Option<&Path>,
         operator: Option<&Path>,
-        tenant: &TenantScope,
         adapters: &ServerAdapters,
     ) -> Result<Self, StackError> {
-        let profile: ServiceProfile =
-            serde_json::from_slice(&read_private(service)?).map_err(|_| invalid())?;
-        profile.validate(tenant)?;
-        let native_guard = profile
-            .source_content
-            .as_ref()
-            .map(|configuration| configuration.load(service, adapters.native_closeout.clone()))
-            .transpose()?;
-        if operator.is_none() && native_guard.is_none() {
-            return Err(invalid());
-        }
-        let secret_path = service
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(&profile.client_secret_file);
-        let secret = String::from_utf8(read_private(&secret_path)?).map_err(|_| invalid())?;
-        let credentials = StaticClientSecret::new(
-            profile.client_id.clone(),
-            secret.trim_end_matches(['\r', '\n']).to_owned(),
-        )
-        .map_err(|_| invalid())?;
-        let verifier = OidcAccessTokenVerifier::new(
-            OidcTrust {
-                issuer: profile.issuer,
-                audience: profile.audience,
-                required_scopes: profile.required_scopes.into_iter().collect(),
-                allowed_clients: profile.allowed_clients.into_iter().collect(),
-                profile: match profile.profile {
-                    ClaimProfile::Keycloak => AccessTokenProfile::Keycloak,
-                    ClaimProfile::OktaCustomAuthorizationServer => {
-                        AccessTokenProfile::OktaCustomAuthorizationServer
-                    }
-                    ClaimProfile::Rfc9068 => AccessTokenProfile::Rfc9068,
-                },
-                transport: if profile.allow_development_loopback_http {
-                    TransportPolicy::DevelopmentLiteralLoopback
-                } else {
-                    TransportPolicy::HttpsOnly
-                },
-            },
-            OidcDependencies {
-                http: Arc::new(ReqwestAuthHttpClient::new().map_err(|_| invalid())?),
-                clock: Arc::new(SystemAuthClock),
-            },
-        )
-        .map_err(|_| invalid())?;
-        let provider = OidcClientCredentials::new(
-            ClientCredentialsConfig {
-                client_id: profile.client_id,
-                scopes: profile.scopes.into_iter().collect(),
-                method: ClientAuthenticationMethod::ClientSecretBasic,
-                assurance: WorkloadAssurance::RegisteredClient,
-            },
-            verifier,
-            Arc::new(credentials),
-        )
-        .map_err(|_| invalid())?;
-        let client_configuration =
-            TrellisServiceClientConfig::new(profile.origin, profile.tenant_headers.into_config());
-        let client = TrellisServiceClient::new(client_configuration)
-            .map_err(|_| invalid())?
-            .with_token_provider(Arc::new(provider))
-            .map_err(|_| invalid())?;
-
         let rows: Vec<OperatorProfile> = match operator {
             Some(path) => serde_json::from_slice(&read_private(path)?).map_err(|_| invalid())?,
             None => Vec::new(),
@@ -191,190 +104,34 @@ impl StartupCompletion {
             );
             signers.push((authority, signer));
         }
-        let source_content = match (profile.source_content, native_guard) {
-            (Some(configuration), Some(guard)) => Some(configuration.compose(
-                guard,
-                &adapters.source_content,
-                if operator.is_some() {
-                    Some(trusted)
-                } else {
-                    None
-                },
-            )),
-            (None, None) => None,
-            _ => return Err(invalid()),
-        };
+        let source_content = source
+            .map(|path| {
+                let configuration: SourceContentStartupConfiguration =
+                    serde_json::from_slice(&read_private(path)?).map_err(|_| invalid())?;
+                let guard = configuration.load(path, adapters.native_closeout.clone())?;
+                Ok::<_, StackError>(configuration.compose(
+                    guard,
+                    &adapters.source_content,
+                    operator.map(|_| trusted),
+                ))
+            })
+            .transpose()?;
         Ok(Self {
-            selector: operator
-                .map(|_| RemoteCompletionSelector::for_tenant(client, tenant.clone())),
             signer: operator.map(|_| OperatorSigners(signers)),
             source_content,
         })
     }
 
     pub(crate) fn apply(self, state: TrellisServerState) -> TrellisServerState {
-        let state = match (self.selector, self.signer) {
-            (Some(selector), Some(signer)) => {
-                state.with_completion(Arc::new(selector), Arc::new(signer))
-            }
-            (None, None) => state,
-            _ => unreachable!("startup constructs paired formal dependencies"),
+        let state = match self.signer {
+            Some(signer) => state.with_completion(Arc::new(signer)),
+            None => state,
         };
         match self.source_content {
             Some(composition) => state.with_source_content(composition),
             None => state,
         }
     }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ServiceProfile {
-    origin: String,
-    tenant_scope: CompletionTenant,
-    issuer: String,
-    audience: String,
-    required_scopes: Vec<String>,
-    allowed_clients: Vec<String>,
-    profile: ClaimProfile,
-    #[serde(default)]
-    allow_development_loopback_http: bool,
-    client_id: String,
-    scopes: Vec<String>,
-    authentication: Authentication,
-    assurance: Assurance,
-    client_secret_file: PathBuf,
-    tenant_headers: ProfileTenantHeaders,
-    #[serde(default)]
-    source_content: Option<crate::source_content_startup::SourceContentStartupConfiguration>,
-}
-
-/// Header names the owning service reads its tenant tuple from.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ProfileTenantHeaders {
-    tenant: String,
-    workspace: String,
-    environment: String,
-    cell: String,
-}
-
-impl ProfileTenantHeaders {
-    fn validate(&self) -> Result<(), StackError> {
-        for name in [&self.tenant, &self.workspace, &self.environment, &self.cell] {
-            // Lowercase HTTP token, so the name is valid in a header map unchanged.
-            if name.is_empty()
-                || name.len() > 128
-                || !name
-                    .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-            {
-                return Err(invalid());
-            }
-        }
-        Ok(())
-    }
-
-    /// `HeaderConfig` holds `'static` names; the four strings live as long as the client.
-    fn into_config(self) -> HeaderConfig {
-        let leak = |name: String| -> &'static str { Box::leak(name.into_boxed_str()) };
-        HeaderConfig {
-            tenant: leak(self.tenant),
-            workspace: leak(self.workspace),
-            environment: leak(self.environment),
-            cell: leak(self.cell),
-        }
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-enum ClaimProfile {
-    Keycloak,
-    OktaCustomAuthorizationServer,
-    Rfc9068,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-enum Authentication {
-    ClientSecretBasic,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-enum Assurance {
-    RegisteredClient,
-}
-
-impl ServiceProfile {
-    fn validate(&self, tenant: &TenantScope) -> Result<(), StackError> {
-        let _ = (&self.authentication, &self.assurance);
-        if self.tenant_scope != CompletionTenant::from(tenant)
-            || self.allowed_clients != [self.client_id.clone()]
-        {
-            return Err(invalid());
-        }
-        for field in [
-            &self.tenant_scope.tenant,
-            &self.tenant_scope.workspace,
-            &self.tenant_scope.environment,
-            &self.tenant_scope.cell,
-            &self.issuer,
-            &self.audience,
-            &self.client_id,
-        ] {
-            text(field)?;
-        }
-        let requested = scope_set(&self.scopes)?;
-        if requested != scope_set(&self.required_scopes)? {
-            return Err(invalid());
-        }
-        if self.client_secret_file.as_os_str().is_empty() {
-            return Err(invalid());
-        }
-        self.tenant_headers.validate()?;
-        text(&self.origin)?;
-        // http::Uri discards fragments; refuse them before parsing.
-        if self.origin.contains('#') {
-            return Err(invalid());
-        }
-        let uri: axum::http::Uri = self.origin.parse().map_err(|_| invalid())?;
-        let authority = uri.authority().ok_or_else(invalid)?;
-        if authority.as_str().contains('@') || uri.path() != "/" || uri.query().is_some() {
-            return Err(invalid());
-        }
-        match uri.scheme_str() {
-            Some("https") => (),
-            Some("http") if self.allow_development_loopback_http => {
-                let host = uri
-                    .host()
-                    .ok_or_else(invalid)?
-                    .trim_start_matches('[')
-                    .trim_end_matches(']');
-                if !host
-                    .parse::<IpAddr>()
-                    .is_ok_and(|address| address.is_loopback())
-                {
-                    return Err(invalid());
-                }
-            }
-            _ => return Err(invalid()),
-        }
-        Ok(())
-    }
-}
-
-fn scope_set(values: &[String]) -> Result<BTreeSet<String>, StackError> {
-    if values.is_empty() || values.len() > 64 {
-        return Err(invalid());
-    }
-    let mut result = BTreeSet::new();
-    for value in values {
-        text(value)?;
-        if value.chars().any(char::is_whitespace) || !result.insert(value.clone()) {
-            return Err(invalid());
-        }
-    }
-    Ok(result)
 }
 
 #[derive(Deserialize)]
@@ -429,96 +186,18 @@ mod tests {
     use serde_json::{Value, json};
     use std::os::unix::fs::PermissionsExt;
 
-    fn tenant() -> TenantScope {
-        TenantScope {
-            tenant: "tenant-a".into(),
-            workspace: "workspace-a".into(),
-            environment: "environment-a".into(),
-            cell: "cell-a".into(),
-        }
-    }
-    fn profile() -> Value {
-        json!({"origin":"https://wos.example", "tenantHeaders":{"tenant":"x-wos-tenant-id","workspace":"x-wos-workspace-id","environment":"x-wos-environment-id","cell":"x-wos-cell-id"}, "tenantScope":{"tenant":"tenant-a","workspace":"workspace-a","environment":"environment-a","cell":"cell-a"},
-            "issuer":"https://issuer.example/realm", "audience":"wos-audience", "requiredScopes":["completion.read"], "allowedClients":["completion-client"],
-            "profile":"keycloak", "clientId":"completion-client", "scopes":["completion.read"], "authentication":"clientSecretBasic", "assurance":"registeredClient", "clientSecretFile":"secret"})
-    }
-    fn validate(value: Value) -> bool {
-        serde_json::from_value::<ServiceProfile>(value)
-            .is_ok_and(|profile| profile.validate(&tenant()).is_ok())
-    }
     fn private(path: &Path, bytes: &[u8]) {
         std::fs::write(path, bytes).unwrap();
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
-
-    #[test]
-    fn completion_profile_requires_exact_tenant_client_and_scopes() {
-        assert!(validate(profile()));
-        let mut value = profile();
-        value["tenantScope"]["cell"] = json!("other-cell");
-        assert!(!validate(value));
-        let mut value = profile();
-        value["allowedClients"] = json!(["another-client"]);
-        assert!(!validate(value));
-        let mut value = profile();
-        value["requiredScopes"] = json!(["another.scope"]);
-        assert!(!validate(value));
-        let mut value = profile();
-        value["scopes"] = json!(["completion.read", "completion.read"]);
-        assert!(!validate(value));
-    }
-
-    #[test]
-    fn completion_profile_refuses_origin_redirection_and_implicit_development() {
-        for origin in [
-            "http://127.0.0.1:1",
-            "https://user:secret@wos.example",
-            "https://wos.example/path",
-            "https://wos.example/?token=secret",
-            "https://wos.example/#fragment",
-        ] {
-            let mut value = profile();
-            value["origin"] = json!(origin);
-            assert!(!validate(value), "{origin}");
-        }
-        for origin in ["http://127.0.0.1:1", "http://[::1]:1"] {
-            let mut value = profile();
-            value["origin"] = json!(origin);
-            value["allowDevelopmentLoopbackHttp"] = json!(true);
-            assert!(validate(value), "{origin}");
-        }
-        for origin in ["http://localhost:1", "http://192.0.2.1:1"] {
-            let mut value = profile();
-            value["origin"] = json!(origin);
-            value["allowDevelopmentLoopbackHttp"] = json!(true);
-            assert!(!validate(value));
-        }
-    }
-
-    #[test]
-    fn completion_profile_is_closed_and_requires_supported_credentials() {
-        for (field, value) in [
-            ("authentication", json!("privateKeyJwt")),
-            ("assurance", json!("workloadAttested")),
-            ("profile", json!("unknown")),
-            ("staticToken", json!("secret")),
-        ] {
-            let mut selected = profile();
-            selected[field] = value;
-            assert!(!validate(selected));
-        }
+    fn adapters() -> ServerAdapters {
+        crate::test_adapters::adapters()
     }
 
     #[test]
     fn completion_startup_loads_only_explicit_valid_operator_keys() {
         let directory = tempfile::tempdir().unwrap();
-        let service = directory.path().join("service.json");
         let operator = directory.path().join("operator.json");
-        private(&service, &serde_json::to_vec(&profile()).unwrap());
-        private(
-            &directory.path().join("secret"),
-            b"private-test-only-secret",
-        );
         let key = std::fs::read(
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../fixtures/vectors/_keys/issuer-001.cose_key"),
@@ -529,94 +208,49 @@ mod tests {
             .public_key;
         private(&directory.path().join("key.cose"), &key);
         let row = json!({"authority":"test-operator", "authorityClass":"prior", "publicKey":public, "validFrom":[0,0], "validUntil":[20000,0], "coseKeyFile":"key.cose"});
-        private(
-            &operator,
-            &serde_json::to_vec(&json!([row.clone()])).unwrap(),
-        );
-        assert!(
-            StartupCompletion::load(
-                &service,
-                &operator,
-                &tenant(),
-                &crate::test_adapters::adapters()
-            )
-            .is_ok()
-        );
-        private(
-            &operator,
-            &serde_json::to_vec(&json!([row.clone(), row.clone()])).unwrap(),
-        );
-        assert!(
-            StartupCompletion::load(
-                &service,
-                &operator,
-                &tenant(),
-                &crate::test_adapters::adapters()
-            )
-            .is_err()
-        );
+        let loads = |rows: Value| {
+            private(&operator, &serde_json::to_vec(&rows).unwrap());
+            StartupCompletion::load(None, Some(&operator), &adapters())
+        };
+        assert!(loads(json!([row.clone()])).unwrap().signer.is_some());
+        assert!(loads(json!([row.clone(), row.clone()])).is_err());
         let mut mismatch = row.clone();
         mismatch["publicKey"] = json!(vec![0u8; 32]);
-        private(&operator, &serde_json::to_vec(&json!([mismatch])).unwrap());
-        assert!(
-            StartupCompletion::load(
-                &service,
-                &operator,
-                &tenant(),
-                &crate::test_adapters::adapters()
-            )
-            .is_err()
-        );
+        assert!(loads(json!([mismatch])).is_err());
         let mut interval = row;
         interval["validUntil"] = json!([0, 0]);
-        private(&operator, &serde_json::to_vec(&json!([interval])).unwrap());
-        assert!(
-            StartupCompletion::load(
-                &service,
-                &operator,
-                &tenant(),
-                &crate::test_adapters::adapters()
-            )
-            .is_err()
-        );
+        assert!(loads(json!([interval])).is_err());
+        assert!(loads(json!([])).is_err());
     }
 
     #[test]
-    fn source_content_normal_startup_needs_no_formal_operator_or_signing_key() {
+    fn source_content_startup_needs_no_operator_key_and_no_outgoing_client() {
         let directory = tempfile::tempdir().unwrap();
-        let service = directory.path().join("service.json");
-        private(
-            &directory.path().join("secret"),
-            b"private-test-only-secret",
-        );
+        let source = directory.path().join("source.json");
         let owning = serde_json::to_vec(&json!({"closeoutRecord":{"recordKind":serde_json::to_value(wos_events::ProvenanceKind::OnEntry).unwrap(),"event":"neutral.closeout","tests":[]}})).unwrap();
         private(&directory.path().join("owning.json"), &owning);
-        let mut selected = profile();
-        selected["sourceContent"] = json!({"pins":{"providerSelectionHash":vec![1u8;32],"nativePolicyHash":vec![2u8;32],"recipientPolicyHash":vec![3u8;32]},
-            "publisher":"wos-machine","objectStore":{"bucket":"b","endpoint":null,"region":null,"prefix":"p"},
-            "nativeHostSelectionFile":"owning.json","nativeHostSelectionSha256":stack_common_hash::sha256_prefixed(&owning)});
-        private(&service, &serde_json::to_vec(&selected).unwrap());
-        let loaded = StartupCompletion::load_selected(
-            &service,
-            None,
-            &tenant(),
-            &crate::test_adapters::adapters(),
-        )
-        .unwrap();
-        assert!(loaded.selector.is_none());
-        assert!(loaded.signer.is_none());
-        assert!(loaded.source_content.is_some());
-        // An unrelated formal profile retains its required operator dependency.
-        private(&service, &serde_json::to_vec(&profile()).unwrap());
-        assert!(
-            StartupCompletion::load_selected(
-                &service,
-                None,
-                &tenant(),
-                &crate::test_adapters::adapters()
-            )
-            .is_err()
+        private(
+            &source,
+            &serde_json::to_vec(&json!({
+                "pins":{"providerSelectionHash":vec![1u8;32],"nativePolicyHash":vec![2u8;32],"recipientPolicyHash":vec![3u8;32]},
+                "publisher":"wos-machine",
+                "objectStore":{"bucket":"b","endpoint":null,"region":null,"prefix":"p"},
+                "nativeHostSelectionFile":"owning.json",
+                "nativeHostSelectionSha256":stack_common_hash::sha256_prefixed(&owning)
+            }))
+            .unwrap(),
         );
+        let loaded = StartupCompletion::load(Some(&source), None, &adapters()).unwrap();
+        assert!(loaded.signer.is_none());
+        let composition = loaded.source_content.unwrap();
+        assert_eq!(composition.publisher, "wos-machine");
+        assert_eq!(composition.pins.native_policy_hash, [2; 32]);
+        // An outgoing-client profile is no longer a configuration shape.
+        private(
+            &source,
+            &serde_json::to_vec(&json!({"origin":"https://wos.example","clientId":"c"})).unwrap(),
+        );
+        assert!(StartupCompletion::load(Some(&source), None, &adapters()).is_err());
     }
 
     #[tokio::test]

@@ -160,7 +160,6 @@ fn seal_completion_command(args: &[String]) -> Result<(), String> {
         endpoint: String,
         tenant: stack_common_http::tenant::TenantScope,
         bearer_token_file: String,
-        caller_bearer_token_file: Option<String>,
     }
     if args.len() != 5 {
         return Err(
@@ -170,29 +169,16 @@ fn seal_completion_command(args: &[String]) -> Result<(), String> {
     let config: ClientConfig = serde_json::from_slice(&read_bounded(&args[2], 32 * 1024)?)
         .map_err(|_| "invalid completion client configuration")?;
     let request: trellis_service_client::CompletionRequest =
-        serde_json::from_slice(&read_bounded(&args[4], 32 * 1024)?)
+        serde_json::from_slice(&read_bounded(&args[4], 1024 * 1024)?)
             .map_err(|_| "invalid closed completion request")?;
     request.validate().map_err(|e| e.to_string())?;
-    // A single manual call uses a token independently acquired by the caller.
-    // The server verifies current identity/permissions; no CLI key or closure claim is accepted.
+    // A single manual call uses a machine token independently acquired by the caller. The
+    // request file carries the product's selection; the server verifies identity, permissions
+    // and the head, and no CLI key or closure claim is accepted.
     let token_bytes = read_bounded(&config.bearer_token_file, 16 * 1024)?;
     let token = std::str::from_utf8(&token_bytes)
         .map_err(|_| "invalid bearer token file")?
         .trim();
-    let caller_authorization = config
-        .caller_bearer_token_file
-        .as_ref()
-        .map(|path| {
-            let bytes = read_bounded(path, 8 * 1024)?;
-            let token = std::str::from_utf8(&bytes)
-                .map_err(|_| "invalid caller bearer token file")?
-                .trim();
-            let authorization = format!("Bearer {token}");
-            trellis_service_client::validate_completion_caller_authorization(&authorization)
-                .map_err(|_| "invalid caller bearer token file")?;
-            Ok::<_, String>(authorization)
-        })
-        .transpose()?;
     let client = trellis_service_client::TrellisServiceClient::new(
         trellis_service_client::TrellisServiceClientConfig::new(
             config.endpoint,
@@ -206,22 +192,7 @@ fn seal_completion_command(args: &[String]) -> Result<(), String> {
         .build()
         .map_err(|_| "completion runtime unavailable")?;
     let result = runtime
-        .block_on(async {
-            if let Some(authorization) = caller_authorization.as_deref() {
-                client
-                    .seal_completion_with_caller_authorization(
-                        &args[3],
-                        &config.tenant,
-                        &request,
-                        authorization,
-                    )
-                    .await
-            } else {
-                client
-                    .seal_completion(&args[3], &config.tenant, &request)
-                    .await
-            }
-        })
+        .block_on(client.seal_completion(&args[3], &config.tenant, &request))
         .map_err(|e| e.to_string())?;
     println!(
         "{}",

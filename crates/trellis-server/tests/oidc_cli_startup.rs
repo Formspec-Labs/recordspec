@@ -39,7 +39,7 @@ fn oidc_cli_refuses_partial_completion_before_signing_key_or_storage() {
         &serde_json::to_vec(&json!({"tenantScope":tenant,"grants":[]})).unwrap(),
     );
     for setting in [
-        "TRELLIS_COMPLETION_CONFIG_FILE",
+        "TRELLIS_SOURCE_CONTENT_CONFIG_FILE",
         "TRELLIS_COMPLETION_OPERATOR_CONFIG_FILE",
     ] {
         let output = cli()

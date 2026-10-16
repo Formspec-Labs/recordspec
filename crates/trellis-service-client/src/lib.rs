@@ -63,10 +63,14 @@
 
 #![forbid(unsafe_code)]
 
-pub mod completion_selection;
+mod completion;
 mod reconciliation;
 pub mod source_content;
 mod source_diagnostics;
+pub use completion::{
+    COMPLETION_EVENT, CompletionAttestor, CompletionRequest, CompletionSelection,
+    CompletionSignerLabel,
+};
 #[doc(inline)]
 pub use reconciliation::{
     AppendReconciliation, AppendReconciliationRequest, CanonicalAppendContent,
@@ -707,63 +711,6 @@ impl TrellisServiceClientConfig {
     }
 }
 
-/// Certificate event literal shared by the manual trigger and append receipt.
-pub const COMPLETION_EVENT: &str = "trellis.certificate-of-completion.v2";
-
-/// Separate person credential forwarded only during selected completion checks.
-pub const COMPLETION_CALLER_AUTHORIZATION_HEADER: &str = "x-stack-completion-caller-authorization";
-
-/// Validates a bounded opaque bearer without establishing the person's authority.
-///
-/// # Errors
-/// Refuses empty, oversized, or malformed header values without echoing secrets.
-pub fn validate_completion_caller_authorization(value: &str) -> Result<(), StackError> {
-    // Bound the additional secret header independently from the closed trigger body.
-    if value.len() > 8 * 1024
-        || !value.strip_prefix("Bearer ").is_some_and(|token| {
-            !token.is_empty() && token.bytes().all(|byte| byte.is_ascii_graphic())
-        })
-    {
-        return Err(StackError::bad_request(
-            "completion caller authorization is invalid",
-        ));
-    }
-    Ok(())
-}
-
-/// Manual trigger for an exact prefix. Trusted completion facts come from the product.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CompletionRequest {
-    pub idempotency_key: String,
-    pub certificate_id: String,
-    pub expected_head: [u8; 32],
-    pub signing_events: Vec<[u8; 32]>,
-}
-impl CompletionRequest {
-    /// Validates finite trigger fields without asserting workflow completion.
-    ///
-    /// # Errors
-    /// Refuses empty identifiers, overlong fields and repeated signing hashes.
-    pub fn validate(&self) -> Result<(), StackError> {
-        if !(1..=64).contains(&self.idempotency_key.len())
-            || self.certificate_id.trim().is_empty()
-            || self.certificate_id.len() > 1024
-            || self.signing_events.is_empty()
-            || self.signing_events.len() > 64
-            || self
-                .signing_events
-                .iter()
-                .collect::<std::collections::BTreeSet<_>>()
-                .len()
-                != self.signing_events.len()
-        {
-            return Err(StackError::bad_request("completion trigger fields invalid"));
-        }
-        Ok(())
-    }
-}
-
 /// Reqwest-backed Trellis service client.
 #[derive(Clone)]
 pub struct TrellisServiceClient {
@@ -839,71 +786,31 @@ impl TrellisServiceClient {
         Self::append_response(response, scope, ACCEPTED_ATTACHMENT_EVENT_TYPE_LITERAL).await
     }
 
-    /// Manually seals a completion certificate through the selected product checks.
+    /// Seals a completion certificate from the facts the caller embeds in `body.selection`.
     ///
-    /// Every retry checks current permissions and retained completion evidence.
+    /// The caller authenticates as a machine; the selection is bound by the idempotency key
+    /// and `expected_head`, so a retry with a different selection is a changed retry.
+    ///
     /// # Errors
-    /// Refuses invalid triggers, unavailable selection or invalid append receipts.
+    /// Refuses invalid triggers or selections and invalid append receipts.
     pub async fn seal_completion(
         &self,
         scope: &str,
         tenant: &TenantScope,
         body: &CompletionRequest,
     ) -> Result<SubstrateAppendResult, StackError> {
-        self.seal_completion_inner(scope, tenant, body, None).await
-    }
-
-    /// Forwards a person credential separately from the machine token and trigger.
-    ///
-    /// The selected WOS service must independently verify current human authority.
-    /// No credential becomes an event, replay fingerprint, or caller body field.
-    ///
-    /// # Errors
-    /// Refuses invalid credentials, unavailable selection, or invalid append receipts.
-    pub async fn seal_completion_with_caller_authorization(
-        &self,
-        scope: &str,
-        tenant: &TenantScope,
-        body: &CompletionRequest,
-        caller_authorization: &str,
-    ) -> Result<SubstrateAppendResult, StackError> {
-        validate_completion_caller_authorization(caller_authorization)?;
-        self.seal_completion_inner(scope, tenant, body, Some(caller_authorization))
-            .await
-    }
-
-    async fn seal_completion_inner(
-        &self,
-        scope: &str,
-        tenant: &TenantScope,
-        body: &CompletionRequest,
-        caller_authorization: Option<&str>,
-    ) -> Result<SubstrateAppendResult, StackError> {
         validate_scope(scope)?;
         body.validate()?;
         let path = format!("/v1/scopes/{}/completion", encode_path_segment(scope));
-        let mut request = self
+        let response = self
             .request(reqwest::Method::POST, &path, tenant)
             .await?
             .header(IDEMPOTENCY_KEY_HEADER, body.idempotency_key.as_str())
-            .json(body);
-        if let Some(value) = caller_authorization {
-            let mut header = reqwest::header::HeaderValue::from_str(value).map_err(|_| {
-                StackError::bad_request("completion caller authorization is invalid")
-            })?;
-            header.set_sensitive(true);
-            request = request.header(COMPLETION_CALLER_AUTHORIZATION_HEADER, header);
-        }
-        let response = request
+            .json(body)
             .send()
             .await
             .map_err(|_| StackError::unavailable("trellis completion request failed"))?;
-        let result = Self::append_response(response, scope, COMPLETION_EVENT).await;
-        if caller_authorization.is_some() {
-            result.map_err(|_| StackError::unavailable("trellis completion response refused"))
-        } else {
-            result
-        }
+        Self::append_response(response, scope, COMPLETION_EVENT).await
     }
 
     async fn append_response(

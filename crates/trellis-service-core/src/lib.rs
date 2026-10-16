@@ -46,9 +46,8 @@ mod source_content;
 mod source_content_startup;
 mod source_diagnostics;
 pub use completion::{
-    CompletionAttestor, CompletionCallerContext, CompletionRequest, CompletionSelector,
-    CompletionSigner, CompletionSignerLabel, CoseCompletionSigner, RemoteCompletionSelector,
-    SelectedCompletion, seal_completion,
+    CompletionAttestor, CompletionRequest, CompletionSigner, CompletionSignerLabel,
+    CoseCompletionSigner, SelectedCompletion, seal_completion,
 };
 #[doc(inline)]
 pub use source_content::{
