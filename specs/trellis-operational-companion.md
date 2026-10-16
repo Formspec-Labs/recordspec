@@ -467,11 +467,13 @@ The table form is normative. Prose commentary MAY accompany the table; it MUST N
 
 Trellis Core reserves **redaction-aware commitment slots** in the envelope header (Core §13 (Commitment Slots Reserved)) — the byte positions for per-field commitments (Pedersen, Merkle leaves, or equivalent) that enable later selective disclosure without envelope reissue. This companion specifies how those slots are **populated** and how **disclosure manifests** are assembled over them. Implementation of BBS+ or equivalent advanced selective-disclosure cryptography remains **deferred** to Phase 3+.
 
+*Amended by formspec-stack ADR 0166 (`thoughts/adr/0166-real-receipt-integrity-features.md`): a binding may declare its commitment carrier as Core §13 slots or as a commitment in the anchored payload. "Those slots" and "them" above refer to the binding's declared commitment carrier.*
+
 ### 13.2 Population Rule
 
-**OC-26 (MUST).** When an Operator admits a canonical record that is subject to later selective disclosure — for example, a record that may later be redacted for FOIA, sealed for child-welfare, or selectively disclosed to opposing counsel — the Operator MUST populate the redaction-aware commitment slots declared by the active binding (Core §13 (Commitment Slots Reserved)). Records appended without commitment slots populated are ineligible for later selective disclosure without envelope reissue, which is a NON-CONFORMANT path for Phase 2+.
+**OC-26 (MUST).** When an Operator admits a canonical record that is subject to later selective disclosure — for example, a record that may later be redacted for FOIA, sealed for child-welfare, or selectively disclosed to opposing counsel — the Operator MUST populate the redaction-aware commitment slots declared by the active binding (Core §13 (Commitment Slots Reserved)). Records appended without their declared commitment carrier populated are ineligible for later selective disclosure without envelope reissue, which is a NON-CONFORMANT path for Phase 2+.
 
-*Amended by formspec-stack ADR 0166 (`thoughts/adr/0166-real-receipt-integrity-features.md`): "the redaction-aware commitment slots declared by the active binding" reads "the binding's declared commitment carrier". That carrier is either Core §13 slots or a commitment the binding declares in the anchored payload. The Formspec response binding declares zero slots. Its payload carries `disclosureCommitment`, the SHA-256 of an RFC 9901 SD-JWT issuer JWT.*
+*Amended by formspec-stack ADR 0166 (`thoughts/adr/0166-real-receipt-integrity-features.md`): "the redaction-aware commitment slots declared by the active binding" reads "the binding's declared commitment carrier", meaning Core §13 slots or a commitment the binding declares in the anchored payload. The Formspec carrier is ADR 0166 §4's `disclosureCommitment`.*
 
 ### 13.3 Disclosure Manifest Structure
 
@@ -503,7 +505,7 @@ Trellis Core reserves **redaction-aware commitment slots** in the envelope heade
 
 ### 13.6 Deferral
 
-**OC-31 (SEAM DEFINED; ADVANCED CRYPTO DEFERRED TO PHASE 3+).** This companion does not require BBS+, group signatures, or other advanced selective-disclosure cryptography. The Phase 2 requirement is population discipline (§13.2) and manifest structure (§13.3) over the Core-reserved slots. Phase 3+ deployment classes MAY elevate specific cryptographic mechanisms to MUST.
+**OC-31 (SEAM DEFINED; ADVANCED CRYPTO DEFERRED TO PHASE 3+).** This companion does not require BBS+, group signatures, or other advanced selective-disclosure cryptography. The Phase 2 requirement is population discipline (§13.2) and manifest structure (§13.3) over the binding's declared commitment carrier. Phase 3+ deployment classes MAY elevate specific cryptographic mechanisms to MUST.
 
 ---
 
