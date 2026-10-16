@@ -59,9 +59,9 @@ pub use source_content::{
 mod event_repository;
 mod external_attachment;
 mod external_transport;
-pub use external_attachment::{
-    ExternalAttachmentRecipientPolicy, append_prepared_external_attachment,
-};
+pub(crate) use external_attachment::ExternalAttachmentRecipientPolicy;
+#[cfg(test)]
+pub(crate) use external_attachment::append_prepared_external_attachment;
 pub use external_transport::{ExternalAttachmentRecipient, ExternalAttachmentRecipientSelector};
 mod completion_startup;
 mod export_profile;
@@ -1403,6 +1403,32 @@ mod tests {
             ArtifactType::Event,
             "Formspec Response Actions appends must project artifactType=event"
         );
+    }
+
+    #[test]
+    fn event_type_registry_cbor_maps_privacy_class_to_published_label() {
+        let catalog = composition::EventTypeCatalog::default_stack();
+        let decoded = integrity_cbor::decode_cbor_value(
+            &event_type_registry_cbor(&catalog).expect("encode event-type registry"),
+        )
+        .expect("decode registry");
+        let types = integrity_cbor::map_lookup_map(decoded.as_map().unwrap(), "event_types")
+            .expect("event_types");
+        let privacy = |event_type: &str| {
+            let entry = integrity_cbor::map_lookup_map(types, event_type).expect("registered type");
+            match integrity_cbor::map_lookup_optional_value(entry, "privacy_class") {
+                Some(Value::Text(label)) => label.clone(),
+                other => panic!("privacy_class {other:?}"),
+            }
+        };
+        let private = catalog
+            .entries()
+            .find(|entry| {
+                entry.privacy_class == trellis_server_ports::EventPrivacyClass::PrivateAttachment
+            })
+            .expect("a private-attachment type is registered");
+        assert_eq!(privacy(&private.event_type), "privateAttachment");
+        assert_eq!(privacy(FORMSPEC_RESPONSE_SUBMITTED), "publicMetadata");
     }
 
     #[test]
