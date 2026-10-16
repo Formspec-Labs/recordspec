@@ -60,8 +60,6 @@ mod event_repository;
 mod external_attachment;
 mod external_transport;
 pub(crate) use external_attachment::ExternalAttachmentRecipientPolicy;
-#[cfg(test)]
-pub(crate) use external_attachment::append_prepared_external_attachment;
 pub use external_transport::{ExternalAttachmentRecipient, ExternalAttachmentRecipientSelector};
 mod completion_startup;
 mod export_profile;
