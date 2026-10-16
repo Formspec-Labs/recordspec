@@ -29,6 +29,8 @@ pip install -e "./trellis/trellis-py"
 - `trellis_py.export_to_zip_bytes(entries: list[ExportEntry]) -> bytes`
 - `trellis_py.verify_export_zip(export_zip: bytes) -> VerificationReport`
 - `trellis_py.verify_tampered_ledger(registry: bytes, ledger: bytes, ...) -> VerificationReport`
+- `trellis_py.verify_wos.verify_export_zip(export_zip, authorities=None) -> WosVerificationReport` — strict WOS-domain verification; `authorities` is an externally trusted `CertificateAuthorityRegistry` (`{authority URI: TrustedCertificateAuthority}`) for operator attestations, otherwise authority is reported `unchecked`.
+- `trellis_py.verify_wos.verify_source_content_publication(export_zip, authorities=None) -> SourceContentPublicationReport` — ADR 0163 publication phase (`publication_admitted`, `substrate`, `findings`, `blocking_reasons`). Admits protected Response and Source task catalog rows without requiring their content; it is never final Source readiness.
 
 ## Conformance
 
@@ -50,6 +52,22 @@ python -m trellis_py.conformance --vectors /path/to/fixtures/vectors --write-rep
 **Pytest (G-5):** from `trellis/` repo root, `cd trellis-py && python3 -m pytest -q`. From stack monorepo root, `cd trellis/trellis-py && python3 -m pytest -q`, or `PYTHONPATH=trellis/trellis-py/src python3 -m pytest trellis/trellis-py -q` if you keep cwd at the root.
 
 Exit code `0` means every vector under `append/`, `export/`, `verify/`, `tamper/`, `projection/`, and `shred/` passed.
+
+## Source-content publication (ADR 0163)
+
+`verify_source_content_publication` is the counterpart of Rust
+`trellis_verify_wos::verify_source_content_publication`; catalog readers live in
+`trellis_py.source_content`. Both runtimes check the closed protected Response
+locator, the closed `sourceSignedCompletedTask` rows and their protected proof
+packages, the exact native `taskCreated` / `taskCompleted` join, and the
+original-context join. Neither opens protected content or verifies Source
+signatures, and the batch checks and Source-opening verifiers are Rust-only.
+
+Known gap: the WOS-owned native provenance record schema
+(`NativeProvenanceEvent`, finding `native_provenance_invalid`) is not
+re-implemented. The task join reads only the fields it needs from a wrapped
+record, so Python can admit a bundle whose native records Rust refuses on schema
+grounds. The same gap exists in the strict Python verifier today.
 
 ## Dependencies
 

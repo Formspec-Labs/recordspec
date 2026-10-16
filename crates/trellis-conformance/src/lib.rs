@@ -256,6 +256,7 @@ mod tests {
             root,
             table_in_table(root, expected, "report"),
             &expected_zip,
+            pathless_string(inputs, "verifier").as_deref(),
         );
     }
 
@@ -267,7 +268,30 @@ mod tests {
             &root.join(path_field(root, inputs, "export_zip")),
             "read export_zip",
         );
-        assert_report_matches_zip(root, expected_report, &export_zip);
+        assert_report_matches_zip(
+            root,
+            expected_report,
+            &export_zip,
+            pathless_string(inputs, "verifier").as_deref(),
+        );
+    }
+
+    /// `inputs.verifier` selects a non-default phase; absent means strict verification.
+    fn verify_export(
+        export_zip: &[u8],
+        verifier: Option<&str>,
+    ) -> trellis_verify_wos::WosVerificationReport {
+        match verifier {
+            None => trellis_verify_wos::verify_export_zip(export_zip),
+            Some("source-content-publication") => {
+                let report = trellis_verify_wos::verify_source_content_publication(export_zip, None);
+                trellis_verify_wos::WosVerificationReport {
+                    trellis: report.substrate().clone(),
+                    wos_findings: report.findings().to_vec(),
+                }
+            }
+            Some(other) => panic!("unknown verifier {other:?}"),
+        }
     }
 
     /// Run the verifier on `export_zip` and compare it to an
@@ -277,6 +301,7 @@ mod tests {
         root: &Path,
         expected_report: &toml::value::Table,
         export_zip: &[u8],
+        verifier: Option<&str>,
     ) {
         let expected_kind = pathless_string(expected_report, "first_failure_kind");
         let expected_event_id = pathless_string(expected_report, "failing_event_id");
@@ -284,7 +309,7 @@ mod tests {
         // `verify_wos.verify_export_zip`): its substrate resolves WOS-owned
         // references (e.g. completion signing events) that the bare Trellis
         // verifier reports as unresolved.
-        let wos_report = trellis_verify_wos::verify_export_zip(export_zip);
+        let wos_report = verify_export(export_zip, verifier);
         if expected_kind.as_deref().is_some_and(is_wos_kind) {
             assert_wos_report_matches(
                 root,
@@ -524,7 +549,13 @@ mod tests {
     fn is_wos_kind(kind: &str) -> bool {
         matches!(
             kind,
-            "case_created_event_type_mismatch"
+            "protected_response_native_binding_mismatch"
+                | "protected_response_unavailable"
+                | "source_original_context_join_invalid"
+                | "source_task_catalog_duplicate"
+                | "source_task_content_unavailable"
+                | "source_task_native_join_mismatch"
+                | "case_created_event_type_mismatch"
                 | "case_created_event_unresolved"
                 | "case_created_handoff_mismatch"
                 | "case_created_payload_invalid"

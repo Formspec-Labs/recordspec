@@ -1,0 +1,20 @@
+id          = "verify/029-source-content-strict-protected-intake"
+op          = "verify"
+status      = "active"
+description = """The same bytes as `verify/028` under the default strict phase: protected content is not available to a generic verifier, so the bundle is refused with `protected_response_unavailable`."""
+
+[coverage]
+tr_core = ["TR-CORE-067"]
+tr_op = ["TR-OP-122"]
+
+[inputs]
+export_zip = "input-export.zip"
+
+[expected.report]
+structure_verified   = true
+integrity_verified   = false
+readability_verified = true
+first_failure_kind   = "protected_response_unavailable"
+
+[derivation]
+document = "derivation.md"

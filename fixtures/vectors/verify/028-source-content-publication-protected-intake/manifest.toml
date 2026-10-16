@@ -1,0 +1,20 @@
+id          = "verify/028-source-content-publication-protected-intake"
+op          = "verify"
+status      = "active"
+description = """Source-content publication phase (ADR 0163). Starts from `export/007-intake-handoffs-public-create`, replaces the catalog row's inline Response with a closed protected Response locator bound to the intake event, and re-signs the manifest. The publication phase admits it without requiring protected content."""
+
+[coverage]
+tr_core = ["TR-CORE-067"]
+tr_op = ["TR-OP-122"]
+
+[inputs]
+export_zip = "input-export.zip"
+verifier   = "source-content-publication"
+
+[expected.report]
+structure_verified   = true
+integrity_verified   = true
+readability_verified = true
+
+[derivation]
+document = "derivation.md"

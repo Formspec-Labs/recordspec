@@ -1,0 +1,20 @@
+id          = "verify/034-source-content-strict-task-and-original"
+op          = "verify"
+status      = "active"
+description = """The same bytes as `verify/033` under the default strict phase: Source task content is unavailable to a generic verifier, so the bundle is refused with `source_task_content_unavailable`."""
+
+[coverage]
+tr_core = ["TR-CORE-067"]
+tr_op = ["TR-OP-122"]
+
+[inputs]
+export_zip = "input-export.zip"
+
+[expected.report]
+structure_verified   = true
+integrity_verified   = false
+readability_verified = true
+first_failure_kind   = "source_task_content_unavailable"
+
+[derivation]
+document = "derivation.md"

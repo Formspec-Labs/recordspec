@@ -14,7 +14,9 @@ import cbor2
 from cbor2 import CBORDecodeError, CBORTag
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
+from trellis_py._cbor_canonical import encode_canonical_cbor_value
 from trellis_py.codec import (
+    domain_separated_preimage,
     domain_separated_sha256,
     encode_bstr,
     encode_tstr,
@@ -170,6 +172,27 @@ class ErasureEvidenceOutcome:
     failures: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class TrustedCertificateAuthority:
+    """Externally trusted operator key binding for completion certificates only.
+
+    Configure outside the untrusted export: an embedded key or the
+    attestation's self-asserted authority URI does not establish this trust.
+    `allowed_purpose` is the exact registered certificate extension; the
+    validity interval is inclusive and never implicitly unlimited.
+    """
+
+    public_key: bytes
+    authority_class: str
+    allowed_purpose: str
+    valid_from: "TrellisTimestamp"
+    valid_until: "TrellisTimestamp"
+
+
+# Trusted bindings keyed by exact authority URI.
+CertificateAuthorityRegistry = dict[str, TrustedCertificateAuthority]
+
+
 @dataclass
 class CertificateOfCompletionOutcome:
     """Outcome for one ADR 0007 certificate-of-completion verification
@@ -192,8 +215,8 @@ class CertificateOfCompletionOutcome:
     chain_summary_consistent: bool = True
     failures: list[str] = field(default_factory=list)
     # ADR 0016 §Verification: operator authority is reported separately as
-    # unchecked / verified / failed. This verifier selects no external trust
-    # registry, so it is always "unchecked".
+    # unchecked / verified / failed. "unchecked" unless the caller selects an
+    # external `CertificateAuthorityRegistry`.
     attestation_authority: str = "unchecked"
 
 
@@ -1889,12 +1912,53 @@ def _affirmation_payload_bytes(
     return None
 
 
+def _attestation_preimage(
+    certificate_id: str, completed_at: TrellisTimestamp, authority_class: str
+) -> bytes:
+    """Signed bytes of one operator attestation row (ADR 0016 §Verification)."""
+    component = encode_canonical_cbor_value(
+        [certificate_id, [completed_at.seconds, completed_at.nanos], authority_class]
+    )
+    return domain_separated_preimage("trellis-transition-attestation-v1", component)
+
+
+def _operator_attestations_trusted(
+    payload: CertificateDetails, registry: CertificateAuthorityRegistry
+) -> bool:
+    """Every operator row verifies against the externally selected trust snapshot."""
+    rows = payload.payload["attestations"]
+    if not rows:
+        return False
+    for row in rows:
+        authority = registry.get(row["authority"])
+        if (
+            authority is None
+            or authority.authority_class != row["authority_class"]
+            or authority.allowed_purpose != payload.extension
+            or authority.valid_from > authority.valid_until
+            or payload.completed_at < authority.valid_from
+            or payload.completed_at > authority.valid_until
+        ):
+            return False
+        preimage = _attestation_preimage(
+            payload.certificate_id, payload.completed_at, row["authority_class"]
+        )
+        try:
+            Ed25519PublicKey.from_public_bytes(authority.public_key).verify(
+                row["signature"], preimage
+            )
+        except Exception:  # noqa: BLE001
+            return False
+    return True
+
+
 def _finalize_certificates_of_completion(
     payloads: list[tuple[int, CertificateDetails, bytes]],
     events: list[ParsedSign1],
     event_failures: list[VerificationFailure],
     payload_blobs: Optional[dict[bytes, bytes]] = None,
     resolver: Optional[ResponseProofResolver] = None,
+    authorities: Optional[CertificateAuthorityRegistry] = None,
 ) -> list[CertificateOfCompletionOutcome]:
     """ADR 0007 §"Verifier obligations" cross-event finalization. Step 1
     runs in `_decode_certificate_payload`; this pass runs steps 2 (id
@@ -1974,6 +2038,13 @@ def _finalize_certificates_of_completion(
             all_signing_events_resolved=True,
             chain_summary_consistent=True,
             failures=[],
+            attestation_authority=(
+                "unchecked"
+                if authorities is None
+                else "verified"
+                if _operator_attestations_trusted(payload, authorities)
+                else "failed"
+            ),
         )
 
         def fail(kind: str, locator: bytes, *, consistent: bool = True) -> None:
@@ -2003,9 +2074,13 @@ def _finalize_certificates_of_completion(
             ):
                 fail("certificate_covered_claim_unknown", canonical_hash, consistent=False)
 
-        # Step 3 (Phase-1 structural attestation contract). Operator
-        # authority itself stays "unchecked": no external trust is selected.
-        if not payload.attestation_signatures_well_formed:
+        # Step 3: malformed rows or a failed selected-trust check are
+        # attestation_insufficient; with no trust selected, authority stays
+        # "unchecked" rather than becoming a cryptographic claim.
+        if (
+            not payload.attestation_signatures_well_formed
+            or outcome.attestation_authority == "failed"
+        ):
             fail("attestation_insufficient", canonical_hash, consistent=False)
 
         # Steps 5 / 6 / 7 — each `signing_events[i]` digest cross-checked.
@@ -2476,6 +2551,7 @@ def _verify_event_set(
     identity_event_type_admitted: Callable[[str], bool] = _is_identity_attestation_event_type,
     operator_uri_admitted: Callable[[str], bool] = _is_consumer_operator_uri,
     resolver: Optional[ResponseProofResolver] = None,
+    certificate_authorities: Optional[CertificateAuthorityRegistry] = None,
 ) -> VerificationReport:
     event_failures: list[VerificationFailure] = []
     posture_transitions: list[PostureTransitionOutcome] = []
@@ -2759,6 +2835,7 @@ def _verify_event_set(
         event_failures,
         payload_blobs,
         resolver=resolver,
+        authorities=certificate_authorities,
     )
     # ADR 0010 §"Verifier obligations" finalization — runs steps 3-9
     # cross-event after every event has been decoded.
@@ -3898,31 +3975,6 @@ def _first_array_text(outputs: list[Any]) -> Optional[str]:
     return None
 
 
-def _parse_intake_manifest_entries(data: bytes) -> list[dict[str, Any]]:
-    v = _decode_value(data)
-    if not isinstance(v, list):
-        raise VerifyError("intake handoff catalog root is not an array")
-    out: list[dict[str, Any]] = []
-    for entry in v:
-        if not isinstance(entry, dict):
-            raise VerifyError("intake handoff catalog entry is not a map")
-        handoff_raw = entry.get("handoff")
-        if handoff_raw is None:
-            raise VerifyError("missing `handoff`")
-        handoff = _parse_intake_handoff_details(handoff_raw)
-        out.append(
-            {
-                "intake_event_hash": _map_lookup_fixed_bytes(entry, "intake_event_hash", 32),
-                "case_created_event_hash": _map_lookup_optional_fixed_bytes(
-                    entry, "case_created_event_hash", 32
-                ),
-                "handoff": handoff,
-                "response_bytes": _map_lookup_bytes(entry, "response_bytes"),
-            }
-        )
-    return out
-
-
 def _intake_entry_matches_record(entry: dict[str, Any], record: dict[str, Any]) -> bool:
     handoff = entry["handoff"]
     if handoff["handoff_id"] != record["intake_id"]:
@@ -3935,11 +3987,15 @@ def _intake_entry_matches_record(entry: dict[str, Any], record: dict[str, Any]) 
             and record["case_disposition"] == "attachToExistingCase"
         )
     if mode == "publicIntake":
+        # The handoff's definitionRef names the Formspec Definition (the
+        # validation contract); the record's definitionUrl names the governing
+        # WOS kernel. Different namespaces: require the governing definition,
+        # never equate the two.
         return (
             record["case_intent"] == "requestGovernedCaseCreation"
             and record["case_disposition"] == "createGovernedCase"
-            and record.get("definition_url") == handoff["definition_url"]
-            and record.get("definition_version") == handoff["definition_version"]
+            and bool(record.get("definition_url"))
+            and bool(record.get("definition_version"))
         )
     return False
 
@@ -4172,74 +4228,6 @@ def _readable_payload_bytes(
     if details.payload_ref_external:
         return payload_blobs.get(details.content_hash)
     return None
-
-
-def _optional_str_entry(m: dict, key: str) -> Optional[str]:
-    """Return the string value of `key` or None if the key is absent or null."""
-    v = m.get(key)
-    if v is None:
-        return None
-    if isinstance(v, str):
-        return v
-    return None
-
-
-def _parse_signature_catalog_entries(data: bytes) -> list[dict[str, Any]]:
-    v = _decode_value(data)
-    if not isinstance(v, list):
-        raise VerifyError("signature catalog root is not an array")
-    rows: list[dict[str, Any]] = []
-    for entry in v:
-        if not isinstance(entry, dict):
-            raise VerifyError("signature catalog entry is not a map")
-        pr = entry.get("profile_ref")
-        pk = entry.get("profile_key")
-        ib = entry.get("identity_binding")
-        cr = entry.get("consent_reference")
-        if not isinstance(ib, dict) or not isinstance(cr, dict):
-            raise VerifyError("identity_binding or consent_reference is not a map")
-        rows.append(
-            {
-                "canonical_event_hash": _map_lookup_fixed_bytes(
-                    entry, "canonical_event_hash", 32
-                ),
-                "signer_id": str(_map_lookup_str(entry, "signer_id")),
-                "role_id": str(_map_lookup_str(entry, "role_id")),
-                "role": str(_map_lookup_str(entry, "role")),
-                "document_id": str(_map_lookup_str(entry, "document_id")),
-                "document_hash": str(_map_lookup_str(entry, "document_hash")),
-                "document_hash_algorithm": str(_map_lookup_str(entry, "document_hash_algorithm")),
-                "signed_at": str(_map_lookup_str(entry, "signed_at")),
-                "identity_binding": ib,
-                "consent_reference": cr,
-                "signature_provider": str(_map_lookup_str(entry, "signature_provider")),
-                "ceremony_id": str(_map_lookup_str(entry, "ceremony_id")),
-                "source_signature_system": _optional_str_entry(
-                    entry, "source_signature_system"
-                ),
-                "source_signature_id": _optional_str_entry(
-                    entry, "source_signature_id"
-                ),
-                "signed_payload_digest": _optional_str_entry(
-                    entry, "signed_payload_digest"
-                ),
-                "signed_payload_digest_algorithm": _optional_str_entry(
-                    entry, "signed_payload_digest_algorithm"
-                ),
-                "signing_intent": _optional_str_entry(entry, "signing_intent"),
-                "profile_ref": str(pr) if isinstance(pr, str) else None,
-                "profile_key": str(pk) if isinstance(pk, str) else None,
-                "source_response_ref": _map_lookup_str_alias(
-                    entry, "source_response_ref", "formspec_response_ref"
-                ),
-                "signing_act_id": str(_map_lookup_str(entry, "signing_act_id")),
-                "presentation_hash": str(_map_lookup_str(entry, "presentation_hash")),
-                "witnessed_signature_ref": _optional_str_entry(
-                    entry, "witnessed_signature_ref"
-                ),
-            }
-        )
-    return rows
 
 
 def _signature_entry_matches_record(entry: dict[str, Any], record: dict[str, Any]) -> bool:
@@ -4643,6 +4631,7 @@ def verify_export_zip(
     resolver: Optional[ResponseProofResolver] = None,
     *,
     operator_uri_admitted: Callable[[str], bool] = _is_consumer_operator_uri,
+    certificate_authorities: Optional[CertificateAuthorityRegistry] = None,
 ) -> VerificationReport:
     try:
         archive = parse_export_zip(export_zip)
@@ -4852,6 +4841,7 @@ def verify_export_zip(
         identity_event_type_admitted=identity_event_type_admitted,
         operator_uri_admitted=operator_uri_admitted,
         resolver=resolver,
+        certificate_authorities=certificate_authorities,
     )
     # ADR 0008 / Core §18.3a — Wave 25 dispatched-verifier outcomes.
     # `_verify_interop_sidecars` already short-circuited any fatal

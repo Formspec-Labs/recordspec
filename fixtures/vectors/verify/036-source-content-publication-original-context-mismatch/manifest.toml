@@ -1,0 +1,21 @@
+id          = "verify/036-source-content-publication-original-context-mismatch"
+op          = "verify"
+status      = "active"
+description = """Publication phase refusal. The original's context proof names a package record hash that differs from the task's protected package, so the join fails with `source_original_context_join_invalid`."""
+
+[coverage]
+tr_core = ["TR-CORE-067"]
+tr_op = ["TR-OP-122"]
+
+[inputs]
+export_zip = "input-export.zip"
+verifier   = "source-content-publication"
+
+[expected.report]
+structure_verified   = true
+integrity_verified   = false
+readability_verified = true
+first_failure_kind   = "source_original_context_join_invalid"
+
+[derivation]
+document = "derivation.md"

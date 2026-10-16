@@ -71,6 +71,7 @@ def test_core_operator_uri_hook_preserves_positional_resolver_slot() -> None:
         "identity_event_type_admitted",
         "resolver",
         "operator_uri_admitted",
+        "certificate_authorities",
     ]
     assert list(inspect.signature(verify.verify_tampered_ledger).parameters) == [
         "signing_key_registry",

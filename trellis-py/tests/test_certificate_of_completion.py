@@ -10,10 +10,13 @@ focused decode + finalize + catalog helpers.
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from trellis_py import verify
 from trellis_py.verify import (
@@ -25,8 +28,10 @@ from trellis_py.verify import (
     ChainSummaryDetails,
     SignerDisplayDetails,
     TrellisTimestamp,
+    TrustedCertificateAuthority,
     VerificationFailure,
     VerifyError,
+    _attestation_preimage,
     _decode_certificate_payload,
     _finalize_certificates_of_completion,
     _parse_certificate_export_extension,
@@ -651,3 +656,114 @@ def test_parse_certificate_catalog_entries_rejects_non_array_root():
 
     with pytest.raises(VerifyError):
         _parse_certificate_catalog_entries(cbor2.dumps({"not": "array"}, canonical=True))
+
+
+# ---------------------------------------------------------------------------
+# Externally selected operator authority (ADR 0016 §Verification).
+# ---------------------------------------------------------------------------
+
+AUTHORITY_URI = "urn:trellis:authority:operator-1"
+ATTEST_COMPLETED_AT = 1_776_899_500
+CERTIFICATE_EXTENSION = "trellis.certificate-of-completion.v1"
+VECTORS = Path(__file__).resolve().parents[2] / "fixtures" / "vectors"
+
+
+def _trust(key: Ed25519PrivateKey, **overrides) -> dict[str, TrustedCertificateAuthority]:
+    binding = dict(
+        public_key=key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw),
+        authority_class="new",
+        allowed_purpose=CERTIFICATE_EXTENSION,
+        valid_from=TrellisTimestamp(ATTEST_COMPLETED_AT, 0),
+        valid_until=TrellisTimestamp(ATTEST_COMPLETED_AT + 60, 0),
+    )
+    return {AUTHORITY_URI: TrustedCertificateAuthority(**{**binding, **overrides})}
+
+
+def _signed_certificate(key: Ed25519PrivateKey, certificate_id: str = "urn:trellis:certificate:test:1"):
+    preimage = _attestation_preimage(
+        certificate_id, TrellisTimestamp(ATTEST_COMPLETED_AT, 0), "new"
+    )
+    row = {
+        "authority": AUTHORITY_URI,
+        "authority_class": "new",
+        "signature": key.sign(preimage),
+    }
+    cert = _decode_certificate_payload(
+        certificate_extensions(certificate_id=certificate_id, attestations=[row])
+    )
+    assert cert is not None
+    return cert
+
+
+def _authority_outcome(cert, authorities):
+    failures: list[VerificationFailure] = []
+    outcome = _finalize_certificates_of_completion(
+        [(0, cert, b"\x00" * 32)], [], failures, authorities=authorities
+    )[0]
+    return outcome, [f.kind for f in failures]
+
+
+def test_attestation_preimage_matches_the_committed_rust_preimage():
+    tag = b"trellis-transition-attestation-v1"
+    component = (
+        VECTORS
+        / "append/030-certificate-of-completion-html-template/input-attestation-preimage-00-new.cbor"
+    ).read_bytes()
+    assert _attestation_preimage(
+        "urn:trellis:certificate:test:030", TrellisTimestamp(1_776_899_500, 0), "new"
+    ) == (
+        len(tag).to_bytes(4, "big") + tag + len(component).to_bytes(4, "big") + component
+    )
+
+
+def test_authority_is_unchecked_without_a_selected_registry():
+    key = Ed25519PrivateKey.generate()
+    outcome, _ = _authority_outcome(_signed_certificate(key), None)
+    assert outcome.attestation_authority == "unchecked"
+    assert "attestation_insufficient" not in outcome.failures
+
+
+def test_authority_is_verified_by_an_exact_trusted_binding():
+    key = Ed25519PrivateKey.generate()
+    outcome, kinds = _authority_outcome(_signed_certificate(key), _trust(key))
+    assert outcome.attestation_authority == "verified"
+    assert "attestation_insufficient" not in kinds
+
+
+@pytest.mark.parametrize(
+    "registry",
+    [
+        pytest.param(lambda key: {}, id="unknown-authority"),
+        pytest.param(lambda key: _trust(Ed25519PrivateKey.generate()), id="foreign-key"),
+        pytest.param(lambda key: _trust(key, authority_class="prior"), id="wrong-class"),
+        pytest.param(
+            lambda key: _trust(key, allowed_purpose="trellis.certificate-of-completion.v2"),
+            id="wrong-purpose",
+        ),
+        pytest.param(
+            lambda key: _trust(key, valid_from=TrellisTimestamp(ATTEST_COMPLETED_AT + 1, 0)),
+            id="not-yet-valid",
+        ),
+        pytest.param(
+            lambda key: _trust(key, valid_until=TrellisTimestamp(ATTEST_COMPLETED_AT - 1, 0)),
+            id="expired",
+        ),
+    ],
+)
+def test_authority_fails_closed_without_an_exact_trusted_binding(registry):
+    key = Ed25519PrivateKey.generate()
+    outcome, kinds = _authority_outcome(_signed_certificate(key), registry(key))
+    assert outcome.attestation_authority == "failed"
+    assert outcome.chain_summary_consistent is False
+    assert "attestation_insufficient" in kinds
+
+
+def test_authority_interval_is_inclusive_at_both_ends():
+    key = Ed25519PrivateKey.generate()
+    registry = _trust(
+        key,
+        valid_from=TrellisTimestamp(ATTEST_COMPLETED_AT, 0),
+        valid_until=TrellisTimestamp(ATTEST_COMPLETED_AT, 0),
+    )
+    outcome, _ = _authority_outcome(_signed_certificate(key), registry)
+    assert outcome.attestation_authority == "verified"

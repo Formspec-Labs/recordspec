@@ -10,6 +10,7 @@ import copy
 import hashlib
 import json
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -49,6 +50,7 @@ OUT_VERIFY_015 = ROOT / "verify" / "015-export-007-intake-response-hash-mismatch
 OUT_EXPORT_013 = ROOT / "export" / "013-intake-handoffs-public-create-empty-outputs"
 OUT_VERIFY_016 = ROOT / "verify" / "016-export-013-intake-empty-outputs"
 OUT_TAMPER_015 = ROOT / "tamper" / "015-intake-handoff-catalog-digest-mismatch"
+SOURCE_CONTENT_VERIFY = ROOT / "verify"
 
 TAG_TRELLIS_EVENT_V1 = "trellis-event-v1"
 TAG_TRELLIS_AUTHOR_EVENT_V1 = "trellis-author-event-v1"
@@ -149,40 +151,40 @@ def merkle_interior_hash(left_hash: bytes, right_hash: bytes) -> bytes:
     return domain_separated_sha256(TAG_TRELLIS_MERKLE_INTERIOR_V1, left_hash + right_hash)
 
 
+def _split_point(size: int) -> int:
+    """Largest power of two strictly below `size` (RFC 6962 §2.1 split)."""
+    k = 1
+    while k * 2 < size:
+        k *= 2
+    return k
+
+
 def merkle_root(leaf_hashes: list[bytes]) -> bytes:
     if len(leaf_hashes) == 1:
         return leaf_hashes[0]
-    if len(leaf_hashes) == 2:
-        return merkle_interior_hash(leaf_hashes[0], leaf_hashes[1])
-    raise ValueError("generator only needs tree sizes 1 or 2")
+    k = _split_point(len(leaf_hashes))
+    return merkle_interior_hash(merkle_root(leaf_hashes[:k]), merkle_root(leaf_hashes[k:]))
+
+
+def _audit_path(index: int, leaf_hashes: list[bytes]) -> list[bytes]:
+    if len(leaf_hashes) == 1:
+        return []
+    k = _split_point(len(leaf_hashes))
+    if index < k:
+        return _audit_path(index, leaf_hashes[:k]) + [merkle_root(leaf_hashes[k:])]
+    return _audit_path(index - k, leaf_hashes[k:]) + [merkle_root(leaf_hashes[:k])]
 
 
 def inclusion_proofs(leaf_hashes: list[bytes]) -> dict:
-    if len(leaf_hashes) == 1:
-        return {
-            0: {
-                "leaf_index": 0,
-                "tree_size": 1,
-                "leaf_hash": leaf_hashes[0],
-                "audit_path": [],
-            }
+    return {
+        index: {
+            "leaf_index": index,
+            "tree_size": len(leaf_hashes),
+            "leaf_hash": leaf_hash,
+            "audit_path": _audit_path(index, leaf_hashes),
         }
-    if len(leaf_hashes) == 2:
-        return {
-            0: {
-                "leaf_index": 0,
-                "tree_size": 2,
-                "leaf_hash": leaf_hashes[0],
-                "audit_path": [leaf_hashes[1]],
-            },
-            1: {
-                "leaf_index": 1,
-                "tree_size": 2,
-                "leaf_hash": leaf_hashes[1],
-                "audit_path": [leaf_hashes[0]],
-            },
-        }
-    raise ValueError("generator only needs tree sizes 1 or 2")
+        for index, leaf_hash in enumerate(leaf_hashes)
+    }
 
 
 def write_bytes(path: Path, data: bytes) -> None:
@@ -196,6 +198,7 @@ def write_text(path: Path, text: str) -> None:
 
 
 def write_zip(path: Path, *, root_dir: str, members: list[str], data: dict[str, bytes]) -> bytes:
+    path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(path, "w") as zf:
         for member in sorted(members):
             zf.writestr(deterministic_zipinfo(f"{root_dir}/{member}"), data[member])
@@ -228,7 +231,7 @@ def build_signing_key_registry(kid: bytes, pubkey: bytes, valid_from: int) -> by
     return dcbor([entry])
 
 
-def build_domain_registry() -> bytes:
+def build_domain_registry(extra_event_types: dict | None = None) -> bytes:
     return dcbor(
         {
             "governance": {
@@ -244,6 +247,7 @@ def build_domain_registry() -> bytes:
                     "privacy_class": "restricted",
                     "binding_family": "wos.intake",
                 },
+                **(extra_event_types or {}),
             },
             "classifications": ["x-trellis-test/unclassified"],
             "role_vocabulary": ["x-trellis-test/role-intake-worker"],
@@ -489,13 +493,14 @@ def build_signed_append_event(
     authored_at: int,
     sequence: int,
     prev_hash: bytes | None,
+    record_id: str | None = None,
 ) -> dict:
     seed, pubkey = load_seed_and_pubkey(KEY_ISSUER_001)
     kid = derive_kid(SUITE_ID_PHASE_1, pubkey)
 
     scope = f"wos-case:{case_id}".encode("utf-8")
     record_bytes = dcbor(record)
-    tuple_bytes = dcbor(wos_idempotency_tuple(case_id, record["id"]))
+    tuple_bytes = dcbor(wos_idempotency_tuple(case_id, record_id or record["id"]))
     idempotency_key = domain_separated_sha256(TAG_TRELLIS_WOS_IDEMPOTENCY_V1, tuple_bytes)
     content_hash = domain_separated_sha256(TAG_TRELLIS_CONTENT_V1, record_bytes)
 
@@ -686,6 +691,7 @@ def build_export(
     readme_body: str,
     extra_members: dict[str, bytes],
     manifest_extensions: dict,
+    domain_registry: bytes | None = None,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     seed, pubkey = load_seed_and_pubkey(KEY_ISSUER_001)
@@ -720,7 +726,7 @@ def build_export(
         [cbor2.loads(cose_sign1(seed, kid, dcbor(checkpoint_payload), ARTIFACT_TYPE_CHECKPOINT))]
     )
 
-    domain_registry = build_domain_registry()
+    domain_registry = domain_registry or build_domain_registry()
     domain_registry_digest = sha256(domain_registry)
     domain_registry_member = f"050-registries/{domain_registry_digest.hex()}.cbor"
     members_data[domain_registry_member] = domain_registry
@@ -1248,8 +1254,441 @@ digest bound by `trellis.export.intake-handoffs.v1.intake_catalog_digest`.
     )
 
 
+# --- Source-content publication vectors (ADR 0163) ---------------------------------
+#
+# Each vector is verified with the explicitly selected publication phase
+# (`inputs.verifier = "source-content-publication"`), which admits a bundle whose
+# catalog rows carry protected Responses without requiring their content. The
+# default strict phase still refuses the same bytes. The real-route bundle from the
+# export job lands under the slot named in `verify/README.md`.
+
+PUBLICATION_VERIFIER = "source-content-publication"
+
+
+def protected_response_locator(
+    *, native_event_hash: bytes, handoff: dict, response_id: str, length: int, **overrides
+) -> dict:
+    """Closed protected Response locator; the ciphertext and keys are deliberately fake.
+
+    The codec facts bind the catalog row to the actual anchor event. They confer no
+    decryption or Source signature authority, which a final reader must establish.
+    """
+    locator = {
+        "version": 1,
+        "native_event_hash": native_event_hash,
+        "response_ref": handoff["responseRef"],
+        "response_id": response_id,
+        "response_hash": handoff["responseHash"],
+        "original_byte_length": length,
+        "content_hash": sha256(b"x-trellis-test/source-content/ciphertext"),
+        "context_key": b"\x03" * 32,
+        "record_hash": sha256(b"x-trellis-test/source-content/record"),
+        "source_binding_hash": sha256(b"x-trellis-test/source-content/binding"),
+        "publication_hash": sha256(b"x-trellis-test/source-content/publication"),
+        "public_policy_hash": sha256(b"x-trellis-test/source-content/public-policy"),
+        "recipient_policy_hash": sha256(b"x-trellis-test/source-content/recipient-policy"),
+        "nonce": b"\x08" * 12,
+        "key_bag": {"entries": []},
+    }
+    return {**locator, **overrides}
+
+
+def write_publication_vector(
+    *,
+    out_dir: Path,
+    vector_id: str,
+    description: str,
+    export_zip: bytes,
+    verifier: str | None,
+    report: dict,
+    derivation: str,
+) -> None:
+    write_bytes(out_dir / "input-export.zip", export_zip)
+    lines = "".join(
+        f"{key:<20} = {json.dumps(value)}\n" for key, value in report.items()
+    )
+    verifier_line = f'verifier   = "{verifier}"\n' if verifier else ""
+    write_text(
+        out_dir / "manifest.toml",
+        f'''id          = "{vector_id}"
+op          = "verify"
+status      = "active"
+description = """{description}"""
+
+[coverage]
+tr_core = ["TR-CORE-067"]
+tr_op = ["TR-OP-122"]
+
+[inputs]
+export_zip = "input-export.zip"
+{verifier_line}
+[expected.report]
+{lines}
+[derivation]
+document = "derivation.md"
+''',
+    )
+    write_text(out_dir / "derivation.md", derivation)
+
+
+def build_source_content_publication_vectors() -> None:
+    root_dir, members, data, manifest_payload = export_members_from_dir(OUT_EXPORT_007)
+    seed, pubkey = load_seed_and_pubkey(KEY_ISSUER_001)
+    kid = derive_kid(SUITE_ID_PHASE_1, pubkey)
+    row = cbor2.loads(data["063-intake-handoffs.cbor"])[0]
+    response = json.loads(row["response_bytes"].decode("utf-8"))
+
+    def protected_bundle(path: Path, *, native_event_hash: bytes) -> bytes:
+        """Replaces the inline Response with a protected locator and re-signs the manifest."""
+        protected_row = {k: v for k, v in row.items() if k != "response_bytes"}
+        protected_row["protected_response"] = protected_response_locator(
+            native_event_hash=native_event_hash,
+            handoff=row["handoff"],
+            response_id=response["id"],
+            length=len(row["response_bytes"]),
+        )
+        catalog = dcbor([protected_row])
+        manifest = copy.deepcopy(manifest_payload)
+        manifest["extensions"][EXTENSION_KEY]["intake_catalog_digest"] = sha256(catalog)
+        bundle = dict(data)
+        bundle["063-intake-handoffs.cbor"] = catalog
+        bundle["000-manifest.cbor"] = cose_sign1(seed, kid, dcbor(manifest), ARTIFACT_TYPE_MANIFEST)
+        return write_zip(path, root_dir=root_dir, members=members, data=bundle)
+
+    ok_report = {"structure_verified": True, "integrity_verified": True, "readability_verified": True}
+    refused = {**ok_report, "integrity_verified": False}
+    intake_hash = row["intake_event_hash"]
+
+    admitted = SOURCE_CONTENT_VERIFY / "028-source-content-publication-protected-intake"
+    zip_bytes = protected_bundle(admitted / "input-export.zip", native_event_hash=intake_hash)
+    write_publication_vector(
+        out_dir=admitted,
+        vector_id="verify/028-source-content-publication-protected-intake",
+        description="Source-content publication phase (ADR 0163). Starts from `export/007-intake-handoffs-public-create`, replaces the catalog row's inline Response with a closed protected Response locator bound to the intake event, and re-signs the manifest. The publication phase admits it without requiring protected content.",
+        export_zip=zip_bytes,
+        verifier=PUBLICATION_VERIFIER,
+        report=ok_report,
+        derivation="""# Derivation — `verify/028-source-content-publication-protected-intake`
+
+Starts from `export/007-intake-handoffs-public-create`: the `063` row drops
+`response_bytes` and carries a `protected_response` locator whose native event
+hash, Response ref and Response hash equal the intake anchor and handoff. The
+ciphertext and key material are fake; the publication phase checks only the
+closed locator and its native binding, never decryption or Source signatures.
+The catalog digest and the signed manifest are recomputed.
+""",
+    )
+
+    strict = SOURCE_CONTENT_VERIFY / "029-source-content-strict-protected-intake"
+    write_publication_vector(
+        out_dir=strict,
+        vector_id="verify/029-source-content-strict-protected-intake",
+        description="The same bytes as `verify/028` under the default strict phase: protected content is not available to a generic verifier, so the bundle is refused with `protected_response_unavailable`.",
+        export_zip=zip_bytes,
+        verifier=None,
+        report={**refused, "first_failure_kind": "protected_response_unavailable"},
+        derivation="""# Derivation — `verify/029-source-content-strict-protected-intake`
+
+Byte-identical to `verify/028`, verified without selecting the publication
+phase. The strict phase demands independently admitted opening and Source
+verification of protected content, which a generic verifier cannot perform.
+""",
+    )
+
+    mismatch = SOURCE_CONTENT_VERIFY / "030-source-content-publication-binding-mismatch"
+    write_publication_vector(
+        out_dir=mismatch,
+        vector_id="verify/030-source-content-publication-binding-mismatch",
+        description="Publication phase refusal. The protected locator names a different native event than the intake anchor, so the row is refused with `protected_response_native_binding_mismatch` even though protected content is not required.",
+        export_zip=protected_bundle(mismatch / "input-export.zip", native_event_hash=sha256(b"foreign-event")),
+        verifier=PUBLICATION_VERIFIER,
+        report={**refused, "first_failure_kind": "protected_response_native_binding_mismatch"},
+        derivation="""# Derivation — `verify/030-source-content-publication-binding-mismatch`
+
+As `verify/028`, but the locator's `native_event_hash` is a foreign digest. The
+publication phase defers content, not identity: the locator must name the actual
+anchor event.
+""",
+    )
+
+    tampered_014 = (
+        SOURCE_CONTENT_VERIFY / "014-export-006-signature-row-mismatch" / "input-export.zip"
+    ).read_bytes()
+    write_publication_vector(
+        out_dir=SOURCE_CONTENT_VERIFY / "031-source-content-publication-tampered-catalog",
+        vector_id="verify/031-source-content-publication-tampered-catalog",
+        description="Publication phase keeps substrate and catalog failures. The bytes of `verify/014` (a signature catalog row that no longer matches the signed record) fail identically under the publication phase.",
+        export_zip=tampered_014,
+        verifier=PUBLICATION_VERIFIER,
+        report={**refused, "first_failure_kind": "signature_catalog_mismatch"},
+        derivation="""# Derivation — `verify/031-source-content-publication-tampered-catalog`
+
+Byte-identical to `verify/014-export-006-signature-row-mismatch`. The
+publication phase relaxes only protected-content requirements; a catalog row
+that contradicts the chain-authored record is still refused.
+""",
+    )
+
+    write_publication_vector(
+        out_dir=SOURCE_CONTENT_VERIFY / "032-source-content-publication-unreadable-archive",
+        vector_id="verify/032-source-content-publication-unreadable-archive",
+        description="Publication phase refuses bytes that are not a ZIP archive.",
+        export_zip=b"not a ZIP",
+        verifier=PUBLICATION_VERIFIER,
+        report={
+            "structure_verified": False,
+            "integrity_verified": False,
+            "readability_verified": False,
+            "first_failure_kind": "export_zip_invalid",
+        },
+        derivation="""# Derivation — `verify/032-source-content-publication-unreadable-archive`
+
+The input is the nine bytes `not a ZIP`. No phase can read a bundle that is not
+an archive, so structure fails before any catalog is consulted.
+""",
+    )
+
+
+def digest_of(label: str) -> bytes:
+    return sha256(f"x-trellis-test/source-content/{label}".encode("utf-8"))
+
+
+# Native task records as the WOS-owned schema admits them (taskCreated, taskCompleted).
+TASK_CREATED_RECORD = {
+    "auditLayer": "facts",
+    "data": {
+        "details": {"assignedActor": "actor:human:owner", "taskRef": "correction"},
+        "taskId": "task",
+    },
+    "definitionVersion": "1",
+    "id": "acme_prov_01m53cmbc2e1grcyzxcehx4232",
+    "recordKind": "taskCreated",
+    "timestamp": "2026-10-13T00:00:00Z",
+}
+TASK_COMPLETED_RECORD = {
+    "actorId": "actor:human:owner",
+    "auditLayer": "facts",
+    "data": {
+        "details": {"artifactId": "artifact", "caseMutated": True},
+        "taskId": "task",
+    },
+    "definitionVersion": "1",
+    "id": "acme_prov_01m53cmbc2e1grcyzxfycwzw72",
+    "recordKind": "taskCompleted",
+    "timestamp": "2026-10-13T00:01:00Z",
+}
+NATIVE_PROVENANCE_EVENT_TYPE = "wos.provenance.recorded"
+SIGNATURE_EXTENSION_KEY = "trellis.export.signature-affirmations.v1"
+
+
+def build_source_task_publication_vectors() -> None:
+    """Mixed-family bundle: a Source-signed correction task joined to a protected original."""
+    root_dir_007, members_007, data_007, _manifest = export_members_from_dir(OUT_EXPORT_007)
+    scope = f"wos-case:{PUBLIC_CASE_ID}".encode("utf-8")
+    prior_events = cbor2.loads(data_007["010-events.cbor"])
+    prior_hash = canonical_event_hash(scope, cbor2.loads(prior_events[-1].value[2]))
+    row = cbor2.loads(data_007["063-intake-handoffs.cbor"])[0]
+    response = json.loads(row["response_bytes"].decode("utf-8"))
+
+    native_events = []
+    for sequence, (record, authored_at) in enumerate(
+        [(TASK_CREATED_RECORD, ts(1776958380)), (TASK_COMPLETED_RECORD, ts(1776958440))], start=len(prior_events)
+    ):
+        signed = build_signed_append_event(
+            record={"record": record},
+            case_id=PUBLIC_CASE_ID,
+            event_type=NATIVE_PROVENANCE_EVENT_TYPE.encode("utf-8"),
+            authored_at=authored_at,
+            sequence=sequence,
+            prev_hash=prior_hash,
+            record_id=record["id"],
+        )
+        prior_hash = signed["canonical_event_hash"]
+        native_events.append(signed)
+    created_hash, completed_hash = (event["canonical_event_hash"] for event in native_events)
+    events = [dcbor(event) for event in prior_events] + [event["event_bytes"] for event in native_events]
+
+    task_handoff = {
+        "responseRef": "urn:formspec:response:task-response",
+        "responseHash": f"sha256:{digest_of('task-response').hex()}",
+    }
+
+    def package_locator() -> dict:
+        return {
+            "version": 1,
+            "family": "mixed-v2",
+            "task_completed_event_hash": completed_hash,
+            "package_sha256": digest_of("package"),
+            "witness_sha256": digest_of("witness"),
+            "original_byte_length": 64,
+            "content_hash": digest_of("package-ciphertext"),
+            "context_key": b"\x05" * 32,
+            "record_hash": digest_of("package-record"),
+            "source_binding_hash": digest_of("task-binding"),
+            "current_publication_hash": digest_of("task-publication"),
+            "original_publication_hash": digest_of("publication"),
+            "public_policy_hash": digest_of("task-public-policy"),
+            "recipient_policy_hash": digest_of("recipient-policy"),
+            "nonce": b"\x06" * 12,
+            "key_bag": {
+                "entries": [
+                    {
+                        "recipient": b"x-trellis-test/recipient",
+                        "suite": 1,
+                        "ephemeral_pubkey": b"\x07" * 32,
+                        "wrapped_dek": b"\x09" * 48,
+                    }
+                ]
+            },
+        }
+
+    def task_row(task_ref: str) -> dict:
+        locator = protected_response_locator(
+            native_event_hash=completed_hash,
+            handoff=task_handoff,
+            response_id="task-response",
+            length=40,
+            source_binding_hash=digest_of("task-binding"),
+            publication_hash=digest_of("task-publication"),
+            public_policy_hash=digest_of("task-public-policy"),
+        )
+        return {
+            "kind": "sourceSignedCompletedTask",
+            "version": 1,
+            "family": "mixed-v2",
+            "canonical_event_hash": completed_hash,
+            "task_created_event_hash": created_hash,
+            "process_id": "process",
+            "task_id": "task",
+            "task_ref": task_ref,
+            "task_created_record_id": TASK_CREATED_RECORD["id"],
+            "task_completed_record_id": TASK_COMPLETED_RECORD["id"],
+            "actor_ref": "actor:human:owner",
+            "artifact_id": "artifact",
+            "formspec_response_ref": task_handoff["responseRef"],
+            "response_id": "task-response",
+            "signature_id": "source-signature",
+            "signed_payload_digest": f"sha256:{digest_of('signed-payload').hex()}",
+            "signed_payload_digest_algorithm": "sha-256",
+            "task_proof": {
+                "version": 1,
+                "admission": "owningWosProviderAdmitted",
+                "witness_sha256": digest_of("witness"),
+                "native_snapshot_hash": digest_of("snapshot"),
+                "provider_selection_hash": digest_of("provider"),
+                "family_selection_hash": digest_of("family"),
+                "original_selection_hash": digest_of("original-selection"),
+                "committed_task_submit_key": "original-command",
+                "native_outcome_digest": digest_of("outcome"),
+                "http_receipt_digest": digest_of("receipt"),
+                "protected_package": package_locator(),
+            },
+            "protected_response": locator,
+        }
+
+    def bundle(*, task_ref: str = "correction", package_record_hash: bytes | None = None) -> bytes:
+        signatures = dcbor([task_row(task_ref)])
+        original = {k: v for k, v in row.items() if k != "response_bytes"}
+        original["protected_response"] = protected_response_locator(
+            native_event_hash=row["intake_event_hash"],
+            handoff=row["handoff"],
+            response_id=response["id"],
+            length=len(row["response_bytes"]),
+        )
+        original["original_context_proof"] = {
+            "task_completed_event_hash": completed_hash,
+            "package_record_hash": package_record_hash or digest_of("package-record"),
+            "context_instance": "original-1",
+        }
+        intakes = dcbor([original])
+        with tempfile.TemporaryDirectory() as scratch:
+            build_export(
+                out_dir=Path(scratch),
+                export_id="scratch",
+                description="scratch",
+                scope=scope,
+                generated_at=ts(1776958510),
+                checkpoint_timestamp=ts(1776958500),
+                events=events,
+                registry_version="x-trellis-test/registry-intake-v1",
+                readme_title="Source-signed task publication",
+                readme_body="Mixed-family Source-content publication fixture.",
+                extra_members={
+                    "062-signature-affirmations.cbor": signatures,
+                    "063-intake-handoffs.cbor": intakes,
+                },
+                manifest_extensions={
+                    SIGNATURE_EXTENSION_KEY: {"signature_catalog_digest": sha256(signatures)},
+                    EXTENSION_KEY: {"intake_catalog_digest": sha256(intakes)},
+                },
+                domain_registry=build_domain_registry(
+                    {
+                        NATIVE_PROVENANCE_EVENT_TYPE: {
+                            "privacy_class": "restricted",
+                            "binding_family": "wos.provenance",
+                        }
+                    }
+                ),
+            )
+            return (Path(scratch) / "expected-export.zip").read_bytes()
+
+    ok_report = {"structure_verified": True, "integrity_verified": True, "readability_verified": True}
+    refused = {**ok_report, "integrity_verified": False}
+    admitted_zip = bundle()
+    derivation_base = """The bundle extends the public-intake export with two native task records
+(`taskCreated`, `taskCompleted`) as generic `wos.provenance.recorded` events.
+`062` carries one closed `sourceSignedCompletedTask` row of the mixed family
+whose protected package locator is bound to the task's protected Response, and
+`063` carries the protected original with an `original_context_proof` naming
+that package. All ciphertext, keys and Source proofs are fake: the publication
+phase checks closed shapes and exact native joins only."""
+
+    def vector(number: str, slug: str, description: str, zip_bytes: bytes, verifier, report, body: str):
+        write_publication_vector(
+            out_dir=SOURCE_CONTENT_VERIFY / f"{number}-{slug}",
+            vector_id=f"verify/{number}-{slug}",
+            description=description,
+            export_zip=zip_bytes,
+            verifier=verifier,
+            report=report,
+            derivation=f"# Derivation — `verify/{number}-{slug}`\n\n{derivation_base}\n\n{body}\n",
+        )
+
+    vector(
+        "033", "source-content-publication-task-and-original", 
+        "Source-content publication phase (ADR 0163) for a mixed-family Source task joined to a protected original. Both catalogs carry protected content the phase does not require; the native task join and the original-context join are exact, so the bundle is admitted.",
+        admitted_zip, PUBLICATION_VERIFIER, ok_report,
+        "Every join holds, so the publication phase admits the bundle.",
+    )
+    vector(
+        "034", "source-content-strict-task-and-original",
+        "The same bytes as `verify/033` under the default strict phase: Source task content is unavailable to a generic verifier, so the bundle is refused with `source_task_content_unavailable`.",
+        admitted_zip, None, {**refused, "first_failure_kind": "source_task_content_unavailable"},
+        "Byte-identical to `verify/033`, verified without selecting the publication phase.",
+    )
+    vector(
+        "035", "source-content-publication-task-native-join-mismatch",
+        "Publication phase refusal. The catalog row names a task reference the `taskCreated` record does not carry, so the exact native join fails with `source_task_native_join_mismatch`.",
+        bundle(task_ref="other-task-ref"), PUBLICATION_VERIFIER,
+        {**refused, "first_failure_kind": "source_task_native_join_mismatch"},
+        "The row's `task_ref` differs from the chain-authored `taskCreated` record.",
+    )
+    vector(
+        "036", "source-content-publication-original-context-mismatch",
+        "Publication phase refusal. The original's context proof names a package record hash that differs from the task's protected package, so the join fails with `source_original_context_join_invalid`.",
+        bundle(package_record_hash=digest_of("foreign-package-record")), PUBLICATION_VERIFIER,
+        {**refused, "first_failure_kind": "source_original_context_join_invalid"},
+        "The original's `package_record_hash` differs from the task package's `record_hash`.",
+    )
+
+
 def main() -> None:
-    build_vectors()
+    # `--source-content-only` derives the publication vectors from the committed
+    # export/007 bytes without regenerating (and so overwriting) the older ones.
+    if "--source-content-only" not in sys.argv:
+        build_vectors()
+    build_source_content_publication_vectors()
+    build_source_task_publication_vectors()
 
 
 if __name__ == "__main__":

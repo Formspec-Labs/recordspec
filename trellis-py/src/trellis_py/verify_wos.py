@@ -13,6 +13,7 @@ from typing import Any, Callable, Iterable, Optional
 
 import cbor2
 
+from trellis_py import source_content
 from trellis_py import verify as core
 from trellis_py._cbor_canonical import (
     CanonicalCborError,
@@ -226,12 +227,71 @@ def _is_projection_finding(finding: WosFinding) -> bool:
     }
 
 
-def verify_export_zip(export_zip: bytes) -> WosVerificationReport:
+def verify_export_zip(
+    export_zip: bytes,
+    authorities: Optional[core.CertificateAuthorityRegistry] = None,
+) -> WosVerificationReport:
+    """Strict verification; `authorities` is an externally trusted operator registry."""
+    return _verify(export_zip, authorities, publication=False)
+
+
+@dataclass
+class SourceContentPublicationReport:
+    """Protected-content publication admission, never final Source readiness.
+
+    Retains substrate and WOS structural findings. It does not open protected
+    records or verify their Source signatures; final readers must use the
+    owning Source verifiers. Mirrors Rust `SourceContentPublicationReport`.
+    """
+
+    report: WosVerificationReport
+
+    @property
+    def publication_admitted(self) -> bool:
+        return self.report.integrity_verified
+
+    @property
+    def substrate(self) -> core.VerificationReport:
+        return self.report.trellis
+
+    @property
+    def findings(self) -> list[WosFinding]:
+        return self.report.wos_findings
+
+    @property
+    def blocking_reasons(self) -> list[str]:
+        """The verdict's blocking reasons plus each finding's kind and detail."""
+        return self.report.verdict.blocking_reasons + [
+            f"{finding.kind}: {finding.detail}" for finding in self.report.wos_findings
+        ]
+
+
+def verify_source_content_publication(
+    export_zip: bytes,
+    authorities: Optional[core.CertificateAuthorityRegistry] = None,
+) -> SourceContentPublicationReport:
+    """Checks publication structure before independent protected Source verification.
+
+    Select only for an explicitly admitted Source-content publication. Catalog
+    rows may carry protected Responses and Source task rows whose content this
+    phase never requires. Formal certificate and operator-authority checks,
+    native joins, catalogs, clocks and policy closure still run.
+    """
+    return SourceContentPublicationReport(_verify(export_zip, authorities, publication=True))
+
+
+def _verify(
+    export_zip: bytes,
+    authorities: Optional[core.CertificateAuthorityRegistry],
+    *,
+    publication: bool,
+) -> WosVerificationReport:
     trellis = core.verify_export_zip(
         export_zip,
         identity_event_type_admitted=_is_wos_identity_attestation_event_type,
         operator_uri_admitted=_is_wos_operator_uri,
         resolver=WosFormspecResolver(),
+        certificate_authorities=authorities,
     )
     if not trellis.structure_verified:
         return WosVerificationReport(trellis)
@@ -244,7 +304,14 @@ def verify_export_zip(export_zip: bytes) -> WosVerificationReport:
 
     findings = _validate_events(events, payload_blobs)
     findings.extend(
-        _validate_export(archive, events, payload_blobs, manifest_map, generated_at)
+        _validate_export(
+            archive,
+            events,
+            payload_blobs,
+            manifest_map,
+            generated_at,
+            publication=publication,
+        )
     )
     return WosVerificationReport(trellis, findings)
 
@@ -329,6 +396,8 @@ def _validate_export(
     payload_blobs: dict[bytes, bytes],
     manifest_map: dict,
     generated_at: core.TrellisTimestamp,
+    *,
+    publication: bool = False,
 ) -> list[WosFinding]:
     findings: list[WosFinding] = []
 
@@ -373,13 +442,22 @@ def _validate_export(
     if signature_catalog_digest is not None:
         findings.extend(
             _validate_signature_catalog(
-                archive, payload_blobs, signature_catalog_digest, event_by_hash
+                archive,
+                payload_blobs,
+                signature_catalog_digest,
+                event_by_hash,
+                [d for d in map(_event_details, events) if d is not None],
+                publication=publication,
             )
         )
     if intake_catalog_digest is not None:
         findings.extend(
             _validate_intake_catalog(
-                archive, payload_blobs, intake_catalog_digest, event_by_hash
+                archive,
+                payload_blobs,
+                intake_catalog_digest,
+                event_by_hash,
+                publication=publication,
             )
         )
     findings.extend(_validate_open_clock_export(archive, manifest_map, generated_at))
@@ -1363,7 +1441,15 @@ def _validate_signature_catalog(
     payload_blobs: dict[bytes, bytes],
     catalog_digest: bytes,
     event_by_hash: dict[bytes, core.EventDetails],
+    ordered_events: list[core.EventDetails],
+    *,
+    publication: bool,
 ) -> list[WosFinding]:
+    """Mirror of Rust `validate_signature_catalog_phase`.
+
+    The publication phase defers protected content (legacy rows' protected
+    Responses and Source task content); the strict phase demands it.
+    """
     findings: list[WosFinding] = []
     cat_bytes = archive.get("062-signature-affirmations.cbor")
     if cat_bytes is None:
@@ -1383,7 +1469,7 @@ def _validate_signature_catalog(
             )
         )
     try:
-        entries = core._parse_signature_catalog_entries(cat_bytes)
+        entries, tasks = source_content.read_signature_catalog(cat_bytes)
     except core.VerifyError as exc:
         return [
             _failure(
@@ -1405,57 +1491,142 @@ def _validate_signature_catalog(
             )
         seen_row.add(h)
     for row in entries:
-        h = row["canonical_event_hash"]
-        det = event_by_hash.get(h)
-        if det is None:
-            findings.append(
-                _failure(
-                    "signature_catalog_event_unresolved",
-                    h,
-                    "signature catalog references an event absent from the export",
-                )
+        findings.extend(
+            _validate_signature_entry(
+                row, payload_blobs, event_by_hash, require_protected_content=not publication
             )
-            continue
-        if det.event_type != WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE:
-            findings.append(
-                _failure(
-                    "signature_catalog_event_type_mismatch",
-                    h,
-                    "signature catalog event is not a WOS signature affirmation",
-                )
+        )
+    findings.extend(
+        _source_task_findings(
+            tasks, ordered_events, payload_blobs, require_content=not publication
+        )
+    )
+    return findings
+
+
+def _validate_signature_entry(
+    row: dict[str, Any],
+    payload_blobs: dict[bytes, bytes],
+    event_by_hash: dict[bytes, core.EventDetails],
+    *,
+    require_protected_content: bool,
+) -> list[WosFinding]:
+    h = row["canonical_event_hash"]
+    det = event_by_hash.get(h)
+    if det is None:
+        return [
+            _failure(
+                "signature_catalog_event_unresolved",
+                h,
+                "signature catalog references an event absent from the export",
             )
-            continue
-        payload = core._readable_payload_bytes(det, payload_blobs)
-        if payload is None:
-            findings.append(
-                _failure(
-                    "signature_affirmation_payload_unreadable",
-                    h,
-                    "signature affirmation payload is not readable",
-                )
+        ]
+    if det.event_type != WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE:
+        return [
+            _failure(
+                "signature_catalog_event_type_mismatch",
+                h,
+                "signature catalog event is not a WOS signature affirmation",
             )
-            continue
-        try:
-            record = _parse_signature_affirmation_record(
-                payload, WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE
+        ]
+    payload = core._readable_payload_bytes(det, payload_blobs)
+    if payload is None:
+        return [
+            _failure(
+                "signature_affirmation_payload_unreadable",
+                h,
+                "signature affirmation payload is not readable",
             )
-        except core.VerifyError as exc:
-            findings.append(
-                _failure(
-                    "signature_affirmation_payload_invalid",
-                    h,
-                    f"signature affirmation payload is invalid: {exc}",
-                )
+        ]
+    try:
+        record = _parse_signature_affirmation_record(
+            payload, WOS_SIGNATURE_AFFIRMATION_EVENT_TYPE
+        )
+    except core.VerifyError as exc:
+        return [
+            _failure(
+                "signature_affirmation_payload_invalid",
+                h,
+                f"signature affirmation payload is invalid: {exc}",
             )
-            continue
-        if not core._signature_entry_matches_record(row, record):
-            findings.append(
-                _failure(
-                    "signature_catalog_mismatch",
-                    h,
-                    "signature catalog fields do not match the signed record",
-                )
+        ]
+    findings: list[WosFinding] = []
+    if not core._signature_entry_matches_record(row, record):
+        findings.append(
+            _failure(
+                "signature_catalog_mismatch",
+                h,
+                "signature catalog fields do not match the signed record",
             )
+        )
+    findings.extend(
+        _protected_response_findings(
+            row["protected_response"],
+            h,
+            "signature",
+            row["source_response_ref"],
+            require_protected_content,
+        )
+    )
+    return findings
+
+
+def _protected_response_findings(
+    locator: Optional[dict[str, Any]],
+    anchor: bytes,
+    anchor_label: str,
+    response_ref: str,
+    require_protected_content: bool,
+    response_hash: Optional[str] = None,
+) -> list[WosFinding]:
+    """Codec binding cannot confer decryption or Source signature authority."""
+    if locator is None:
+        return []
+    findings: list[WosFinding] = []
+    if (
+        locator["native_event_hash"] != anchor
+        or locator["response_ref"] != response_ref
+        or (response_hash is not None and locator["response_hash"] != response_hash)
+    ):
+        findings.append(
+            _failure(
+                "protected_response_native_binding_mismatch",
+                anchor,
+                f"protected Response locator differs from the actual {anchor_label} anchor",
+            )
+        )
+    if require_protected_content:
+        findings.append(
+            _failure(
+                "protected_response_unavailable",
+                anchor,
+                "protected Response requires independently admitted opening and Source verification",
+            )
+        )
+    return findings
+
+
+def _source_task_findings(
+    tasks: list[dict[str, Any]],
+    ordered_events: list[core.EventDetails],
+    payload_blobs: dict[bytes, bytes],
+    *,
+    require_content: bool,
+) -> list[WosFinding]:
+    """Mirror of Rust `source_signed_task::structural_findings`."""
+    detail = "Source task content requires exact admitted native, policy and owning proof bindings"
+    findings: list[WosFinding] = []
+    anchors: set[bytes] = set()
+    index = source_content.native_task_index(ordered_events, payload_blobs) if tasks else None
+    for task in tasks:
+        h = task["canonical_event_hash"]
+        if h in anchors:
+            findings.append(_failure("source_task_catalog_duplicate", h, detail))
+        anchors.add(h)
+        if source_content.native_join_error(task, index) is not None:
+            findings.append(_failure("source_task_native_join_mismatch", h, detail))
+        if require_content:
+            findings.append(_failure("source_task_content_unavailable", h, detail))
     return findings
 
 
@@ -1464,6 +1635,8 @@ def _validate_intake_catalog(
     payload_blobs: dict[bytes, bytes],
     catalog_digest: bytes,
     event_by_hash: dict[bytes, core.EventDetails],
+    *,
+    publication: bool,
 ) -> list[WosFinding]:
     findings: list[WosFinding] = []
     cat_bytes = archive.get("063-intake-handoffs.cbor")
@@ -1484,7 +1657,7 @@ def _validate_intake_catalog(
             )
         )
     try:
-        entries = core._parse_intake_manifest_entries(cat_bytes)
+        entries = source_content.read_intake_catalog(cat_bytes)
     except core.VerifyError as exc:
         return [
             _failure(
@@ -1493,6 +1666,7 @@ def _validate_intake_catalog(
                 f"intake handoff catalog is invalid: {exc}",
             )
         ]
+    findings.extend(_validate_original_context_joins(archive, cat_bytes, entries))
     seen_row: set[bytes] = set()
     for entry in entries:
         h = entry["intake_event_hash"]
@@ -1506,7 +1680,43 @@ def _validate_intake_catalog(
             )
         seen_row.add(h)
     for entry in entries:
-        findings.extend(_validate_intake_entry(entry, payload_blobs, event_by_hash))
+        findings.extend(
+            _validate_intake_entry(
+                entry, payload_blobs, event_by_hash, require_protected_content=not publication
+            )
+        )
+    return findings
+
+
+def _validate_original_context_joins(
+    archive: dict[str, bytes], cat_bytes: bytes, entries: list[dict[str, Any]]
+) -> list[WosFinding]:
+    """Supplied original/task associations; legacy rows carry none."""
+    try:
+        originals = source_content.protected_originals(cat_bytes, entries)
+    except core.VerifyError as exc:
+        return [_failure("intake_handoff_catalog_invalid", None, str(exc))]
+    joined = [o for o in originals if o["original_context_proof"] is not None]
+    if not joined:
+        return []
+    tasks: list[dict[str, Any]] = []
+    signature_catalog = archive.get("062-signature-affirmations.cbor")
+    if signature_catalog is not None:
+        try:
+            tasks = source_content.read_signature_catalog(signature_catalog)[1]
+        except core.VerifyError:
+            tasks = []
+    findings = []
+    for original in joined:
+        error = source_content.original_context_error(original, tasks)
+        if error is not None:
+            findings.append(
+                _failure(
+                    "source_original_context_join_invalid",
+                    original["intake_event_hash"],
+                    error,
+                )
+            )
     return findings
 
 
@@ -1514,6 +1724,8 @@ def _validate_intake_entry(
     entry: dict[str, Any],
     payload_blobs: dict[bytes, bytes],
     event_by_hash: dict[bytes, core.EventDetails],
+    *,
+    require_protected_content: bool,
 ) -> list[WosFinding]:
     findings: list[WosFinding] = []
     intake_h = entry["intake_event_hash"]
@@ -1563,23 +1775,36 @@ def _validate_intake_entry(
                 "intake handoff fields do not match the intakeAccepted record",
             )
         )
-    ok, err_detail = core._response_hash_matches(
-        entry["handoff"]["response_hash"], entry["response_bytes"]
-    )
-    if err_detail is not None:
-        findings.append(
-            _failure(
-                "intake_handoff_catalog_invalid",
-                intake_h,
-                f"intake handoff response hash is invalid: {err_detail}",
-            )
+    locator = entry["protected_response"]
+    if locator is None:
+        ok, err_detail = core._response_hash_matches(
+            entry["handoff"]["response_hash"], entry["response_bytes"]
         )
-    elif not ok:
-        findings.append(
-            _failure(
-                "intake_response_hash_mismatch",
+        if err_detail is not None:
+            findings.append(
+                _failure(
+                    "intake_handoff_catalog_invalid",
+                    intake_h,
+                    f"intake handoff response hash is invalid: {err_detail}",
+                )
+            )
+        elif not ok:
+            findings.append(
+                _failure(
+                    "intake_response_hash_mismatch",
+                    intake_h,
+                    "intake handoff response hash does not match response bytes",
+                )
+            )
+    else:
+        findings.extend(
+            _protected_response_findings(
+                locator,
                 intake_h,
-                "intake handoff response hash does not match response bytes",
+                "intake handoff",
+                entry["handoff"]["response_ref"],
+                require_protected_content,
+                entry["handoff"]["response_hash"],
             )
         )
 
