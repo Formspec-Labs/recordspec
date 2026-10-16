@@ -357,22 +357,6 @@ impl S3CompatibleArtifactStore {
         .await
     }
 
-    /// Deletes an artifact; an already absent object is success.
-    ///
-    /// # Errors
-    /// Refuses wrong bucket/prefix and backend failures other than absence.
-    pub async fn delete(&self, artifact_ref: &ArtifactRef) -> Result<(), StackError> {
-        let location = self.selected_location(artifact_ref)?;
-        match self
-            .object_store()?
-            .delete(&object_store::path::Path::from(location.as_str()))
-            .await
-        {
-            Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
-            Err(_) => Err(StackError::unavailable("artifact delete failed")),
-        }
-    }
-
     fn location_for_key(&self, key: &str) -> Result<String, StackError> {
         let key_segments = key
             .split('/')
@@ -1193,30 +1177,6 @@ mod tests {
                 .await
                 .is_err()
         );
-    }
-
-    #[tokio::test]
-    async fn delete_removes_the_object_and_treats_absence_as_success() {
-        let store = S3CompatibleArtifactStore::from_object_store_for_test(
-            S3ObjectConfig {
-                bucket: "proof-bundles".into(),
-                endpoint: None,
-                region: None,
-            },
-            "pfx/",
-            Arc::new(object_store::memory::InMemory::new()),
-        );
-        let artifact = store.put("case/a", b"bytes").await.unwrap();
-        assert_eq!(
-            store.artifact_ref_for_key("case/a").unwrap().uri,
-            artifact.uri
-        );
-        store.delete(&artifact).await.unwrap();
-        assert_eq!(store.get(&artifact).await.unwrap(), None);
-        store.delete(&artifact).await.unwrap();
-        for uri in ["s3://other/pfx/a", "s3://proof-bundles/pfx-other/a"] {
-            assert!(store.delete(&ArtifactRef::new(uri)).await.is_err());
-        }
     }
 
     #[tokio::test]

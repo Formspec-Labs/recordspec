@@ -15,7 +15,6 @@ mod postgres_support {
 fn selection_for(signing_events: &[[u8; 32]], last: &StoredEvent) -> CompletionSelection {
     let at = crate::event_summary(last).unwrap().authored_at;
     CompletionSelection {
-        selection_revision: [1; 32],
         case_ref: "case-test".into(),
         workflow_ref: "workflow-test".into(),
         workflow_status: "completed".into(),

@@ -12,10 +12,43 @@ pub const COMPLETION_EVENT: &str = "trellis.certificate-of-completion.v2";
 
 const MAX_TEXT: usize = 1024;
 
+/// 32-byte hashes and keys as standard base64 text; a number array is 4x the size.
+mod bytes32 {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use serde::{Deserialize, Deserializer, Serializer, de::Error as _};
+
+    pub(super) fn serialize<S: Serializer>(value: &[u8; 32], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&STANDARD.encode(value))
+    }
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<[u8; 32], D::Error> {
+        let text = String::deserialize(deserializer)?;
+        STANDARD
+            .decode(text)
+            .ok()
+            .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+            .ok_or_else(|| D::Error::custom("expected 32 bytes as base64"))
+    }
+}
+mod bytes32_list {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Serialize, Deserialize)]
+    struct One(#[serde(with = "super::bytes32")] [u8; 32]);
+
+    pub(super) fn serialize<S: Serializer>(values: &[[u8; 32]], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(values.iter().copied().map(One))
+    }
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<[u8; 32]>, D::Error> {
+        Ok(Vec::<One>::deserialize(deserializer)?.into_iter().map(|One(bytes)| bytes).collect())
+    }
+}
+
 /// Disclosure label for one retained signing event.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CompletionSignerLabel {
+    #[serde(with = "bytes32")]
+    #[schema(value_type = String)]
     pub signing_event: [u8; 32],
     pub display_name: String,
     pub display_role: Option<String>,
@@ -27,6 +60,8 @@ pub struct CompletionSignerLabel {
 pub struct CompletionAttestor {
     pub authority: String,
     pub authority_class: String,
+    #[serde(with = "bytes32")]
+    #[schema(value_type = String)]
     pub public_key: [u8; 32],
 }
 
@@ -37,8 +72,6 @@ pub struct CompletionAttestor {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CompletionSelection {
-    /// Hash of the owning service's case snapshot; informational for Trellis.
-    pub selection_revision: [u8; 32],
     pub case_ref: String,
     pub workflow_ref: String,
     pub workflow_status: String,
@@ -56,7 +89,11 @@ pub struct CompletionSelection {
 pub struct CompletionRequest {
     pub idempotency_key: String,
     pub certificate_id: String,
+    #[serde(with = "bytes32")]
+    #[schema(value_type = String)]
     pub expected_head: [u8; 32],
+    #[serde(with = "bytes32_list")]
+    #[schema(value_type = Vec<String>)]
     pub signing_events: Vec<[u8; 32]>,
     pub selection: CompletionSelection,
 }
@@ -112,11 +149,11 @@ impl CompletionSelection {
                 return Err(fail());
             }
         }
-        let mut authorities = BTreeSet::new();
+        let mut attestors = BTreeSet::new();
         for row in &self.required_attestors {
             if !text(&row.authority)
                 || !matches!(row.authority_class.as_str(), "prior" | "new")
-                || !authorities.insert(&row.authority)
+                || !attestors.insert((&row.authority, &row.authority_class))
             {
                 return Err(fail());
             }
@@ -136,7 +173,6 @@ pub(crate) mod tests {
             expected_head: [1; 32],
             signing_events: vec![[2; 32], [3; 32]],
             selection: CompletionSelection {
-                selection_revision: [4; 32],
                 case_ref: "case-1".into(),
                 workflow_ref: "urn:workflow".into(),
                 workflow_status: "completed".into(),
@@ -170,7 +206,10 @@ pub(crate) mod tests {
         assert_eq!(selection["completedAt"], serde_json::json!([1_700_000_000u64, 5]));
         assert_eq!(selection["signerLabels"][1]["displayRole"], "Witness");
         assert_eq!(selection["requiredAttestors"][0]["authorityClass"], "new");
-        assert_eq!(selection["selectionRevision"].as_array().unwrap().len(), 32);
+        // Hashes and keys travel as base64 text, not 32-number arrays.
+        assert_eq!(value["expectedHead"], serde_json::json!("AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="));
+        assert!(selection["requiredAttestors"][0]["publicKey"].is_string());
+        assert!(selection["signerLabels"][0]["signingEvent"].is_string());
         assert_eq!(serde_json::from_value::<CompletionRequest>(value.clone()).unwrap(), request());
         let mut unknown = value.clone();
         unknown["selection"]["callerBearer"] = serde_json::json!("x");
@@ -197,8 +236,7 @@ pub(crate) mod tests {
                 r.selection.required_attestors = vec![row; 9];
             },
             |r| {
-                let mut row = r.selection.required_attestors[0].clone();
-                row.authority_class = "prior".into();
+                let row = r.selection.required_attestors[0].clone();
                 r.selection.required_attestors.push(row);
             },
             |r| r.selection.case_ref = " ".into(),

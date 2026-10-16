@@ -704,12 +704,7 @@
             "type": "string"
           },
           "publicKey": {
-            "type": "array",
-            "items": {
-              "type": "integer",
-              "format": "int32",
-              "minimum": 0
-            }
+            "type": "string"
           }
         },
         "additionalProperties": false
@@ -729,12 +724,7 @@
             "type": "string"
           },
           "expectedHead": {
-            "type": "array",
-            "items": {
-              "type": "integer",
-              "format": "int32",
-              "minimum": 0
-            }
+            "type": "string"
           },
           "idempotencyKey": {
             "type": "string"
@@ -745,12 +735,7 @@
           "signingEvents": {
             "type": "array",
             "items": {
-              "type": "array",
-              "items": {
-                "type": "integer",
-                "format": "int32",
-                "minimum": 0
-              }
+              "type": "string"
             }
           }
         },
@@ -760,7 +745,6 @@
         "type": "object",
         "description": "Owning facts from one current, complete, consistently read case snapshot.\n\nThe product computes this under its own permission checks and sends it in the seal\nbody. `workflow_status` describes processing disposition and does not imply approval.",
         "required": [
-          "selectionRevision",
           "caseRef",
           "workflowRef",
           "workflowStatus",
@@ -792,15 +776,6 @@
             "items": {
               "$ref": "#/components/schemas/CompletionAttestor"
             }
-          },
-          "selectionRevision": {
-            "type": "array",
-            "items": {
-              "type": "integer",
-              "format": "int32",
-              "minimum": 0
-            },
-            "description": "Hash of the owning service's case snapshot; informational for Trellis."
           },
           "signerLabels": {
             "type": "array",
@@ -835,12 +810,7 @@
             ]
           },
           "signingEvent": {
-            "type": "array",
-            "items": {
-              "type": "integer",
-              "format": "int32",
-              "minimum": 0
-            }
+            "type": "string"
           }
         },
         "additionalProperties": false
