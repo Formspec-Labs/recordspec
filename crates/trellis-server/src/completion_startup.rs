@@ -18,6 +18,7 @@ use stack_common_auth::oidc::{
 use stack_common_error::StackError;
 use stack_common_http::tenant::{HeaderConfig, TenantScope};
 use trellis_export_writer::TrellisTimestamp;
+use trellis_server_ports::NativeCloseout;
 use trellis_service_client::{
     TrellisServiceClient, TrellisServiceClientConfig, completion_selection::CompletionTenant,
 };
@@ -37,17 +38,20 @@ pub(crate) struct StartupCompletion {
 }
 
 impl StartupCompletion {
-    pub(crate) fn from_env(tenant: &TenantScope) -> Result<Option<Self>, StackError> {
+    pub(crate) fn from_env(
+        tenant: &TenantScope,
+        closeout: Arc<dyn NativeCloseout>,
+    ) -> Result<Option<Self>, StackError> {
         match (
             std::env::var_os("TRELLIS_WOS_COMPLETION_CONFIG_FILE"),
             std::env::var_os("TRELLIS_COMPLETION_OPERATOR_CONFIG_FILE"),
         ) {
             (None, None) => Ok(None),
             (Some(service), Some(operator)) if !service.is_empty() && !operator.is_empty() => {
-                Self::load(Path::new(&service), Path::new(&operator), tenant).map(Some)
+                Self::load(Path::new(&service), Path::new(&operator), tenant, closeout).map(Some)
             }
             (Some(service), None) if !service.is_empty() => {
-                Self::load_selected(Path::new(&service), None, tenant)
+                Self::load_selected(Path::new(&service), None, tenant, closeout)
                     .map_err(|_| invalid())
                     .map(Some)
             }
@@ -55,14 +59,20 @@ impl StartupCompletion {
         }
     }
 
-    fn load(service: &Path, operator: &Path, tenant: &TenantScope) -> Result<Self, StackError> {
-        Self::load_selected(service, Some(operator), tenant)
+    fn load(
+        service: &Path,
+        operator: &Path,
+        tenant: &TenantScope,
+        closeout: Arc<dyn NativeCloseout>,
+    ) -> Result<Self, StackError> {
+        Self::load_selected(service, Some(operator), tenant, closeout)
     }
 
     fn load_selected(
         service: &Path,
         operator: Option<&Path>,
         tenant: &TenantScope,
+        closeout: Arc<dyn NativeCloseout>,
     ) -> Result<Self, StackError> {
         let profile: ServiceProfile =
             serde_json::from_slice(&read_private(service)?).map_err(|_| invalid())?;
@@ -70,7 +80,7 @@ impl StartupCompletion {
         let native_guard = profile
             .source_content
             .as_ref()
-            .map(|configuration| configuration.load(service))
+            .map(|configuration| configuration.load(service, closeout))
             .transpose()?;
         if operator.is_none() && native_guard.is_none() {
             return Err(invalid());
@@ -491,20 +501,52 @@ mod tests {
             &operator,
             &serde_json::to_vec(&json!([row.clone()])).unwrap(),
         );
-        assert!(StartupCompletion::load(&service, &operator, &tenant()).is_ok());
+        assert!(
+            StartupCompletion::load(
+                &service,
+                &operator,
+                &tenant(),
+                crate::test_adapters::closeout()
+            )
+            .is_ok()
+        );
         private(
             &operator,
             &serde_json::to_vec(&json!([row.clone(), row.clone()])).unwrap(),
         );
-        assert!(StartupCompletion::load(&service, &operator, &tenant()).is_err());
+        assert!(
+            StartupCompletion::load(
+                &service,
+                &operator,
+                &tenant(),
+                crate::test_adapters::closeout()
+            )
+            .is_err()
+        );
         let mut mismatch = row.clone();
         mismatch["publicKey"] = json!(vec![0u8; 32]);
         private(&operator, &serde_json::to_vec(&json!([mismatch])).unwrap());
-        assert!(StartupCompletion::load(&service, &operator, &tenant()).is_err());
+        assert!(
+            StartupCompletion::load(
+                &service,
+                &operator,
+                &tenant(),
+                crate::test_adapters::closeout()
+            )
+            .is_err()
+        );
         let mut interval = row;
         interval["validUntil"] = json!([0, 0]);
         private(&operator, &serde_json::to_vec(&json!([interval])).unwrap());
-        assert!(StartupCompletion::load(&service, &operator, &tenant()).is_err());
+        assert!(
+            StartupCompletion::load(
+                &service,
+                &operator,
+                &tenant(),
+                crate::test_adapters::closeout()
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -521,13 +563,27 @@ mod tests {
         selected["sourceContent"] = json!({"pins":{"providerSelectionHash":vec![1u8;32],"nativePolicyHash":vec![2u8;32],"recipientPolicyHash":vec![3u8;32]},
             "nativeHostSelectionFile":"owning.json","nativeHostSelectionSha256":stack_common_hash::sha256_prefixed(&owning)});
         private(&service, &serde_json::to_vec(&selected).unwrap());
-        let loaded = StartupCompletion::load_selected(&service, None, &tenant()).unwrap();
+        let loaded = StartupCompletion::load_selected(
+            &service,
+            None,
+            &tenant(),
+            crate::test_adapters::closeout(),
+        )
+        .unwrap();
         assert!(loaded.selector.is_none());
         assert!(loaded.signer.is_none());
         assert!(loaded.source_content.is_some());
         // An unrelated formal profile retains its required operator dependency.
         private(&service, &serde_json::to_vec(&profile()).unwrap());
-        assert!(StartupCompletion::load_selected(&service, None, &tenant()).is_err());
+        assert!(
+            StartupCompletion::load_selected(
+                &service,
+                None,
+                &tenant(),
+                crate::test_adapters::closeout()
+            )
+            .is_err()
+        );
     }
 
     #[tokio::test]

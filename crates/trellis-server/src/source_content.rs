@@ -9,6 +9,7 @@ use integrity_cbor::{Value, decode_cbor_value, domain_separated_sha256, sha256_b
 use serde::Deserialize;
 use stack_common_error::StackError;
 use trellis_export_writer::ExportEvidenceMember;
+use trellis_server_ports::NativeCloseout;
 use trellis_types::StoredEvent;
 
 use crate::CompletionCallerContext;
@@ -178,6 +179,7 @@ pub struct SourceContentComposition {
     pub contributor: std::sync::Arc<dyn SourceContentContributor>,
     pub final_prefix_guard: std::sync::Arc<dyn SourceContentFinalPrefixGuard>,
     pub structural: std::sync::Arc<dyn StructuralSourcePublicationVerifier>,
+    pub closeout: std::sync::Arc<dyn NativeCloseout>,
 }
 impl std::fmt::Debug for SourceContentComposition {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -203,7 +205,7 @@ impl SourceContentComposition {
                 == reserved_closeout_record_id
                 && source.selection.identity.native_policy_hash == native_policy_hash =>
             {
-                validate_prefix(scope, events, &source.selection)
+                validate_prefix(scope, events, &source.selection, self.closeout.as_ref())
             }
             (SourceContentPrefixClass::FinalCloseout { .. }, None) => Err(StackError::unavailable(
                 "final closeout requires committed Source content",
@@ -251,7 +253,7 @@ fn refused() -> StackError {
 }
 
 pub(crate) async fn read_admitted(
-    contributor: &dyn SourceContentContributor,
+    composition: &SourceContentComposition,
     request: &SourceContentRequest<'_>,
 ) -> Result<ProtectedSourceMembersReady, StackError> {
     if request.caller.person_authorization().is_none() {
@@ -259,15 +261,23 @@ pub(crate) async fn read_admitted(
             "qualified Source content caller is absent",
         ));
     }
-    validate_prefix(request.scope, request.events, request.selection)?;
-    let batch = contributor.read(request).await?;
-    admit_batch(request.scope, request.events, request.selection, batch)
+    let closeout = composition.closeout.as_ref();
+    validate_prefix(request.scope, request.events, request.selection, closeout)?;
+    let batch = composition.contributor.read(request).await?;
+    admit_batch(
+        request.scope,
+        request.events,
+        request.selection,
+        batch,
+        closeout,
+    )
 }
 
 fn validate_prefix(
     scope: &[u8],
     events: &[StoredEvent],
     selected: &SourceContentSelection,
+    closeout_codec: &dyn NativeCloseout,
 ) -> Result<(), StackError> {
     trellis_types::completion_selection::completion_prefix_bounds(events)
         .map_err(StackError::bad_request)?;
@@ -278,7 +288,7 @@ fn validate_prefix(
     let mut expected = selected.native_prefix_event_hashes.clone();
     expected.extend(&selected.photo_event_hashes);
     let closeout = events.last().ok_or_else(refused)?;
-    crate::validate_source_content_stored_closeout(closeout, &selected.identity)?;
+    closeout_codec.validate_stored(closeout, &selected.identity)?;
     expected.push(crate::event_hash(scope, closeout)?);
     if hashes != expected {
         return Err(refused());
@@ -316,8 +326,9 @@ fn admit_batch(
     events: &[StoredEvent],
     selected: &SourceContentSelection,
     batch: PreparedSourceContentBatchV1,
+    closeout: &dyn NativeCloseout,
 ) -> Result<ProtectedSourceMembersReady, StackError> {
-    validate_prefix(scope, events, selected)?;
+    validate_prefix(scope, events, selected, closeout)?;
     serde_json::to_writer(&mut EncodedBound(0), &batch).map_err(|_| refused())?;
     if batch.version != 1
         || batch_key(&batch)? != selected.preparation_key
@@ -693,6 +704,7 @@ pub struct WosSourceContentContributor {
     client: trellis_service_client::TrellisServiceClient,
     tenant: stack_common_http::tenant::TenantScope,
     pins: ConfiguredSourceContentPins,
+    closeout: std::sync::Arc<dyn NativeCloseout>,
 }
 impl std::fmt::Debug for WosSourceContentContributor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -709,11 +721,13 @@ impl WosSourceContentContributor {
         client: trellis_service_client::TrellisServiceClient,
         tenant: stack_common_http::tenant::TenantScope,
         pins: ConfiguredSourceContentPins,
+        closeout: std::sync::Arc<dyn NativeCloseout>,
     ) -> Self {
         Self {
             client,
             tenant,
             pins,
+            closeout,
         }
     }
 }
@@ -811,7 +825,7 @@ impl SourceContentSelectionResolver for WosSourceContentContributor {
                 "configured Source provider pins differ",
             ));
         }
-        crate::validate_source_content_append_closeout(
+        self.closeout.validate_append(
             &request.append_body.event_type,
             &request.append_body.payload,
             &selected.identity,
@@ -843,15 +857,17 @@ enum NativeCloseoutValueTest {
 /// Classifies current native closeout using the independently pinned owning rule.
 #[derive(Clone, Debug)]
 pub(crate) struct ConfiguredNativeCloseoutGuard {
+    pub(crate) closeout: std::sync::Arc<dyn NativeCloseout>,
     native_policy_hash: [u8; 32],
     rule: NativeCloseoutRecordRule,
 }
 impl ConfiguredNativeCloseoutGuard {
     pub(crate) fn new(
+        closeout: std::sync::Arc<dyn NativeCloseout>,
         native_policy_hash: [u8; 32],
         rule: NativeCloseoutRecordRule,
     ) -> Result<Self, StackError> {
-        crate::validate_source_closeout_rule_kind(&rule.record_kind)?;
+        closeout.validate_rule_kind(&rule.record_kind)?;
         if rule.tests.len() > 32
             || rule.tests.iter().any(|test| {
                 let pointer = match test {
@@ -866,6 +882,7 @@ impl ConfiguredNativeCloseoutGuard {
             ));
         }
         Ok(Self {
+            closeout,
             native_policy_hash,
             rule,
         })
@@ -898,7 +915,7 @@ impl SourceContentFinalPrefixGuard for ConfiguredNativeCloseoutGuard {
         }
         let mut selected = None;
         for (index, event) in events.iter().enumerate() {
-            if let Some(native) = crate::source_native_record_for_guard(event)? {
+            if let Some(native) = self.closeout.record_from_stored(event)? {
                 if self.matches(&native) {
                     if selected.replace((index, native)).is_some() {
                         return Err(refused());
@@ -929,7 +946,7 @@ impl SourceContentFinalPrefixGuard for ConfiguredNativeCloseoutGuard {
         body: &trellis_service_client::SubstrateAppendBody,
         prefix: &[StoredEvent],
     ) -> Result<SourceContentPrefixClass, StackError> {
-        if let Some(native) = crate::source_native_append_record_for_guard(body)? {
+        if let Some(native) = self.closeout.record_from_append(body)? {
             if self.matches(&native) {
                 let id = native
                     .get("id")

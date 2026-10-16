@@ -32,12 +32,12 @@
 
 #![forbid(unsafe_code)]
 
+mod adapters;
 mod admission;
 mod append;
 mod artifacts;
 mod auth;
 mod completion;
-mod composition;
 mod reconciliation;
 mod source_content;
 mod source_content_startup;
@@ -62,14 +62,15 @@ mod external_transport;
 pub(crate) use external_attachment::ExternalAttachmentRecipientPolicy;
 pub use external_transport::{ExternalAttachmentRecipient, ExternalAttachmentRecipientSelector};
 mod completion_startup;
-mod export_profile;
 mod http;
 mod oidc_startup;
 pub mod openapi;
 mod state;
+#[cfg(test)]
+mod test_adapters;
 
 #[doc(inline)]
-pub use composition::{AdmissionRouter, default_admission_policy};
+pub use adapters::{AdmissionRouter, EventTypeCatalog, ServerAdapters, TenantHeaders};
 
 use artifacts::{BundleIdentity, BundleRecord};
 
@@ -92,30 +93,29 @@ pub mod test_harness;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use integrity_cbor::{
-    CborHelperError, Value, domain_separated_sha256, encode_canonical_cbor_value, map_lookup_bytes,
-    map_lookup_fixed_bytes, map_lookup_map,
+    Value, domain_separated_sha256, encode_canonical_cbor_value, map_lookup_bytes,
 };
 #[cfg(test)]
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use stack_common_auth::{BaseClaims, Claims};
 use stack_common_error::StackError;
-use trellis_cddl::canonical_event_hash_preimage;
 use trellis_core::SigningKeyMaterial as CoreSigningKey;
 use trellis_export_writer::{
     ExportSealFence, ExportWriterInput, RegistrySnapshot as ExportRegistrySnapshot,
     SigningKeyMaterial as ExportSigningKey, TrellisTimestamp, write_export,
 };
 use trellis_service_client::{ComputeContext, SubstrateAppendResult, VerificationReceipt};
-use trellis_types::{ArtifactType, EVENT_DOMAIN, StoredEvent};
+use trellis_types::{ArtifactType, StoredEvent};
+
+use trellis_server_ports::event_codec::{
+    cbor_bad_request, encode_value, event_hash, event_summary, event_timestamp, text_map, uint,
+};
 
 use crate::openapi::EventTypeRegistryView;
 
-/// Formspec append event literals admitted at the service edge.
-pub use composition::{FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH, FORMSPEC_RESPONSE_SUBMITTED};
-// Catalog version label is producer-neutral after DI-001/DI-002: the catalog
-// projects both WOS and Formspec admitted literals through `composition`. The
-// old `wos-events:` namespace was misleading once Formspec joined the catalog.
+// Catalog version label is producer-neutral: the catalog projects whatever
+// admitted literals the injected adapters declare.
 const EVENT_TYPE_REGISTRY_VERSION: &str = "trellis-events:2026-05-15";
 const EXPORT_ATTEMPT_DOMAIN: &str = "trellis-export-attempt-v1";
 const DEFAULT_BIND_ADDR: &str = "127.0.0.1:8080";
@@ -123,13 +123,6 @@ const DEFAULT_BIND_ADDR: &str = "127.0.0.1:8080";
 #[must_use]
 pub const fn default_bind_addr() -> &'static str {
     DEFAULT_BIND_ADDR
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TenantHeaderMode {
-    Wos,
-    Formspec,
-    MultiProducer,
 }
 
 /// Local JWT claims used by isolated unit-test fixtures.
@@ -206,119 +199,6 @@ impl ServerSigningKey {
     fn export_key(&self) -> ExportSigningKey {
         self.export_key.clone()
     }
-}
-
-/// Returns true when the export ZIP passes the same independent verifier used in conformance.
-#[must_use]
-pub(crate) fn export_bundle_cryptographically_verified(zip_bytes: &[u8]) -> bool {
-    let report = composition::substrate_export_report(zip_bytes);
-    #[cfg(test)]
-    if !report.structure_verified || !report.integrity_verified {
-        eprintln!(
-            "export verification failures: events={:?}; checkpoints={:?}; proofs={:?}; warnings={:?}",
-            report.event_failures,
-            report.checkpoint_failures,
-            report.proof_failures,
-            report.warnings
-        );
-    }
-    report.structure_verified && report.integrity_verified
-}
-
-pub(crate) fn validate_source_closeout_rule_kind(kind: &str) -> Result<(), StackError> {
-    serde_json::from_value::<wos_events::ProvenanceKind>(serde_json::Value::String(
-        kind.to_owned(),
-    ))
-    .map_err(|_| StackError::bad_request("native Source closeout kind invalid"))?;
-    Ok(())
-}
-
-pub(crate) fn source_native_append_record_for_guard(
-    body: &trellis_service_client::SubstrateAppendBody,
-) -> Result<Option<serde_json::Value>, StackError> {
-    if body.event_type != wos_events::WOS_NATIVE_PROVENANCE_EVENT_LITERAL {
-        return Ok(None);
-    }
-    let native = wos_events::NativeProvenanceEvent::from_json(&body.payload)
-        .map_err(|_| StackError::conflict("native Source closeout append payload invalid"))?;
-    Ok(Some(native.record().clone()))
-}
-
-pub(crate) fn source_native_record_for_guard(
-    event: &StoredEvent,
-) -> Result<Option<serde_json::Value>, StackError> {
-    if event_summary(event)?.event_type != wos_events::WOS_NATIVE_PROVENANCE_EVENT_LITERAL {
-        return Ok(None);
-    }
-    let value =
-        integrity_cbor::decode_cbor_value(event.canonical_event()).map_err(cbor_bad_request)?;
-    let fields = value
-        .as_map()
-        .ok_or_else(|| StackError::conflict("native event malformed"))?;
-    let reference = map_lookup_map(fields, "payload_ref").map_err(cbor_bad_request)?;
-    let bytes = map_lookup_bytes(reference, "ciphertext").map_err(cbor_bad_request)?;
-    let native = wos_events::NativeProvenanceEvent::from_dcbor_slice(&bytes)
-        .map_err(|_| StackError::conflict("native Source closeout payload invalid"))?;
-    Ok(Some(native.record().clone()))
-}
-
-fn validate_source_content_native_closeout(
-    native: &wos_events::NativeProvenanceEvent,
-    event_type: &str,
-    selected: &SourceContentIdentityV1,
-) -> Result<(), StackError> {
-    let original: wos_events::ProvenanceRecord = serde_json::from_value(native.record().clone())
-        .map_err(|_| StackError::conflict("reserved native closeout record malformed"))?;
-    let context = wos_events::CustodyAppendContext {
-        event_type_prefix: "wos".into(),
-        case_id: Some(selected.case_ledger_id.clone()),
-        max_inline_record_bytes: None,
-        workflow_ref: Some(selected.workflow_url.clone()),
-    };
-    // Position does not alter authored record bytes in the maintained factory.
-    let metadata = context
-        .metadata_for_provenance_record(&selected.process_id, 0, &original)
-        .map_err(|_| StackError::conflict("reserved native closeout metadata invalid"))?;
-    let input =
-        wos_events::CustodyAppendInput::from_provenance_record(&original, &context, metadata)
-            .map_err(|_| StackError::conflict("reserved native closeout input invalid"))?;
-    if input.case_id != selected.case_ledger_id
-        || input.record_id != selected.reserved_closeout_record_id
-        || input.event_type != event_type
-        || integrity_cbor::sha256_bytes(input.record_bytes())
-            != selected.reserved_native_closeout_record_sha256
-    {
-        return Err(StackError::conflict(
-            "reserved native closeout identity changed",
-        ));
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_source_content_stored_closeout(
-    event: &StoredEvent,
-    selected: &SourceContentIdentityV1,
-) -> Result<(), StackError> {
-    let value =
-        integrity_cbor::decode_cbor_value(event.canonical_event()).map_err(cbor_bad_request)?;
-    let fields = value
-        .as_map()
-        .ok_or_else(|| StackError::conflict("native closeout event malformed"))?;
-    let reference = map_lookup_map(fields, "payload_ref").map_err(cbor_bad_request)?;
-    let payload = map_lookup_bytes(reference, "ciphertext").map_err(cbor_bad_request)?;
-    let native = wos_events::NativeProvenanceEvent::from_dcbor_slice(&payload)
-        .map_err(|_| StackError::conflict("native closeout payload invalid"))?;
-    validate_source_content_native_closeout(&native, &event_summary(event)?.event_type, selected)
-}
-
-pub(crate) fn validate_source_content_append_closeout(
-    event_type: &str,
-    payload: &serde_json::Value,
-    selected: &SourceContentIdentityV1,
-) -> Result<(), StackError> {
-    let native = wos_events::NativeProvenanceEvent::from_json(payload)
-        .map_err(|_| StackError::conflict("native closeout payload invalid"))?;
-    validate_source_content_native_closeout(&native, event_type, selected)
 }
 
 pub(crate) async fn publish_bundle(
@@ -400,20 +280,17 @@ pub(crate) async fn publish_bundle_with_source_content(
     }
     let retained_compute =
         external_attachment::export_compute(state, scope, events, compute).await?;
-    let mut evidence_members =
-        signature_evidence_members(scope, &events.iter().collect::<Vec<_>>())?;
+    let mut evidence_members = state
+        .export_profile
+        .evidence_members(scope, &events.iter().collect::<Vec<_>>())?;
     evidence_members.extend(external_attachment::evidence_members(state, scope, events).await?);
     if let Some(source) = source {
         evidence_members = source.merge_members(evidence_members)?;
     }
     let registry_bytes = event_type_registry_cbor(state.event_type_catalog.as_ref())?;
-    let policy_artifacts = composition::default_signature_policy_artifacts();
-    let export_profile = export_profile::build_export_profile_members(
-        scope,
-        events,
-        generated_at,
-        &policy_artifacts,
-    )?;
+    let export_profile = state
+        .export_profile
+        .profile_members(scope, events, generated_at)?;
     let profile_validation_required = export_profile.requires_profile_validation();
     let package = write_export(ExportWriterInput {
         scope: scope.to_vec(),
@@ -458,7 +335,7 @@ pub(crate) async fn publish_bundle_with_source_content(
         seal_version,
         export_attempt_id: export_attempt_id.clone(),
     };
-    if !export_bundle_cryptographically_verified(&package.zip_bytes) {
+    if !state.export_profile.substrate_verified(&package.zip_bytes) {
         return Err(StackError::internal(
             "published export bundle failed independent verification",
         ));
@@ -466,7 +343,7 @@ pub(crate) async fn publish_bundle_with_source_content(
     if profile_validation_required {
         match (&state.source_content, source) {
             (Some(composition), Some(_)) => composition.verify_structural(&package.zip_bytes)?,
-            _ if !(state.profile_export_verifier.as_ref())(&package.zip_bytes) => {
+            _ if !state.export_profile.profile_verified(&package.zip_bytes) => {
                 return Err(StackError::internal(
                     "published export bundle failed WOS/Formspec profile verification",
                 ));
@@ -499,21 +376,6 @@ pub(crate) async fn publish_bundle_with_source_content(
         .insert_published_record(scope, &record, update_head)
         .await?;
     Ok(record)
-}
-
-/// Forwards opaque actual-event evidence through the selected composition seam.
-pub(crate) fn signature_evidence_members(
-    scope: &[u8],
-    events: &[&StoredEvent],
-) -> Result<Vec<trellis_export_writer::ExportEvidenceMember>, StackError> {
-    composition::signature_evidence_members(scope, events)
-}
-
-pub(crate) fn completion_signing_facts(
-    events: &[StoredEvent],
-    selected: &[[u8; 32]],
-) -> Result<Vec<completion::SigningFact>, StackError> {
-    composition::completion_signing_facts(events, selected)
 }
 
 /// Checks fixed published bytes against their exact repository prefix.
@@ -555,7 +417,7 @@ pub(crate) async fn read_verified_retained_publication(
         .await?
         .ok_or_else(|| StackError::unavailable("published bundle artifact unavailable"))?;
     // This is a processing limit after store allocation, not a streaming-read claim.
-    if bytes.len() > 32 * 1024 * 1024 || !export_bundle_cryptographically_verified(&bytes) {
+    if bytes.len() > 32 * 1024 * 1024 || !state.export_profile.substrate_verified(&bytes) {
         return Err(StackError::conflict(
             "retained bundle fails integrity or byte limit",
         ));
@@ -697,21 +559,22 @@ pub(crate) async fn read_verified_retained_publication(
             )
         )
     });
-    let profile_applies = export_profile::build_export_profile_members(
-        scope,
-        events,
-        event_timestamp(
-            events
-                .last()
-                .ok_or_else(|| StackError::conflict("retained prefix absent"))?,
-        )?,
-        &composition::default_signature_policy_artifacts(),
-    )?
-    .requires_profile_validation();
+    let profile_applies = state
+        .export_profile
+        .profile_members(
+            scope,
+            events,
+            event_timestamp(
+                events
+                    .last()
+                    .ok_or_else(|| StackError::conflict("retained prefix absent"))?,
+            )?,
+        )?
+        .requires_profile_validation();
     if has_profile || profile_applies {
         match (&state.source_content, source) {
             (Some(composition), Some(_)) => composition.verify_structural(&bytes)?,
-            _ if !(state.profile_export_verifier.as_ref())(&bytes) => {
+            _ if !state.export_profile.profile_verified(&bytes) => {
                 return Err(StackError::internal(
                     "retained export bundle failed WOS/Formspec profile verification",
                 ));
@@ -786,79 +649,6 @@ pub(crate) fn validate_existing_replay(
     Ok(())
 }
 
-#[derive(Debug, PartialEq, Eq)]
-struct EventSummary {
-    event_type: String,
-    content_hash: [u8; 32],
-    authored_at: TrellisTimestamp,
-}
-
-fn event_summary(event: &StoredEvent) -> Result<EventSummary, StackError> {
-    let value = integrity_cbor::decode_cbor_value(event.canonical_event()).map_err(|error| {
-        StackError::bad_request(format!("canonical event decode failed: {error}"))
-    })?;
-    let map = value
-        .as_map()
-        .ok_or_else(|| StackError::bad_request("canonical event is not a map"))?;
-    let content_hash = map_lookup_fixed_bytes(map, "content_hash", 32)
-        .map_err(cbor_bad_request)?
-        .try_into()
-        .map_err(|_| StackError::internal("content_hash length changed"))?;
-    let header = map_lookup_map(map, "header").map_err(cbor_bad_request)?;
-    let event_type =
-        String::from_utf8(map_lookup_bytes(header, "event_type").map_err(cbor_bad_request)?)
-            .map_err(|_| StackError::bad_request("event_type is not UTF-8"))?;
-    let authored_at = timestamp_from_header(header)?;
-    Ok(EventSummary {
-        event_type,
-        content_hash,
-        authored_at,
-    })
-}
-
-fn event_timestamp(event: &StoredEvent) -> Result<TrellisTimestamp, StackError> {
-    event_summary(event).map(|summary| summary.authored_at)
-}
-
-pub(crate) fn event_hash(scope: &[u8], event: &StoredEvent) -> Result<[u8; 32], StackError> {
-    if let Some(hash) = event.canonical_event_hash() {
-        return Ok(*hash);
-    }
-    Ok(domain_separated_sha256(
-        EVENT_DOMAIN,
-        &canonical_event_hash_preimage(scope, event.canonical_event()),
-    ))
-}
-
-fn timestamp_from_header(map: &[(Value, Value)]) -> Result<TrellisTimestamp, StackError> {
-    let value = integrity_cbor::map_lookup_value(map, "authored_at").map_err(cbor_bad_request)?;
-    let Value::Array(items) = value else {
-        return Err(StackError::bad_request(
-            "authored_at is not a timestamp array",
-        ));
-    };
-    if items.len() != 2 {
-        return Err(StackError::bad_request(
-            "authored_at timestamp length is invalid",
-        ));
-    }
-    let seconds = value_to_u64(&items[0], "authored_at seconds")?;
-    let nanos = value_to_u64(&items[1], "authored_at nanos")?;
-    let nanos = u32::try_from(nanos)
-        .map_err(|_| StackError::bad_request("authored_at nanos exceeds u32"))?;
-    TrellisTimestamp::new(seconds, nanos)
-}
-
-fn value_to_u64(value: &Value, label: &str) -> Result<u64, StackError> {
-    let Value::Integer(integer) = value else {
-        return Err(StackError::bad_request(format!(
-            "{label} is not an integer"
-        )));
-    };
-    u64::try_from(*integer)
-        .map_err(|_| StackError::bad_request(format!("{label} is negative or too large")))
-}
-
 pub(crate) fn now_timestamp() -> Result<TrellisTimestamp, StackError> {
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -873,9 +663,7 @@ pub(crate) fn timestamp_value(timestamp: TrellisTimestamp) -> Value {
     ])
 }
 
-pub(crate) fn event_type_registry_view(
-    catalog: &composition::EventTypeCatalog,
-) -> EventTypeRegistryView {
+pub(crate) fn event_type_registry_view(catalog: &EventTypeCatalog) -> EventTypeRegistryView {
     debug_assert!(
         !catalog.is_empty(),
         "default event-type catalog must not be empty"
@@ -897,9 +685,7 @@ pub(crate) fn event_type_registry_view(
     }
 }
 
-fn event_type_registry_cbor(
-    catalog: &composition::EventTypeCatalog,
-) -> Result<Vec<u8>, StackError> {
+fn event_type_registry_cbor(catalog: &EventTypeCatalog) -> Result<Vec<u8>, StackError> {
     const SERVICE_CLASSIFICATION: &str = "x-trellis-service/public-metadata";
     const ATTACHMENT_CLASSIFICATION: &str = "x-trellis-service/private-attachment";
     let mut event_types = Vec::with_capacity(catalog.len());
@@ -959,45 +745,6 @@ pub(crate) fn signing_key_registry_cbor(
         ("attestation", Value::Null),
     ])?;
     encode_value(&Value::Array(vec![entry]))
-}
-
-pub(crate) fn text_map(fields: Vec<(&str, Value)>) -> Result<Value, StackError> {
-    canonical_map(
-        fields
-            .into_iter()
-            .map(|(key, value)| (Value::Text(key.to_string()), value))
-            .collect(),
-    )
-}
-
-fn canonical_map(fields: Vec<(Value, Value)>) -> Result<Value, StackError> {
-    let mut fields = fields
-        .into_iter()
-        .map(|(key, value)| {
-            let encoded = encode_value(&key)?;
-            Ok((encoded, key, value))
-        })
-        .collect::<Result<Vec<_>, StackError>>()?;
-    fields.sort_by(|left, right| left.0.cmp(&right.0));
-    Ok(Value::Map(
-        fields
-            .into_iter()
-            .map(|(_, key, value)| (key, value))
-            .collect(),
-    ))
-}
-
-pub(crate) fn encode_value(value: &Value) -> Result<Vec<u8>, StackError> {
-    encode_canonical_cbor_value(value)
-        .map_err(|error| StackError::internal(format!("failed to encode CBOR: {error}")))
-}
-
-pub(crate) fn uint(value: u64) -> Value {
-    Value::Integer(value.into())
-}
-
-fn cbor_bad_request(error: CborHelperError) -> StackError {
-    StackError::bad_request(error.to_string())
 }
 
 fn encode_path_segment(value: &str) -> String {
@@ -1068,6 +815,11 @@ mod tests {
     use crate::admission::ScopedAllowlistScopeAuthorizer;
     use crate::append::{AppendRunner, DefaultAppendRunner};
     use crate::state::TrellisHealthProbe;
+    use crate::test_adapters::{
+        self, FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH, FORMSPEC_RESPONSE_SUBMITTED,
+        export_bundle_cryptographically_verified,
+    };
+    use integrity_cbor::map_lookup_map;
 
     use std::fs;
     use std::sync::Arc;
@@ -1186,7 +938,7 @@ mod tests {
     #[tokio::test]
     async fn given_fresh_append_when_http_post_then_admission_runs_once_in_coordinator() {
         let admission_calls = Arc::new(AtomicUsize::new(0));
-        let inner = default_admission_policy();
+        let inner = test_adapters::admission_policy();
         let counting = Arc::new(CountingAdmissionPolicy {
             inner,
             calls: admission_calls.clone(),
@@ -1212,7 +964,7 @@ mod tests {
     #[tokio::test]
     async fn given_ledger_idempotency_replay_when_coordinator_runs_then_admission_once_per_pass() {
         let admission_calls = Arc::new(AtomicUsize::new(0));
-        let inner = default_admission_policy();
+        let inner = test_adapters::admission_policy();
         let counting = Arc::new(CountingAdmissionPolicy {
             inner,
             calls: admission_calls.clone(),
@@ -1405,7 +1157,7 @@ mod tests {
 
     #[test]
     fn event_type_registry_cbor_maps_privacy_class_to_published_label() {
-        let catalog = composition::EventTypeCatalog::default_stack();
+        let catalog = EventTypeCatalog::from_specs(test_adapters::adapters().event_type_specs);
         let decoded = integrity_cbor::decode_cbor_value(
             &event_type_registry_cbor(&catalog).expect("encode event-type registry"),
         )
@@ -1525,7 +1277,7 @@ mod tests {
         let state = TrellisServerState::new(
             Arc::new(InMemoryEventRepository::new()),
             signing_key,
-            TenantHeaderMode::MultiProducer,
+            crate::test_adapters::adapters(),
         );
         let app = router(state).expect("router");
         let response = app
@@ -1596,7 +1348,7 @@ mod tests {
         TrellisServerState::new(
             Arc::new(InMemoryEventRepository::new()),
             test_signing_key(),
-            TenantHeaderMode::MultiProducer,
+            crate::test_adapters::adapters(),
         )
         .with_jwt_verifier(verifier)
         .with_scope_authorizer(Arc::new(ScopedAllowlistScopeAuthorizer))
@@ -1835,7 +1587,7 @@ mod tests {
         let state = TrellisServerState::new(
             repo.clone(),
             test_signing_key(),
-            TenantHeaderMode::MultiProducer,
+            crate::test_adapters::adapters(),
         );
         let body: SubstrateAppendBody =
             serde_json::from_slice(&append_body("idem-coordinator-persisted-hash")).unwrap();
@@ -2759,7 +2511,7 @@ mod tests {
         let state = TrellisServerState::new(
             Arc::new(FailingEventRepository),
             test_signing_key(),
-            TenantHeaderMode::MultiProducer,
+            crate::test_adapters::adapters(),
         );
         let health = TrellisHealthProbe::new(state).check().await;
         assert_eq!(
@@ -3001,7 +2753,7 @@ mod tests {
         TrellisServerState::new(
             Arc::new(InMemoryEventRepository::new()),
             signing_key,
-            TenantHeaderMode::MultiProducer,
+            crate::test_adapters::adapters(),
         )
     }
 
@@ -3433,7 +3185,7 @@ mod tests {
         assert_eq!(current.len(), 3);
         assert_ne!(
             event_summary(&current[2]).unwrap().event_type,
-            composition::wos_signature_affirmation_event_type()
+            trellis_export_profile_wos::wos_signature_affirmation_event_type()
         );
         for ((row, event), original) in rows.iter().zip(&prior_events).zip(&originals) {
             assert_eq!(
@@ -3560,13 +3312,9 @@ mod tests {
             high_water_event_hash,
         )?;
         let registry_bytes = event_type_registry_cbor(state.event_type_catalog.as_ref())?;
-        let policy_artifacts = composition::default_signature_policy_artifacts();
-        let export_profile = export_profile::build_export_profile_members(
-            scope,
-            events,
-            generated_at,
-            &policy_artifacts,
-        )?;
+        let export_profile = state
+            .export_profile
+            .profile_members(scope, events, generated_at)?;
         let package = write_export(ExportWriterInput {
             scope: scope.to_vec(),
             events: events.to_vec(),
@@ -3744,8 +3492,9 @@ mod tests {
             StatusCode::OK,
             "another valid signed ZIP cannot replace the exact published prefix"
         );
-        let mut rejecting = frozen.clone();
-        rejecting.profile_export_verifier = std::sync::Arc::new(|_| false);
+        let rejecting = frozen
+            .clone()
+            .with_profile_export_verifier(std::sync::Arc::new(|_| false));
         let refusal = router(rejecting)
             .unwrap()
             .oneshot(get_request(&format!("/v1/scopes/{scope}/bundles/head")))

@@ -83,6 +83,7 @@ fn selected(final_prefix: bool) -> (SourceContentComposition, Arc<NeutralPorts>)
             contributor: ports.clone(),
             final_prefix_guard: ports.clone(),
             structural: ports.clone(),
+            closeout: crate::test_adapters::closeout(),
         },
         ports,
     )
@@ -220,7 +221,7 @@ fn real_guard() -> ConfiguredNativeCloseoutGuard {
     let rule = serde_json::from_value(json!({"recordKind":kind,"event":"neutral.closeout",
         "tests":[{"test":"equals","pointer":"/data/closed","value":true}]}))
     .unwrap();
-    ConfiguredNativeCloseoutGuard::new([17; 32], rule).unwrap()
+    ConfiguredNativeCloseoutGuard::new(crate::test_adapters::closeout(), [17; 32], rule).unwrap()
 }
 
 #[tokio::test]
@@ -665,6 +666,7 @@ fn original_composition(contributor: Arc<CommittedOriginal>) -> SourceContentCom
         contributor,
         final_prefix_guard: Arc::new(real_guard()),
         structural: verifier,
+        closeout: crate::test_adapters::closeout(),
     }
 }
 fn source_headers_tenant() -> (

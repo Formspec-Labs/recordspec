@@ -19,10 +19,7 @@ use stack_common_http::idempotency::{
     IdempotencyResponseDisposition,
 };
 use stack_common_http::problem_response;
-use stack_common_http::tenant::{
-    HeaderConfig, TenantHeaderConfigProvider, TenantScope, extract_tenant,
-    extract_tenant_multi_producer,
-};
+use stack_common_http::tenant::{HeaderConfig, TenantHeaderConfigProvider, TenantScope};
 use stack_common_idempotency::{
     HttpReplayScope, HttpReplayStore, InMemoryHttpReplayStore, ReplayOutcome,
     ScopedHttpReplayStore, ScopedReplayOutcome, StoredResponse,
@@ -30,22 +27,21 @@ use stack_common_idempotency::{
 use stack_common_ops::{ComponentHealth, HealthProbe};
 use trellis_export_writer::TrellisTimestamp;
 use trellis_server_ports::{
-    ArtifactStore, EventAdmissionPolicy, S3CompatibleArtifactStore, S3ObjectConfig, ScopeAuthorizer,
+    ArtifactStore, EventAdmissionPolicy, ExportProfile, NativeCloseout, S3CompatibleArtifactStore,
+    S3ObjectConfig, ScopeAuthorizer,
 };
 
+use crate::ServerSigningKey;
 #[cfg(test)]
 use crate::TrellisClaims;
+use crate::adapters::{EventTypeCatalog, ServerAdapters, TenantHeaders};
 use crate::admission::AllowAllScopeAuthorizer;
 use crate::append::{AppendRunner, DefaultAppendRunner};
 use crate::artifacts::{BundleIndex, BundleIndexPort, InMemoryArtifactStore, ScopeLocks};
-use crate::composition::{EventTypeCatalog, default_admission_policy};
 use crate::event_repository::{
     EventRepository, InMemoryEventRepository, PostgresBundleIndex, PostgresEventRepository,
 };
 use crate::oidc_startup::StartupAuth;
-use crate::{ServerSigningKey, TenantHeaderMode};
-
-pub(crate) type ProfileExportVerifier = dyn Fn(&[u8]) -> bool + Send + Sync;
 
 /// Explicit verifier selection; verification never falls back between modes.
 #[derive(Clone)]
@@ -106,7 +102,7 @@ pub struct TrellisServerState {
     pub(crate) admission_policy: Arc<dyn EventAdmissionPolicy<Error = StackError>>,
     pub(crate) authorizer: Arc<dyn ScopeAuthorizer<Error = StackError>>,
     pub(crate) signing_key: ServerSigningKey,
-    tenant_header_mode: TenantHeaderMode,
+    tenant_headers: TenantHeaders,
     replay_store: Arc<InMemoryHttpReplayStore>,
     pub(crate) bundles: Arc<dyn BundleIndexPort>,
     pub(crate) scope_locks: Arc<ScopeLocks>,
@@ -120,17 +116,17 @@ pub struct TrellisServerState {
     /// startup; the catalog projection routes consult this and never re-parse
     /// literals or hand-build constants.
     pub(crate) event_type_catalog: Arc<EventTypeCatalog>,
-    pub(crate) profile_export_verifier: Arc<ProfileExportVerifier>,
+    pub(crate) export_profile: Arc<dyn ExportProfile>,
     pub(crate) source_content: Option<crate::SourceContentComposition>,
 }
 
 impl TrellisServerState {
     #[must_use]
-    pub fn in_memory(signing_key: ServerSigningKey, tenant_header_mode: TenantHeaderMode) -> Self {
+    pub fn in_memory(signing_key: ServerSigningKey, adapters: ServerAdapters) -> Self {
         Self::new(
             Arc::new(InMemoryEventRepository::new()),
             signing_key,
-            tenant_header_mode,
+            adapters,
         )
     }
 
@@ -138,20 +134,19 @@ impl TrellisServerState {
     pub(crate) fn new(
         repository: Arc<dyn EventRepository>,
         signing_key: ServerSigningKey,
-        tenant_header_mode: TenantHeaderMode,
+        adapters: ServerAdapters,
     ) -> Self {
         Self {
             completion: None,
             external_attachment_recipients: None,
-            external_attachment_admission:
-                crate::composition::default_external_attachment_admission(),
+            external_attachment_admission: adapters.external_attachment_admission,
             external_attachment_random: Arc::new(integrity_seam::OsSecureRandom),
             repository,
             artifact_store: Arc::new(InMemoryArtifactStore::default()),
-            admission_policy: default_admission_policy(),
+            admission_policy: adapters.admission_policy,
             authorizer: Arc::new(AllowAllScopeAuthorizer),
             signing_key,
-            tenant_header_mode,
+            tenant_headers: adapters.tenant_headers,
             replay_store: Arc::new(InMemoryHttpReplayStore::new()),
             bundles: Arc::new(BundleIndex::default()),
             scope_locks: Arc::new(ScopeLocks::default()),
@@ -159,8 +154,8 @@ impl TrellisServerState {
             production_like_scope_posture: false,
             scope_authorizer_allow_all: true,
             append_runner: Arc::new(DefaultAppendRunner),
-            event_type_catalog: Arc::new(EventTypeCatalog::default_stack()),
-            profile_export_verifier: Arc::new(crate::composition::wos_profile_export_verified),
+            event_type_catalog: Arc::new(EventTypeCatalog::from_specs(adapters.event_type_specs)),
+            export_profile: adapters.export_profile,
             source_content: None,
         }
     }
@@ -226,11 +221,11 @@ impl TrellisServerState {
 
     /// Test-only: replace profile export verification to prove publication is fail-closed.
     #[cfg(test)]
-    pub(crate) fn with_profile_export_verifier(
-        mut self,
-        verifier: Arc<ProfileExportVerifier>,
-    ) -> Self {
-        self.profile_export_verifier = verifier;
+    pub(crate) fn with_profile_export_verifier(mut self, verifier: ProfileVerifier) -> Self {
+        self.export_profile = Arc::new(VerifierOverride {
+            inner: self.export_profile,
+            verifier,
+        });
         self
     }
 
@@ -377,19 +372,11 @@ impl TrellisServerState {
 
 impl TenantHeaderConfigProvider for TrellisServerState {
     fn tenant_header_config(&self) -> HeaderConfig {
-        match self.tenant_header_mode {
-            TenantHeaderMode::Wos => HeaderConfig::wos(),
-            TenantHeaderMode::Formspec => HeaderConfig::formspec(),
-            TenantHeaderMode::MultiProducer => HeaderConfig::wos(),
-        }
+        self.tenant_headers.primary()
     }
 
     fn extract_tenant_scope(&self, headers: &HeaderMap) -> Result<TenantScope, StackError> {
-        match self.tenant_header_mode {
-            TenantHeaderMode::MultiProducer => extract_tenant_multi_producer(headers),
-            TenantHeaderMode::Wos => extract_tenant(&HeaderConfig::wos(), headers),
-            TenantHeaderMode::Formspec => extract_tenant(&HeaderConfig::formspec(), headers),
-        }
+        self.tenant_headers.extract(headers)
     }
 }
 
@@ -405,7 +392,7 @@ impl HttpIdempotencyState for TrellisServerState {
             return match self
                 .replay_store
                 .check_or_record(
-                    &NativeReplayScope(tenant_replay_scope(call)),
+                    &NativeReplayScope(tenant_replay_scope(&self.tenant_headers, call)),
                     "",
                     &call.request.key,
                     &call.request.request_hash,
@@ -425,7 +412,7 @@ impl HttpIdempotencyState for TrellisServerState {
         match self
             .replay_store
             .check(
-                &tenant_replay_scope(call),
+                &tenant_replay_scope(&self.tenant_headers, call),
                 &call.request.key,
                 &call.request.request_hash,
             )
@@ -447,7 +434,7 @@ impl HttpIdempotencyState for TrellisServerState {
             return self
                 .replay_store
                 .record_response(
-                    &NativeReplayScope(tenant_replay_scope(call)),
+                    &NativeReplayScope(tenant_replay_scope(&self.tenant_headers, call)),
                     "",
                     &call.request.key,
                     &call.request.request_hash,
@@ -458,7 +445,7 @@ impl HttpIdempotencyState for TrellisServerState {
         }
         self.replay_store
             .record(
-                &tenant_replay_scope(call),
+                &tenant_replay_scope(&self.tenant_headers, call),
                 &call.request.key,
                 &call.request.request_hash,
                 response,
@@ -531,13 +518,14 @@ impl HttpIdempotencyState for TrellisServerState {
     }
 }
 
-fn tenant_replay_scope(call: &IdempotencyCall) -> String {
+fn tenant_replay_scope(tenant_headers: &TenantHeaders, call: &IdempotencyCall) -> String {
     if let Some(partition) = &call.replay_partition {
         // Length-prefix the trusted partition so arbitrary principal/route text cannot collide.
         return format!("{}:{}{}", partition.len(), partition, call.request.scope);
     }
-    let tenant = header_value(&call.headers, "x-wos-tenant-id")
-        .or_else(|| header_value(&call.headers, "x-formspec-tenant-id"))
+    let tenant = tenant_headers
+        .tenant_header_names()
+        .find_map(|name| header_value(&call.headers, name))
         .unwrap_or("unknown-tenant");
     format!("{tenant}:{}", call.request.scope)
 }
@@ -557,7 +545,6 @@ fn header_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 ///
 /// Optional:
 /// - `TRELLIS_STORAGE=memory` (in-memory repository; skips `TRELLIS_DATABASE_URL`)
-/// - `TRELLIS_TENANT_HEADER_SET=wos|formspec|mixed`
 /// - `TRELLIS_WOS_COMPLETION_CONFIG_FILE` and `TRELLIS_COMPLETION_OPERATOR_CONFIG_FILE` (paired)
 /// - `TRELLIS_SIGNING_KEY_VALID_TO_UNIX_SECS`
 /// - `TRELLIS_ARTIFACT_BUCKET`
@@ -568,11 +555,16 @@ fn header_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 /// # Errors
 /// Returns an error when OIDC configuration is missing or invalid, legacy auth
 /// environment settings are supplied, or signing-key/backend setup fails.
-pub async fn state_from_env() -> Result<TrellisServerState, StackError> {
+pub async fn state_from_env(
+    adapters: ServerAdapters,
+    native_closeout: Arc<dyn NativeCloseout>,
+) -> Result<TrellisServerState, StackError> {
     // Qualify required authentication before reading signing keys or opening storage.
     let authentication = StartupAuth::from_env()?;
-    let completion =
-        crate::completion_startup::StartupCompletion::from_env(authentication.tenant_scope())?;
+    let completion = crate::completion_startup::StartupCompletion::from_env(
+        authentication.tenant_scope(),
+        native_closeout,
+    )?;
     let trellis_storage_is_memory = matches!(env::var("TRELLIS_STORAGE").as_deref(), Ok("memory"));
 
     let signing_key_path = env::var("TRELLIS_SIGNING_KEY_COSE_PATH")
@@ -586,20 +578,6 @@ pub async fn state_from_env() -> Result<TrellisServerState, StackError> {
     let signing_key =
         ServerSigningKey::from_cose_key_bytes(signing_key_bytes, TrellisTimestamp::new(0, 0)?)?
             .with_valid_to(signing_key_valid_to);
-
-    let tenant_header_mode = match env::var("TRELLIS_TENANT_HEADER_SET")
-        .unwrap_or_else(|_| "mixed".to_string())
-        .as_str()
-    {
-        "wos" => TenantHeaderMode::Wos,
-        "formspec" => TenantHeaderMode::Formspec,
-        "mixed" => TenantHeaderMode::MultiProducer,
-        other => {
-            return Err(StackError::bad_request(format!(
-                "unsupported TRELLIS_TENANT_HEADER_SET `{other}`"
-            )));
-        }
-    };
 
     let (repository, bundle_index): (Arc<dyn EventRepository>, Option<Arc<dyn BundleIndexPort>>) =
         if trellis_storage_is_memory {
@@ -621,7 +599,7 @@ pub async fn state_from_env() -> Result<TrellisServerState, StackError> {
             )
         };
 
-    let mut state = TrellisServerState::new(repository, signing_key, tenant_header_mode);
+    let mut state = TrellisServerState::new(repository, signing_key, adapters);
     if let Some(bundle_index) = bundle_index {
         state = state.with_bundle_index(bundle_index);
     }
@@ -719,5 +697,51 @@ struct NativeReplayScope(String);
 impl HttpReplayScope for NativeReplayScope {
     fn replay_scope_id(&self) -> String {
         self.0.clone()
+    }
+}
+
+/// Test-only: judges profile bundles with `verifier` and delegates everything else.
+#[cfg(test)]
+pub(crate) type ProfileVerifier = Arc<dyn Fn(&[u8]) -> bool + Send + Sync>;
+
+#[cfg(test)]
+struct VerifierOverride {
+    inner: Arc<dyn ExportProfile>,
+    verifier: ProfileVerifier,
+}
+
+#[cfg(test)]
+impl ExportProfile for VerifierOverride {
+    fn evidence_members(
+        &self,
+        scope: &[u8],
+        events: &[&trellis_types::StoredEvent],
+    ) -> Result<Vec<trellis_export_writer::ExportEvidenceMember>, StackError> {
+        self.inner.evidence_members(scope, events)
+    }
+
+    fn profile_members(
+        &self,
+        scope: &[u8],
+        events: &[trellis_types::StoredEvent],
+        generated_at: TrellisTimestamp,
+    ) -> Result<trellis_server_ports::ExportProfileMembers, StackError> {
+        self.inner.profile_members(scope, events, generated_at)
+    }
+
+    fn substrate_verified(&self, zip: &[u8]) -> bool {
+        self.inner.substrate_verified(zip)
+    }
+
+    fn profile_verified(&self, zip: &[u8]) -> bool {
+        (self.verifier)(zip)
+    }
+
+    fn signing_facts(
+        &self,
+        events: &[trellis_types::StoredEvent],
+        selected: &[[u8; 32]],
+    ) -> Result<Vec<trellis_server_ports::SigningFact>, StackError> {
+        self.inner.signing_facts(events, selected)
     }
 }

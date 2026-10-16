@@ -21,12 +21,6 @@ const TEMPLATE: &str =
     include_str!("../../../reference/certificate-of-completion/template-v2/template.html");
 const MAX_BYTES: usize = 1024 * 1024;
 
-pub(crate) struct SigningFact {
-    pub(crate) principal: String,
-    pub(crate) response_hash: [u8; 32],
-    pub(crate) authored_at: TrellisTimestamp,
-}
-
 #[doc(inline)]
 pub use trellis_verify_wos::CompletionRecord;
 
@@ -859,8 +853,9 @@ fn signing_summary(
     request: &CompletionRequest,
     selected: &SelectedCompletion,
 ) -> Result<Value, StackError> {
-    let _ = state;
-    let facts = crate::completion_signing_facts(prefix, &request.signing_events)?;
+    let facts = state
+        .export_profile
+        .signing_facts(prefix, &request.signing_events)?;
     let mut rows = Vec::new();
     for (fact, label) in facts.into_iter().zip(&selected.signer_labels) {
         if (

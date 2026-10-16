@@ -8,6 +8,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
+use trellis_server_ports::NativeCloseout;
 
 use crate::source_content::{
     ConfiguredNativeCloseoutGuard, ConfiguredSourceContentPins, NativeCloseoutRecordRule,
@@ -27,6 +28,7 @@ impl SourceContentStartupConfiguration {
     pub(crate) fn load(
         &self,
         service_profile: &Path,
+        closeout: Arc<dyn NativeCloseout>,
     ) -> Result<ConfiguredNativeCloseoutGuard, StackError> {
         let parent = service_profile.parent().unwrap_or_else(|| Path::new("."));
         let bytes =
@@ -47,7 +49,7 @@ impl SourceContentStartupConfiguration {
                 .ok_or_else(|| StackError::bad_request("Source native closeout rule absent"))?,
         )
         .map_err(|_| StackError::bad_request("Source native closeout rule invalid"))?;
-        ConfiguredNativeCloseoutGuard::new(self.pins.native_policy_hash, rule)
+        ConfiguredNativeCloseoutGuard::new(closeout, self.pins.native_policy_hash, rule)
     }
 
     pub(crate) fn compose(
@@ -57,16 +59,19 @@ impl SourceContentStartupConfiguration {
         tenant: TenantScope,
         authorities: Option<integrity_verify::trellis::CertificateAuthorityRegistry>,
     ) -> SourceContentComposition {
+        let closeout = guard.closeout.clone();
         let reader = Arc::new(WosSourceContentContributor::for_tenant(
             client,
             tenant,
             self.pins.clone(),
+            closeout.clone(),
         ));
         SourceContentComposition {
             selection_resolver: reader.clone(),
             contributor: reader,
             final_prefix_guard: Arc::new(guard),
             structural: Arc::new(WosSourcePublicationVerifier::new(authorities)),
+            closeout,
         }
     }
 }
@@ -91,13 +96,19 @@ mod tests {
             serde_json::from_value(value.clone()).unwrap();
         assert!(
             configuration
-                .load(&directory.path().join("service.json"))
+                .load(
+                    &directory.path().join("service.json"),
+                    crate::test_adapters::closeout()
+                )
                 .is_ok()
         );
         std::fs::write(&owning, b"{}").unwrap();
         assert!(
             configuration
-                .load(&directory.path().join("service.json"))
+                .load(
+                    &directory.path().join("service.json"),
+                    crate::test_adapters::closeout()
+                )
                 .is_err()
         );
         let mut unknown = value;

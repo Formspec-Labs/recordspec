@@ -208,7 +208,7 @@ async fn admit_append(
             diag::observed(
                 selected,
                 Stage::SelectedNative,
-                crate::validate_source_content_append_closeout(
+                composition.closeout.validate_append(
                     &body.event_type,
                     &body.payload,
                     &selection.identity,

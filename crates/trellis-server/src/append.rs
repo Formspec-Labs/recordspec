@@ -118,11 +118,17 @@ impl<'a> AppendCoordinator<'a> {
         diag::observed(
             true,
             Stage::SelectedNative,
-            crate::validate_source_content_append_closeout(
-                &command.event_type,
-                &command.payload,
-                &source.selection.identity,
-            ),
+            self.state
+                .source_content
+                .as_ref()
+                .ok_or_else(|| StackError::unavailable("Source content composition is absent"))
+                .and_then(|composition| {
+                    composition.closeout.validate_append(
+                        &command.event_type,
+                        &command.payload,
+                        &source.selection.identity,
+                    )
+                }),
         )?;
         diag::observed(
             true,
@@ -361,7 +367,7 @@ impl<'a> AppendCoordinator<'a> {
         let protected = diag::observed(
             true,
             Stage::ContentRead,
-            crate::source_content::read_admitted(composition.contributor.as_ref(), &request).await,
+            crate::source_content::read_admitted(composition, &request).await,
         )?;
         diag::mark(true, Stage::CurrentAuthority, Outcome::Enter);
         if diag::observed(
@@ -429,7 +435,9 @@ impl<'a> AppendCoordinator<'a> {
         diag::observed(
             selected,
             Stage::Evidence,
-            crate::signature_evidence_members(scope.as_bytes(), &prefix),
+            self.state
+                .export_profile
+                .evidence_members(scope.as_bytes(), &prefix),
         )?;
         diag::mark(selected, Stage::RepositoryWrite, Outcome::Enter);
         diag::observed(

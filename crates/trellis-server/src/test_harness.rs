@@ -9,24 +9,16 @@
 use std::fs;
 use trellis_export_writer::TrellisTimestamp;
 
-use crate::{ServerSigningKey, TenantHeaderMode, TrellisServerState};
+use crate::ServerSigningKey;
 
-/// In-memory substrate state with mixed WOS/Formspec tenant headers (compose default).
+/// The fixture issuer's signing key.
 ///
 /// # Panics
 ///
 /// Panics when the repo `fixtures/vectors/_keys/issuer-001.cose_key` file is missing
 /// relative to this crate (same oracle as `trellis-server` unit tests).
 #[must_use]
-pub fn multi_producer_memory_state() -> TrellisServerState {
-    TrellisServerState::in_memory(
-        fixture_issuer_signing_key(),
-        TenantHeaderMode::MultiProducer,
-    )
-}
-
-#[must_use]
-fn fixture_issuer_signing_key() -> ServerSigningKey {
+pub fn fixture_issuer_signing_key() -> ServerSigningKey {
     let key_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../fixtures/vectors/_keys/issuer-001.cose_key");
     let key = fs::read(key_path).expect("read issuer-001.cose_key");
@@ -37,7 +29,7 @@ fn fixture_issuer_signing_key() -> ServerSigningKey {
 /// Encodes the existing fixture issuer's public signing-key registry.
 ///
 /// Select this registry before effects in feature-gated consumer tests. The
-/// helper uses the same fixture issuer as `multi_producer_memory_state` and the
+/// helper uses the same fixture issuer as [`fixture_issuer_signing_key`] and the
 /// maintained registry encoder; it creates no independent trust or key material.
 ///
 /// # Errors
@@ -54,7 +46,8 @@ pub fn fixture_signing_key_registry_cbor() -> Result<Vec<u8>, stack_common_error
 /// Composes configured Source-only ports through the maintained startup loader.
 ///
 /// Pass the independently selected client, tenant, Source/native/recipient pins,
-/// and private native-policy file through the existing closed configuration.
+/// private native-policy file and the domain's native closeout codec through the
+/// existing closed configuration.
 /// SourceContentOnly callers may pass `None` for formal certificate authorities.
 /// This helper supplies the real reader, native guard and publication verifier;
 /// it grants no Source authority or final reader readiness and sends no requests.
@@ -69,6 +62,7 @@ pub fn source_content_composition_from_configuration(
     client: trellis_service_client::TrellisServiceClient,
     tenant: stack_common_http::tenant::TenantScope,
     authorities: Option<integrity_verify::trellis::CertificateAuthorityRegistry>,
+    closeout: std::sync::Arc<dyn trellis_server_ports::NativeCloseout>,
 ) -> Result<crate::SourceContentComposition, stack_common_error::StackError> {
     let selected: crate::source_content_startup::SourceContentStartupConfiguration =
         serde_json::from_slice(configuration).map_err(|_| {
@@ -76,7 +70,7 @@ pub fn source_content_composition_from_configuration(
                 "Source content startup configuration invalid",
             )
         })?;
-    let guard = selected.load(service_profile)?;
+    let guard = selected.load(service_profile, closeout)?;
     Ok(selected.compose(guard, client, tenant, authorities))
 }
 
@@ -126,7 +120,14 @@ mod source_content_configuration_tests {
             environment: "test".into(),
             cell: "cell".into(),
         };
-        source_content_composition_from_configuration(configuration, profile, client, tenant, None)
+        source_content_composition_from_configuration(
+            configuration,
+            profile,
+            client,
+            tenant,
+            None,
+            std::sync::Arc::new(trellis_admission_wos::WosNativeCloseout),
+        )
     }
     #[test]
     fn source_content_harness_uses_real_configuration_without_formal_authority() {

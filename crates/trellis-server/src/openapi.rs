@@ -131,7 +131,9 @@ mod tests {
     use utoipa::OpenApi as _;
     use wos_events::{WOS_CANONICAL_EVENT_LITERALS, WOS_NATIVE_PROVENANCE_EVENT_LITERAL};
 
-    use crate::{FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH, FORMSPEC_RESPONSE_SUBMITTED};
+    use crate::test_adapters::{
+        FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH, FORMSPEC_RESPONSE_SUBMITTED,
+    };
 
     use super::*;
 

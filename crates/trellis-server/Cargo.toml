@@ -42,8 +42,6 @@ stack-common-ops = { path = "../../../stack-common/crates/stack-common-ops" }
 time = { version = "0.3", features = ["formatting"] }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
-trellis-admission-formspec = { path = "../trellis-admission-formspec" }
-trellis-admission-wos = { path = "../trellis-admission-wos" }
 trellis-cddl = { path = "../trellis-cddl" }
 trellis-core = { path = "../trellis-core" }
 trellis-export-writer = { path = "../trellis-export-writer" }
@@ -53,11 +51,12 @@ trellis-store-postgres-async = { path = "../trellis-store-postgres-async" }
 trellis-types = { path = "../trellis-types" }
 trellis-verify-wos = { path = "../trellis-verify-wos" }
 utoipa = "5"
-# Domain vocabulary needed only by the composition root; generic modules are
-# blocked from importing wos-events by the boundary gate.
-wos-events = { path = "../../../work-spec/crates/wos-events" }
 
 [dev-dependencies]
+# Tests drive the real adapters; production layering is enforced by deny.toml (dev-deps excluded).
+trellis-admission-formspec = { path = "../trellis-admission-formspec" }
+trellis-admission-wos = { path = "../trellis-admission-wos" }
+trellis-export-profile-wos = { path = "../trellis-export-profile-wos" }
 stack-common-typeid = { path = "../../../stack-common/crates/stack-common-typeid", features = ["testing"] }
 jsonwebtoken = "9"
 tempfile = "3"

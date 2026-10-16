@@ -1,0 +1,38 @@
+[package]
+name = "trellis-server-app"
+version.workspace = true
+edition.workspace = true
+description = "Trellis substrate server composition root: the generic server wired to the shipped WOS and Formspec adapters"
+license.workspace = true
+
+[features]
+default = []
+# Pass-through of trellis-server's fixture-backed state; consumers enable it from dev-dependencies only.
+test-harness = ["trellis-server/test-harness"]
+
+[[bin]]
+name = "trellis-server"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.8"
+integrity-verify = { path = "../../../integrity-stack/crates/integrity-verify" }
+stack-common-error = { path = "../../../stack-common/crates/stack-common-error" }
+stack-common-http = { path = "../../../stack-common/crates/stack-common-http" }
+stack-common-ops = { path = "../../../stack-common/crates/stack-common-ops" }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+trellis-admission-formspec = { path = "../trellis-admission-formspec" }
+trellis-admission-wos = { path = "../trellis-admission-wos" }
+trellis-export-profile-wos = { path = "../trellis-export-profile-wos" }
+trellis-server = { path = "../trellis-server" }
+trellis-server-ports = { path = "../trellis-server-ports" }
+trellis-service-client = { path = "../trellis-service-client" }
+trellis-types = { path = "../trellis-types" }
+
+[dev-dependencies]
+wos-events = { path = "../../../work-spec/crates/wos-events" }
+async-trait = "0.1"
+serde_json = "1"
+stack-common-typeid = { path = "../../../stack-common/crates/stack-common-typeid", features = ["testing"] }
+tempfile = "3"
