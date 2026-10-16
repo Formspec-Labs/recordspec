@@ -2613,7 +2613,8 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
         let doc: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        crate::openapi::assert_trellis_openapi_shape(&doc);
+        // The mounted route serves the document the committed copy is checked against.
+        assert_eq!(doc, serde_json::to_value(<crate::openapi::TrellisServerOpenApi as utoipa::OpenApi>::openapi()).unwrap());
     }
 
     /// Given a successful substrate append, when the same JSON body and idempotency key are
