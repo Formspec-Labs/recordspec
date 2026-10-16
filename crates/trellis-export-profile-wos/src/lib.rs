@@ -12,12 +12,15 @@
 #![forbid(unsafe_code)]
 
 mod export_profile;
+mod source_content;
+
+pub use source_content::{check_source_content_batch, verify_source_content_export};
 
 use integrity_cbor::sha256_bytes;
 use stack_common_error::StackError;
 use trellis_export_writer::{ExportEvidenceMember, TrellisTimestamp};
 use trellis_server_ports::event_codec::{cbor_bad_request, event_summary, event_timestamp};
-use trellis_server_ports::{ExportProfile, ExportProfileMembers, SigningFact};
+use trellis_server_ports::{ExportProfile, ExportProfileMembers, ExportVerdict, SigningFact};
 use trellis_types::StoredEvent;
 use wos_events::ProvenanceKind;
 
@@ -50,27 +53,41 @@ impl ExportProfile for WosExportProfile {
         )
     }
 
-    /// Verifies substrate bytes using the product-owned signing-proof resolver.
+    /// Verifies with the product-owned signing-proof resolver in a single pass.
     ///
     /// V2 certificates require every indexed response proof; generic no-op resolution
     /// cannot establish that binding.
-    fn substrate_verified(&self, zip: &[u8]) -> bool {
-        let report = trellis_verify_wos::verify_export_zip(zip).trellis;
+    fn verify(&self, zip: &[u8]) -> ExportVerdict {
+        let report = trellis_verify_wos::verify_export_zip(zip);
+        let substrate_verified =
+            report.trellis.structure_verified && report.trellis.integrity_verified;
         #[cfg(test)]
-        if !report.structure_verified || !report.integrity_verified {
+        if !substrate_verified {
             eprintln!(
                 "export verification failures: events={:?}; checkpoints={:?}; proofs={:?}; warnings={:?}",
-                report.event_failures,
-                report.checkpoint_failures,
-                report.proof_failures,
-                report.warnings
+                report.trellis.event_failures,
+                report.trellis.checkpoint_failures,
+                report.trellis.proof_failures,
+                report.trellis.warnings
             );
         }
-        report.structure_verified && report.integrity_verified
-    }
-
-    fn profile_verified(&self, zip: &[u8]) -> bool {
-        trellis_verify_wos::verify_export_zip(zip).relying_party_valid()
+        let profile_present = integrity_bundle::read_stored_zip(zip).is_ok_and(|entries| {
+            entries.iter().any(|entry| {
+                matches!(
+                    entry.path().rsplit('/').next(),
+                    Some(
+                        trellis_export_writer::SIGNED_ACTS_MEMBER
+                            | trellis_export_writer::SIGNED_ACTS_MANIFEST_MEMBER
+                            | trellis_export_writer::POLICY_CLOSURE_MEMBER
+                    )
+                )
+            })
+        });
+        ExportVerdict {
+            substrate_verified,
+            profile_present,
+            profile_verified: report.relying_party_valid(),
+        }
     }
 
     fn signing_facts(

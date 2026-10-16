@@ -2,10 +2,10 @@
 //! WOS native-provenance closeout records behind the [`NativeCloseout`] port.
 
 use integrity_cbor::{decode_cbor_value, map_lookup_bytes, map_lookup_map, sha256_bytes};
+use serde::Deserialize;
 use stack_common_error::StackError;
-use trellis_server_ports::NativeCloseout;
 use trellis_server_ports::event_codec::{cbor_bad_request, event_summary};
-use trellis_service_client::SubstrateAppendBody;
+use trellis_server_ports::{CloseoutSource, NativeCloseout};
 use trellis_service_client::source_content::SourceContentIdentityV1;
 use trellis_types::StoredEvent;
 use wos_events::{
@@ -17,58 +17,135 @@ use wos_events::{
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WosNativeCloseout;
 
+/// The owning `closeoutRecord` predicate: record kind, optional event name, JSON-pointer tests.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CloseoutRecordRule {
+    record_kind: String,
+    event: Option<String>,
+    tests: Vec<ValueTest>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "test", rename_all = "camelCase", deny_unknown_fields)]
+enum ValueTest {
+    Equals {
+        pointer: String,
+        value: serde_json::Value,
+    },
+    Nonblank {
+        pointer: String,
+    },
+}
+
+impl CloseoutRecordRule {
+    /// Reads the `closeoutRecord` rule from the owner's pinned native-selection document.
+    fn parse(document: &serde_json::Value) -> Result<Self, StackError> {
+        let rule = document
+            .get("closeoutRecord")
+            .ok_or_else(|| StackError::bad_request("Source native closeout rule absent"))?;
+        let parsed: Self = serde_json::from_value(rule.clone())
+            .map_err(|_| StackError::bad_request("Source native closeout rule invalid"))?;
+        serde_json::from_value::<ProvenanceKind>(serde_json::Value::String(
+            parsed.record_kind.clone(),
+        ))
+        .map_err(|_| StackError::bad_request("native Source closeout kind invalid"))?;
+        if parsed.tests.len() > 32
+            || parsed.tests.iter().any(|test| {
+                let (ValueTest::Equals { pointer, .. } | ValueTest::Nonblank { pointer }) = test;
+                !pointer.starts_with('/') || pointer.len() > 2048
+            })
+        {
+            return Err(StackError::bad_request(
+                "native Source closeout rule invalid",
+            ));
+        }
+        Ok(parsed)
+    }
+
+    fn matches(&self, native: &serde_json::Value) -> bool {
+        native.get("recordKind").and_then(serde_json::Value::as_str)
+            == Some(self.record_kind.as_str())
+            && self.event.as_ref().is_none_or(|event| {
+                native.get("event").and_then(serde_json::Value::as_str) == Some(event.as_str())
+            })
+            && self.tests.iter().all(|test| match test {
+                ValueTest::Equals { pointer, value } => native.pointer(pointer) == Some(value),
+                ValueTest::Nonblank { pointer } => native
+                    .pointer(pointer)
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|value| !value.trim().is_empty()),
+            })
+    }
+}
+
 impl NativeCloseout for WosNativeCloseout {
-    fn validate_rule_kind(&self, kind: &str) -> Result<(), StackError> {
-        serde_json::from_value::<ProvenanceKind>(serde_json::Value::String(kind.to_owned()))
-            .map_err(|_| StackError::bad_request("native Source closeout kind invalid"))?;
-        Ok(())
+    fn validate_rule(&self, rule: &serde_json::Value) -> Result<(), StackError> {
+        CloseoutRecordRule::parse(rule).map(|_| ())
     }
 
-    fn record_from_append(
+    fn matching_record_id(
         &self,
-        body: &SubstrateAppendBody,
-    ) -> Result<Option<serde_json::Value>, StackError> {
-        if body.event_type != WOS_NATIVE_PROVENANCE_EVENT_LITERAL {
+        rule: &serde_json::Value,
+        source: CloseoutSource<'_>,
+    ) -> Result<Option<String>, StackError> {
+        let Some(native) = record(source)? else {
+            return Ok(None);
+        };
+        if !CloseoutRecordRule::parse(rule)?.matches(&native) {
             return Ok(None);
         }
-        let native = NativeProvenanceEvent::from_json(&body.payload)
-            .map_err(|_| StackError::conflict("native Source closeout append payload invalid"))?;
-        Ok(Some(native.record().clone()))
+        native
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .map(|id| Some(id.to_owned()))
+            .ok_or_else(|| StackError::conflict("native Source closeout id absent"))
     }
 
-    fn record_from_stored(
+    fn validate(
         &self,
-        event: &StoredEvent,
-    ) -> Result<Option<serde_json::Value>, StackError> {
-        if event_summary(event)?.event_type != WOS_NATIVE_PROVENANCE_EVENT_LITERAL {
-            return Ok(None);
+        source: CloseoutSource<'_>,
+        selected: &SourceContentIdentityV1,
+    ) -> Result<(), StackError> {
+        let (native, event_type) = match source {
+            CloseoutSource::Append(body) => (
+                NativeProvenanceEvent::from_json(&body.payload)
+                    .map_err(|_| StackError::conflict("native closeout payload invalid"))?,
+                body.event_type.clone(),
+            ),
+            CloseoutSource::Stored(event) => {
+                let payload = inline_payload(event, "native closeout event malformed")?;
+                (
+                    NativeProvenanceEvent::from_dcbor_slice(&payload)
+                        .map_err(|_| StackError::conflict("native closeout payload invalid"))?,
+                    event_summary(event)?.event_type,
+                )
+            }
+        };
+        validate_native_closeout(&native, &event_type, selected)
+    }
+}
+
+/// Native record carried by `source`, or `None` when it is another event type.
+fn record(source: CloseoutSource<'_>) -> Result<Option<serde_json::Value>, StackError> {
+    match source {
+        CloseoutSource::Append(body) => {
+            if body.event_type != WOS_NATIVE_PROVENANCE_EVENT_LITERAL {
+                return Ok(None);
+            }
+            NativeProvenanceEvent::from_json(&body.payload)
+                .map(|native| Some(native.record().clone()))
+                .map_err(|_| StackError::conflict("native Source closeout append payload invalid"))
         }
-        let bytes = inline_payload(event, "native event malformed")?;
-        let native = NativeProvenanceEvent::from_dcbor_slice(&bytes)
-            .map_err(|_| StackError::conflict("native Source closeout payload invalid"))?;
-        Ok(Some(native.record().clone()))
-    }
-
-    fn validate_append(
-        &self,
-        event_type: &str,
-        payload: &serde_json::Value,
-        selected: &SourceContentIdentityV1,
-    ) -> Result<(), StackError> {
-        let native = NativeProvenanceEvent::from_json(payload)
-            .map_err(|_| StackError::conflict("native closeout payload invalid"))?;
-        validate_native_closeout(&native, event_type, selected)
-    }
-
-    fn validate_stored(
-        &self,
-        event: &StoredEvent,
-        selected: &SourceContentIdentityV1,
-    ) -> Result<(), StackError> {
-        let payload = inline_payload(event, "native closeout event malformed")?;
-        let native = NativeProvenanceEvent::from_dcbor_slice(&payload)
-            .map_err(|_| StackError::conflict("native closeout payload invalid"))?;
-        validate_native_closeout(&native, &event_summary(event)?.event_type, selected)
+        CloseoutSource::Stored(event) => {
+            if event_summary(event)?.event_type != WOS_NATIVE_PROVENANCE_EVENT_LITERAL {
+                return Ok(None);
+            }
+            let bytes = inline_payload(event, "native event malformed")?;
+            NativeProvenanceEvent::from_dcbor_slice(&bytes)
+                .map(|native| Some(native.record().clone()))
+                .map_err(|_| StackError::conflict("native Source closeout payload invalid"))
+        }
     }
 }
 

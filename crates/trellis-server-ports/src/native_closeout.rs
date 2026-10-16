@@ -2,59 +2,49 @@
 //! Port for the domain's native closeout records.
 //!
 //! The generic server selects Source content around a closeout record without
-//! naming the producer that defines it. A domain adapter (for example
-//! `trellis-admission-wos`) decodes and validates the record; the composition
-//! root installs it.
+//! naming the producer that defines it or reading its fields. A domain adapter
+//! (for example `trellis-admission-wos`) owns the pinned rule document, decodes
+//! the record and validates it; the composition root installs it.
 
 use stack_common_error::StackError;
 use trellis_service_client::SubstrateAppendBody;
 use trellis_service_client::source_content::SourceContentIdentityV1;
 use trellis_types::StoredEvent;
 
+/// Where a closeout candidate comes from.
+#[derive(Clone, Copy, Debug)]
+pub enum CloseoutSource<'a> {
+    /// A pending append request.
+    Append(&'a SubstrateAppendBody),
+    /// An event already in the ledger.
+    Stored(&'a StoredEvent),
+}
+
 /// Domain adapter for native closeout records.
 pub trait NativeCloseout: Send + Sync + std::fmt::Debug {
-    /// Validates the record kind named by a closeout rule.
+    /// Validates the owner's pinned closeout rule document, which is opaque to the server.
     ///
     /// # Errors
-    /// Refuses a kind the domain does not define.
-    fn validate_rule_kind(&self, kind: &str) -> Result<(), StackError>;
+    /// Refuses a malformed rule or one naming a record kind the domain does not define.
+    fn validate_rule(&self, rule: &serde_json::Value) -> Result<(), StackError>;
 
-    /// Native record carried by a pending append, or `None` for any other event type.
+    /// Reserved record id when `source` carries a native record matching `rule`, else `None`.
     ///
     /// # Errors
-    /// Refuses a native payload that does not decode.
-    fn record_from_append(
+    /// Refuses a native payload that does not decode or a matching record without an id.
+    fn matching_record_id(
         &self,
-        body: &SubstrateAppendBody,
-    ) -> Result<Option<serde_json::Value>, StackError>;
+        rule: &serde_json::Value,
+        source: CloseoutSource<'_>,
+    ) -> Result<Option<String>, StackError>;
 
-    /// Native record carried by a stored event, or `None` for any other event type.
-    ///
-    /// # Errors
-    /// Refuses a native payload that does not decode.
-    fn record_from_stored(
-        &self,
-        event: &StoredEvent,
-    ) -> Result<Option<serde_json::Value>, StackError>;
-
-    /// Checks a pending closeout append against the selected reserved identity.
+    /// Checks the closeout against the selected reserved identity.
     ///
     /// # Errors
     /// Refuses a malformed payload or any identity change.
-    fn validate_append(
+    fn validate(
         &self,
-        event_type: &str,
-        payload: &serde_json::Value,
-        selected: &SourceContentIdentityV1,
-    ) -> Result<(), StackError>;
-
-    /// Checks a stored closeout event against the selected reserved identity.
-    ///
-    /// # Errors
-    /// Refuses a malformed payload or any identity change.
-    fn validate_stored(
-        &self,
-        event: &StoredEvent,
+        source: CloseoutSource<'_>,
         selected: &SourceContentIdentityV1,
     ) -> Result<(), StackError>;
 }

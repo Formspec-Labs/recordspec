@@ -31,6 +31,17 @@ impl ExportProfileMembers {
     }
 }
 
+/// Outcome of verifying one export ZIP.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExportVerdict {
+    /// Structure and cryptographic integrity pass independent substrate verification.
+    pub substrate_verified: bool,
+    /// The bundle carries domain profile members.
+    pub profile_present: bool,
+    /// The domain verifier accepts the bundle for relying parties.
+    pub profile_verified: bool,
+}
+
 /// Consumer-owned signing facts resolved from one actual signature event.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SigningFact {
@@ -62,11 +73,8 @@ pub trait ExportProfile: Send + Sync {
         generated_at: TrellisTimestamp,
     ) -> Result<ExportProfileMembers, StackError>;
 
-    /// True when the export ZIP passes independent substrate verification.
-    fn substrate_verified(&self, zip: &[u8]) -> bool;
-
-    /// True when a profile-bearing export passes domain verification.
-    fn profile_verified(&self, zip: &[u8]) -> bool;
+    /// Verifies a finished export ZIP in one pass.
+    fn verify(&self, zip: &[u8]) -> ExportVerdict;
 
     /// Resolves signing facts for the selected signature events.
     ///

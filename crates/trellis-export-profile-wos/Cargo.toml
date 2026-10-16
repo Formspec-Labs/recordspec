@@ -7,12 +7,14 @@ license.workspace = true
 
 [dependencies]
 hex = "0.4"
+integrity-bundle = { path = "../../../integrity-stack/crates/integrity-bundle" }
 integrity-cbor = { path = "../../../integrity-stack/crates/integrity-cbor" }
 integrity-verify = { path = "../../../integrity-stack/crates/integrity-verify" }
 stack-common-error = { path = "../../../stack-common/crates/stack-common-error", default-features = false }
 time = { version = "0.3", features = ["formatting"] }
 trellis-export-writer = { path = "../trellis-export-writer" }
 trellis-server-ports = { path = "../trellis-server-ports" }
+trellis-service-client = { path = "../trellis-service-client" }
 trellis-types = { path = "../trellis-types" }
 trellis-verify-wos = { path = "../trellis-verify-wos" }
 wos-events = { path = "../../../work-spec/crates/wos-events" }
