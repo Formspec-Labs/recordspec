@@ -37,6 +37,8 @@ deny = [
     { name = "trellis-admission-formspec", wrappers = ["trellis-server"] },
     { name = "trellis-export-profile-wos", wrappers = ["trellis-server"] },
 
+    # Adapters depend on the ports crate only; the generic server is reachable from the composition root alone.
+    { name = "trellis-service-core", wrappers = ["trellis-server"] },
     { name = "formspec-signature-trellis-binding" },
 
     # Verifier, conformance and interop crates stay off the substrate core, the writer and the ports.
