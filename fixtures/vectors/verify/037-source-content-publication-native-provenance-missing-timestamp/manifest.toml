@@ -1,0 +1,21 @@
+id          = "verify/037-source-content-publication-native-provenance-missing-timestamp"
+op          = "verify"
+status      = "active"
+description = """Publication phase refusal. The `taskCreated` record omits its required `timestamp`. Rust refuses it as `native_provenance_invalid`; so must every runtime, whatever the phase."""
+
+[coverage]
+tr_core = ["TR-CORE-067"]
+tr_op = ["TR-OP-122"]
+
+[inputs]
+export_zip = "input-export.zip"
+verifier   = "source-content-publication"
+
+[expected.report]
+structure_verified   = true
+integrity_verified   = false
+readability_verified = true
+first_failure_kind   = "native_provenance_invalid"
+
+[derivation]
+document = "derivation.md"

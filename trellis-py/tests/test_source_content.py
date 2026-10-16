@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import cbor2
 import pytest
 
-from trellis_py import source_content, verify, verify_wos
+from trellis_py import native_provenance, source_content, verify, verify_wos
 from trellis_py._cbor_canonical import encode_canonical_cbor_value
 
 VECTORS = Path(__file__).resolve().parents[2] / "fixtures" / "vectors" / "verify"
@@ -268,14 +268,34 @@ def test_original_context_join_names_the_failing_association():
 
 def _native(event_hash: bytes, record: dict) -> SimpleNamespace:
     return SimpleNamespace(
-        event_type=source_content.NATIVE_PROVENANCE_EVENT_TYPE,
+        event_type=native_provenance.EVENT_TYPE,
         canonical_event_hash=event_hash,
         payload_ref_inline=cbor2.dumps({"record": record}),
         payload_ref_external=False,
     )
 
 
+_CROCKFORD = "0123456789abcdefghjkmnpqrstvwxyz"
+
+
+def _typeid(n: int) -> str:
+    """A valid `acme_prov_<uuidv7>` record TypeID, distinct per `n`."""
+    raw = bytearray(n.to_bytes(6, "big") + b"\x70\x00\x80" + b"\x00" * 7)
+    number = int.from_bytes(raw, "big")
+    tail = "".join(_CROCKFORD[(number >> (5 * i)) & 31] for i in reversed(range(26)))
+    return f"acme_prov_{tail}"
+
+
+def _stamped(record: dict) -> dict:
+    return {**record, "timestamp": "2026-10-13T00:00:00Z", "auditLayer": "facts", "definitionVersion": "1"}
+
+
 def _records(task: dict) -> tuple[dict, dict]:
+    created, completed = _bare_records(task)
+    return _stamped(created), _stamped(completed)
+
+
+def _bare_records(task: dict) -> tuple[dict, dict]:
     created = {
         "id": task["task_created_record_id"],
         "recordKind": "taskCreated",
@@ -324,7 +344,7 @@ def test_native_join_refuses_each_inexact_association():
     assert case(lambda c, d: d["data"]["details"].update(artifactId="other")) is not None
     assert case(lambda c, d: c["data"]["details"].update(assignedActor="someone-else")) is not None
     assert case(lambda c, d: c["data"]["details"].update(assignedActor=None)) is not None
-    assert case(lambda c, d: c.update(id="foreign-record-id")) is not None
+    assert case(lambda c, d: c.update(id=_typeid(1))) is not None
     assert _join_error(task, list(reversed(_joined_events(task, created, completed)))) is not None
 
 
@@ -344,9 +364,59 @@ def test_native_join_ignores_other_tasks_but_not_unreadable_records():
     events = _joined_events(task, created, completed)
     assert _join_error(task, [_native(b"\x03" * 32, other)] + events) is None
     broken = SimpleNamespace(
-        event_type=source_content.NATIVE_PROVENANCE_EVENT_TYPE,
+        event_type=native_provenance.EVENT_TYPE,
         canonical_event_hash=b"\x04" * 32,
         payload_ref_inline=cbor2.dumps({"record": {"id": b"bytes-are-outside-the-subset"}}),
         payload_ref_external=False,
     )
     assert _join_error(task, [broken] + events) == "invalid native task record"
+
+
+# --- text bounds and legacy rows follow Rust ---------------------------------------
+
+
+def test_text_bounds_count_utf8_bytes():
+    locator = _locator()
+    locator["response_id"] = "é" * 512  # 1024 bytes
+    source_content.parse_protected_response(locator)
+    locator["response_id"] = "é" * 513  # 1026 bytes, 513 characters
+    with pytest.raises(verify.VerifyError):
+        source_content.parse_protected_response(locator)
+    task = _task()
+    task["task_id"] = "é" * 2049  # 4098 bytes
+    with pytest.raises(verify.VerifyError):
+        source_content.parse_source_task(task)
+
+
+def test_blank_uses_the_unicode_white_space_rust_trims():
+    locator = _locator()
+    locator["response_ref"] = "\u3000\u00a0"
+    with pytest.raises(verify.VerifyError):
+        source_content.parse_protected_response(locator)
+
+
+LEGACY_ROW = _catalog(
+    _zip("014-export-006-signature-row-mismatch"), "062-signature-affirmations.cbor"
+)[0]
+
+
+def _legacy_error(**changes) -> bool:
+    row = {**copy.deepcopy(LEGACY_ROW), **changes}
+    for key in [k for k, v in row.items() if v is ...]:
+        del row[key]
+    try:
+        source_content.read_signature_catalog(cbor2.dumps([row]))
+    except verify.VerifyError:
+        return True
+    return False
+
+
+def test_legacy_rows_are_read_as_rust_reads_them():
+    assert not _legacy_error()
+    assert _legacy_error(signing_intent=5)  # optional text is text or null, never coerced
+    assert _legacy_error(signing_intent=[])
+    assert not _legacy_error(signing_intent=None)
+    assert _legacy_error(formspec_response_ref=...)  # no alias for the response ref
+    assert _legacy_error(source_response_ref=LEGACY_ROW["formspec_response_ref"], formspec_response_ref=...)
+    assert _legacy_error(consent_reference={"n": float("nan")})  # must re-encode canonically
+    assert _legacy_error(identity_binding={"n": -0.0})

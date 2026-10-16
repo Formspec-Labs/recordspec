@@ -16,15 +16,13 @@ from __future__ import annotations
 import unicodedata
 from typing import Any, Optional
 
-import cbor2
-
+from trellis_py import native_provenance
 from trellis_py import verify as core
 from trellis_py._cbor_canonical import encode_canonical_cbor_value
 from trellis_py._cbor_strict import CborStrictError, reject_duplicate_canonical_map_keys
 
 MAX_CATALOG_BYTES = 1024 * 1024
 MAX_ROWS = 256
-NATIVE_PROVENANCE_EVENT_TYPE = "wos.provenance.recorded"
 
 _MAX_RESPONSE_BYTES = 1_048_576
 _MAX_PACKAGE_BYTES = 8 * 1024 * 1024
@@ -100,10 +98,18 @@ def _closed(m: Any, allowed: tuple[str, ...], *, complete: bool, label: str) -> 
     return m
 
 
+def _blank(s: str) -> bool:
+    return not s.strip(core.RUST_WHITE_SPACE)
+
+
+def _bytes_len(s: str) -> int:
+    return len(s.encode())
+
+
 def _text_ok(s: str) -> bool:
     return (
-        bool(s.strip())
-        and len(s.encode()) <= 4096
+        not _blank(s)
+        and _bytes_len(s) <= 4096
         and not any(unicodedata.category(c) == "Cc" for c in s)
     )
 
@@ -150,8 +156,8 @@ def parse_protected_response(value: Any) -> dict[str, Any]:
     ):
         out[name] = _bytes(m, name, 32)
     if (
-        not out["response_id"].strip() or len(out["response_id"]) > 1024
-        or not out["response_ref"].strip() or len(out["response_ref"]) > 1024
+        _blank(out["response_id"]) or _bytes_len(out["response_id"]) > 1024
+        or _blank(out["response_ref"]) or _bytes_len(out["response_ref"]) > 1024
         or not 0 < out["original_byte_length"] <= _MAX_RESPONSE_BYTES
         or not _KEY_LEN[0] <= len(out["context_key"]) <= _KEY_LEN[1]
         or _canonical_len(out["key_bag"]) > _MAX_METADATA_BYTES
@@ -220,7 +226,7 @@ def parse_original_context_proof(value: Any) -> dict[str, Any]:
         complete=True, label="original context proof",
     )
     instance = _text(m, "context_instance")
-    if not instance.strip() or len(instance) > 1024 or any(
+    if _blank(instance) or _bytes_len(instance) > 1024 or any(
         unicodedata.category(c) == "Cc" for c in instance
     ):
         raise _fail("original context instance invalid")
@@ -346,10 +352,16 @@ def read_signature_catalog(data: bytes) -> tuple[list[dict], list[dict]]:
 
 def _optional_text(entry: dict, key: str) -> Optional[str]:
     v = entry.get(key)
-    return v if isinstance(v, str) else None
+    if v is not None and not isinstance(v, str):
+        raise _fail(f"`{key}` must be text or null")
+    return v
 
 
 def _legacy_signature_row(entry: dict) -> dict[str, Any]:
+    try:
+        encode_canonical_cbor_value(entry)  # legacy rows must be canonically encodable (no NaN, -0.0)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail("invalid legacy row") from exc
     ib = entry.get("identity_binding")
     cr = entry.get("consent_reference")
     if not isinstance(ib, dict) or not isinstance(cr, dict):
@@ -373,9 +385,9 @@ def _legacy_signature_row(entry: dict) -> dict[str, Any]:
                 "profile_key", "witnessed_signature_ref",
             )
         },
-        "source_response_ref": core._map_lookup_str_alias(
-            entry, "source_response_ref", "formspec_response_ref"
-        ),
+        # The catalog names the Response only as `formspec_response_ref`; the row key
+        # keeps the record parser's name so both sides compare field for field.
+        "source_response_ref": _text(entry, "formspec_response_ref"),
         "protected_response": None if protected is None else parse_protected_response(protected),
     }
 
@@ -472,35 +484,6 @@ def _pointer(value: Any, *path: str) -> Any:
     return value
 
 
-def _native_record(payload: bytes) -> dict:
-    """Wrapped native record shape; the WOS-owned record schema is not re-run here."""
-    wrapper = _decode(payload)
-    record = wrapper.get("record") if isinstance(wrapper, dict) else None
-    if (
-        not isinstance(wrapper, dict)
-        or set(wrapper) != {"record"}
-        or not isinstance(record, dict)
-        or not isinstance(record.get("recordKind"), str)
-        or not isinstance(record.get("id"), str)
-        or _has_unsupported_value(record, 0)
-    ):
-        raise _fail("invalid native task record")
-    return record
-
-
-def _has_unsupported_value(value: Any, depth: int) -> bool:
-    if depth > 128 or isinstance(value, (bytes, cbor2.CBORTag)):
-        return True
-    if isinstance(value, dict):
-        return any(
-            not isinstance(k, str) or _has_unsupported_value(v, depth + 1)
-            for k, v in value.items()
-        )
-    if isinstance(value, list):
-        return any(_has_unsupported_value(v, depth + 1) for v in value)
-    return False
-
-
 NativeTaskIndex = Optional[dict[str, list[tuple[int, "core.EventDetails", dict]]]]
 
 
@@ -514,13 +497,13 @@ def native_task_index(
     """
     index: dict[str, list[tuple[int, core.EventDetails, dict]]] = {}
     for position, details in enumerate(ordered_events):
-        if details.event_type != NATIVE_PROVENANCE_EVENT_TYPE:
+        if details.event_type != native_provenance.EVENT_TYPE:
             continue
         payload = core._readable_payload_bytes(details, payload_blobs)
         if payload is None:
             continue
         try:
-            record = _native_record(payload)
+            record = native_provenance.parse_native_record(payload)
         except core.VerifyError:
             return None
         task_id = _pointer(record, "data", "taskId")

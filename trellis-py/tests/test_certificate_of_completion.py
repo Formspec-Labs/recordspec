@@ -767,3 +767,25 @@ def test_authority_interval_is_inclusive_at_both_ends():
     )
     outcome, _ = _authority_outcome(_signed_certificate(key), registry)
     assert outcome.attestation_authority == "verified"
+
+
+def test_attestation_rows_with_non_text_authority_are_a_decode_failure_not_a_crash():
+    for bad in (
+        {"authority": ["urn"], "authority_class": "new", "signature": b"\x00" * 64},
+        {"authority": "urn", "authority_class": 7, "signature": b"\x00" * 64},
+    ):
+        with pytest.raises(VerifyError):
+            _decode_certificate_payload(certificate_extensions(attestations=[bad]))
+
+
+@pytest.mark.parametrize("certificate_id", [" \u3000", "x" * 1025, "é" * 513], ids=["blank", "long", "multibyte"])
+def test_certificate_ids_rust_refuses_cannot_be_trusted(certificate_id):
+    key = Ed25519PrivateKey.generate()
+    with pytest.raises(ValueError):
+        _attestation_preimage(certificate_id, TrellisTimestamp(ATTEST_COMPLETED_AT, 0), "new")
+    row = {"authority": AUTHORITY_URI, "authority_class": "new", "signature": b"\x00" * 64}
+    cert = _decode_certificate_payload(
+        certificate_extensions(certificate_id=certificate_id, attestations=[row])
+    )
+    outcome, _ = _authority_outcome(cert, _trust(key))
+    assert outcome.attestation_authority == "failed"

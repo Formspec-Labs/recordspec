@@ -1,0 +1,21 @@
+id          = "verify/039-source-content-publication-native-provenance-unknown-field"
+op          = "verify"
+status      = "active"
+description = """Publication phase refusal. The `taskCreated` record carries a field the closed schema does not define. Rust refuses it as `native_provenance_invalid`; so must every runtime, whatever the phase."""
+
+[coverage]
+tr_core = ["TR-CORE-067"]
+tr_op = ["TR-OP-122"]
+
+[inputs]
+export_zip = "input-export.zip"
+verifier   = "source-content-publication"
+
+[expected.report]
+structure_verified   = true
+integrity_verified   = false
+readability_verified = true
+first_failure_kind   = "native_provenance_invalid"
+
+[derivation]
+document = "derivation.md"

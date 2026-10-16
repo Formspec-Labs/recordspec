@@ -13,7 +13,7 @@ from typing import Any, Callable, Iterable, Optional
 
 import cbor2
 
-from trellis_py import source_content
+from trellis_py import native_provenance, source_content
 from trellis_py import verify as core
 from trellis_py._cbor_canonical import (
     CanonicalCborError,
@@ -379,6 +379,36 @@ def _validate_events(
     findings: list[WosFinding] = []
     findings.extend(_validate_rescission_terminality(events))
     findings.extend(_validate_clock_segments(events, payload_blobs))
+    findings.extend(_validate_native_provenance(events, payload_blobs))
+    return findings
+
+
+def _validate_native_provenance(
+    events: list[core.ParsedSign1], payload_blobs: dict[bytes, bytes]
+) -> list[WosFinding]:
+    """Mirror of Rust `validate_native_provenance`; reports omit original values."""
+    findings: list[WosFinding] = []
+    for event in events:
+        details = _event_details(event)
+        if details is None or details.event_type != native_provenance.EVENT_TYPE:
+            continue
+        payload = core._readable_payload_bytes(details, payload_blobs)
+        if payload is None:
+            kind, message = (
+                "native_provenance_payload_unavailable",
+                "generic native provenance payload is unavailable for offline validation",
+            )
+        else:
+            try:
+                native_provenance.parse_native_record(payload)
+            except core.VerifyError:
+                kind, message = (
+                    "native_provenance_invalid",
+                    "generic native provenance payload fails WOS-owned shape or kind validation",
+                )
+            else:
+                continue
+        findings.append(_failure(kind, details.canonical_event_hash, message))
     return findings
 
 

@@ -549,7 +549,9 @@ mod tests {
     fn is_wos_kind(kind: &str) -> bool {
         matches!(
             kind,
-            "protected_response_native_binding_mismatch"
+            "native_provenance_invalid"
+                | "native_provenance_payload_unavailable"
+                | "protected_response_native_binding_mismatch"
                 | "protected_response_unavailable"
                 | "source_original_context_join_invalid"
                 | "source_task_catalog_duplicate"

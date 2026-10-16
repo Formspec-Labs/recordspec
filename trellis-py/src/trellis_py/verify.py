@@ -585,6 +585,15 @@ class ChainSummaryDetails:
     covered_claims: list[str]
 
 
+@dataclass(frozen=True)
+class OperatorAttestation:
+    """One decoded operator attestation row of a completion certificate."""
+
+    authority: str
+    authority_class: str
+    signature: bytes
+
+
 @dataclass
 class CertificateDetails:
     """Decoded `trellis.certificate-of-completion.v1` or `.v2` payload (ADR 0007
@@ -603,6 +612,7 @@ class CertificateDetails:
     signing_events: list[bytes]
     workflow_ref: Optional[str]
     attestation_signatures_well_formed: bool
+    operator_attestations: list[OperatorAttestation] = field(default_factory=list)
     # Registered extension this payload was decoded from (v1 or v2).
     extension: str = CERTIFICATE_EVENT_EXTENSION
     # Raw extension map; v2 id-collision compares the whole payload (rare path).
@@ -1216,14 +1226,18 @@ def _decode_certificate_payload(exts: dict) -> Optional[CertificateDetails]:
             'certificate `attestations` MUST be non-empty (ADR 0007 §Wire shape)'
         )
     attestation_signatures_well_formed = True
+    operator_attestations: list[OperatorAttestation] = []
     for entry in attestations:
         if not isinstance(entry, dict):
             raise VerifyError("attestation entry is not a map")
-        authority_class = str(_map_lookup_str(entry, "authority_class"))
+        authority_class = _map_lookup_str(entry, "authority_class")
+        authority = _map_lookup_str(entry, "authority")
         sig = _map_lookup_bytes(entry, "signature")
+        if not isinstance(authority_class, str) or not isinstance(authority, str):
+            raise VerifyError("attestation authority and authority_class must be text")
         if len(sig) != 64 or authority_class not in ("prior", "new"):
             attestation_signatures_well_formed = False
-        _ = str(_map_lookup_str(entry, "authority"))
+        operator_attestations.append(OperatorAttestation(authority, authority_class, sig))
 
     return CertificateDetails(
         certificate_id=certificate_id,
@@ -1248,6 +1262,7 @@ def _decode_certificate_payload(exts: dict) -> Optional[CertificateDetails]:
         signing_events=signing_events,
         workflow_ref=workflow_ref,
         attestation_signatures_well_formed=attestation_signatures_well_formed,
+        operator_attestations=operator_attestations,
         extension=extension,
         payload=ext,
     )
@@ -1915,37 +1930,53 @@ def _affirmation_payload_bytes(
 def _attestation_preimage(
     certificate_id: str, completed_at: TrellisTimestamp, authority_class: str
 ) -> bytes:
-    """Signed bytes of one operator attestation row (ADR 0016 §Verification)."""
+    """Signed bytes of one operator attestation row (ADR 0016 §Verification).
+
+    Raises ValueError where Rust `certificate_attestation_preimage` refuses: a blank
+    or over-1024-byte certificate id, or an unknown authority class.
+    """
+    if (
+        not certificate_id.strip(RUST_WHITE_SPACE)
+        or len(certificate_id.encode()) > 1024
+        or authority_class not in ("prior", "new")
+    ):
+        raise ValueError("certificate attestation identity or class invalid")
     component = encode_canonical_cbor_value(
         [certificate_id, [completed_at.seconds, completed_at.nanos], authority_class]
     )
     return domain_separated_preimage("trellis-transition-attestation-v1", component)
 
 
+# Rust `str::trim` strips Unicode White_Space.
+RUST_WHITE_SPACE = (
+    "\t\n\x0b\x0c\r \x85\xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006"
+    "\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
+)
+
+
 def _operator_attestations_trusted(
     payload: CertificateDetails, registry: CertificateAuthorityRegistry
 ) -> bool:
     """Every operator row verifies against the externally selected trust snapshot."""
-    rows = payload.payload["attestations"]
-    if not rows:
+    if not payload.operator_attestations:
         return False
-    for row in rows:
-        authority = registry.get(row["authority"])
+    for row in payload.operator_attestations:
+        authority = registry.get(row.authority)
         if (
             authority is None
-            or authority.authority_class != row["authority_class"]
+            or authority.authority_class != row.authority_class
             or authority.allowed_purpose != payload.extension
             or authority.valid_from > authority.valid_until
             or payload.completed_at < authority.valid_from
             or payload.completed_at > authority.valid_until
         ):
             return False
-        preimage = _attestation_preimage(
-            payload.certificate_id, payload.completed_at, row["authority_class"]
-        )
         try:
+            preimage = _attestation_preimage(
+                payload.certificate_id, payload.completed_at, row.authority_class
+            )
             Ed25519PublicKey.from_public_bytes(authority.public_key).verify(
-                row["signature"], preimage
+                row.signature, preimage
             )
         except Exception:  # noqa: BLE001
             return False

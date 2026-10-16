@@ -63,15 +63,20 @@ packages, the exact native `taskCreated` / `taskCompleted` join, and the
 original-context join. Neither opens protected content or verifies Source
 signatures, and the batch checks and Source-opening verifiers are Rust-only.
 
-Known gap: the WOS-owned native provenance record schema
-(`NativeProvenanceEvent`, finding `native_provenance_invalid`) is not
-re-implemented. The task join reads only the fields it needs from a wrapped
-record, so Python can admit a bundle whose native records Rust refuses on schema
-grounds. The same gap exists in the strict Python verifier today.
+Native provenance records are validated as Rust validates them
+(`trellis_py.native_provenance`): the owning JSON Schema ships as package data
+(`schemas/`, pinned byte-for-byte to
+`work-spec/schemas/wos-native-provenance-event.schema.json` by a test), with the
+`date-time` and record-TypeID formats enforced, the signed-64-bit/finite-float/
+depth-128 subset, and the TypeID grammar. A missing schema refuses every record.
+
+Python rejects duplicate map keys anywhere in the 062/063 catalogs; Rust does so
+only in closed maps and takes the first match in 063 (fs-465t), so Python is the
+stricter side there.
 
 ## Dependencies
 
-`cbor2`, `cryptography` (Ed25519). No Rust runtime is required at import time.
+`cbor2`, `cryptography` (Ed25519), `jsonschema` + `rfc3339-validator` (native provenance schema). No Rust runtime is required at import time.
 
 ## Out of scope (intentional)
 

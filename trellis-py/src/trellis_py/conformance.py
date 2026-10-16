@@ -29,6 +29,8 @@ from trellis_py import verify_wos
 SOURCE_CONTENT_PUBLICATION = "source-content-publication"
 
 WOS_TAMPER_KINDS = {
+    "native_provenance_invalid",
+    "native_provenance_payload_unavailable",
     "protected_response_native_binding_mismatch",
     "protected_response_unavailable",
     "source_original_context_join_invalid",

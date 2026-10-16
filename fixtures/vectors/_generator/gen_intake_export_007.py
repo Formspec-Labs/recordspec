@@ -48,9 +48,14 @@ OUT_EXPORT_007 = ROOT / "export" / "007-intake-handoffs-public-create"
 OUT_EXPORT_008 = ROOT / "export" / "008-intake-handoffs-workflow-attach"
 OUT_VERIFY_015 = ROOT / "verify" / "015-export-007-intake-response-hash-mismatch"
 OUT_EXPORT_013 = ROOT / "export" / "013-intake-handoffs-public-create-empty-outputs"
-OUT_VERIFY_016 = ROOT / "verify" / "016-export-013-intake-empty-outputs"
 OUT_TAMPER_015 = ROOT / "tamper" / "015-intake-handoff-catalog-digest-mismatch"
 SOURCE_CONTENT_VERIFY = ROOT / "verify"
+
+EXPORT_ADMITTED = {
+    "structure_verified": True,
+    "integrity_verified": True,
+    "readability_verified": True,
+}
 
 TAG_TRELLIS_EVENT_V1 = "trellis-event-v1"
 TAG_TRELLIS_AUTHOR_EVENT_V1 = "trellis-author-event-v1"
@@ -185,6 +190,11 @@ def inclusion_proofs(leaf_hashes: list[bytes]) -> dict:
         }
         for index, leaf_hash in enumerate(leaf_hashes)
     }
+
+
+def report_table(report: dict) -> str:
+    """The `[expected.report]` body the runners compare the verifier's report to."""
+    return "".join(f"{key:<20} = {json.dumps(value)}\n" for key, value in report.items())
 
 
 def write_bytes(path: Path, data: bytes) -> None:
@@ -691,6 +701,7 @@ def build_export(
     readme_body: str,
     extra_members: dict[str, bytes],
     manifest_extensions: dict,
+    report: dict,
     domain_registry: bytes | None = None,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -824,6 +835,8 @@ ledger_state = "input-ledger-state.cbor"
 zip        = "expected-export.zip"
 zip_sha256 = "{hashlib.sha256(zip_bytes).hexdigest()}"
 
+[expected.report]
+{report_table(report)}
 [derivation]
 document = "derivation.md"
 ''',
@@ -972,6 +985,7 @@ ordered case-ledger slice.
         ),
         extra_members={"063-intake-handoffs.cbor": public_catalog},
         manifest_extensions={EXTENSION_KEY: {"intake_catalog_digest": sha256(public_catalog)}},
+        report=EXPORT_ADMITTED,
     )
     write_text(
         OUT_EXPORT_007 / "derivation.md",
@@ -1010,6 +1024,7 @@ stored in `handoff.responseHash`.
         ),
         extra_members={"063-intake-handoffs.cbor": workflow_catalog},
         manifest_extensions={EXTENSION_KEY: {"intake_catalog_digest": sha256(workflow_catalog)}},
+        report=EXPORT_ADMITTED,
     )
     write_text(
         OUT_EXPORT_008 / "derivation.md",
@@ -1153,6 +1168,11 @@ Response bytes.
         ),
         extra_members={"063-intake-handoffs.cbor": public_empty_catalog},
         manifest_extensions={EXTENSION_KEY: {"intake_catalog_digest": sha256(public_empty_catalog)}},
+        report={
+            **EXPORT_ADMITTED,
+            "integrity_verified": False,
+            "first_failure_kind": "intake_payload_invalid",
+        },
     )
     write_text(
         OUT_EXPORT_013 / "derivation.md",
@@ -1162,46 +1182,6 @@ This fixture mirrors `export/007-intake-handoffs-public-create`, but the
 embedded WOS `intakeAccepted` and `caseCreated` records carry empty `outputs`
 arrays. The archive must still verify structurally, but Trellis intake
 verification must reject the payloads before catalog matching.
-""",
-    )
-
-    OUT_VERIFY_016.mkdir(parents=True, exist_ok=True)
-    write_bytes(
-        OUT_VERIFY_016 / "input-export.zip",
-        (OUT_EXPORT_013 / "expected-export.zip").read_bytes(),
-    )
-    write_text(
-        OUT_VERIFY_016 / "manifest.toml",
-        '''id          = "verify/016-export-013-intake-empty-outputs"
-op          = "verify"
-status      = "active"
-description = """Negative verify vector for the ADR 0073 intake-handoff export. Starts from `export/013-intake-handoffs-public-create-empty-outputs`, which keeps the archive structurally valid but emits WOS `intakeAccepted` and `caseCreated` payloads with empty `outputs` arrays so intake verification must fail during payload parsing."""
-
-[coverage]
-tr_core = ["TR-CORE-067"]
-tr_op = ["TR-OP-122"]
-
-[inputs]
-export_zip = "input-export.zip"
-
-[expected.report]
-structure_verified   = true
-integrity_verified   = false
-readability_verified = true
-first_failure_kind   = "intake_payload_invalid"
-
-[derivation]
-document = "derivation.md"
-''',
-    )
-    write_text(
-        OUT_VERIFY_016 / "derivation.md",
-        """# Derivation — `verify/016-export-013-intake-empty-outputs`
-
-This fixture starts from `export/013-intake-handoffs-public-create-empty-outputs`.
-The archive is structurally sound, but Trellis intake verification must reject
-the first admitted WOS payload because `outputs` is empty on the
-`intakeAccepted` record.
 """,
     )
 
@@ -1304,9 +1284,7 @@ def write_publication_vector(
     derivation: str,
 ) -> None:
     write_bytes(out_dir / "input-export.zip", export_zip)
-    lines = "".join(
-        f"{key:<20} = {json.dumps(value)}\n" for key, value in report.items()
-    )
+    lines = report_table(report)
     verifier_line = f'verifier   = "{verifier}"\n' if verifier else ""
     write_text(
         out_dir / "manifest.toml",
@@ -1355,7 +1333,7 @@ def build_source_content_publication_vectors() -> None:
         bundle["000-manifest.cbor"] = cose_sign1(seed, kid, dcbor(manifest), ARTIFACT_TYPE_MANIFEST)
         return write_zip(path, root_dir=root_dir, members=members, data=bundle)
 
-    ok_report = {"structure_verified": True, "integrity_verified": True, "readability_verified": True}
+    ok_report = EXPORT_ADMITTED
     refused = {**ok_report, "integrity_verified": False}
     intake_hash = row["intake_event_hash"]
 
@@ -1490,30 +1468,36 @@ def build_source_task_publication_vectors() -> None:
     row = cbor2.loads(data_007["063-intake-handoffs.cbor"])[0]
     response = json.loads(row["response_bytes"].decode("utf-8"))
 
-    native_events = []
-    for sequence, (record, authored_at) in enumerate(
-        [(TASK_CREATED_RECORD, ts(1776958380)), (TASK_COMPLETED_RECORD, ts(1776958440))], start=len(prior_events)
-    ):
-        signed = build_signed_append_event(
-            record={"record": record},
-            case_id=PUBLIC_CASE_ID,
-            event_type=NATIVE_PROVENANCE_EVENT_TYPE.encode("utf-8"),
-            authored_at=authored_at,
-            sequence=sequence,
-            prev_hash=prior_hash,
-            record_id=record["id"],
+    def chain(created_record: dict) -> tuple[list[bytes], bytes, bytes]:
+        """The export's events plus the two native task records appended to the case ledger."""
+        prev, native = prior_hash, []
+        for sequence, (record, authored_at) in enumerate(
+            [(created_record, ts(1776958380)), (TASK_COMPLETED_RECORD, ts(1776958440))],
+            start=len(prior_events),
+        ):
+            signed = build_signed_append_event(
+                record={"record": record},
+                case_id=PUBLIC_CASE_ID,
+                event_type=NATIVE_PROVENANCE_EVENT_TYPE.encode("utf-8"),
+                authored_at=authored_at,
+                sequence=sequence,
+                prev_hash=prev,
+                record_id=record["id"],
+            )
+            prev = signed["canonical_event_hash"]
+            native.append(signed)
+        return (
+            [dcbor(event) for event in prior_events] + [event["event_bytes"] for event in native],
+            native[0]["canonical_event_hash"],
+            native[1]["canonical_event_hash"],
         )
-        prior_hash = signed["canonical_event_hash"]
-        native_events.append(signed)
-    created_hash, completed_hash = (event["canonical_event_hash"] for event in native_events)
-    events = [dcbor(event) for event in prior_events] + [event["event_bytes"] for event in native_events]
 
     task_handoff = {
         "responseRef": "urn:formspec:response:task-response",
         "responseHash": f"sha256:{digest_of('task-response').hex()}",
     }
 
-    def package_locator() -> dict:
+    def package_locator(completed_hash: bytes) -> dict:
         return {
             "version": 1,
             "family": "mixed-v2",
@@ -1542,7 +1526,7 @@ def build_source_task_publication_vectors() -> None:
             },
         }
 
-    def task_row(task_ref: str) -> dict:
+    def task_row(task_ref: str, created_hash: bytes, completed_hash: bytes) -> dict:
         locator = protected_response_locator(
             native_event_hash=completed_hash,
             handoff=task_handoff,
@@ -1581,13 +1565,19 @@ def build_source_task_publication_vectors() -> None:
                 "committed_task_submit_key": "original-command",
                 "native_outcome_digest": digest_of("outcome"),
                 "http_receipt_digest": digest_of("receipt"),
-                "protected_package": package_locator(),
+                "protected_package": package_locator(completed_hash),
             },
             "protected_response": locator,
         }
 
-    def bundle(*, task_ref: str = "correction", package_record_hash: bytes | None = None) -> bytes:
-        signatures = dcbor([task_row(task_ref)])
+    def bundle(
+        *,
+        task_ref: str = "correction",
+        package_record_hash: bytes | None = None,
+        created_record: dict = TASK_CREATED_RECORD,
+    ) -> bytes:
+        events, created_hash, completed_hash = chain(created_record)
+        signatures = dcbor([task_row(task_ref, created_hash, completed_hash)])
         original = {k: v for k, v in row.items() if k != "response_bytes"}
         original["protected_response"] = protected_response_locator(
             native_event_hash=row["intake_event_hash"],
@@ -1617,6 +1607,7 @@ def build_source_task_publication_vectors() -> None:
                     "062-signature-affirmations.cbor": signatures,
                     "063-intake-handoffs.cbor": intakes,
                 },
+                report=EXPORT_ADMITTED,
                 manifest_extensions={
                     SIGNATURE_EXTENSION_KEY: {"signature_catalog_digest": sha256(signatures)},
                     EXTENSION_KEY: {"intake_catalog_digest": sha256(intakes)},
@@ -1632,7 +1623,7 @@ def build_source_task_publication_vectors() -> None:
             )
             return (Path(scratch) / "expected-export.zip").read_bytes()
 
-    ok_report = {"structure_verified": True, "integrity_verified": True, "readability_verified": True}
+    ok_report = EXPORT_ADMITTED
     refused = {**ok_report, "integrity_verified": False}
     admitted_zip = bundle()
     derivation_base = """The bundle extends the public-intake export with two native task records
@@ -1681,12 +1672,29 @@ phase checks closed shapes and exact native joins only."""
         "The original's `package_record_hash` differs from the task package's `record_hash`.",
     )
 
+    # The native record schema is WOS-owned: a record the owner refuses is refused here
+    # in both phases, and no task can then join it.
+    for number, slug, change, body in [
+        ("037", "native-provenance-missing-timestamp", {"timestamp": None},
+         "The `taskCreated` record omits its required `timestamp`."),
+        ("038", "native-provenance-invalid-typeid", {"id": "acme_prov_not-a-typeid"},
+         "The `taskCreated` record's `id` is not a record-family TypeID."),
+        ("039", "native-provenance-unknown-field", {"unrecognizedStructuralField": "must not disappear"},
+         "The `taskCreated` record carries a field the closed schema does not define."),
+    ]:
+        record = {**TASK_CREATED_RECORD, **change}
+        record = {k: v for k, v in record.items() if v is not None}
+        vector(
+            number, f"source-content-publication-{slug}",
+            f"Publication phase refusal. {body} Rust refuses it as `native_provenance_invalid`; so must every runtime, whatever the phase.",
+            bundle(created_record=record), PUBLICATION_VERIFIER,
+            {**refused, "first_failure_kind": "native_provenance_invalid"},
+            body,
+        )
+
 
 def main() -> None:
-    # `--source-content-only` derives the publication vectors from the committed
-    # export/007 bytes without regenerating (and so overwriting) the older ones.
-    if "--source-content-only" not in sys.argv:
-        build_vectors()
+    build_vectors()
     build_source_content_publication_vectors()
     build_source_task_publication_vectors()
 
