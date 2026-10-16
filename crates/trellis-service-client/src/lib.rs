@@ -70,6 +70,7 @@ pub mod source_content;
 mod source_content_tests;
 mod source_content_transport;
 mod source_diagnostics;
+pub use source_diagnostics::public_code;
 #[doc(inline)]
 pub use reconciliation::{
     AppendReconciliation, AppendReconciliationRequest, CanonicalAppendContent,
