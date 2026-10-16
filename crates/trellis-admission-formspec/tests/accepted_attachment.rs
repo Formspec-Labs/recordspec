@@ -3,10 +3,12 @@
 
 use trellis_admission_formspec::FormspecAppendAdmissionPolicy;
 use trellis_admission_formspec::accepted_attachment::{
-    ATTACHMENT_BINDING_EXTENSION, AcceptedAttachmentDescriptor, AttachmentLimits,
-    admit_accepted_attachment_descriptor,
+    AcceptedAttachmentDescriptor, admit_accepted_attachment_descriptor,
 };
-use trellis_server_ports::{AdmissionEvent, DirectSubmitPolicy, EventAdmissionPolicy};
+use trellis_cddl::ATTACHMENT_BINDING_EXTENSION;
+use trellis_server_ports::{
+    AdmissionEvent, AttachmentLimits, DirectSubmitPolicy, EventAdmissionPolicy,
+};
 
 fn descriptor() -> serde_json::Value {
     serde_json::json!({

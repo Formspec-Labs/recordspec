@@ -8,8 +8,9 @@ use stack_common_auth::{AccessTokenError, AccessTokenVerifier, VerifiedAccessIde
 use stack_common_http::tenant::TenantScope;
 use std::sync::atomic::AtomicBool;
 use trellis_admission_formspec::accepted_attachment::{
-    ACCEPTED_ATTACHMENT_EVENT, AcceptedAttachmentDescriptor, AttachmentLimits,
+    ACCEPTED_ATTACHMENT_EVENT, AcceptedAttachmentDescriptor,
 };
+use trellis_server_ports::AttachmentLimits;
 use trellis_core::external_attachment::{
     ExternalAppendLimits, ExternalAttachmentAppend, ExternalAttachmentHeader,
     open_native_external_attachment,
@@ -277,7 +278,10 @@ async fn retained_head_read_advances_after_an_actual_accepted_attachment() {
         &native_headers(&authorization.idempotency_key),
         &native_tenant(),
         &authorization,
-        &prepared,
+        b"case_123",
+        trellis_admission_formspec::accepted_attachment::ACCEPTED_ATTACHMENT_EVENT,
+        &serde_json::to_value(&descriptor).unwrap(),
+        &binding_of(&prepared),
         input.clone(),
         &recipient_policy(),
     )
@@ -315,6 +319,16 @@ fn native_headers(key: &str) -> HeaderMap {
     );
     headers.insert(IDEMPOTENCY_KEY_HEADER, key.parse().unwrap());
     headers
+}
+
+fn binding_of(
+    prepared: &trellis_admission_formspec::accepted_attachment::PreparedAcceptedAttachment<'_>,
+) -> trellis_server_ports::AttachmentBinding {
+    trellis_server_ports::AttachmentBinding {
+        extensions_cbor: prepared.extensions_cbor().unwrap(),
+        replay_digest: prepared.replay_digest(),
+        expected_head: prepared.expected_head(),
+    }
 }
 
 fn recipient_policy() -> ExternalAttachmentRecipientPolicy {
@@ -515,7 +529,10 @@ async fn native_service_append_exports_verified_ciphertext_and_recipient_opens_o
         &native_headers(&authorization.idempotency_key),
         &native_tenant(),
         &authorization,
-        &prepared,
+        b"case_123",
+        trellis_admission_formspec::accepted_attachment::ACCEPTED_ATTACHMENT_EVENT,
+        &serde_json::to_value(&descriptor).unwrap(),
+        &binding_of(&prepared),
         input.clone(),
         &recipient_policy(),
     )
@@ -603,7 +620,10 @@ async fn native_exact_replay_after_head_advance_preserves_original_event_and_exp
         &headers,
         &native_tenant(),
         &authorization,
-        &prepared,
+        b"case_123",
+        trellis_admission_formspec::accepted_attachment::ACCEPTED_ATTACHMENT_EVENT,
+        &serde_json::to_value(&descriptor).unwrap(),
+        &binding_of(&prepared),
         input.clone(),
         &recipient_policy(),
     )
@@ -628,7 +648,10 @@ async fn native_exact_replay_after_head_advance_preserves_original_event_and_exp
         &headers,
         &native_tenant(),
         &authorization,
-        &prepared,
+        b"case_123",
+        trellis_admission_formspec::accepted_attachment::ACCEPTED_ATTACHMENT_EVENT,
+        &serde_json::to_value(&descriptor).unwrap(),
+        &binding_of(&prepared),
         input.clone(),
         &recipient_policy(),
     )
@@ -670,7 +693,10 @@ async fn native_changed_preparation_wrap_and_body_conflict_without_replacing_ret
         &headers,
         &native_tenant(),
         &authorization,
-        &prepared,
+        b"case_123",
+        trellis_admission_formspec::accepted_attachment::ACCEPTED_ATTACHMENT_EVENT,
+        &serde_json::to_value(&descriptor).unwrap(),
+        &binding_of(&prepared),
         input.clone(),
         &recipient_policy(),
     )
@@ -719,7 +745,10 @@ async fn native_changed_preparation_wrap_and_body_conflict_without_replacing_ret
             &headers,
             &native_tenant(),
             &changed_authorization,
-            &changed_prepared,
+            b"case_123",
+            trellis_admission_formspec::accepted_attachment::ACCEPTED_ATTACHMENT_EVENT,
+            &serde_json::to_value(&changed_descriptor).unwrap(),
+            &binding_of(&changed_prepared),
             changed,
             &recipient_policy(),
         )
@@ -764,7 +793,10 @@ async fn native_replay_rechecks_current_identity_grant_tenant_and_service_actor(
         &headers,
         &native_tenant(),
         &authorization,
-        &prepared,
+        b"case_123",
+        trellis_admission_formspec::accepted_attachment::ACCEPTED_ATTACHMENT_EVENT,
+        &serde_json::to_value(&descriptor).unwrap(),
+        &binding_of(&prepared),
         input.clone(),
         &recipient_policy(),
     )
@@ -776,7 +808,10 @@ async fn native_replay_rechecks_current_identity_grant_tenant_and_service_actor(
         &headers,
         &native_tenant(),
         &authorization,
-        &prepared,
+        b"case_123",
+        trellis_admission_formspec::accepted_attachment::ACCEPTED_ATTACHMENT_EVENT,
+        &serde_json::to_value(&descriptor).unwrap(),
+        &binding_of(&prepared),
         input.clone(),
         &recipient_policy(),
     )
@@ -790,7 +825,10 @@ async fn native_replay_rechecks_current_identity_grant_tenant_and_service_actor(
         &headers,
         &native_tenant(),
         &authorization,
-        &prepared,
+        b"case_123",
+        trellis_admission_formspec::accepted_attachment::ACCEPTED_ATTACHMENT_EVENT,
+        &serde_json::to_value(&descriptor).unwrap(),
+        &binding_of(&prepared),
         input.clone(),
         &recipient_policy(),
     )
@@ -804,7 +842,10 @@ async fn native_replay_rechecks_current_identity_grant_tenant_and_service_actor(
         &headers,
         &native_tenant(),
         &authorization,
-        &prepared,
+        b"case_123",
+        trellis_admission_formspec::accepted_attachment::ACCEPTED_ATTACHMENT_EVENT,
+        &serde_json::to_value(&descriptor).unwrap(),
+        &binding_of(&prepared),
         changed_scope,
         &recipient_policy(),
     )
@@ -831,7 +872,10 @@ async fn native_replay_rechecks_current_identity_grant_tenant_and_service_actor(
         &headers,
         &foreign,
         &authorization,
-        &prepared,
+        b"case_123",
+        trellis_admission_formspec::accepted_attachment::ACCEPTED_ATTACHMENT_EVENT,
+        &serde_json::to_value(&descriptor).unwrap(),
+        &binding_of(&prepared),
         input.clone(),
         &recipient_policy(),
     )
@@ -846,7 +890,10 @@ async fn native_replay_rechecks_current_identity_grant_tenant_and_service_actor(
         &headers,
         &native_tenant(),
         &foreign_actor,
-        &prepared,
+        b"case_123",
+        trellis_admission_formspec::accepted_attachment::ACCEPTED_ATTACHMENT_EVENT,
+        &serde_json::to_value(&descriptor).unwrap(),
+        &binding_of(&prepared),
         input.clone(),
         &recipient_policy(),
     )
@@ -915,7 +962,10 @@ async fn native_publication_failure_retries_committed_operation_without_new_prot
         &headers,
         &native_tenant(),
         &authorization,
-        &prepared,
+        b"case_123",
+        trellis_admission_formspec::accepted_attachment::ACCEPTED_ATTACHMENT_EVENT,
+        &serde_json::to_value(&descriptor).unwrap(),
+        &binding_of(&prepared),
         input.clone(),
         &recipient_policy(),
     )
@@ -939,7 +989,10 @@ async fn native_publication_failure_retries_committed_operation_without_new_prot
         &headers,
         &native_tenant(),
         &authorization,
-        &prepared,
+        b"case_123",
+        trellis_admission_formspec::accepted_attachment::ACCEPTED_ATTACHMENT_EVENT,
+        &serde_json::to_value(&descriptor).unwrap(),
+        &binding_of(&prepared),
         input.clone(),
         &recipient_policy(),
     )

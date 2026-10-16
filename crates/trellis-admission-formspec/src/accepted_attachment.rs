@@ -18,8 +18,8 @@ use stack_common_error::StackError;
 use stack_common_hash::sha256_prefixed;
 use trellis_cddl::{canonical_event_hash_preimage, parse_canonical_event};
 use trellis_server_ports::{
-    AdmittedAttachment, AdmittedEvent, DirectSubmitPolicy, EventFamilyId, EventPrivacyClass,
-    ExternalAttachmentAdmission, PreparedAttachment, SchemaRef,
+    AdmittedDescriptor, AdmittedEvent, AttachmentBinding, DirectSubmitPolicy, EventFamilyId,
+    EventPrivacyClass, ExternalAttachmentAdmission, SchemaRef,
 };
 use trellis_types::ArtifactType;
 use trellis_types::{CONTENT_DOMAIN, EVENT_DOMAIN, StoredEvent};
@@ -28,8 +28,8 @@ use trellis_types::{CONTENT_DOMAIN, EVENT_DOMAIN, StoredEvent};
 pub const ACCEPTED_ATTACHMENT_EVENT: &str = "substrate.append.accepted_attachment_binding";
 /// Producer-owned family for accepted-filing attachment bindings.
 pub const ACCEPTED_ATTACHMENT_FAMILY: &str = "formspec.accepted_attachment";
-pub use trellis_cddl::ATTACHMENT_BINDING_EXTENSION;
-pub use trellis_server_ports::AttachmentLimits;
+use trellis_cddl::ATTACHMENT_BINDING_EXTENSION;
+use trellis_server_ports::AttachmentLimits;
 // Descriptors are metadata, independent of the selected binary payload limit.
 const MAX_DESCRIPTOR_BYTES: usize = 64 * 1024;
 
@@ -498,73 +498,33 @@ impl ExternalAttachmentAdmission for FormspecAttachmentAdmission {
         ACCEPTED_ATTACHMENT_EVENT
     }
 
-    fn admit(&self, descriptor_json: &str) -> Result<Box<dyn AdmittedAttachment>, StackError> {
-        Ok(Box::new(AcceptedAttachmentDescriptor::decode(
-            descriptor_json.as_bytes(),
-        )?))
-    }
-}
-
-impl AdmittedAttachment for AcceptedAttachmentDescriptor {
-    fn payload(&self) -> Result<serde_json::Value, StackError> {
-        serde_json::to_value(self).map_err(|_| StackError::internal("descriptor encode failed"))
+    fn admit(&self, descriptor_json: &str) -> Result<AdmittedDescriptor, StackError> {
+        let descriptor = AcceptedAttachmentDescriptor::decode(descriptor_json.as_bytes())?;
+        Ok(AdmittedDescriptor {
+            payload: serde_json::to_value(&descriptor)
+                .map_err(|_| StackError::internal("descriptor encode failed"))?,
+            byte_length: descriptor.byte_length,
+            attachment_sha256: descriptor.attachment_sha256,
+        })
     }
 
-    fn byte_length(&self) -> u64 {
-        self.byte_length
-    }
-
-    fn attachment_sha256(&self) -> &str {
-        &self.attachment_sha256
-    }
-
-    fn prepare<'a>(
+    fn bind(
         &self,
+        payload: &serde_json::Value,
         scope: &[u8],
         original: &[u8],
-        ciphertext: &'a [u8],
+        ciphertext: &[u8],
         prior: &[StoredEvent],
         limits: AttachmentLimits,
-    ) -> Result<Box<dyn PreparedAttachment + 'a>, StackError> {
-        Ok(Box::new(
-            self.clone()
-                .prepare(scope, original, ciphertext, prior, limits)?,
-        ))
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-}
-
-impl PreparedAttachment for PreparedAcceptedAttachment<'_> {
-    fn event_type(&self) -> &str {
-        ACCEPTED_ATTACHMENT_EVENT
-    }
-
-    fn payload(&self) -> Result<serde_json::Value, StackError> {
-        serde_json::to_value(&self.descriptor)
-            .map_err(|_| StackError::internal("descriptor encoding failed"))
-    }
-
-    fn scope(&self) -> &[u8] {
-        Self::scope(self)
-    }
-
-    fn expected_head(&self) -> Option<[u8; 32]> {
-        Self::expected_head(self)
-    }
-
-    fn replay_digest(&self) -> [u8; 32] {
-        Self::replay_digest(self)
-    }
-
-    fn ciphertext(&self) -> &[u8] {
-        Self::ciphertext(self)
-    }
-
-    fn extensions_cbor(&self) -> Result<Vec<u8>, StackError> {
-        Self::extensions_cbor(self)
+    ) -> Result<AttachmentBinding, StackError> {
+        let descriptor: AcceptedAttachmentDescriptor = serde_json::from_value(payload.clone())
+            .map_err(|_| invalid("invalid closed accepted attachment descriptor"))?;
+        let prepared = descriptor.prepare(scope, original, ciphertext, prior, limits)?;
+        Ok(AttachmentBinding {
+            extensions_cbor: prepared.extensions_cbor()?,
+            replay_digest: prepared.replay_digest(),
+            expected_head: prepared.expected_head(),
+        })
     }
 }
 

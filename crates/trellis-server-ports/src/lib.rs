@@ -28,7 +28,7 @@ use trellis_types::{ArtifactType, StoredEvent};
 
 mod attachment;
 pub use attachment::{
-    AdmittedAttachment, AttachmentLimits, ExternalAttachmentAdmission, PreparedAttachment,
+    AdmittedDescriptor, AttachmentBinding, AttachmentLimits, ExternalAttachmentAdmission,
 };
 
 /// Ledger scope bytes.

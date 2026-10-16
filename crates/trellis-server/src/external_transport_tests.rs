@@ -96,7 +96,7 @@ impl crate::ExternalAttachmentRecipientSelector for Recipients {
     async fn select(
         &self,
         _permit: &AuthorizedScope,
-        _descriptor: &dyn trellis_server_ports::AdmittedAttachment,
+        _descriptor: &serde_json::Value,
     ) -> Result<Vec<crate::ExternalAttachmentRecipient>, StackError> {
         // Public X25519 key derived from fixture seed [17;32]; not production key material.
         let mut public: [u8; 32] =
@@ -414,6 +414,18 @@ fn verify_and_open(zip: &[u8], original: &[u8], public: [u8; 32]) {
     );
 }
 
+/// Evidence lands in `TRELLIS_NATIVE_TEST_EVIDENCE` when set, else in a temp dir
+/// that is removed with the returned guard.
+fn evidence_root() -> (PathBuf, Option<tempfile::TempDir>) {
+    match std::env::var_os("TRELLIS_NATIVE_TEST_EVIDENCE") {
+        Some(root) => (PathBuf::from(root), None),
+        None => {
+            let temp = tempfile::tempdir().unwrap();
+            (temp.path().to_path_buf(), Some(temp))
+        }
+    }
+}
+
 #[tokio::test]
 async fn cross_process_native_transport_qualification() {
     let cluster = stack_common_postgres::testing::EphemeralCluster::start_required();
@@ -649,11 +661,7 @@ async fn cross_process_native_transport_qualification() {
         initial_row, final_row,
         "failed publication and restart must preserve exact committed bytes"
     );
-    let evidence_root = std::env::var_os("TRELLIS_NATIVE_TEST_EVIDENCE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../transport-evidence")
-        });
+    let (evidence_root, _evidence_guard) = evidence_root();
     let run = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -837,11 +845,7 @@ async fn actual_source_png_jpeg_cross_process_protection() {
         .fetch_one(&pool)
         .await
         .unwrap();
-        let evidence_root = std::env::var_os("TRELLIS_NATIVE_TEST_EVIDENCE")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../transport-evidence")
-            });
+        let (evidence_root, _evidence_guard) = evidence_root();
         let run = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()

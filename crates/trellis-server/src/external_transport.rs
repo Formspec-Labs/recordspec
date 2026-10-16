@@ -27,8 +27,7 @@ use trellis_core::external_attachment::{
     RetainedExternalAttachment,
 };
 use trellis_server_ports::{
-    AdmittedAttachment, AttachmentLimits, AuthorizedScope, ComputeContext, ComputeSensitivity,
-    ScopeAction,
+    AttachmentLimits, AuthorizedScope, ComputeContext, ComputeSensitivity, ScopeAction,
 };
 use trellis_service_client::{AppendActor, SubstrateAppendBody, SubstrateAppendResult};
 use trellis_types::StoredEvent;
@@ -55,7 +54,7 @@ pub trait ExternalAttachmentRecipientSelector: Send + Sync {
     async fn select(
         &self,
         permit: &AuthorizedScope,
-        descriptor: &dyn AdmittedAttachment,
+        descriptor: &serde_json::Value,
     ) -> Result<Vec<ExternalAttachmentRecipient>, StackError>;
 }
 
@@ -73,7 +72,7 @@ pub(crate) struct WireRequest {
     actor: WireActor,
     // Kept as raw text: the configured admission adapter decodes its own closed type
     // strictly, so duplicate keys survive to rejection.
-    #[schema(value_type = Object)]
+    #[schema(schema_with = trellis_service_client::attachment_descriptor_openapi_schema)]
     descriptor: Box<serde_json::value::RawValue>,
     #[schema(min_length = 4, max_length = 1398104, format = Byte)]
     original_bytes: String,
@@ -81,7 +80,7 @@ pub(crate) struct WireRequest {
 pub(crate) struct AuthorizedExternal {
     scope: String,
     request: WireRequest,
-    admitted: Box<dyn AdmittedAttachment>,
+    payload: serde_json::Value,
     original: Vec<u8>,
     compute: ComputeContext,
     recipients: Vec<ExternalAttachmentRecipient>,
@@ -156,7 +155,7 @@ async fn admit(
         .map_err(|_| StackError::bad_request("invalid closed accepted-attachment request"))?;
     let admission = state.external_attachment_admission.as_ref();
     let admitted = admission.admit(wire.descriptor.get())?;
-    let payload = admitted.payload()?;
+    let payload = admitted.payload;
     if serde_json::to_vec(&payload)
         .map_err(|_| StackError::internal("descriptor encode failed"))?
         .len()
@@ -178,8 +177,8 @@ async fn admit(
     if original.is_empty()
         || original.len() > ORIGINAL_CAP
         || STANDARD.encode(&original) != wire.original_bytes
-        || admitted.byte_length() != original.len() as u64
-        || admitted.attachment_sha256()
+        || admitted.byte_length != original.len() as u64
+        || admitted.attachment_sha256
             != format!("sha256:{}", hex::encode(Sha256::digest(&original)))
     {
         return Err(StackError::bad_request(
@@ -190,7 +189,7 @@ async fn admit(
         event_type: admission.event_type().into(),
         idempotency_key: wire.idempotency_key.clone(),
         actor: AppendActor::service(&wire.actor.subject),
-        payload,
+        payload: payload.clone(),
         compute_context: ComputeContext::no_delegated_compute(&wire.actor.subject),
         client_attestation: None,
     };
@@ -210,7 +209,7 @@ async fn admit(
         .ok_or_else(|| {
             StackError::unavailable("accepted-attachment recipient policy is not configured")
         })?;
-    let recipients = selector.select(&permit, admitted.as_ref()).await?;
+    let recipients = selector.select(&permit, &payload).await?;
     let (_, sensitivity) = selected_custody(&recipients)?;
 
     let mut policy_rows = recipients
@@ -246,7 +245,7 @@ async fn admit(
         .insert(Arc::new(AuthorizedExternal {
             scope,
             request: wire,
-            admitted,
+            payload,
             original,
             compute,
             recipients,
@@ -270,6 +269,7 @@ pub(crate) async fn append(
     }
     let factory = Factory {
         authorized: &authorized,
+        admission: state.external_attachment_admission.as_ref(),
         random: state.external_attachment_random.as_ref(),
         now,
     };
@@ -363,6 +363,7 @@ impl IntoResponse for TransportError {
 
 struct Factory<'a> {
     authorized: &'a AuthorizedExternal,
+    admission: &'a dyn trellis_server_ports::ExternalAttachmentAdmission,
     random: &'a dyn SecureRandom,
     now: trellis_export_writer::TrellisTimestamp,
 }
@@ -454,29 +455,24 @@ impl ExternalAttachmentFactory for Factory<'_> {
             .filter(|event| retained.is_none_or(|r| event.sequence() < r.event().sequence()))
             .cloned()
             .collect::<Vec<_>>();
-        // Read everything off the borrowing preparation before `ciphertext` moves.
-        let (extensions, preparation_identity, expected_head, event_type) = {
-            let prepared = self.authorized.admitted.prepare(
-                scope,
-                original,
-                &ciphertext,
-                &prior,
-                AttachmentLimits {
-                    original_bytes: ORIGINAL_CAP,
-                    ciphertext_bytes: ORIGINAL_CAP + 16,
-                    prior_events: 256,
-                    prior_event_bytes: 1024 * 1024,
-                },
-            )?;
-            let extensions = decode_cbor_value(&prepared.extensions_cbor()?)
-                .map_err(|_| StackError::internal("prepared attachment extensions invalid"))?;
-            (
-                extensions,
-                prepared.replay_digest(),
-                prepared.expected_head(),
-                prepared.event_type().to_owned(),
-            )
-        };
+        let binding = self.admission.bind(
+            &self.authorized.payload,
+            scope,
+            original,
+            &ciphertext,
+            &prior,
+            AttachmentLimits {
+                original_bytes: ORIGINAL_CAP,
+                ciphertext_bytes: ORIGINAL_CAP + 16,
+                prior_events: 256,
+                prior_event_bytes: 1024 * 1024,
+            },
+        )?;
+        let extensions = decode_cbor_value(&binding.extensions_cbor)
+            .map_err(|_| StackError::internal("prepared attachment extensions invalid"))?;
+        let preparation_identity = binding.replay_digest;
+        let expected_head = binding.expected_head;
+        let event_type = self.admission.event_type().to_owned();
         Ok(ExternalAttachmentAppend {
             scope: scope.to_vec(),
             idempotency_key: key.to_vec(),

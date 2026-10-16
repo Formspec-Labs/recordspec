@@ -70,12 +70,12 @@ pub mod source_content;
 mod source_content_tests;
 mod source_content_transport;
 mod source_diagnostics;
-pub use source_diagnostics::public_code;
 #[doc(inline)]
 pub use reconciliation::{
     AppendReconciliation, AppendReconciliationRequest, CanonicalAppendContent,
     ReconciliationUnknown, canonical_append_content,
 };
+pub use source_diagnostics::public_code;
 
 #[doc(inline)]
 pub use source_content::MAX_PREPARED_SOURCE_CONTENT_BYTES;
@@ -320,7 +320,8 @@ pub struct AcceptedAttachmentAppendBody {
     pub original_bytes: String,
 }
 
-fn attachment_descriptor_openapi_schema() -> RefOr<Schema> {
+/// OpenAPI schema for the accepted-attachment descriptor object, shared with the server route.
+pub fn attachment_descriptor_openapi_schema() -> RefOr<Schema> {
     ObjectBuilder::new()
         .schema_type(SchemaType::new(Type::Object))
         .description(Some("Accepted Source descriptor object; serialized metadata is limited to 64 KiB and the server validates its closed domain schema."))

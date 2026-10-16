@@ -2,15 +2,13 @@
 //!
 //! The generic server retains and exports native external attachments without
 //! naming the producer that defines the descriptor. A domain adapter (for
-//! example `trellis-admission-formspec`) implements these traits and the
-//! composition root installs it.
-
-use std::any::Any;
+//! example `trellis-admission-formspec`) implements [`ExternalAttachmentAdmission`]
+//! and the composition root installs it.
 
 use stack_common_error::StackError;
 use trellis_types::StoredEvent;
 
-/// Deployment-selected finite input bounds for preparing an attachment binding.
+/// Deployment-selected finite input bounds for binding an attachment.
 #[derive(Clone, Copy, Debug)]
 pub struct AttachmentLimits {
     pub original_bytes: usize,
@@ -19,7 +17,29 @@ pub struct AttachmentLimits {
     pub prior_event_bytes: usize,
 }
 
-/// Domain adapter that admits a wire descriptor for one protected-attachment event type.
+/// A validated descriptor and the facts the transport checks against the original bytes.
+#[derive(Clone, Debug)]
+pub struct AdmittedDescriptor {
+    /// JSON the authorizer, recipient selector and replay identity see.
+    pub payload: serde_json::Value,
+    /// Declared length of the unchanged original bytes.
+    pub byte_length: u64,
+    /// Declared `sha256:`-prefixed digest of the unchanged original bytes.
+    pub attachment_sha256: String,
+}
+
+/// What the owner's binding contributes to one native attachment append.
+#[derive(Clone, Debug)]
+pub struct AttachmentBinding {
+    /// Canonical CBOR of the outer event extensions.
+    pub extensions_cbor: Vec<u8>,
+    /// Preparation identity for full-descriptor replay comparison.
+    pub replay_digest: [u8; 32],
+    /// Validated head of the preparation prefix.
+    pub expected_head: Option<[u8; 32]>,
+}
+
+/// Domain adapter for one protected-attachment event type.
 pub trait ExternalAttachmentAdmission: Send + Sync {
     /// Event type signed for this attachment family.
     fn event_type(&self) -> &'static str;
@@ -28,66 +48,19 @@ pub trait ExternalAttachmentAdmission: Send + Sync {
     ///
     /// # Errors
     /// Refuses unknown or duplicate fields, malformed identity or excessive metadata.
-    fn admit(&self, descriptor_json: &str) -> Result<Box<dyn AdmittedAttachment>, StackError>;
-}
+    fn admit(&self, descriptor_json: &str) -> Result<AdmittedDescriptor, StackError>;
 
-/// A validated descriptor, before any protected bytes are bound to it.
-pub trait AdmittedAttachment: Send + Sync {
-    /// JSON payload the authorizer and replay identity see for this descriptor.
-    ///
-    /// # Errors
-    /// Returns an error if the descriptor cannot be encoded.
-    fn payload(&self) -> Result<serde_json::Value, StackError>;
-
-    /// Declared length of the unchanged original bytes.
-    fn byte_length(&self) -> u64;
-
-    /// Declared `sha256:`-prefixed digest of the unchanged original bytes.
-    fn attachment_sha256(&self) -> &str;
-
-    /// Binds the descriptor to actual original bytes, ciphertext and prior ledger prefix.
+    /// Binds an admitted payload to actual original bytes, ciphertext and prior prefix.
     ///
     /// # Errors
     /// Refuses changed bytes, excessive inputs, foreign prefixes and stale replacements.
-    fn prepare<'a>(
+    fn bind(
         &self,
+        payload: &serde_json::Value,
         scope: &[u8],
         original: &[u8],
-        ciphertext: &'a [u8],
+        ciphertext: &[u8],
         prior: &[StoredEvent],
         limits: AttachmentLimits,
-    ) -> Result<Box<dyn PreparedAttachment + 'a>, StackError>;
-
-    /// Lets the adapter's own selectors recover the concrete descriptor.
-    fn as_any(&self) -> &dyn Any;
-}
-
-/// Validated binding and exact borrowed ciphertext, ready for native append.
-pub trait PreparedAttachment {
-    /// Event type the prepared binding is signed under.
-    fn event_type(&self) -> &str;
-
-    /// JSON payload matching [`AdmittedAttachment::payload`].
-    ///
-    /// # Errors
-    /// Returns an error if the descriptor cannot be encoded.
-    fn payload(&self) -> Result<serde_json::Value, StackError>;
-
-    /// Ledger scope the binding was prepared against.
-    fn scope(&self) -> &[u8];
-
-    /// Validated head of the preparation prefix.
-    fn expected_head(&self) -> Option<[u8; 32]>;
-
-    /// Preparation identity for full-descriptor replay comparison.
-    fn replay_digest(&self) -> [u8; 32];
-
-    /// Exact protected bytes, without another payload copy.
-    fn ciphertext(&self) -> &[u8];
-
-    /// Canonical CBOR of the outer event extensions this binding contributes.
-    ///
-    /// # Errors
-    /// Returns an error if canonical encoding fails.
-    fn extensions_cbor(&self) -> Result<Vec<u8>, StackError>;
+    ) -> Result<AttachmentBinding, StackError>;
 }

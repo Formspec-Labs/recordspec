@@ -11,7 +11,7 @@ use stack_common_http::tenant::TenantScope;
 use trellis_cddl::ATTACHMENT_BINDING_EXTENSION;
 use trellis_core::external_attachment::ExternalAttachmentAppend;
 use trellis_export_writer::ExportEvidenceMember;
-use trellis_server_ports::{ComputeSensitivity, PreparedAttachment, ScopeAction};
+use trellis_server_ports::{AttachmentBinding, ComputeSensitivity, ScopeAction};
 use trellis_service_client::{SubstrateAppendBody, SubstrateAppendResult};
 use trellis_types::{ArtifactType, StoredEvent};
 
@@ -36,12 +36,16 @@ pub struct ExternalAttachmentRecipientPolicy {
     pub operator_recipients: Vec<Vec<u8>>,
 }
 
-pub async fn append_prepared_external_attachment(
+#[cfg(test)]
+pub(crate) async fn append_prepared_external_attachment(
     state: &TrellisServerState,
     headers: &HeaderMap,
     tenant: &TenantScope,
     authorization: &SubstrateAppendBody,
-    prepared: &dyn PreparedAttachment,
+    prepared_scope: &[u8],
+    event_type: &str,
+    payload: &serde_json::Value,
+    binding: &AttachmentBinding,
     mut input: ExternalAttachmentAppend,
     recipient_policy: &ExternalAttachmentRecipientPolicy,
 ) -> Result<SubstrateAppendResult, StackError> {
@@ -51,19 +55,17 @@ pub async fn append_prepared_external_attachment(
     let identity = state.authenticate(headers).await?;
     authorization.validate()?;
     crate::http::validate_idempotency_header(headers, &authorization.idempotency_key)?;
-    let event_type = prepared.event_type();
     if authorization.event_type != event_type
         || input.header.event_type != event_type
         || authorization.client_attestation.is_some()
         || authorization.idempotency_key.as_bytes() != input.idempotency_key
         || input.header.classification != "x-trellis-service/private-attachment"
-        || prepared.payload()? != authorization.payload
-        || input.scope != prepared.scope()
-        || input.expected_head != prepared.expected_head()
-        || input.preparation_identity != prepared.replay_digest()
-        || input.ciphertext != prepared.ciphertext()
+        || *payload != authorization.payload
+        || input.scope != prepared_scope
+        || input.expected_head != binding.expected_head
+        || input.preparation_identity != binding.replay_digest
         || input.extensions
-            != decode_cbor_value(&prepared.extensions_cbor()?)
+            != decode_cbor_value(&binding.extensions_cbor)
                 .map_err(|_| StackError::bad_request("prepared binding unreadable"))?
     {
         return Err(StackError::bad_request(
