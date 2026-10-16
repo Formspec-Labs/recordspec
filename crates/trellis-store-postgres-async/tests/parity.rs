@@ -3,7 +3,7 @@
 mod support;
 
 use sqlx::PgPool;
-use support::TestCluster;
+use stack_common_postgres::testing::EphemeralCluster;
 use trellis_store_postgres_async::{AppendError, append_event_in_tx, run_migrations};
 use trellis_types::StoredEvent;
 
@@ -17,9 +17,9 @@ fn event(scope: &[u8], sequence: u64, canonical: &[u8], signed: &[u8], idem: &[u
     )
 }
 
-async fn started_pool() -> (TestCluster, PgPool) {
-    let cluster = TestCluster::start_without_migrations();
-    let pool = cluster.tls_pool(8).await;
+async fn started_pool() -> (EphemeralCluster, PgPool) {
+    let cluster = EphemeralCluster::start_required();
+    let pool = support::tls_pool(&cluster, 8).await;
     run_migrations(&pool).await.unwrap();
     (cluster, pool)
 }

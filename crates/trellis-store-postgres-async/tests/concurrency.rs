@@ -3,7 +3,7 @@ mod support;
 use std::sync::Arc;
 
 use sqlx::PgPool;
-use support::TestCluster;
+use stack_common_postgres::testing::EphemeralCluster;
 use tokio::task::JoinSet;
 use trellis_store_postgres_async::{AppendError, append_event_in_tx, run_migrations};
 use trellis_types::StoredEvent;
@@ -18,18 +18,18 @@ fn event(scope: &[u8], sequence: u64, canonical: &[u8], signed: &[u8], idem: &[u
     )
 }
 
-async fn started_pool(max_connections: u32) -> (TestCluster, PgPool) {
-    let cluster = TestCluster::start_without_migrations();
-    let pool = cluster.tls_pool(max_connections).await;
+async fn started_pool(max_connections: u32) -> (EphemeralCluster, PgPool) {
+    let cluster = EphemeralCluster::start_required();
+    let pool = support::tls_pool(&cluster, max_connections).await;
     run_migrations(&pool).await.unwrap();
     (cluster, pool)
 }
 
 #[tokio::test]
 async fn cleartext_rejected_by_tls_required_server() {
-    let cluster = TestCluster::start_without_migrations();
+    let cluster = EphemeralCluster::start_required();
 
-    let _pool = cluster.tls_pool(1).await;
+    let _pool = support::tls_pool(&cluster, 1).await;
 }
 
 #[tokio::test]
