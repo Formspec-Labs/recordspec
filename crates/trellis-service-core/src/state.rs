@@ -87,9 +87,9 @@ impl AuthenticatedRequest {
 /// Cloneable Axum state for the Trellis service.
 #[derive(Clone)]
 pub struct TrellisServerState {
-    pub(crate) completion: Option<Arc<dyn crate::CompletionSigner>>,
-    /// The one principal that may seal and publish Source content (the WOS machine).
-    pub(crate) completion_publisher: Option<String>,
+    /// The operator signer and the one principal that may ask for a seal (the WOS machine):
+    /// the signer attests whatever selection that caller sent, so neither exists without the other.
+    pub(crate) completion: Option<(Arc<dyn crate::CompletionSigner>, String)>,
     pub(crate) external_attachment_recipients:
         Option<Arc<dyn crate::ExternalAttachmentRecipientSelector>>,
     pub(crate) external_attachment_admission:
@@ -137,7 +137,6 @@ impl TrellisServerState {
     ) -> Self {
         Self {
             completion: None,
-            completion_publisher: None,
             external_attachment_recipients: None,
             external_attachment_admission: adapters.external_attachment_admission,
             external_attachment_random: Arc::new(integrity_seam::OsSecureRandom),
@@ -169,8 +168,7 @@ impl TrellisServerState {
         signer: Arc<dyn crate::CompletionSigner>,
         publisher: impl Into<String>,
     ) -> Self {
-        self.completion = Some(signer);
-        self.completion_publisher = Some(publisher.into());
+        self.completion = Some((signer, publisher.into()));
         self
     }
 

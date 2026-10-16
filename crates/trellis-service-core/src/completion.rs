@@ -200,7 +200,7 @@ pub async fn seal_completion(
     validate_selection(&selected)?;
     let principal = authorize(state, headers, tenant, scope, request).await?;
     // Before anything is reserved or signed: only the configured publisher may seal.
-    if state.completion_publisher.as_deref() != Some(principal.as_str()) {
+    if state.completion.as_ref().map(|(_, publisher)| publisher.as_str()) != Some(principal.as_str()) {
         return Err(StackError::new(
             ErrorCode::new("INFRA-4030").expect("static error code is valid"),
             axum::http::StatusCode::FORBIDDEN,

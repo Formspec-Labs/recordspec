@@ -131,7 +131,7 @@ pub(crate) async fn seal_completion(
 ) -> Result<(StatusCode, Json<SubstrateAppendResult>), StackError> {
     // Authenticate before revealing configuration availability.
     state.authenticate(&headers).await?;
-    let signer = state
+    let (signer, _) = state
         .completion
         .as_ref()
         .ok_or_else(|| StackError::unavailable("completion composition is not selected"))?;
