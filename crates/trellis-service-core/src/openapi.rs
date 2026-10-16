@@ -137,6 +137,18 @@ mod tests {
 
     use super::*;
 
+    /// The committed document is the route inventory, regenerated from code. Regenerate with
+    /// `cargo run -q -p trellis-server --bin emit_openapi > specs/trellis-server.openapi.json`.
+    #[test]
+    fn committed_openapi_document_equals_the_generated_one() {
+        let committed = include_str!("../../../specs/trellis-server.openapi.json");
+        let generated = TrellisServerOpenApi::openapi().to_pretty_json().unwrap();
+        assert!(
+            committed.trim_end() == generated.trim_end(),
+            "specs/trellis-server.openapi.json is stale; regenerate it with the command in this test's doc comment"
+        );
+    }
+
     #[test]
     fn openapi_append_contract_matches_json_schema() {
         let schema_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
