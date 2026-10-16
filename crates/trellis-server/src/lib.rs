@@ -2,7 +2,7 @@
 #![allow(clippy::result_large_err)]
 //! Trellis server composition root.
 //!
-//! The only crate that names both the generic [`trellis_server`] and the shipped
+//! The only crate that names both the generic [`trellis_service_core`] and the shipped
 //! domain adapters (`trellis-admission-wos`, `trellis-admission-formspec`,
 //! `trellis-export-profile-wos`); `deny.toml` keeps every other crate from
 //! depending on them. Consumers that embed a composed server in-process (tests,
