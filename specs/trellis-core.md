@@ -2006,7 +2006,11 @@ VERIFY(E) -> VerificationReport
    aggregate response_ref, or ambiguous v1/v2 dispatch. For EVERY indexed
    signing event, the selected consumer resolver MUST return a readable response
    proof and principal; its digest, principal and exact event timestamp MUST
-   match that row. Missing or unrecognized proof fails `signing_event_unresolved`;
+   match that row. A principal is a text string compared exactly (no
+   trimming); a missing or empty principal, like a missing or unrecognized
+   proof, makes the row unresolvable (step 5), while a present but different principal fails
+   `certificate_chain_summary_mismatch`. Response digests are raw hex as the
+   WOS and Formspec record schemas pin them (no `sha256:` prefix);
    malformed digest fails `malformed_response_digest`; wrong digest fails
    `response_ref_mismatch`. A matching row cannot compensate for another row's
    failure. External operator trust MUST allow the exact certificate event
@@ -2028,6 +2032,7 @@ VERIFY(E) -> VerificationReport
    remains the byte-authoritative source if prose drifts.
      1. Decode the payload against the ADR 0007 CDDL. Mismatch is a
         structure failure for that event (recorded in report.event_failures).
+        Attestation rows are reported by step 3.
      2. Validate the chain-summary invariants:
         `signer_count == len(signing_events)`,
         `len(signer_display) == len(signing_events)`, and each
@@ -2069,7 +2074,13 @@ VERIFY(E) -> VerificationReport
         `trellis-transition-attestation-v1` (§9.8) — same domain shared
         with §A.5 posture-transition attestations and ADR 0005 erasure
         evidence. Invalid signature flips `integrity_verified = false`
-        with `attestation_insufficient` (existing code reused).
+        with `attestation_insufficient` (existing code reused). An
+        `authority_class` other than `"prior"` / `"new"` (Companion A.5) also
+        fails `attestation_insufficient`. Each outcome records
+        `attestation_authority`: `"unchecked"` when no external operator trust
+        registry was selected (attestation shape never establishes authority),
+        `"verified"` when every row verified under the selected registry,
+        `"failed"` otherwise.
      4. Resolve `presentation_artifact.attachment_id` via the ADR 0072
         attachment-binding lineage. A conformant export that includes
         this certificate event MUST ship resolvable attachment bytes
@@ -2088,7 +2099,11 @@ VERIFY(E) -> VerificationReport
         Each MUST be a chain-present signing/provenance event whose
         readable payload is available to the verifier. Missing events or
         unreadable signing-event payloads flip `integrity_verified = false`
-        with `signing_event_unresolved`. Consumer validators own any
+        with `signing_event_unresolved`. Any unresolvable row (missing event,
+        unreadable payload, or for v2 a missing or empty principal or absent
+        proof) fails `signing_event_unresolved`, sets
+        `all_signing_events_resolved = false`, skips that row's other
+        checks, and leaves `chain_summary_consistent` unchanged. Consumer validators own any
         event-type-specific assertion for the signing event.
      6. Validate temporal consistency: every
         `signer_display[i].signed_at` MUST exactly equal the resolved
@@ -2108,7 +2123,8 @@ VERIFY(E) -> VerificationReport
         Each entry carries `certificate_id`, `completed_at`,
         `signer_count`, `attachment_resolved`,
         `all_signing_events_resolved`, `chain_summary_consistent`,
-        `failures` (array of localizable failure codes).
+        `attestation_authority`, `failures` (array of localizable failure
+        codes).
 
    `integrity_verified = false` if any certificate-of-completion entry
    has `chain_summary_consistent = false`, `attachment_resolved = false`,
@@ -2375,6 +2391,7 @@ CertificateOfCompletionOutcome = {
   attachment_resolved:           bool,
   all_signing_events_resolved:   bool,
   chain_summary_consistent:      bool,
+  attestation_authority:         "unchecked" / "verified" / "failed",
   failures:                      [* tstr],
 }
 
@@ -3393,6 +3410,7 @@ CertificateOfCompletionOutcome = {
   attachment_resolved:           bool,
   all_signing_events_resolved:   bool,
   chain_summary_consistent:      bool,
+  attestation_authority:         "unchecked" / "verified" / "failed",
   failures:                      [* tstr],
 }
 

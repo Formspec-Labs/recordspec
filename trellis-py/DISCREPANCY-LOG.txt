@@ -1,2 +1,4 @@
 No spec or vector discrepancies observed in the last conformance run (failed=0).
 If a vector fails, log: vector id, artifact paths, and Core / Companion section citations only.
+
+2026-10: append/048 and export/015 carried signedPayloadDigest values with a "sha256:" prefix, which the Rust resolver accepted and this oracle refused as malformed (Core 19.1 malformed_response_digest; WOS SignatureAffirmationData.signedPayloadDigest and Formspec AuthoredSignatureSignedPayload.digest pin raw hex). The oracle was right; the vectors and the Rust resolver were fixed and the vectors regenerated.

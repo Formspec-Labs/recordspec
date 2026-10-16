@@ -94,6 +94,9 @@ ERASURE_EVIDENCE_CATALOG_MEMBER = "064-erasure-evidence.cbor"
 # certificate-of-completion records. Per-certificate inline shape per
 # `CertificateOfCompletionPayload` in ADR 0007 §"Wire shape".
 CERTIFICATE_EVENT_EXTENSION = "trellis.certificate-of-completion.v1"
+# ADR 0016 — v2 keeps the ADR 0007 outer shape but binds a required per-row
+# `signer_display[i].response_ref` digest to `signing_events[i]`.
+CERTIFICATE_V2_EVENT_EXTENSION = "trellis.certificate-of-completion.v2"
 # ADR 0007 §"Export manifest catalog" — optional manifest extension
 # binding `065-certificates-of-completion.cbor`.
 CERTIFICATE_EXPORT_EXTENSION = "trellis.export.certificates-of-completion.v1"
@@ -188,6 +191,10 @@ class CertificateOfCompletionOutcome:
     all_signing_events_resolved: bool = True
     chain_summary_consistent: bool = True
     failures: list[str] = field(default_factory=list)
+    # ADR 0016 §Verification: operator authority is reported separately as
+    # unchecked / verified / failed. This verifier selects no external trust
+    # registry, so it is always "unchecked".
+    attestation_authority: str = "unchecked"
 
 
 @dataclass
@@ -527,6 +534,8 @@ class SignerDisplayDetails:
     display_name: str
     display_role: Optional[str]
     signed_at: TrellisTimestamp
+    # ADR 0016: required 32-byte digest on v2 rows; always None on v1.
+    response_ref: Optional[bytes] = None
 
 
 @dataclass
@@ -555,8 +564,8 @@ class ChainSummaryDetails:
 
 @dataclass
 class CertificateDetails:
-    """Decoded `trellis.certificate-of-completion.v1` payload (ADR 0007
-    §"Wire shape"). Mirrors Rust `trellis_verify::CertificateDetails`.
+    """Decoded `trellis.certificate-of-completion.v1` or `.v2` payload (ADR 0007
+    §"Wire shape", ADR 0016).
 
     `attestation_signatures_well_formed` is the Phase-1 structural check
     (every attestation row carries a 64-byte signature + recognized
@@ -571,6 +580,14 @@ class CertificateDetails:
     signing_events: list[bytes]
     workflow_ref: Optional[str]
     attestation_signatures_well_formed: bool
+    # Registered extension this payload was decoded from (v1 or v2).
+    extension: str = CERTIFICATE_EVENT_EXTENSION
+    # Raw extension map; v2 id-collision compares the whole payload (rare path).
+    payload: Any = None
+
+    @property
+    def is_v2(self) -> bool:
+        return self.extension == CERTIFICATE_V2_EVENT_EXTENSION
 
 
 @dataclass
@@ -1005,8 +1022,7 @@ def _decode_attachment_binding_details(exts: dict) -> Optional[AttachmentBinding
 def _decode_certificate_payload(exts: dict) -> Optional[CertificateDetails]:
     """Decodes the optional `trellis.certificate-of-completion.v1` extension
     payload and runs ADR 0007 §"Verifier obligations" step 1 (CDDL decode +
-    per-event chain-summary invariants) inline. Mirrors Rust
-    `decode_certificate_payload` byte-for-byte.
+    per-event chain-summary invariants) inline; v2 per ADR 0016.
 
     Cross-event steps 2 (id collision), 4 (attachment lineage), 5 (signing-
     event resolution), 6 (timestamp equivalence), 7 (response_ref
@@ -1022,9 +1038,15 @@ def _decode_certificate_payload(exts: dict) -> Optional[CertificateDetails]:
       failure via `malformed_cose` because §19.1 has no dedicated tamper_kind
       for this case)
     """
-    ext = exts.get(CERTIFICATE_EVENT_EXTENSION)
-    if ext is None:
+    v1 = exts.get(CERTIFICATE_EVENT_EXTENSION)
+    v2 = exts.get(CERTIFICATE_V2_EVENT_EXTENSION)
+    if v1 is None and v2 is None:
         return None
+    if v1 is not None and v2 is not None:
+        raise VerifyError("certificate has ambiguous v1 and v2 extensions")
+    extension = CERTIFICATE_EVENT_EXTENSION if v2 is None else CERTIFICATE_V2_EVENT_EXTENSION
+    is_v2 = v2 is not None
+    ext = v2 if is_v2 else v1
     if not isinstance(ext, dict):
         raise VerifyError("certificate-of-completion extension is not a map")
 
@@ -1090,14 +1112,18 @@ def _decode_certificate_payload(exts: dict) -> Optional[CertificateDetails]:
         else:
             raise VerifyError("signer_display entry display_role is neither text nor null")
         signed_at = _map_lookup_timestamp(entry, "signed_at")
+        row_response_ref = _map_lookup_fixed_bytes(entry, "response_ref", 32) if is_v2 else None
         signer_display.append(
             SignerDisplayDetails(
                 principal_ref=principal_ref,
                 display_name=display_name,
                 display_role=display_role,
                 signed_at=signed_at,
+                response_ref=row_response_ref,
             )
         )
+    if is_v2 and "response_ref" in cs:
+        raise VerifyError("v2 forbids aggregate chain_summary.response_ref")
     response_ref = _map_lookup_optional_fixed_bytes(cs, "response_ref", 32)
     workflow_status = str(_map_lookup_str(cs, "workflow_status"))
     impact_level_raw = _map_lookup_optional_str(cs, "impact_level")
@@ -1144,6 +1170,11 @@ def _decode_certificate_payload(exts: dict) -> Optional[CertificateDetails]:
             "(ADR 0007 §Verifier obligations step 2)",
             kind="certificate_chain_summary_mismatch",
         )
+    if is_v2 and len(set(signing_events)) != len(signing_events):
+        raise VerifyError(
+            "v2 signing_events must contain distinct event hashes",
+            kind="certificate_chain_summary_mismatch",
+        )
 
     workflow_ref_raw = _map_lookup_optional_str(ext, "workflow_ref")
     if workflow_ref_raw is None:
@@ -1165,9 +1196,9 @@ def _decode_certificate_payload(exts: dict) -> Optional[CertificateDetails]:
     for entry in attestations:
         if not isinstance(entry, dict):
             raise VerifyError("attestation entry is not a map")
-        _ = str(_map_lookup_str(entry, "authority_class"))
+        authority_class = str(_map_lookup_str(entry, "authority_class"))
         sig = _map_lookup_bytes(entry, "signature")
-        if len(sig) != 64:
+        if len(sig) != 64 or authority_class not in ("prior", "new"):
             attestation_signatures_well_formed = False
         _ = str(_map_lookup_str(entry, "authority"))
 
@@ -1194,6 +1225,8 @@ def _decode_certificate_payload(exts: dict) -> Optional[CertificateDetails]:
         signing_events=signing_events,
         workflow_ref=workflow_ref,
         attestation_signatures_well_formed=attestation_signatures_well_formed,
+        extension=extension,
+        payload=ext,
     )
 
 
@@ -1453,6 +1486,12 @@ def _decode_event_details(
     else:
         raise VerifyError("payload_ref.ref_type unsupported")
     exts = payload_value.get("extensions")
+    if event_type == CERTIFICATE_V2_EVENT_EXTENSION and not (
+        isinstance(exts, dict)
+        and CERTIFICATE_V2_EVENT_EXTENSION in exts
+        and CERTIFICATE_EVENT_EXTENSION not in exts
+    ):
+        raise VerifyError("v2 certificate event must carry only its v2 extension")
     transition: Optional[TransitionDetails] = None
     attachment_binding: Optional[AttachmentBindingDetails] = None
     erasure: Optional[ErasureEvidenceDetails] = None
@@ -1465,6 +1504,8 @@ def _decode_event_details(
         attachment_binding = _decode_attachment_binding_details(exts)
         erasure = _decode_erasure_evidence_details(exts, authored_at)
         certificate = _decode_certificate_payload(exts)
+        if certificate is not None and certificate.is_v2 and event_type != certificate.extension:
+            raise VerifyError("v2 certificate extension needs the v2 event_type")
         user_content_attestation = _decode_user_content_attestation_payload(exts, authored_at)
         identity_attestation_subject = _decode_identity_attestation_subject(
             exts, event_type, identity_event_type_admitted
@@ -1858,8 +1899,8 @@ def _finalize_certificates_of_completion(
     """ADR 0007 §"Verifier obligations" cross-event finalization. Step 1
     runs in `_decode_certificate_payload`; this pass runs steps 2 (id
     collision), 5 (signing-event resolution), 6 (timestamp equivalence),
-    7 (response_ref equivalence), and 8 (outcome accumulation). Mirrors
-    Rust `finalize_certificates_of_completion` byte-for-byte.
+    7 (response_ref equivalence), and 8 (outcome accumulation); v2 rows per
+    Core §19 step 6c and ADR 0016.
 
     **Phase-1 chain-context posture.** Steps 5 / 6 / 7 require the full
     event list to resolve `signing_events[i]` digests against in-chain
@@ -1891,7 +1932,8 @@ def _finalize_certificates_of_completion(
     # "Differ" is canonical-payload disagreement; for the Phase-1 reference
     # verifier we compare (content_hash, signing_events, signer_count,
     # completed_at, workflow_status) — the load-bearing fields ADR 0007
-    # §"Field semantics" identifies as collision-indicative.
+    # §"Field semantics" identifies as collision-indicative. A v2 payload
+    # on either side (ADR 0016) additionally compares the whole payload.
     id_to_canonical: dict[str, CertificateDetails] = {}
     id_collision_reported: set[str] = set()
     for _index, payload, canonical_hash in payloads:
@@ -1900,7 +1942,10 @@ def _finalize_certificates_of_completion(
             continue
         prior = id_to_canonical[payload.certificate_id]
         differs = (
-            prior.presentation_artifact.content_hash
+            prior.extension != payload.extension
+            or ((prior.is_v2 or payload.is_v2)
+                and _normalize_cbor_compare(prior.payload) != _normalize_cbor_compare(payload.payload))
+            or prior.presentation_artifact.content_hash
             != payload.presentation_artifact.content_hash
             or prior.signing_events != payload.signing_events
             or prior.chain_summary.signer_count != payload.chain_summary.signer_count
@@ -1931,42 +1976,78 @@ def _finalize_certificates_of_completion(
             failures=[],
         )
 
-        # Step 3 (Phase-1 structural attestation contract).
+        def fail(kind: str, locator: bytes, *, consistent: bool = True) -> None:
+            if not consistent:
+                outcome.chain_summary_consistent = False
+            outcome.failures.append(kind)
+            event_failures.append(VerificationFailure(kind, _hex(locator)))
+
+        if payload.is_v2:
+            # ADR 0016: status / impact_level / covered_claims extension
+            # registries are empty, so only the CDDL literals are admitted.
+            summary = payload.chain_summary
+            if summary.workflow_status not in (
+                "completed",
+                "countersigned",
+                "notarized",
+                "partially-completed",
+            ) or (summary.impact_level is not None and summary.impact_level not in (
+                "low",
+                "moderate",
+                "high",
+            )):
+                fail("certificate_enum_extension_unknown", canonical_hash, consistent=False)
+            if any(
+                claim not in ("signer_count", "principal_ref", "signed_at", "response_ref")
+                for claim in summary.covered_claims
+            ):
+                fail("certificate_covered_claim_unknown", canonical_hash, consistent=False)
+
+        # Step 3 (Phase-1 structural attestation contract). Operator
+        # authority itself stays "unchecked": no external trust is selected.
         if not payload.attestation_signatures_well_formed:
-            outcome.chain_summary_consistent = False
-            outcome.failures.append("attestation_insufficient")
-            event_failures.append(
-                VerificationFailure("attestation_insufficient", _hex(canonical_hash))
-            )
+            fail("attestation_insufficient", canonical_hash, consistent=False)
 
         # Steps 5 / 6 / 7 — each `signing_events[i]` digest cross-checked.
+        # Trellis Core does NOT inspect WOS/Formspec field names; the
+        # resolver (`WosFormspecResolver` in `verify_wos.py`) is the only
+        # code path allowed to read consumer-domain field names.
         for i, signing_event_hash in enumerate(payload.signing_events):
             target = event_by_hash.get(signing_event_hash)
-            if target is None:
+            affirmation = (
+                None if target is None else _affirmation_payload_bytes(target, payload_blobs)
+            )
+            if target is None or affirmation is None:
                 outcome.all_signing_events_resolved = False
-                outcome.failures.append("signing_event_unresolved")
-                event_failures.append(
-                    VerificationFailure(
-                        "signing_event_unresolved", _hex(signing_event_hash)
-                    )
-                )
+                fail("signing_event_unresolved", signing_event_hash)
                 continue
             display = payload.chain_summary.signer_display[i]
+            principal_ref = resolver.resolve_principal_ref(affirmation)
+            proof: Optional[CertificateResponseProof] = None
+            malformed = False
+            if payload.is_v2:
+                try:
+                    proof = resolver.resolve(affirmation)
+                except MalformedResponseDigestError:
+                    malformed = True
+                # A missing or empty principal (compared exactly) or an absent
+                # proof leaves the row unresolvable; its other checks are skipped.
+                if not principal_ref or (proof is None and not malformed):
+                    outcome.all_signing_events_resolved = False
+                    fail("signing_event_unresolved", signing_event_hash)
+                    continue
+            if principal_ref is not None and display.principal_ref != principal_ref:
+                fail("certificate_chain_summary_mismatch", canonical_hash, consistent=False)
+            if malformed:
+                fail("malformed_response_digest", canonical_hash, consistent=False)
+            elif proof is not None and display.response_ref != proof.response_hash:
+                fail("response_ref_mismatch", canonical_hash, consistent=False)
+            # Step 6: signed_at MUST equal authored_at (exact, no skew).
             if display.signed_at != target.authored_at:
-                outcome.chain_summary_consistent = False
-                outcome.failures.append("signing_event_timestamp_mismatch")
-                event_failures.append(
-                    VerificationFailure(
-                        "signing_event_timestamp_mismatch", _hex(signing_event_hash)
-                    )
-                )
+                fail("signing_event_timestamp_mismatch", signing_event_hash, consistent=False)
 
-        # Step 7 — response_ref equivalence when non-null.
-        # Trellis Core does NOT inspect WOS/Formspec field names. The
-        # resolver (`WosFormspecResolver` in `verify_wos.py`) is the only
-        # code path allowed to read consumer-domain field names; Core only
-        # compares the returned hash against `response_ref`.
-        if payload.chain_summary.response_ref is not None:
+        # Step 7 (v1) — aggregate response_ref equivalence when non-null.
+        if not payload.is_v2 and payload.chain_summary.response_ref is not None:
             response_ref = payload.chain_summary.response_ref
             had_resolvable_response = False
             matched = False
@@ -1985,15 +2066,8 @@ def _finalize_certificates_of_completion(
                     # 32 bytes of hex. Fail closed with a distinct
                     # `malformed_response_digest` failure localized to the
                     # certificate event whose `response_ref` triggered the
-                    # lookup; mirror of the Rust call-site handling in
-                    # `crates/trellis-verify/src/certificate.rs`.
-                    outcome.chain_summary_consistent = False
-                    outcome.failures.append("malformed_response_digest")
-                    event_failures.append(
-                        VerificationFailure(
-                            "malformed_response_digest", _hex(canonical_hash)
-                        )
-                    )
+                    # lookup.
+                    fail("malformed_response_digest", canonical_hash, consistent=False)
                     continue
                 if proof is None:
                     continue
@@ -2002,36 +2076,7 @@ def _finalize_certificates_of_completion(
                     matched = True
                     break
             if had_resolvable_response and not matched:
-                outcome.chain_summary_consistent = False
-                outcome.failures.append("response_ref_mismatch")
-                event_failures.append(
-                    VerificationFailure("response_ref_mismatch", _hex(canonical_hash))
-                )
-
-        # Step 2 first sub-clause (per-index principal_ref equivalence).
-        # Resolver returns the consumer-domain principal-ref string when it
-        # recognizes the payload; Core only compares against
-        # `display.principal_ref`.
-        for i, signing_event_hash in enumerate(payload.signing_events):
-            target = event_by_hash.get(signing_event_hash)
-            if target is None:
-                continue
-            affirmation = _affirmation_payload_bytes(target, payload_blobs)
-            if affirmation is None:
-                continue
-            principal_ref = resolver.resolve_principal_ref(affirmation)
-            if principal_ref is None:
-                continue
-            display = payload.chain_summary.signer_display[i]
-            if display.principal_ref != principal_ref:
-                outcome.chain_summary_consistent = False
-                outcome.failures.append("certificate_chain_summary_mismatch")
-                event_failures.append(
-                    VerificationFailure(
-                        "certificate_chain_summary_mismatch", _hex(canonical_hash)
-                    )
-                )
-                break
+                fail("response_ref_mismatch", canonical_hash, consistent=False)
 
         outcomes.append(outcome)
 
@@ -3538,8 +3583,7 @@ def _parse_certificate_catalog_entries(cat_bytes: bytes) -> list[dict[str, Any]]
 
 def _certificate_catalog_row_matches(row: dict[str, Any], det: EventDetails) -> bool:
     """Field-wise agreement check between a catalog row and the in-chain
-    certificate event's decoded payload. Mirror of Rust
-    `certificate_catalog_row_matches_details`."""
+    certificate event's decoded payload."""
     cert = det.certificate
     if cert is None:
         return False
