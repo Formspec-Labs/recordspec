@@ -9,7 +9,7 @@ use integrity_cbor::{Value, decode_cbor_value, domain_separated_sha256, sha256_b
 use serde::Deserialize;
 use stack_common_error::StackError;
 use trellis_export_writer::ExportEvidenceMember;
-use trellis_server_ports::{CloseoutSource, NativeCloseout};
+use trellis_server_ports::{CloseoutRule, CloseoutSource, NativeCloseout};
 use trellis_types::StoredEvent;
 
 use crate::CompletionCallerContext;
@@ -623,7 +623,7 @@ pub struct ConfiguredSourceContentPins {
 pub(crate) struct ConfiguredNativeCloseoutGuard {
     pub(crate) closeout: std::sync::Arc<dyn NativeCloseout>,
     native_policy_hash: [u8; 32],
-    rule: serde_json::Value,
+    rule: std::sync::Arc<dyn CloseoutRule>,
 }
 impl ConfiguredNativeCloseoutGuard {
     pub(crate) fn new(
@@ -631,7 +631,7 @@ impl ConfiguredNativeCloseoutGuard {
         native_policy_hash: [u8; 32],
         rule: serde_json::Value,
     ) -> Result<Self, StackError> {
-        closeout.validate_rule(&rule)?;
+        let rule = closeout.compile_rule(&rule)?;
         Ok(Self {
             closeout,
             native_policy_hash,
@@ -654,8 +654,8 @@ impl SourceContentFinalPrefixGuard for ConfiguredNativeCloseoutGuard {
         let mut selected = None;
         for (index, event) in events.iter().enumerate() {
             if let Some(id) = self
-                .closeout
-                .matching_record_id(&self.rule, CloseoutSource::Stored(event))?
+                .rule
+                .matching_record_id(CloseoutSource::Stored(event))?
             {
                 if selected.replace((index, id)).is_some() {
                     return Err(refused());
@@ -678,10 +678,7 @@ impl SourceContentFinalPrefixGuard for ConfiguredNativeCloseoutGuard {
         body: &trellis_service_client::SubstrateAppendBody,
         prefix: &[StoredEvent],
     ) -> Result<SourceContentPrefixClass, StackError> {
-        if let Some(id) = self
-            .closeout
-            .matching_record_id(&self.rule, CloseoutSource::Append(body))?
-        {
+        if let Some(id) = self.rule.matching_record_id(CloseoutSource::Append(body))? {
             return Ok(self.final_closeout(id));
         }
         self.classify(scope, prefix)

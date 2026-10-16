@@ -4,8 +4,10 @@
 use integrity_cbor::{decode_cbor_value, map_lookup_bytes, map_lookup_map, sha256_bytes};
 use serde::Deserialize;
 use stack_common_error::StackError;
+use std::sync::Arc;
 use trellis_server_ports::event_codec::{cbor_bad_request, event_summary};
-use trellis_server_ports::{CloseoutSource, NativeCloseout};
+
+use trellis_server_ports::{CloseoutRule, CloseoutSource, NativeCloseout};
 use trellis_service_client::source_content::SourceContentIdentityV1;
 use trellis_types::StoredEvent;
 use wos_events::{
@@ -79,20 +81,12 @@ impl CloseoutRecordRule {
     }
 }
 
-impl NativeCloseout for WosNativeCloseout {
-    fn validate_rule(&self, rule: &serde_json::Value) -> Result<(), StackError> {
-        CloseoutRecordRule::parse(rule).map(|_| ())
-    }
-
-    fn matching_record_id(
-        &self,
-        rule: &serde_json::Value,
-        source: CloseoutSource<'_>,
-    ) -> Result<Option<String>, StackError> {
+impl CloseoutRule for CloseoutRecordRule {
+    fn matching_record_id(&self, source: CloseoutSource<'_>) -> Result<Option<String>, StackError> {
         let Some(native) = record(source)? else {
             return Ok(None);
         };
-        if !CloseoutRecordRule::parse(rule)?.matches(&native) {
+        if !self.matches(&native) {
             return Ok(None);
         }
         native
@@ -100,6 +94,12 @@ impl NativeCloseout for WosNativeCloseout {
             .and_then(serde_json::Value::as_str)
             .map(|id| Some(id.to_owned()))
             .ok_or_else(|| StackError::conflict("native Source closeout id absent"))
+    }
+}
+
+impl NativeCloseout for WosNativeCloseout {
+    fn compile_rule(&self, rule: &serde_json::Value) -> Result<Arc<dyn CloseoutRule>, StackError> {
+        Ok(Arc::new(CloseoutRecordRule::parse(rule)?))
     }
 
     fn validate(

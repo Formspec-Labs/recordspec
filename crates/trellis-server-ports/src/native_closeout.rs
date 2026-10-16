@@ -20,23 +20,25 @@ pub enum CloseoutSource<'a> {
     Stored(&'a StoredEvent),
 }
 
-/// Domain adapter for native closeout records.
-pub trait NativeCloseout: Send + Sync + std::fmt::Debug {
-    /// Validates the owner's pinned closeout rule document, which is opaque to the server.
-    ///
-    /// # Errors
-    /// Refuses a malformed rule or one naming a record kind the domain does not define.
-    fn validate_rule(&self, rule: &serde_json::Value) -> Result<(), StackError>;
-
-    /// Reserved record id when `source` carries a native record matching `rule`, else `None`.
+/// A closeout rule parsed once at startup.
+pub trait CloseoutRule: Send + Sync + std::fmt::Debug {
+    /// Reserved record id when `source` carries a native record matching the rule, else `None`.
     ///
     /// # Errors
     /// Refuses a native payload that does not decode or a matching record without an id.
-    fn matching_record_id(
+    fn matching_record_id(&self, source: CloseoutSource<'_>) -> Result<Option<String>, StackError>;
+}
+
+/// Domain adapter for native closeout records.
+pub trait NativeCloseout: Send + Sync + std::fmt::Debug {
+    /// Compiles the owner's pinned closeout rule document, which is opaque to the server.
+    ///
+    /// # Errors
+    /// Refuses a malformed rule or one naming a record kind the domain does not define.
+    fn compile_rule(
         &self,
         rule: &serde_json::Value,
-        source: CloseoutSource<'_>,
-    ) -> Result<Option<String>, StackError>;
+    ) -> Result<std::sync::Arc<dyn CloseoutRule>, StackError>;
 
     /// Checks the closeout against the selected reserved identity.
     ///
