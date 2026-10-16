@@ -12,7 +12,7 @@ mod postgres_support {
 }
 
 /// The facts a product would send: one label per signing event and the last event's time.
-fn selection_for(signing_events: &[[u8; 32]], last: &StoredEvent) -> CompletionSelection {
+pub(super) fn selection_for(signing_events: &[[u8; 32]], last: &StoredEvent) -> CompletionSelection {
     let at = crate::event_summary(last).unwrap().authored_at;
     CompletionSelection {
         case_ref: "case-test".into(),
@@ -58,10 +58,10 @@ fn fixture_key(label: i64) -> [u8; 32] {
         .unwrap()
 }
 /// The principal `MappedAuthorizer` admits and the configured publisher the seal pins.
-const PUBLISHER: &str = "internal-operator";
-struct Signer {
-    calls: AtomicUsize,
-    corrupt: bool,
+pub(super) const PUBLISHER: &str = "internal-operator";
+pub(super) struct Signer {
+    pub(super) calls: AtomicUsize,
+    pub(super) corrupt: bool,
 }
 #[async_trait]
 impl CompletionSigner for Signer {
@@ -85,6 +85,15 @@ async fn fixture() -> (
 ) {
     let state = test_state().with_scope_authorizer(Arc::new(MappedAuthorizer))
     .with_completion(Arc::new(Signer { calls: AtomicUsize::new(0), corrupt: false }), PUBLISHER);
+    fixture_on(state).await
+}
+/// The same case ledger (one retained signing event) on a state the caller composed.
+pub(super) async fn fixture_on(state: TrellisServerState) -> (
+    TrellisServerState,
+    axum::http::HeaderMap,
+    stack_common_http::tenant::TenantScope,
+    CompletionRequest,
+) {
     let body: SubstrateAppendBody = serde_json::from_slice(&signature_affirmation_append_body(
         "completion-signing-evidence",
     ))
@@ -1252,4 +1261,119 @@ async fn only_the_configured_publisher_may_seal() {
     seal_completion(&state, &headers, &tenant, "case_completion", &request, &signer)
         .await
         .unwrap();
+}
+
+/// The route answer as `(status, title)`: refusals are pinned by code, not just "an error".
+async fn seal_answer(app: &axum::Router, request: &CompletionRequest) -> (StatusCode, String) {
+    use tower::ServiceExt;
+    let response = app.clone().oneshot(completion_post(request)).await.unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap();
+    let title = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .and_then(|body| body["title"].as_str().map(str::to_owned))
+        .unwrap_or_default();
+    (status, title)
+}
+
+#[tokio::test]
+async fn seal_refuses_signing_events_that_are_not_this_ledgers_signatures() {
+    let (state, _, _, request) = fixture().await;
+    // A later event that is not a signature affirmation becomes the head the caller names.
+    let body: SubstrateAppendBody = serde_json::from_slice(&append_body("not-a-signature")).unwrap();
+    let outcome = state
+        .append_coordinator()
+        .append(crate::append::AppendCommand {
+            scope: "case_completion".into(),
+            event_type: body.event_type,
+            idempotency_key: body.idempotency_key,
+            payload: body.payload,
+            compute_context: body.compute_context,
+            client_attestation: None,
+        })
+        .await
+        .unwrap();
+    let plain = *outcome.stored.canonical_event_hash().unwrap();
+    let mut forged = request.clone();
+    forged.expected_head = plain;
+    forged.signing_events = vec![plain];
+    forged.selection = selection_for(&[plain], &outcome.stored);
+    let signer = Arc::new(Signer { calls: AtomicUsize::new(0), corrupt: false });
+    let app = router(state.clone().with_completion(signer.clone(), PUBLISHER)).unwrap();
+    let (status, title) = seal_answer(&app, &forged).await;
+    assert_eq!(
+        (status, title.as_str()),
+        (StatusCode::CONFLICT, "completion signing evidence unreadable or unqualified")
+    );
+    assert_eq!(signer.calls.load(Ordering::SeqCst), 0, "the operator key attested nothing");
+    assert_eq!(state.repository.list_scope(b"case_completion").await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn seal_refuses_a_completion_that_predates_its_signatures() {
+    let (state, _, _, mut request) = fixture().await;
+    request.selection.completed_at.0 -= 1_000;
+    let signer = Arc::new(Signer { calls: AtomicUsize::new(0), corrupt: false });
+    let app = router(state.clone().with_completion(signer.clone(), PUBLISHER)).unwrap();
+    let (status, title) = seal_answer(&app, &request).await;
+    assert_eq!(
+        (status, title.as_str()),
+        (StatusCode::CONFLICT, "completion certificate evidence invalid")
+    );
+    assert_eq!(signer.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(state.repository.list_scope(b"case_completion").await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn seal_refuses_an_unknown_status_or_impact_vocabulary_as_a_bad_request() {
+    let (state, _, _, request) = fixture().await;
+    let signer = Arc::new(Signer { calls: AtomicUsize::new(0), corrupt: false });
+    let app = router(state.clone().with_completion(signer.clone(), PUBLISHER)).unwrap();
+    let mut unsettled = request.clone();
+    unsettled.selection.workflow_status = "in-progress".into();
+    let mut unknown_impact = request;
+    unknown_impact.selection.impact_level = Some("catastrophic".into());
+    for refused in [unsettled, unknown_impact] {
+        let (status, title) = seal_answer(&app, &refused).await;
+        assert_eq!(
+            (status, title.as_str()),
+            (StatusCode::BAD_REQUEST, "completion selection vocabulary refused")
+        );
+    }
+    assert_eq!(signer.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(state.repository.list_scope(b"case_completion").await.unwrap().len(), 1);
+}
+
+/// Append and Read admit different principals for one caller: the seal cannot tell whose it is.
+struct SplitAuthorizer;
+#[async_trait]
+impl trellis_server_ports::ScopeAuthorizer for SplitAuthorizer {
+    type Error = StackError;
+    async fn authorize(
+        &self,
+        request: &trellis_server_ports::ScopeAuthorization<'_>,
+    ) -> Result<trellis_server_ports::AuthorizedScope, StackError> {
+        Ok(trellis_server_ports::AuthorizedScope {
+            principal: match request.action {
+                trellis_server_ports::ScopeAction::Append => PUBLISHER.into(),
+                _ => "another-principal".into(),
+            },
+            tenant_scope: request.tenant_scope.clone(),
+            scope: request.scope.to_vec(),
+            action: request.action,
+        })
+    }
+}
+
+#[tokio::test]
+async fn seal_is_a_conflict_when_append_and_read_admit_different_principals() {
+    let (state, _, _, request) = fixture().await;
+    let signer = Arc::new(Signer { calls: AtomicUsize::new(0), corrupt: false });
+    let split = state.with_scope_authorizer(Arc::new(SplitAuthorizer)).with_completion(signer.clone(), PUBLISHER);
+    let (status, title) = seal_answer(&router(split).unwrap(), &request).await;
+    assert_eq!(
+        (status, title.as_str()),
+        (StatusCode::CONFLICT, "completion permissions admit different principals")
+    );
+    assert_eq!(signer.calls.load(Ordering::SeqCst), 0);
 }

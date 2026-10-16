@@ -121,7 +121,7 @@ pub(crate) async fn reconcile_event(
 #[utoipa::path(post, path="/v1/scopes/{scope}/completion",
     params(("scope"=String,Path,description="Authorized ledger scope"), ("idempotency-key"=String,Header,description="Must match closed request")),
     request_body=trellis_service_client::CompletionRequest,
-    responses((status=201,description="Certificate and archive retained",body=SubstrateAppendResult),(status=400,description="Closed trigger or selection refused"),(status=401,description="Current authentication refused"),(status=403,description="Current permission refused"),(status=409,description="Snapshot or replay conflict"),(status=503,description="Composition not selected or dependency unavailable")),tag="events")]
+    responses((status=201,description="Certificate and archive retained",body=SubstrateAppendResult),(status=400,description="Closed trigger or selection refused, including a status or impact outside the vocabulary"),(status=401,description="Current authentication refused"),(status=403,description="Current permission refused, or the caller is not the configured publisher"),(status=409,description="Snapshot, signing-evidence, different-principal or replay conflict"),(status=503,description="Composition not selected or dependency unavailable")),tag="events")]
 pub(crate) async fn seal_completion(
     State(state): State<TrellisServerState>,
     Path(scope): Path<String>,

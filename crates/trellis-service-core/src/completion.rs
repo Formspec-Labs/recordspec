@@ -465,7 +465,9 @@ fn validate_selection(selected: &SelectedCompletion) -> Result<(), StackError> {
         .as_ref()
         .is_some_and(|v| !matches!(v.as_str(), "low" | "moderate" | "high"))
     {
-        return Err(invalid());
+        return Err(StackError::bad_request(
+            "completion selection vocabulary refused",
+        ));
     }
     Ok(())
 }

@@ -54,9 +54,18 @@ impl AuthHttpClient for ProtocolHttp {
                     .contains_key(axum::http::header::AUTHORIZATION)
             );
             self.introspections.fetch_add(1, Ordering::SeqCst);
-            json!({"active":self.active.load(Ordering::SeqCst),"iss":ISSUER,"sub":"external-producer",
-                "client_id":"trellis-producer","exp":10600,"token_type":"Bearer",
-                "aud":["trellis-api","trellis-introspection"],"scope":"trellis.access trellis.read trellis.append trellis.administer"})
+            // The introspection answer describes the token it was asked about.
+            let form = String::from_utf8_lossy(&request.body).into_owned();
+            let token = form.split('&').find_map(|pair| pair.strip_prefix("token=")).unwrap_or_default();
+            let claims = token
+                .split('.')
+                .nth(1)
+                .and_then(|segment| base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, segment).ok())
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                .unwrap_or_else(claims);
+            json!({"active":self.active.load(Ordering::SeqCst),"iss":ISSUER,"sub":claims["sub"],
+                "client_id":claims["azp"],"exp":10600,"token_type":"Bearer",
+                "aud":["trellis-api","trellis-introspection"],"scope":claims["scope"]})
         } else {
             return Err(AccessTokenError::unavailable());
         };
@@ -704,4 +713,112 @@ async fn oidc_startup_attachment_selection_requires_exact_admitted_append_permis
             "{error}"
         );
     }
+}
+
+// ---- the completion seal through the shipped OIDC and grant path ------------------------------
+
+/// A seal server whose callers are told apart by their real tokens and current grants:
+/// the configured publisher, a case writer who may append and read but is not the publisher,
+/// and callers holding only one of the two actions.
+async fn seal_server() -> (axum::Router, Arc<super::completion_tests::Signer>, Files, trellis_service_client::CompletionRequest) {
+    let mut files = Files::new();
+    let callers = [
+        // (subject, principal, actions)
+        ("case-writer", "case-writer", vec!["append", "read"]),
+        ("append-only", "append-only", vec!["append"]),
+        ("read-only", "read-only", vec!["read"]),
+    ];
+    let mut grants = vec![json!({"principal":"internal-producer","scope":"case_completion","action":"append","actors":[{"kind":"service","subject":"external-producer"}]}),
+        json!({"principal":"internal-producer","scope":"case_completion","action":"read"})];
+    for (subject, principal, actions) in callers {
+        files.profile["identities"].as_array_mut().unwrap().push(
+            json!({"issuer":ISSUER,"subject":subject,"clientId":"trellis-producer","principal":principal}));
+        for action in actions {
+            let mut grant = json!({"principal":principal,"scope":"case_completion","action":action});
+            if action == "append" {
+                grant["actors"] = json!([{"kind":"service","subject":subject}]);
+            }
+            grants.push(grant);
+        }
+    }
+    files.grants["grants"].as_array_mut().unwrap().extend(grants);
+    files.save();
+    let signer = Arc::new(super::completion_tests::Signer { calls: AtomicUsize::new(0), corrupt: false });
+    // The publisher is the principal the profile maps the WOS machine client to.
+    let state = files
+        .load(Arc::new(ProtocolHttp::new()))
+        .unwrap()
+        .apply(test_state())
+        .with_completion(signer.clone(), "internal-producer");
+    let (state, _, _, request) = super::completion_tests::fixture_on(state).await;
+    (router(state).unwrap(), signer, files, request)
+}
+
+fn seal_request(request: &trellis_service_client::CompletionRequest, token: Option<&str>) -> Request<Body> {
+    let path = "/v1/scopes/case_completion/completion";
+    let body = serde_json::to_vec(request).unwrap();
+    match token {
+        Some(token) => post_request_bearer(path, body, token),
+        None => Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("content-type", "application/json")
+            .header(IDEMPOTENCY_KEY_HEADER, &request.idempotency_key)
+            .header("x-wos-tenant-id", "tenant-a")
+            .header("x-wos-workspace-id", "workspace-a")
+            .header("x-wos-environment-id", "prod")
+            .header("x-wos-cell-id", "cell-a")
+            .body(Body::from(body))
+            .unwrap(),
+    }
+}
+fn token_for(subject: &str) -> String {
+    let mut claims = claims();
+    claims["sub"] = json!(subject);
+    sign(&claims)
+}
+async fn answer(app: &axum::Router, request: Request<Body>) -> (StatusCode, String) {
+    let response = app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap();
+    let title = serde_json::from_slice::<Value>(&bytes)
+        .ok()
+        .and_then(|body| body["title"].as_str().map(str::to_owned))
+        .unwrap_or_default();
+    (status, title)
+}
+
+#[tokio::test]
+async fn seal_refuses_a_case_writer_who_is_not_the_publisher() {
+    let (app, signer, _files, request) = seal_server().await;
+    let (status, title) = answer(&app, seal_request(&request, Some(&token_for("case-writer")))).await;
+    assert_eq!(
+        (status, title.as_str()),
+        (StatusCode::FORBIDDEN, "completion seal requires the configured publisher"),
+        "its own title, not a generic grant refusal"
+    );
+    assert_eq!(signer.calls.load(Ordering::SeqCst), 0, "the operator key signed nothing");
+    // Nothing was reserved: the publisher seals the very same request.
+    let (status, _) = answer(&app, seal_request(&request, Some(&token_for("external-producer")))).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(signer.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn seal_without_a_token_is_unauthorized() {
+    let (app, signer, _files, request) = seal_server().await;
+    let (status, _) = answer(&app, seal_request(&request, None)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(signer.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn seal_refuses_a_caller_missing_the_append_or_the_read_grant() {
+    let (app, signer, _files, request) = seal_server().await;
+    for subject in ["append-only", "read-only"] {
+        let (status, title) = answer(&app, seal_request(&request, Some(&token_for(subject)))).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{subject}");
+        assert_ne!(title, "completion seal requires the configured publisher", "{subject}: refused earlier, by the grant");
+    }
+    assert_eq!(signer.calls.load(Ordering::SeqCst), 0);
 }

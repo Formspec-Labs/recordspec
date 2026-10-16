@@ -292,16 +292,16 @@
             }
           },
           "400": {
-            "description": "Closed trigger or selection refused"
+            "description": "Closed trigger or selection refused, including a status or impact outside the vocabulary"
           },
           "401": {
             "description": "Current authentication refused"
           },
           "403": {
-            "description": "Current permission refused"
+            "description": "Current permission refused, or the caller is not the configured publisher"
           },
           "409": {
-            "description": "Snapshot or replay conflict"
+            "description": "Snapshot, signing-evidence, different-principal or replay conflict"
           },
           "503": {
             "description": "Composition not selected or dependency unavailable"
