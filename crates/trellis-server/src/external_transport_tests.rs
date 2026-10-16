@@ -416,12 +416,9 @@ fn verify_and_open(zip: &[u8], original: &[u8], public: [u8; 32]) {
 
 #[tokio::test]
 async fn cross_process_native_transport_qualification() {
-    let cluster = support::TestCluster::start_without_migrations();
-    let pool = cluster.tls_pool(4).await;
-    let database = format!(
-        "postgres://postgres@127.0.0.1:{}/postgres?sslmode=require",
-        pool.connect_options().get_port()
-    );
+    let cluster = stack_common_postgres::testing::EphemeralCluster::start_required();
+    let pool = support::tls_pool(&cluster, 4).await;
+    let database = cluster.dsn();
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     std::fs::write(root.join("policy"), "reader").unwrap();
@@ -748,12 +745,9 @@ async fn actual_source_png_jpeg_cross_process_protection() {
             environment: scope["environment_id"].as_str().unwrap().into(),
             cell: scope["cell_id"].as_str().unwrap().into(),
         };
-        let cluster = support::TestCluster::start_without_migrations();
-        let pool = cluster.tls_pool(4).await;
-        let database = format!(
-            "postgres://postgres@127.0.0.1:{}/postgres?sslmode=require",
-            pool.connect_options().get_port()
-        );
+        let cluster = stack_common_postgres::testing::EphemeralCluster::start_required();
+        let pool = support::tls_pool(&cluster, 4).await;
+        let database = cluster.dsn();
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
         std::fs::write(

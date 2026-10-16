@@ -57,6 +57,7 @@ wos-events = { path = "../../../work-spec/crates/wos-events" }
 stack-common-typeid = { path = "../../../stack-common/crates/stack-common-typeid", features = ["testing"] }
 jsonwebtoken = "9"
 tempfile = "3"
+stack-common-postgres = { path = "../../../stack-common/crates/stack-common-postgres", default-features = false, features = ["testing"] }
 integrity-seam = { path = "../../../integrity-stack/crates/integrity-seam" }
 tower = { version = "0.5", features = ["util"] }
 wos-events = { path = "../../../work-spec/crates/wos-events" }
