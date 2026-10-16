@@ -899,9 +899,9 @@ mod tests {
         }
     }
 
-    /// Fails the first immutable put with a client-class error, then delegates.
+    /// Fails the first `remaining` immutable puts with a client-class error, then delegates.
     struct FailsFirstImmutablePut {
-        failed: std::sync::atomic::AtomicBool,
+        remaining: AtomicUsize,
         inner: crate::artifacts::InMemoryArtifactStore,
     }
 
@@ -914,7 +914,11 @@ mod tests {
         }
 
         async fn put_immutable(&self, key: &str, bytes: &[u8]) -> Result<ArtifactRef, Self::Error> {
-            if !self.failed.swap(true, Ordering::SeqCst) {
+            if self
+                .remaining
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .is_ok()
+            {
                 return Err(StackError::conflict("injected artifact-store fault"));
             }
             self.inner.put_immutable(key, bytes).await
@@ -925,35 +929,37 @@ mod tests {
         }
     }
 
-    /// fs-y075: a failure after the repository write is retryable, never cached, and the
-    /// same-key retry returns the committed record.
-    #[tokio::test]
-    async fn artifact_fault_after_repository_write_is_retryable_and_retry_returns_committed_record()
-    {
+    /// fs-y075: failures after the repository write (first append, then same-key retries) are
+    /// retryable 503s, never cached, and the eventual retry returns the committed record.
+    async fn fault_then_retry(faults: usize) {
         let state = test_state().with_artifact_store(Arc::new(FailsFirstImmutablePut {
-            failed: std::sync::atomic::AtomicBool::new(false),
+            remaining: AtomicUsize::new(faults),
             inner: Default::default(),
         }));
         let app = router(state.clone()).expect("router");
         let path = "/v1/scopes/case_fault/events";
-
-        let first = app
-            .clone()
-            .oneshot(post_request(path, append_body("idem-fault")))
-            .await
-            .expect("first response");
-        assert_eq!(first.status(), StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(
-            state
-                .repository
-                .list_scope(b"case_fault")
+        for attempt in 0..faults {
+            let response = app
+                .clone()
+                .oneshot(post_request(path, append_body("idem-fault")))
                 .await
-                .unwrap()
-                .len(),
-            1,
-            "the event is durable before the publication fault"
-        );
-
+                .expect("faulted response");
+            assert_eq!(
+                response.status(),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "attempt {attempt}"
+            );
+            assert_eq!(
+                state
+                    .repository
+                    .list_scope(b"case_fault")
+                    .await
+                    .unwrap()
+                    .len(),
+                1,
+                "the event is durable before the publication fault"
+            );
+        }
         let retry = app
             .oneshot(post_request(path, append_body("idem-fault")))
             .await
@@ -971,6 +977,18 @@ mod tests {
                 hex::encode(event_hash(b"case_fault", &stored[0]).unwrap())
             )
         );
+    }
+
+    #[tokio::test]
+    async fn artifact_fault_after_repository_write_is_retryable_and_retry_returns_committed_record()
+    {
+        fault_then_retry(1).await;
+    }
+
+    /// The same-key retry path maps its own post-commit failures too: 503, 503, then 201.
+    #[tokio::test]
+    async fn repeated_artifact_faults_stay_retryable_until_the_committed_record_returns() {
+        fault_then_retry(2).await;
     }
 
     /// Given a Trellis router built with an injected append runner probe, when `POST …/events`

@@ -202,7 +202,10 @@ impl<'a> AppendCoordinator<'a> {
                 .cloned()
                 .collect::<Vec<_>>();
             let prior_event_hash =
-                prior_event_hash_for(command.scope.as_str(), &replay_events, existing)?;
+                prior_event_hash_for(command.scope.as_str(), &replay_events, existing)
+                    .map_err(committed_unpublished)?;
+            // Source-content refusals (changed authority, selection or recipients) are the caller's
+            // current answer, not a fault after the commit, so they stay client errors.
             let (new_guard, protected) = self
                 .prefetch_source_content(
                     &command.scope,
@@ -226,7 +229,8 @@ impl<'a> AppendCoordinator<'a> {
                     protected.as_ref(),
                 )
                 .await,
-            )?;
+            )
+            .map_err(committed_unpublished)?;
             drop(scope_guard);
             diag::mark(selected, Stage::Receipt, Outcome::Enter);
             let result = diag::observed(
@@ -241,7 +245,8 @@ impl<'a> AppendCoordinator<'a> {
                     &bundle,
                     true,
                 ),
-            )?;
+            )
+            .map_err(committed_unpublished)?;
             return Ok(AppendOutcome {
                 result,
                 stored: existing.clone(),

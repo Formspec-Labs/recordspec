@@ -285,49 +285,62 @@ pub(crate) async fn append(
             &factory,
         )
         .await?;
-    let events = state
-        .repository
-        .list_scope(authorized.scope.as_bytes())
-        .await?;
-    let update_head = events
-        .last()
-        .is_some_and(|event| event.sequence() == retained.event().sequence());
-    let prefix = events
-        .into_iter()
-        .filter(|event| event.sequence() <= retained.event().sequence())
-        .collect::<Vec<_>>();
-    let prior = retained
-        .event()
-        .sequence()
-        .checked_sub(1)
-        .map(|seq| {
-            prefix
-                .iter()
-                .find(|event| event.sequence() == seq)
-                .ok_or_else(|| StackError::internal("attachment predecessor absent"))
-                .and_then(|event| crate::event_hash(authorized.scope.as_bytes(), event))
-        })
-        .transpose()?;
-    let bundle = crate::publish_bundle(
+    let result = publish_retained(
         &state,
-        authorized.scope.as_bytes(),
-        &prefix,
-        update_head,
-        &authorized.compute,
-    )
-    .await
-    .map_err(crate::append::committed_unpublished)?;
-    let result = crate::append_result_for_event(
         &authorized.scope,
-        retained.event(),
-        prior,
-        trellis_types::ArtifactType::Event,
+        &retained,
+        &authorized.compute,
         state.external_attachment_admission.event_type(),
-        &bundle,
-        true,
     )
-    .map_err(crate::append::committed_unpublished)?;
+    .await?;
     Ok((StatusCode::CREATED, Json(result)))
+}
+
+/// Publishes the bundle for a committed attachment event and builds its receipt.
+///
+/// The event is durable, so every failure here is retryable (see `committed_unpublished`).
+pub(crate) async fn publish_retained(
+    state: &TrellisServerState,
+    scope: &str,
+    retained: &trellis_core::external_attachment::RetainedExternalAttachment,
+    compute: &ComputeContext,
+    event_type: &str,
+) -> Result<SubstrateAppendResult, StackError> {
+    async {
+        let events = state.repository.list_scope(scope.as_bytes()).await?;
+        let update_head = events
+            .last()
+            .is_some_and(|event| event.sequence() == retained.event().sequence());
+        let prefix = events
+            .into_iter()
+            .filter(|event| event.sequence() <= retained.event().sequence())
+            .collect::<Vec<_>>();
+        let prior = retained
+            .event()
+            .sequence()
+            .checked_sub(1)
+            .map(|seq| {
+                prefix
+                    .iter()
+                    .find(|event| event.sequence() == seq)
+                    .ok_or_else(|| StackError::internal("attachment predecessor absent"))
+                    .and_then(|event| crate::event_hash(scope.as_bytes(), event))
+            })
+            .transpose()?;
+        let bundle =
+            crate::publish_bundle(state, scope.as_bytes(), &prefix, update_head, compute).await?;
+        crate::append_result_for_event(
+            scope,
+            retained.event(),
+            prior,
+            trellis_types::ArtifactType::Event,
+            event_type,
+            &bundle,
+            true,
+        )
+    }
+    .await
+    .map_err(crate::append::committed_unpublished)
 }
 
 struct Factory<'a> {

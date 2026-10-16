@@ -290,43 +290,7 @@ async fn append_prepared_external_attachment(
             &authorization.compute_context,
         )
         .await?;
-    let events = state.repository.list_scope(scope.as_bytes()).await?;
-    let update_head = events
-        .last()
-        .is_some_and(|event| event.sequence() == retained.event().sequence());
-    let prefix = events
-        .into_iter()
-        .filter(|event| event.sequence() <= retained.event().sequence())
-        .collect::<Vec<_>>();
-    let prior = retained
-        .event()
-        .sequence()
-        .checked_sub(1)
-        .map(|seq| {
-            prefix
-                .iter()
-                .find(|event| event.sequence() == seq)
-                .ok_or_else(|| StackError::internal("retained attachment predecessor missing"))
-                .and_then(|event| crate::event_hash(scope.as_bytes(), event))
-        })
-        .transpose()?;
-    let bundle = crate::publish_bundle(
-        state,
-        scope.as_bytes(),
-        &prefix,
-        update_head,
-        &authorization.compute_context,
-    )
-    .await?;
-    crate::append_result_for_event(
-        &scope,
-        retained.event(),
-        prior,
-        ArtifactType::Event,
-        event_type,
-        &bundle,
-        true,
-    )
+    crate::external_transport::publish_retained(state, &scope, &retained, &authorization.compute_context, event_type).await
 }
 
 fn binding_of(
@@ -922,6 +886,18 @@ async fn native_replay_rechecks_current_identity_grant_tenant_and_service_actor(
 struct RetryPublication {
     inner: crate::artifacts::InMemoryArtifactStore,
     unavailable: Arc<AtomicBool>,
+    /// Fail with a client-class error instead of 503.
+    client_error: bool,
+}
+
+impl RetryPublication {
+    fn fault(&self) -> StackError {
+        if self.client_error {
+            StackError::conflict("controlled publication refusal")
+        } else {
+            StackError::unavailable("controlled publication failure")
+        }
+    }
 }
 
 #[async_trait]
@@ -929,13 +905,13 @@ impl ArtifactStore for RetryPublication {
     type Error = StackError;
     async fn put(&self, key: &str, bytes: &[u8]) -> Result<ArtifactRef, StackError> {
         if self.unavailable.load(Ordering::SeqCst) {
-            return Err(StackError::unavailable("controlled publication failure"));
+            return Err(self.fault());
         }
         self.inner.put(key, bytes).await
     }
     async fn put_immutable(&self, key: &str, bytes: &[u8]) -> Result<ArtifactRef, StackError> {
         if self.unavailable.load(Ordering::SeqCst) {
-            return Err(StackError::unavailable("controlled publication failure"));
+            return Err(self.fault());
         }
         self.inner.put_immutable(key, bytes).await
     }
@@ -946,11 +922,22 @@ impl ArtifactStore for RetryPublication {
 
 #[tokio::test]
 async fn native_publication_failure_retries_committed_operation_without_new_protection() {
+    native_publication_fault_retries_committed_operation(false).await;
+}
+
+/// A client-class refusal after the commit must surface as retryable, not as a cacheable 4xx.
+#[tokio::test]
+async fn native_publication_client_error_after_commit_is_retryable() {
+    native_publication_fault_retries_committed_operation(true).await;
+}
+
+async fn native_publication_fault_retries_committed_operation(client_error: bool) {
     let (state, _, _) = native_state();
     let unavailable = Arc::new(AtomicBool::new(true));
     let state = state.with_artifact_store(Arc::new(RetryPublication {
         inner: Default::default(),
         unavailable: unavailable.clone(),
+        client_error,
     }));
     let (descriptor, input, original) = external_fixture_input();
     let prepared = descriptor
