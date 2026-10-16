@@ -3,8 +3,6 @@
 
 use std::{
     collections::BTreeSet,
-    fs::File,
-    io::Read,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -574,40 +572,14 @@ impl ScopeAuthorizer for CurrentGrants {
     }
 }
 
-#[cfg(unix)]
+/// Reads one private startup file through the stack-wide reader (descriptor-checked, no symlink or FIFO stall).
 pub(crate) fn read_private(path: &Path) -> Result<Vec<u8>, StackError> {
-    use rustix::fs::{Mode, OFlags, open};
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
-    // Open first without following a final symlink. NONBLOCK prevents FIFO/device stalls
-    // before the opened descriptor is checked; only regular files proceed to reading.
-    let descriptor = open(
+    stack_common_private_file::read_private_file(
         path,
-        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
-        Mode::empty(),
+        MAX_FILE_BYTES,
+        stack_common_private_file::PrivateAccess::OwnerOnly,
     )
-    .map_err(|_| invalid())?;
-    let file = File::from(descriptor);
-    let metadata = file.metadata().map_err(|_| invalid())?;
-    if !metadata.is_file()
-        || metadata.permissions().mode() & 0o077 != 0
-        || metadata.uid() != rustix::process::geteuid().as_raw()
-    {
-        return Err(invalid());
-    }
-    let mut bytes = Vec::new();
-    file.take(MAX_FILE_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| invalid())?;
-    if bytes.len() as u64 > MAX_FILE_BYTES {
-        return Err(invalid());
-    }
-    Ok(bytes)
-}
-
-#[cfg(not(unix))]
-pub(crate) fn read_private(_path: &Path) -> Result<Vec<u8>, StackError> {
-    // This adapter requires an implemented private-file ownership check on its platform.
-    Err(invalid())
+    .map_err(|_| invalid())
 }
 
 fn nonempty(value: &str) -> Result<(), StackError> {
