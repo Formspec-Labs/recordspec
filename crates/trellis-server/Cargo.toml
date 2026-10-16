@@ -33,6 +33,7 @@ stack-common-error = { path = "../../../stack-common/crates/stack-common-error" 
 stack-common-hash = { path = "../../../stack-common/crates/stack-common-hash" }
 stack-common-http = { path = "../../../stack-common/crates/stack-common-http" }
 stack-common-idempotency = { path = "../../../stack-common/crates/stack-common-idempotency", default-features = false, features = ["replay"] }
+stack-common-private-file = { path = "../../../stack-common/crates/stack-common-private-file" }
 stack-common-ops = { path = "../../../stack-common/crates/stack-common-ops" }
 time = { version = "0.3", features = ["formatting"] }
 tokio = { version = "1", features = ["full"] }
@@ -58,6 +59,3 @@ tempfile = "3"
 integrity-seam = { path = "../../../integrity-stack/crates/integrity-seam" }
 tower = { version = "0.5", features = ["util"] }
 wos-events = { path = "../../../work-spec/crates/wos-events" }
-
-[target.'cfg(unix)'.dependencies]
-rustix = { version = "1", features = ["fs", "process"] }

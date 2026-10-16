@@ -3385,6 +3385,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "stack-common-private-file"
+version = "0.1.0"
+dependencies = [
+ "rustix",
+]
+
+[[package]]
 name = "stack-common-typeid"
 version = "0.1.0"
 dependencies = [
@@ -3948,7 +3955,6 @@ dependencies = [
  "integrity-seam",
  "integrity-verify",
  "jsonwebtoken",
- "rustix",
  "serde",
  "serde_json",
  "sha2",
@@ -3959,6 +3965,7 @@ dependencies = [
  "stack-common-http",
  "stack-common-idempotency",
  "stack-common-ops",
+ "stack-common-private-file",
  "tempfile",
  "time",
  "tokio",
