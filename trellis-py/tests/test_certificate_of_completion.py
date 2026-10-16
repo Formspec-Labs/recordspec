@@ -520,6 +520,7 @@ def test_v2_missing_or_empty_principal_is_unresolved(monkeypatch, principal):
     outcome, kinds = _finalize_v2(monkeypatch, [principal, "signer-1"], GOOD_PROOFS)
     assert kinds == ["signing_event_unresolved"]
     assert outcome.all_signing_events_resolved is False
+    assert outcome.chain_summary_consistent is True
 
 
 def test_v2_wrong_principal_is_a_summary_mismatch(monkeypatch):
@@ -528,8 +529,9 @@ def test_v2_wrong_principal_is_a_summary_mismatch(monkeypatch):
 
 
 def test_v2_absent_proof_is_unresolved(monkeypatch):
-    _, kinds = _finalize_v2(monkeypatch, ["signer-0", "signer-1"], [None, GOOD_PROOFS[1]])
+    outcome, kinds = _finalize_v2(monkeypatch, ["signer-0", "signer-1"], [None, GOOD_PROOFS[1]])
     assert kinds == ["signing_event_unresolved"]
+    assert outcome.chain_summary_consistent is True
 
 
 def test_v1_unreadable_signing_event_payload_is_unresolved(monkeypatch):

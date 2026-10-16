@@ -2023,24 +2023,25 @@ def _finalize_certificates_of_completion(
                 continue
             display = payload.chain_summary.signer_display[i]
             principal_ref = resolver.resolve_principal_ref(affirmation)
-            if payload.is_v2 and not principal_ref:
-                # Missing or empty principal: the row cannot be resolved.
-                outcome.all_signing_events_resolved = False
-                fail("signing_event_unresolved", signing_event_hash, consistent=False)
-                continue
-            if principal_ref is not None and display.principal_ref != principal_ref:
-                fail("certificate_chain_summary_mismatch", canonical_hash, consistent=False)
+            proof: Optional[CertificateResponseProof] = None
+            malformed = False
             if payload.is_v2:
                 try:
                     proof = resolver.resolve(affirmation)
                 except MalformedResponseDigestError:
-                    fail("malformed_response_digest", canonical_hash, consistent=False)
-                else:
-                    if proof is None:
-                        outcome.all_signing_events_resolved = False
-                        fail("signing_event_unresolved", signing_event_hash, consistent=False)
-                    elif display.response_ref != proof.response_hash:
-                        fail("response_ref_mismatch", canonical_hash, consistent=False)
+                    malformed = True
+                # A missing or empty principal (compared exactly) or an absent
+                # proof leaves the row unresolvable; its other checks are skipped.
+                if not principal_ref or (proof is None and not malformed):
+                    outcome.all_signing_events_resolved = False
+                    fail("signing_event_unresolved", signing_event_hash)
+                    continue
+            if principal_ref is not None and display.principal_ref != principal_ref:
+                fail("certificate_chain_summary_mismatch", canonical_hash, consistent=False)
+            if malformed:
+                fail("malformed_response_digest", canonical_hash, consistent=False)
+            elif proof is not None and display.response_ref != proof.response_hash:
+                fail("response_ref_mismatch", canonical_hash, consistent=False)
             # Step 6: signed_at MUST equal authored_at (exact, no skew).
             if display.signed_at != target.authored_at:
                 fail("signing_event_timestamp_mismatch", signing_event_hash, consistent=False)

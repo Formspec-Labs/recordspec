@@ -6,9 +6,9 @@
 
 **Forbidden inputs:** `crates/`, `fixtures/vectors/_generator/`, `thoughts/`, `ratification/`, `scripts/`, repo `README.md` except `fixtures/vectors/README.md`, prior implementation excerpts, or generator-derived hints.
 
-**Independence:** The G-5 core (append, verify, export, as of the closing run below) was written from a clean-room thread that read only the allowed inputs above and was not transcribed from the Rust sources. That claim covers the code that existed at that run. Later additions were not clean-room: many carry "Mirrors Rust ..." docstrings because they were ported after Rust implemented them, and the certificate-of-completion v2 and operator-authority-status work (ADR 0016) was written against the Core and ADR text with the parity gate as feedback. Treat those paths as a second implementation checked by the parity gate, not as independent derivations.
+**Independence:** The G-5 core (append, verify, export, as of the closing run below) was written from a clean-room thread that read only the allowed inputs above and was not transcribed from the Rust sources. That claim covers the code that existed at that run. Later additions were not clean-room: many carry "Mirrors Rust ..." docstrings because they were ported after Rust implemented them. The certificate-of-completion v2 and operator-authority-status work (ADR 0016) was ported from integrity-verify, then reconciled with Core §19 step 6c and ADR 0016. Treat those paths as a second implementation checked by the parity gate, not as independent derivations.
 
-**Byte match:** The clean-room conformance run against `fixtures/vectors/` produced `BYTE-MATCH-REPORT.json` with `total_vectors = 63` and `failed = 0`. (The corpus has grown from the G-5 close-out count of 45 as subsequent adopter work added vectors; the stranger implementation tracks Rust byte-for-byte on every added vector.)
+**Byte match:** The clean-room conformance run against `fixtures/vectors/` produced `BYTE-MATCH-REPORT.json` with `total_vectors = 63` and `failed = 0`. (The corpus has grown from the G-5 close-out count of 45 to 158 vectors as subsequent adopter work added them; the stranger implementation tracks Rust byte-for-byte on every added vector.)
 
 **Discrepancies:** `DISCREPANCY-LOG.txt` records no spec or vector discrepancies for the closing run.
 
