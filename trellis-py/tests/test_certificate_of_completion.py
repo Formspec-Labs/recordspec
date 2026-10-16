@@ -10,11 +10,15 @@ focused decode + finalize + catalog helpers.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Optional
 
 import pytest
 
+from trellis_py import verify
 from trellis_py.verify import (
+    CertificateResponseProof,
+    MalformedResponseDigestError,
     CertificateDetails,
     CertificateOfCompletionOutcome,
     PresentationArtifactDetails,
@@ -267,6 +271,70 @@ def test_decode_workflow_status_extension_admitted():
     assert cert.chain_summary.workflow_status == "x-deployment/test-status"
 
 
+def v2_extensions(*, rows: int = 2, mutate=None) -> dict:
+    """ADR 0016 completion certificate: per-row response_ref, no aggregate."""
+    exts = certificate_extensions(
+        cs=chain_summary(
+            signer_count=rows,
+            signer_display=[
+                {**signer_display_entry(principal_ref=f"signer-{i}"), "response_ref": bytes([0x10 + i]) * 32}
+                for i in range(rows)
+            ],
+        ),
+        signing_events=[bytes([0x80 + i]) * 32 for i in range(rows)],
+    )
+    body = exts.pop("trellis.certificate-of-completion.v1")
+    del body["chain_summary"]["response_ref"]
+    if mutate is not None:
+        mutate(body)
+    return {"trellis.certificate-of-completion.v2": body}
+
+
+def test_decode_v2_retains_per_row_response_refs():
+    cert = _decode_certificate_payload(v2_extensions())
+    assert cert is not None and cert.is_v2
+    assert [row.response_ref for row in cert.chain_summary.signer_display] == [
+        b"\x10" * 32,
+        b"\x11" * 32,
+    ]
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda body: body["chain_summary"].update(response_ref=b"\x00" * 32),
+        lambda body: body["chain_summary"]["signer_display"][0].pop("response_ref"),
+        lambda body: body["chain_summary"]["signer_display"][0].update(response_ref=None),
+        lambda body: body["chain_summary"]["signer_display"][0].update(response_ref=b"\x00" * 31),
+    ],
+    ids=["aggregate", "missing-row", "null-row", "short-row"],
+)
+def test_decode_v2_rejects_aggregate_or_malformed_row_digest(mutate):
+    with pytest.raises(VerifyError):
+        _decode_certificate_payload(v2_extensions(mutate=mutate))
+
+
+def test_decode_v2_rejects_duplicate_signing_events():
+    def duplicate(body: dict) -> None:
+        body["signing_events"][1] = body["signing_events"][0]
+
+    with pytest.raises(VerifyError) as excinfo:
+        _decode_certificate_payload(v2_extensions(mutate=duplicate))
+    assert excinfo.value.kind == "certificate_chain_summary_mismatch"
+
+
+def test_decode_rejects_ambiguous_v1_and_v2_extensions():
+    exts = {**certificate_extensions(), **v2_extensions()}
+    with pytest.raises(VerifyError):
+        _decode_certificate_payload(exts)
+
+
+def test_decode_unknown_attestation_authority_class_is_not_well_formed():
+    exts = certificate_extensions(attestations=[one_attestation("sideways")])
+    cert = _decode_certificate_payload(exts)
+    assert cert is not None and cert.attestation_signatures_well_formed is False
+
+
 # ---------------------------------------------------------------------------
 # Finalize tests.
 # ---------------------------------------------------------------------------
@@ -384,6 +452,127 @@ def test_finalize_certificate_id_no_collision_when_byte_identical():
     failures: list[VerificationFailure] = []
     _finalize_certificates_of_completion(payloads, [], failures)
     assert not any(f.kind == "certificate_id_collision" for f in failures)
+
+
+class _StubResolver:
+    """Resolver stub: payload bytes are the row index; behaviour per index."""
+
+    def __init__(self, principals, proofs):
+        self.principals, self.proofs = principals, proofs
+
+    def resolve_principal_ref(self, payload: bytes):
+        return self.principals[payload[0]]
+
+    def resolve(self, payload: bytes):
+        proof = self.proofs[payload[0]]
+        if isinstance(proof, Exception):
+            raise proof
+        return None if proof is None else CertificateResponseProof(response_hash=proof)
+
+
+def _finalize_v2(monkeypatch, principals, proofs):
+    """Runs v2 finalize with chain-present, readable signing events so each row
+    actually reaches the resolver (events=[] never would)."""
+    cert = _decode_certificate_payload(v2_extensions())
+    assert cert is not None
+    stubs = {
+        h: SimpleNamespace(
+            canonical_event_hash=h,
+            authored_at=cert.chain_summary.signer_display[i].signed_at,
+            payload_ref_inline=bytes([i]),
+            payload_ref_external=False,
+            content_hash=h,
+        )
+        for i, h in enumerate(cert.signing_events)
+    }
+    events = list(stubs)
+    monkeypatch.setattr(verify, "_decode_event_details", lambda event: stubs[event])
+    failures: list[VerificationFailure] = []
+    outcomes = _finalize_certificates_of_completion(
+        [(0, cert, b"\x00" * 32)], events, failures, resolver=_StubResolver(principals, proofs)
+    )
+    return outcomes[0], [f.kind for f in failures]
+
+
+GOOD_PROOFS = [b"\x10" * 32, b"\x11" * 32]
+
+
+def test_v2_all_rows_matching_verifies(monkeypatch):
+    outcome, kinds = _finalize_v2(monkeypatch, ["signer-0", "signer-1"], GOOD_PROOFS)
+    assert kinds == [] and outcome.failures == []
+    assert outcome.attestation_authority == "unchecked"
+
+
+def test_v2_swapped_digests_fail_each_row(monkeypatch):
+    _, kinds = _finalize_v2(monkeypatch, ["signer-0", "signer-1"], GOOD_PROOFS[::-1])
+    assert kinds == ["response_ref_mismatch"] * 2
+
+
+def test_v2_malformed_digest_fails_closed(monkeypatch):
+    _, kinds = _finalize_v2(
+        monkeypatch, ["signer-0", "signer-1"], [MalformedResponseDigestError("x"), GOOD_PROOFS[1]]
+    )
+    assert kinds == ["malformed_response_digest"]
+
+
+@pytest.mark.parametrize("principal", [None, ""], ids=["missing", "empty"])
+def test_v2_missing_or_empty_principal_is_unresolved(monkeypatch, principal):
+    outcome, kinds = _finalize_v2(monkeypatch, [principal, "signer-1"], GOOD_PROOFS)
+    assert kinds == ["signing_event_unresolved"]
+    assert outcome.all_signing_events_resolved is False
+
+
+def test_v2_wrong_principal_is_a_summary_mismatch(monkeypatch):
+    _, kinds = _finalize_v2(monkeypatch, ["someone-else", "signer-1"], GOOD_PROOFS)
+    assert kinds == ["certificate_chain_summary_mismatch"]
+
+
+def test_v2_absent_proof_is_unresolved(monkeypatch):
+    _, kinds = _finalize_v2(monkeypatch, ["signer-0", "signer-1"], [None, GOOD_PROOFS[1]])
+    assert kinds == ["signing_event_unresolved"]
+
+
+def test_v1_unreadable_signing_event_payload_is_unresolved(monkeypatch):
+    """Core step 5: a chain-present event with no readable payload is unresolved."""
+    cert = _decode_certificate_payload(certificate_extensions())
+    assert cert is not None
+    h = cert.signing_events[0]
+    stub = SimpleNamespace(
+        canonical_event_hash=h,
+        authored_at=cert.chain_summary.signer_display[0].signed_at,
+        payload_ref_inline=None,
+        payload_ref_external=False,
+        content_hash=h,
+    )
+    monkeypatch.setattr(verify, "_decode_event_details", lambda event: stub)
+    failures: list[VerificationFailure] = []
+    outcomes = _finalize_certificates_of_completion([(0, cert, b"\x00" * 32)], [h], failures)
+    assert outcomes[0].all_signing_events_resolved is False
+    assert [f.kind for f in failures] == ["signing_event_unresolved"]
+
+
+def test_v2_whole_payload_collision(monkeypatch):
+    a = _decode_certificate_payload(v2_extensions())
+    b = _decode_certificate_payload(v2_extensions(mutate=lambda body: body.update(workflow_ref="x")))
+    assert a is not None and b is not None
+    failures: list[VerificationFailure] = []
+    _finalize_certificates_of_completion(
+        [(0, a, b"\x01" * 32), (1, b, b"\x02" * 32)], [], failures
+    )
+    assert any(f.kind == "certificate_id_collision" for f in failures)
+
+
+def test_finalize_v2_status_and_claim_registries_are_empty():
+    def unregistered(body: dict) -> None:
+        body["chain_summary"]["workflow_status"] = "x-deployment/status"
+        body["chain_summary"]["covered_claims"] = ["x-claim"]
+
+    cert = _decode_certificate_payload(v2_extensions(mutate=unregistered))
+    assert cert is not None
+    failures: list[VerificationFailure] = []
+    _finalize_certificates_of_completion([(0, cert, b"\x00" * 32)], [], failures)
+    kinds = {f.kind for f in failures}
+    assert {"certificate_enum_extension_unknown", "certificate_covered_claim_unknown"} <= kinds
 
 
 # ---------------------------------------------------------------------------

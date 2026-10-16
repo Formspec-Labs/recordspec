@@ -436,6 +436,20 @@ def test_wos_resolver_reads_response_digest_without_full_signed_act_shape() -> N
     assert resolver.resolve_principal_ref(payload) == "applicant"
 
 
+def test_wos_resolver_refuses_prefixed_digest() -> None:
+    """Record schemas pin raw hex; `sha256:`-prefixed digests are malformed."""
+    payload = cbor2.dumps(
+        {
+            "data": {
+                "signedPayloadDigestAlgorithm": "sha-256",
+                "signedPayloadDigest": "sha256:" + "cc" * 32,
+            }
+        }
+    )
+    with pytest.raises(core.MalformedResponseDigestError):
+        verify_wos.WosFormspecResolver().resolve(payload)
+
+
 def test_wos_resolver_malformed_response_digest_fails_closed() -> None:
     payload = cbor2.dumps(
         {

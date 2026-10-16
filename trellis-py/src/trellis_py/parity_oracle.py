@@ -56,7 +56,6 @@ def report_projection(export_zip: bytes) -> dict[str, Any]:
             }
             for item in report.wos_findings
         ],
-        "warnings": trellis.warnings,
         "substrate_tier": None,
     }
 
@@ -100,6 +99,7 @@ def _certificate_projection(item: Any) -> dict[str, Any]:
         "attachment_resolved": item.attachment_resolved,
         "all_signing_events_resolved": item.all_signing_events_resolved,
         "chain_summary_consistent": item.chain_summary_consistent,
+        "attestation_authority": item.attestation_authority,
         "failures": item.failures,
     }
 
