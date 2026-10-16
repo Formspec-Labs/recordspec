@@ -249,6 +249,14 @@ mod tests {
                 fixture_label(root)
             );
         }
+
+        // Byte-identity alone says nothing about whether the bytes are a valid
+        // export: the labelled outcome is checked by running the verifier on them.
+        assert_report_matches_zip(
+            root,
+            table_in_table(root, expected, "report"),
+            &expected_zip,
+        );
     }
 
     fn assert_verify_fixture_matches(root: &Path, manifest: &toml::Value) {
@@ -259,20 +267,35 @@ mod tests {
             &root.join(path_field(root, inputs, "export_zip")),
             "read export_zip",
         );
+        assert_report_matches_zip(root, expected_report, &export_zip);
+    }
+
+    /// Run the verifier on `export_zip` and compare it to an
+    /// `[expected.report]` table. Shared by `verify` vectors (the ZIP is an
+    /// input) and `export` vectors (the ZIP is the expected output).
+    fn assert_report_matches_zip(
+        root: &Path,
+        expected_report: &toml::value::Table,
+        export_zip: &[u8],
+    ) {
         let expected_kind = pathless_string(expected_report, "first_failure_kind");
         let expected_event_id = pathless_string(expected_report, "failing_event_id");
+        // The WOS-resolved report is the relying-party view (Python's
+        // `verify_wos.verify_export_zip`): its substrate resolves WOS-owned
+        // references (e.g. completion signing events) that the bare Trellis
+        // verifier reports as unresolved.
+        let wos_report = trellis_verify_wos::verify_export_zip(export_zip);
         if expected_kind.as_deref().is_some_and(is_wos_kind) {
-            let report = trellis_verify_wos::verify_export_zip(&export_zip);
             assert_wos_report_matches(
                 root,
                 expected_report,
-                &report,
+                &wos_report,
                 expected_kind.as_deref(),
                 expected_event_id.as_deref(),
             );
             return;
         }
-        let report = verify_export_zip(&export_zip);
+        let report = &wos_report.trellis;
 
         assert_eq!(
             report.structure_verified,
@@ -280,27 +303,17 @@ mod tests {
             "{}: structure_verified mismatch: {report:?}",
             fixture_label(root)
         );
-        if report.integrity_verified && !bool_field(root, expected_report, "integrity_verified") {
-            let wos_report = trellis_verify_wos::verify_export_zip(&export_zip);
-            let combined_integrity = wos_integrity_verified(&wos_report);
-            if !combined_integrity {
-                assert_wos_report_matches(
-                    root,
-                    expected_report,
-                    &wos_report,
-                    None,
-                    expected_event_id.as_deref(),
-                );
-                return;
-            }
-        }
         assert_eq!(
-            report.integrity_verified,
-            bool_field(root, expected_report, "integrity_verified")
+            wos_integrity_verified(&wos_report),
+            bool_field(root, expected_report, "integrity_verified"),
+            "{}: integrity_verified mismatch: {wos_report:?}",
+            fixture_label(root)
         );
         assert_eq!(
             report.readability_verified,
-            bool_field(root, expected_report, "readability_verified")
+            bool_field(root, expected_report, "readability_verified"),
+            "{}: readability_verified mismatch: {report:?}",
+            fixture_label(root)
         );
         if let Some(expected_count) =
             optional_int_field(expected_report, "posture_transition_count")
@@ -309,13 +322,13 @@ mod tests {
         }
         if let Some(expected_kind) = expected_kind {
             assert_eq!(
-                first_failure(&report).map(|failure| failure.kind.as_str()),
+                first_failure(report).map(|failure| failure.kind.as_str()),
                 Some(expected_kind.as_str()),
             );
         }
         if let Some(expected_loc) = pathless_string(expected_report, "failing_event_id") {
             assert_eq!(
-                first_failure(&report).map(|failure| failure.location.as_str()),
+                first_failure(report).map(|failure| failure.location.as_str()),
                 Some(expected_loc.as_str()),
             );
         }

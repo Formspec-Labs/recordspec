@@ -1,0 +1,25 @@
+id          = "export/011-interop-sidecars-null"
+op          = "export"
+status      = "active"
+description = """Canonical positive: manifest carries interop_sidecars: null (present,
+null; Core §28 `/ null`). Phase-1 verifier accepts a null field without
+error per ADR 0008. Absent and empty-list are `export/001` and
+`export/012`."""
+
+[coverage]
+tr_core = ["TR-CORE-145"]
+
+[inputs]
+ledger_state = "input-ledger-state.cbor"
+
+[expected]
+zip        = "expected-export.zip"
+zip_sha256 = "7cc64622ffb4e3d24d4acc80daa567cda0a2f0a7ac3b8abceea260d627e2d664"
+
+[expected.report]
+structure_verified   = true
+integrity_verified   = true
+readability_verified = true
+
+[derivation]
+document = "derivation.md"

@@ -3501,7 +3501,7 @@ EventPayload {
   content_hash: h'02020202...32bytes',     ; SHA-256 over ciphertext
   header: {
     event_type: h'666f726d737065632e617574686f726564', ; "formspec.authored" bytes
-    authored_at: 1744963200,               ; 2026-04-18T00:00:00Z
+    authored_at: [1744963200, 0],         ; [seconds, nanos] = 2025-04-18T08:00:00Z
     retention_tier: 1,
     classification: h'7075626c6963',       ; "public"
     outcome_commitment: null,
@@ -3556,7 +3556,7 @@ CheckpointPayload {
   scope: h'7265732d303030303031',          ; "res-000001"
   tree_size: 7,
   tree_head_hash: h'aabbccdd...32bytes',
-  timestamp: 1744974000,
+  timestamp: [1744974000, 0],              ; [seconds, nanos]
   anchor_ref: null,
   prev_checkpoint_hash: null,              ; first checkpoint of the scope
   extensions: null
@@ -3572,7 +3572,7 @@ ExportManifestPayload {
   format: "trellis-export/1",
   version: 1,
   generator: "trellis-cli/0.1.0",
-  generated_at: 1744974100,
+  generated_at: [1744974100, 0],           ; [seconds, nanos]
   scope: h'7265732d303030303031',
   tree_size: 7,
   head_checkpoint_digest: h'ffeeddcc...32bytes',
