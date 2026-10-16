@@ -1,10 +1,9 @@
 // Rust guideline compliant 2026-02-21
-//! WOS/Formspec export-profile members composed by the Trellis server.
+//! WOS/Formspec export-profile members derived from a closed event snapshot.
 //!
 //! `trellis-export-writer` binds opaque member bytes and stays substrate-only.
-//! This module is the server composition seam that derives WOS/Formspec
-//! verifier-facing members from the closed event snapshot before the writer
-//! signs the export manifest.
+//! This module derives the WOS/Formspec verifier-facing members before the
+//! writer signs the export manifest.
 
 #![forbid(unsafe_code)]
 
@@ -23,32 +22,17 @@ use trellis_export_writer::{
 };
 use trellis_types::StoredEvent;
 
-use crate::composition::{
-    wos_signature_admission_failed_event_type, wos_signature_affirmation_event_type,
+use trellis_server_ports::ExportProfileMembers;
+use trellis_server_ports::event_codec::{
+    cbor_bad_request, encode_value, event_hash, text_map, uint,
 };
+
+use crate::{wos_signature_admission_failed_event_type, wos_signature_affirmation_event_type};
 
 const SIGNED_ACTS_DERIVATION_RULE_V1: &str = "signed-act-projection-wos-formspec-v1";
 const SIGNED_ACTS_DERIVATION_RULE_V2: &str = "signed-act-projection-wos-formspec-v2";
 const FALLBACK_ACT_ID_DERIVATION_RULE: &str = "signed-act-projection-act-id-v1";
 const POLICY_CLOSURE_VERSION: &str = "wos-formspec-signature-policy-closure-2026-05-16";
-
-/// Optional export-profile members supplied to `trellis-export-writer`.
-#[derive(Debug, Default)]
-pub(crate) struct ExportProfileMembers {
-    pub(crate) signed_acts_catalog: Option<SignedActsCatalogMember>,
-    pub(crate) signed_acts_manifest: Option<SignedActsManifestMember>,
-    pub(crate) policy_closure: Option<PolicyClosureMember>,
-}
-
-impl ExportProfileMembers {
-    /// Returns true when domain verification must run before publication.
-    #[must_use]
-    pub(crate) fn requires_profile_validation(&self) -> bool {
-        self.signed_acts_catalog.is_some()
-            || self.signed_acts_manifest.is_some()
-            || self.policy_closure.is_some()
-    }
-}
 
 /// One policy-evidence artifact row carried in `067-policy-closure.cbor`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -170,7 +154,7 @@ fn signed_acts_manifest(scope: &[u8], events: &[StoredEvent]) -> Result<Vec<u8>,
     for event in events {
         let event_type = event_type(event)?;
         if event_type == signature_affirmation || event_type == signature_admission_failed {
-            let canonical_event_hash = crate::event_hash(scope, event)?;
+            let canonical_event_hash = event_hash(scope, event)?;
             tuples.push((canonical_event_hash.to_vec(), event_type));
         }
     }
@@ -204,7 +188,7 @@ fn signed_acts_catalog(
                 )
             })?;
             let record = parse_signature_affirmation_record(&payload, signature_affirmation)?;
-            let canonical_event_hash = crate::event_hash(scope, event)?;
+            let canonical_event_hash = event_hash(scope, event)?;
             policy_closure_eligible &= signature_affirmation_policy_covered(&record);
             acts.push(project_admitted_act(canonical_event_hash, &record)?);
         } else if event_type == signature_admission_failed {
@@ -215,7 +199,7 @@ fn signed_acts_catalog(
             })?;
             let record =
                 parse_signature_admission_failed_record(&payload, signature_admission_failed)?;
-            let canonical_event_hash = crate::event_hash(scope, event)?;
+            let canonical_event_hash = event_hash(scope, event)?;
             policy_closure_eligible &= signature_admission_failed_policy_covered(&record);
             acts.push(project_rejected_act(canonical_event_hash, &record)?);
         }
@@ -230,8 +214,8 @@ fn signed_acts_catalog(
     } else {
         SIGNED_ACTS_DERIVATION_RULE_V1
     };
-    let catalog = crate::text_map(vec![
-        ("projection_schema_version", crate::uint(1)),
+    let catalog = text_map(vec![
+        ("projection_schema_version", uint(1)),
         (
             "derivation_rule_id",
             Value::Text(derivation_rule.to_string()),
@@ -242,7 +226,7 @@ fn signed_acts_catalog(
         ),
     ])?;
     Ok(Some(SignedActsDerivation {
-        bytes: crate::encode_value(&catalog)?,
+        bytes: encode_value(&catalog)?,
         derivation_rule,
         policy_closure_eligible,
     }))
@@ -256,7 +240,7 @@ fn correlate_projected_acts(acts: Vec<ProjectedAct>) -> Result<Vec<ProjectedAct>
         let source_refs = source_refs_from_act(&act.value)?;
         let mut refs = BTreeMap::new();
         for source_ref in source_refs {
-            let duplicate_key = crate::encode_value(&source_ref)?;
+            let duplicate_key = encode_value(&source_ref)?;
             let key = source_ref_sort_key(&source_ref)?;
             if !seen_source_refs.insert(duplicate_key) {
                 return Err(StackError::bad_request(
@@ -300,7 +284,7 @@ fn correlate_projected_acts(acts: Vec<ProjectedAct>) -> Result<Vec<ProjectedAct>
             let first_source_ref = source_refs
                 .first()
                 .ok_or_else(|| StackError::internal("projected act source_refs missing"))?;
-            let first_source_ref = crate::encode_value(first_source_ref)?;
+            let first_source_ref = encode_value(first_source_ref)?;
             let value = replace_source_refs(&correlated.act.value, Value::Array(source_refs))?;
             Ok(ProjectedAct {
                 act_id: correlated.act.act_id,
@@ -322,7 +306,7 @@ fn act_without_source_refs_key(value: &Value) -> Result<Vec<u8>, StackError> {
         .filter(|(key, _)| key.as_text() != Some("source_refs"))
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
-    crate::encode_value(&Value::Map(filtered))
+    encode_value(&Value::Map(filtered))
 }
 
 fn source_refs_from_act(value: &Value) -> Result<Vec<Value>, StackError> {
@@ -518,13 +502,13 @@ fn project_admitted_act(
         .signing_intent
         .as_deref()
         .ok_or_else(|| StackError::bad_request("signature affirmation missing signingIntent"))?;
-    let signer = crate::text_map(vec![
+    let signer = text_map(vec![
         ("id", Value::Text(record.signer_id.clone())),
         ("role", Value::Text(record.role.clone())),
         ("role_ref", Value::Text(record.role_id.clone())),
         ("identity_evidence_refs", Value::Array(Vec::new())),
     ])?;
-    let bound = crate::text_map(vec![
+    let bound = text_map(vec![
         ("subject_kind", Value::Text("formspec-response".to_string())),
         (
             "subject_hash",
@@ -549,7 +533,7 @@ fn project_admitted_act(
             Value::Text(record.document_hash_algorithm.clone()),
         ),
     ])?;
-    let admission = crate::text_map(vec![
+    let admission = text_map(vec![
         ("outcome", Value::Text("admitted".to_string())),
         (
             "source_response_ref",
@@ -584,7 +568,7 @@ fn project_admitted_act(
         ),
         ("failure_reason", Value::Null),
     ])?;
-    let value = crate::text_map(vec![
+    let value = text_map(vec![
         ("act_id", Value::Text(act_id.clone())),
         ("signer", signer),
         ("bound", bound),
@@ -601,7 +585,7 @@ fn project_admitted_act(
     Ok(ProjectedAct {
         act_id,
         signed_at: record.signed_at.clone(),
-        first_source_ref: crate::encode_value(&source_ref)?,
+        first_source_ref: encode_value(&source_ref)?,
         uses_fallback_act_id,
         value,
     })
@@ -613,13 +597,13 @@ fn project_rejected_act(
 ) -> Result<ProjectedAct, StackError> {
     let source_ref = source_ref(canonical_event_hash, "signature-admission-failed")?;
     let source_refs = sorted_source_refs(vec![source_ref.clone()])?;
-    let signer = crate::text_map(vec![
+    let signer = text_map(vec![
         ("id", option_text(record.signer_id.as_deref())),
         ("role", Value::Null),
         ("role_ref", Value::Null),
         ("identity_evidence_refs", Value::Array(Vec::new())),
     ])?;
-    let bound = crate::text_map(vec![
+    let bound = text_map(vec![
         ("subject_kind", Value::Text("formspec-response".to_string())),
         (
             "subject_hash",
@@ -635,7 +619,7 @@ fn project_rejected_act(
         ),
         ("content_hash_algorithm", Value::Null),
     ])?;
-    let admission = crate::text_map(vec![
+    let admission = text_map(vec![
         ("outcome", Value::Text("rejected".to_string())),
         (
             "source_response_ref",
@@ -658,7 +642,7 @@ fn project_rejected_act(
         ("primitive_verification", Value::Null),
         ("failure_reason", Value::Text(record.reason.clone())),
     ])?;
-    let value = crate::text_map(vec![
+    let value = text_map(vec![
         ("act_id", Value::Text(record.signature_id.clone())),
         ("signer", signer),
         ("bound", bound),
@@ -672,7 +656,7 @@ fn project_rejected_act(
     Ok(ProjectedAct {
         act_id: record.signature_id.clone(),
         signed_at: record.emitted_at.clone(),
-        first_source_ref: crate::encode_value(&source_ref)?,
+        first_source_ref: encode_value(&source_ref)?,
         uses_fallback_act_id: false,
         value,
     })
@@ -685,7 +669,7 @@ fn projected_act_id(
     if let Some(signing_act_id) = signing_act_id {
         return Ok((signing_act_id.to_string(), false));
     }
-    let source_ref_bytes = crate::encode_value(source_refs)?;
+    let source_ref_bytes = encode_value(source_refs)?;
     let digest = sha256_bytes(&source_ref_bytes);
     Ok((
         format!(
@@ -698,7 +682,7 @@ fn projected_act_id(
 }
 
 fn source_ref(canonical_event_hash: [u8; 32], kind: &str) -> Result<Value, StackError> {
-    crate::text_map(vec![
+    text_map(vec![
         ("layer", Value::Text("wos".to_string())),
         ("kind", Value::Text(kind.to_string())),
         ("ref", Value::Bytes(canonical_event_hash.to_vec())),
@@ -736,7 +720,7 @@ fn source_ref_sort_key(source_ref: &Value) -> Result<Vec<u8>, StackError> {
     key.push(0);
     key.extend_from_slice(kind.as_bytes());
     key.push(0);
-    key.extend_from_slice(&crate::encode_value(reference)?);
+    key.extend_from_slice(&encode_value(reference)?);
     Ok(key)
 }
 
@@ -756,8 +740,8 @@ fn policy_closure(
         .iter()
         .map(policy_artifact_value)
         .collect::<Result<Vec<_>, StackError>>()?;
-    let closure = crate::text_map(vec![
-        ("closure_schema_version", crate::uint(1)),
+    let closure = text_map(vec![
+        ("closure_schema_version", uint(1)),
         (
             "closure_version",
             Value::Text(POLICY_CLOSURE_VERSION.to_string()),
@@ -769,7 +753,7 @@ fn policy_closure(
         ),
         (
             "verifier_boundary",
-            crate::text_map(vec![
+            text_map(vec![
                 ("bundle_admission_policy_evidence", Value::Bool(true)),
                 ("bundle_trust_roots_authoritative", Value::Bool(false)),
                 ("verifier_supplied_trust_roots_required", Value::Bool(true)),
@@ -782,11 +766,11 @@ fn policy_closure(
         ),
         ("artifacts", Value::Array(artifacts)),
     ])?;
-    crate::encode_value(&closure)
+    encode_value(&closure)
 }
 
 fn policy_artifact_value(artifact: &PolicyClosureArtifact) -> Result<Value, StackError> {
-    crate::text_map(vec![
+    text_map(vec![
         ("owner", Value::Text(artifact.owner.to_string())),
         ("kind", Value::Text(artifact.kind.to_string())),
         ("version", Value::Text(artifact.version.to_string())),
@@ -844,10 +828,6 @@ fn require_event(
     }
 }
 
-fn cbor_bad_request(error: integrity_cbor::CborHelperError) -> StackError {
-    StackError::bad_request(error.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -865,11 +845,11 @@ mod tests {
         assert_eq!(source_refs.len(), 2);
         assert_eq!(
             encode_source_ref(0x11),
-            crate::encode_value(&source_refs[0]).unwrap()
+            encode_value(&source_refs[0]).unwrap()
         );
         assert_eq!(
             encode_source_ref(0x22),
-            crate::encode_value(&source_refs[1]).unwrap()
+            encode_value(&source_refs[1]).unwrap()
         );
     }
 
@@ -956,7 +936,7 @@ mod tests {
     fn encode_source_ref(source_byte: u8) -> Vec<u8> {
         let source_ref =
             source_ref([source_byte; 32], "signature-affirmation").expect("source ref");
-        crate::encode_value(&source_ref).expect("source ref bytes")
+        encode_value(&source_ref).expect("source ref bytes")
     }
 
     fn act_id_from_catalog(catalog: &[u8]) -> String {
@@ -973,14 +953,14 @@ mod tests {
     }
 
     fn signature_payload_with_consent(consent_reference: Value) -> Value {
-        crate::text_map(vec![
+        text_map(vec![
             (
                 "event",
                 Value::Text(wos_signature_affirmation_event_type().to_string()),
             ),
             (
                 "data",
-                crate::text_map(vec![
+                text_map(vec![
                     ("signerId", Value::Text("signer-1".to_string())),
                     ("roleId", Value::Text("applicant".to_string())),
                     ("role", Value::Text("Applicant".to_string())),
@@ -1018,7 +998,7 @@ mod tests {
                     ),
                     (
                         "identityBinding",
-                        crate::text_map(vec![("ref", Value::Text("identity-1".to_string()))])
+                        text_map(vec![("ref", Value::Text("identity-1".to_string()))])
                             .expect("identity"),
                     ),
                     ("consentReference", consent_reference),
@@ -1027,7 +1007,7 @@ mod tests {
                     ("sourceResponseRef", Value::Text("response-1".to_string())),
                     (
                         "primitiveVerification",
-                        crate::text_map(vec![("status", Value::Text("verified".to_string()))])
+                        text_map(vec![("status", Value::Text("verified".to_string()))])
                             .expect("primitive"),
                     ),
                     ("witnessedSignatureRef", Value::Null),
@@ -1063,11 +1043,11 @@ mod tests {
     }
 
     fn stored_signature_event(scope: &[u8], payload: Value, event_hash: [u8; 32]) -> StoredEvent {
-        let payload = crate::encode_value(&payload).expect("payload");
-        let canonical_event = crate::text_map(vec![
+        let payload = encode_value(&payload).expect("payload");
+        let canonical_event = text_map(vec![
             (
                 "header",
-                crate::text_map(vec![(
+                text_map(vec![(
                     "event_type",
                     Value::Bytes(wos_signature_affirmation_event_type().as_bytes().to_vec()),
                 )])
@@ -1075,7 +1055,7 @@ mod tests {
             ),
             (
                 "payload_ref",
-                crate::text_map(vec![
+                text_map(vec![
                     ("ref_type", Value::Text("inline".to_string())),
                     ("ciphertext", Value::Bytes(payload)),
                 ])
@@ -1083,7 +1063,7 @@ mod tests {
             ),
         ])
         .expect("canonical event");
-        let canonical_event = crate::encode_value(&canonical_event).expect("canonical event");
+        let canonical_event = encode_value(&canonical_event).expect("canonical event");
         StoredEvent::new(scope.to_vec(), 0, canonical_event.clone(), canonical_event)
             .with_canonical_event_hash(Some(event_hash))
     }
@@ -1143,7 +1123,7 @@ mod tests {
     fn projected_act(act_id: &str, signer: &str, source_byte: u8) -> ProjectedAct {
         let source_ref =
             source_ref([source_byte; 32], "signature-affirmation").expect("source ref");
-        let value = crate::text_map(vec![
+        let value = text_map(vec![
             ("act_id", Value::Text(act_id.to_string())),
             ("signer", Value::Text(signer.to_string())),
             ("signed_at", Value::Text("2026-05-17T00:00:00Z".to_string())),
@@ -1156,7 +1136,7 @@ mod tests {
         ProjectedAct {
             act_id: act_id.to_string(),
             signed_at: "2026-05-17T00:00:00Z".to_string(),
-            first_source_ref: crate::encode_value(&source_ref).expect("source ref key"),
+            first_source_ref: encode_value(&source_ref).expect("source ref key"),
             uses_fallback_act_id: false,
             value,
         }

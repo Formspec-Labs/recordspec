@@ -6,16 +6,16 @@
 //! cannot authenticate supplied signed bytes or a caller's chosen event list.
 
 use integrity_cbor::{
-    decode_cbor_value, domain_separated_sha256, map_lookup_bytes, map_lookup_map,
-    map_lookup_optional_value, map_lookup_text, Value,
+    Value, decode_cbor_value, domain_separated_sha256, map_lookup_bytes, map_lookup_map,
+    map_lookup_optional_value, map_lookup_text,
 };
 use std::collections::BTreeSet;
 use trellis_types::{
+    CONTENT_DOMAIN, EVENT_DOMAIN, StoredEvent,
     completion_selection::{
-        completion_prefix_bounds, completion_scope_bounds, MAX_COMPLETION_CANONICAL_BYTES,
-        MAX_COMPLETION_EVENTS,
+        MAX_COMPLETION_CANONICAL_BYTES, MAX_COMPLETION_EVENTS, completion_prefix_bounds,
+        completion_scope_bounds,
     },
-    StoredEvent, CONTENT_DOMAIN, EVENT_DOMAIN,
 };
 
 /// Exact opaque owning record expected in the selected complete snapshot.
@@ -213,11 +213,13 @@ mod tests {
         );
         let second = event(b"a", 1, Value::Bytes(hash.to_vec()), b"second");
         assert!(validate_completion_prefix(&[first.clone(), second], b"a").is_ok());
-        assert!(validate_completion_prefix(
-            &[first.clone().with_canonical_event_hash(Some([0; 32]))],
-            b"a"
-        )
-        .is_err());
+        assert!(
+            validate_completion_prefix(
+                &[first.clone().with_canonical_event_hash(Some([0; 32]))],
+                b"a"
+            )
+            .is_err()
+        );
         assert!(validate_completion_prefix(&[first], b"b").is_err());
         let inner_foreign = event(b"b", 0, Value::Null, b"first");
         let outer = StoredEvent::new(
@@ -230,11 +232,13 @@ mod tests {
         assert!(
             validate_completion_prefix(&[event(b"a", 1, Value::Null, b"first")], b"a").is_err()
         );
-        assert!(validate_completion_prefix(
-            &[event(b"a", 0, Value::Bytes(vec![0; 32]), b"first")],
-            b"a"
-        )
-        .is_err());
+        assert!(
+            validate_completion_prefix(
+                &[event(b"a", 0, Value::Bytes(vec![0; 32]), b"first")],
+                b"a"
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -253,18 +257,18 @@ mod tests {
         );
         assert!(completion_record_bindings(&prefix, &[], &vocabulary).is_err());
         assert!(completion_record_bindings(&prefix, &[record(b"changed")], &vocabulary).is_err());
-        assert!(completion_record_bindings(
-            &prefix,
-            &[record(b"retained"), record(b"retained")],
-            &vocabulary
-        )
-        .is_err());
-        assert!(completion_record_bindings(
-            &prefix,
-            &[record(b"retained")],
-            &["owner.other".into()]
-        )
-        .is_err());
+        assert!(
+            completion_record_bindings(
+                &prefix,
+                &[record(b"retained"), record(b"retained")],
+                &vocabulary
+            )
+            .is_err()
+        );
+        assert!(
+            completion_record_bindings(&prefix, &[record(b"retained")], &["owner.other".into()])
+                .is_err()
+        );
     }
 
     #[test]

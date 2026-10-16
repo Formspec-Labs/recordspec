@@ -22,122 +22,6 @@ use trellis_core::external_attachment::{
 };
 use trellis_server_ports::{AuthorizedScope, ScopeAction, ScopeAuthorization, ScopeAuthorizer};
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn native_http_retryable_completion_preserves_success_in_both_orders_and_concurrently() {
-    use stack_common_http::idempotency::{
-        HttpIdempotencyState, IdempotencyCall, IdempotencyDecision, IdempotencyRequest,
-        IdempotencyReservation, IdempotencyResponseDisposition,
-    };
-    use stack_common_idempotency::{StoredResponse, hash_http_request_body};
-
-    for order in 0..3 {
-        let (state, _, _) = native_state();
-        // This is the trusted tuple minted by typed authorization, not a caller header.
-        let call = IdempotencyCall {
-            request: IdempotencyRequest {
-                scope: "POST:/v1/scopes/case_123/accepted-attachments".into(),
-                key: format!("completion-order-{order}"),
-                request_hash: hash_http_request_body(b"exact authorized original request"),
-            },
-            headers: HeaderMap::new(),
-            replay_partition: Some(
-                serde_json::to_string(&(
-                    "owning-producer",
-                    native_tenant(),
-                    "case_123",
-                    "accepted-attachment",
-                    "selected-policy",
-                ))
-                .unwrap(),
-            ),
-        };
-        for _ in 0..2 {
-            assert!(matches!(
-                state.reserve_http_idempotency_attempt(&call).await,
-                Ok(IdempotencyReservation::Fresh(None))
-            ));
-        }
-        let success = StoredResponse {
-            status: 201,
-            headers: vec![("content-type".into(), "application/json".into())],
-            body: b"exact successful native append response".to_vec(),
-        };
-        let failure = StoredResponse {
-            status: 503,
-            headers: vec![],
-            body: b"storage temporarily unavailable".to_vec(),
-        };
-        let mut failed_response = axum::response::Response::new(axum::body::Body::empty());
-        *failed_response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
-        failed_response
-            .extensions_mut()
-            .insert(crate::external_transport::RetryableStorageAttempt);
-        let retryable = state.http_idempotency_response_disposition(&call, &failed_response);
-        assert_eq!(retryable, IdempotencyResponseDisposition::RetryableAttempt);
-        let mut successful_response = axum::response::Response::new(axum::body::Body::empty());
-        *successful_response.status_mut() = StatusCode::CREATED;
-        let completed = state.http_idempotency_response_disposition(&call, &successful_response);
-        assert_eq!(completed, IdempotencyResponseDisposition::Replay);
-
-        if order == 2 {
-            let barrier = Arc::new(tokio::sync::Barrier::new(3));
-            let success_task = {
-                let state = state.clone();
-                let call = call.clone();
-                let barrier = barrier.clone();
-                let success = success.clone();
-                tokio::spawn(async move {
-                    barrier.wait().await;
-                    state
-                        .finish_http_idempotency_attempt(&call, None, completed, success)
-                        .await
-                        .is_ok()
-                })
-            };
-            let failure_task = {
-                let state = state.clone();
-                let call = call.clone();
-                let barrier = barrier.clone();
-                tokio::spawn(async move {
-                    barrier.wait().await;
-                    state
-                        .finish_http_idempotency_attempt(&call, None, retryable, failure)
-                        .await
-                        .is_ok()
-                })
-            };
-            barrier.wait().await;
-            assert!(success_task.await.unwrap());
-            assert!(failure_task.await.unwrap());
-        } else {
-            let completions = if order == 0 {
-                [(completed, success.clone()), (retryable, failure)]
-            } else {
-                [(retryable, failure), (completed, success.clone())]
-            };
-            for (disposition, response) in completions {
-                assert!(
-                    state
-                        .finish_http_idempotency_attempt(&call, None, disposition, response)
-                        .await
-                        .is_ok()
-                );
-            }
-        }
-        match state.reserve_http_idempotency_attempt(&call).await {
-            Ok(IdempotencyReservation::Replay(actual)) => assert_eq!(actual, success),
-            _ => panic!("completed native response was not preserved for order {order}"),
-        }
-        let mut changed = call.clone();
-        changed.request.request_hash =
-            hash_http_request_body(b"changed authorized original request");
-        assert!(matches!(
-            state.reserve_http_idempotency(&changed).await,
-            Ok(IdempotencyDecision::Conflict)
-        ));
-    }
-}
-
 struct NativeVerifier {
     allowed: Arc<AtomicBool>,
 }
@@ -406,43 +290,7 @@ async fn append_prepared_external_attachment(
             &authorization.compute_context,
         )
         .await?;
-    let events = state.repository.list_scope(scope.as_bytes()).await?;
-    let update_head = events
-        .last()
-        .is_some_and(|event| event.sequence() == retained.event().sequence());
-    let prefix = events
-        .into_iter()
-        .filter(|event| event.sequence() <= retained.event().sequence())
-        .collect::<Vec<_>>();
-    let prior = retained
-        .event()
-        .sequence()
-        .checked_sub(1)
-        .map(|seq| {
-            prefix
-                .iter()
-                .find(|event| event.sequence() == seq)
-                .ok_or_else(|| StackError::internal("retained attachment predecessor missing"))
-                .and_then(|event| crate::event_hash(scope.as_bytes(), event))
-        })
-        .transpose()?;
-    let bundle = crate::publish_bundle(
-        state,
-        scope.as_bytes(),
-        &prefix,
-        update_head,
-        &authorization.compute_context,
-    )
-    .await?;
-    crate::append_result_for_event(
-        &scope,
-        retained.event(),
-        prior,
-        ArtifactType::Event,
-        event_type,
-        &bundle,
-        true,
-    )
+    crate::external_transport::publish_retained(state, &scope, &retained, &authorization.compute_context, event_type).await
 }
 
 fn binding_of(
@@ -1038,6 +886,18 @@ async fn native_replay_rechecks_current_identity_grant_tenant_and_service_actor(
 struct RetryPublication {
     inner: crate::artifacts::InMemoryArtifactStore,
     unavailable: Arc<AtomicBool>,
+    /// Fail with a client-class error instead of 503.
+    client_error: bool,
+}
+
+impl RetryPublication {
+    fn fault(&self) -> StackError {
+        if self.client_error {
+            StackError::conflict("controlled publication refusal")
+        } else {
+            StackError::unavailable("controlled publication failure")
+        }
+    }
 }
 
 #[async_trait]
@@ -1045,13 +905,13 @@ impl ArtifactStore for RetryPublication {
     type Error = StackError;
     async fn put(&self, key: &str, bytes: &[u8]) -> Result<ArtifactRef, StackError> {
         if self.unavailable.load(Ordering::SeqCst) {
-            return Err(StackError::unavailable("controlled publication failure"));
+            return Err(self.fault());
         }
         self.inner.put(key, bytes).await
     }
     async fn put_immutable(&self, key: &str, bytes: &[u8]) -> Result<ArtifactRef, StackError> {
         if self.unavailable.load(Ordering::SeqCst) {
-            return Err(StackError::unavailable("controlled publication failure"));
+            return Err(self.fault());
         }
         self.inner.put_immutable(key, bytes).await
     }
@@ -1062,11 +922,22 @@ impl ArtifactStore for RetryPublication {
 
 #[tokio::test]
 async fn native_publication_failure_retries_committed_operation_without_new_protection() {
+    native_publication_fault_retries_committed_operation(false).await;
+}
+
+/// A client-class refusal after the commit must surface as retryable, not as a cacheable 4xx.
+#[tokio::test]
+async fn native_publication_client_error_after_commit_is_retryable() {
+    native_publication_fault_retries_committed_operation(true).await;
+}
+
+async fn native_publication_fault_retries_committed_operation(client_error: bool) {
     let (state, _, _) = native_state();
     let unavailable = Arc::new(AtomicBool::new(true));
     let state = state.with_artifact_store(Arc::new(RetryPublication {
         inner: Default::default(),
         unavailable: unavailable.clone(),
+        client_error,
     }));
     let (descriptor, input, original) = external_fixture_input();
     let prepared = descriptor

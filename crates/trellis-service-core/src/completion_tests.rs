@@ -156,7 +156,7 @@ async fn completion_postgres_reopened_state_retries_exact_retained_bytes() {
     let state = TrellisServerState::new(
         repository,
         test_signing_key(),
-        TenantHeaderMode::MultiProducer,
+        crate::test_adapters::adapters(),
     )
     .with_scope_authorizer(Arc::new(MappedAuthorizer))
     .with_artifact_store(artifacts.clone())
@@ -203,7 +203,7 @@ async fn completion_postgres_reopened_state_retries_exact_retained_bytes() {
     let reopened = TrellisServerState::new(
         Arc::new(PostgresEventRepository::new(reopened_pool.clone())),
         test_signing_key(),
-        TenantHeaderMode::MultiProducer,
+        crate::test_adapters::adapters(),
     )
     .with_scope_authorizer(Arc::new(MappedAuthorizer))
     .with_artifact_store(artifacts.clone())
@@ -261,7 +261,7 @@ async fn completion_postgres_reopened_state_retries_exact_retained_bytes() {
     let changed_state = TrellisServerState::new(
         Arc::new(PostgresEventRepository::new(reopened_pool.clone())),
         test_signing_key(),
-        TenantHeaderMode::MultiProducer,
+        crate::test_adapters::adapters(),
     )
     .with_scope_authorizer(Arc::new(MappedAuthorizer))
     .with_artifact_store(artifacts.clone())
@@ -354,7 +354,10 @@ async fn completion_manual_exports_exact_html_and_retries_without_signing() {
         .unwrap()
         .unwrap();
     assert!(export_bundle_cryptographically_verified(&zip));
-    assert!(crate::composition::wos_profile_export_verified(&zip));
+    assert!(crate::test_adapters::adapters()
+            .export_profile
+            .verify(&zip)
+            .profile_verified);
     use integrity_verify::trellis::{
         CertificateAttestationAuthorityStatus, CertificateAuthorityRegistry,
         TrustedCertificateAuthority,

@@ -3824,11 +3824,14 @@ name = "trellis-admission-wos"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "integrity-cbor",
+ "serde",
  "serde_json",
  "stack-common-error",
  "stack-common-typeid",
  "tokio",
  "trellis-server-ports",
+ "trellis-service-client",
  "trellis-types",
  "wos-events",
 ]
@@ -3908,6 +3911,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "trellis-export-profile-wos"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "integrity-cbor",
+ "integrity-verify",
+ "stack-common-error",
+ "time",
+ "trellis-export-writer",
+ "trellis-server-ports",
+ "trellis-service-client",
+ "trellis-types",
+ "trellis-verify-wos",
+ "wos-events",
+]
+
+[[package]]
 name = "trellis-export-writer"
 version = "0.1.0"
 dependencies = [
@@ -3941,6 +3961,74 @@ dependencies = [
 
 [[package]]
 name = "trellis-server"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "integrity-verify",
+ "serde_json",
+ "stack-common-error",
+ "stack-common-http",
+ "stack-common-ops",
+ "stack-common-typeid",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "trellis-admission-formspec",
+ "trellis-admission-wos",
+ "trellis-export-profile-wos",
+ "trellis-export-writer",
+ "trellis-server-ports",
+ "trellis-service-client",
+ "trellis-service-core",
+ "trellis-types",
+ "utoipa",
+ "wos-events",
+]
+
+[[package]]
+name = "trellis-server-ports"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "integrity-cbor",
+ "object_store",
+ "serde_json",
+ "stack-common-auth",
+ "stack-common-error",
+ "stack-common-http",
+ "stack-common-object-store",
+ "stack-common-postgres",
+ "tokio",
+ "trellis-cddl",
+ "trellis-core",
+ "trellis-export-writer",
+ "trellis-service-client",
+ "trellis-types",
+]
+
+[[package]]
+name = "trellis-service-client"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "integrity-cbor",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "stack-common-auth",
+ "stack-common-error",
+ "stack-common-http",
+ "stack-common-typeid",
+ "tokio",
+ "trellis-types",
+ "utoipa",
+ "wos-events",
+]
+
+[[package]]
+name = "trellis-service-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
@@ -3979,50 +4067,13 @@ dependencies = [
  "trellis-admission-wos",
  "trellis-cddl",
  "trellis-core",
+ "trellis-export-profile-wos",
  "trellis-export-writer",
  "trellis-server-ports",
  "trellis-service-client",
  "trellis-store-postgres-async",
  "trellis-types",
  "trellis-verify-wos",
- "utoipa",
- "wos-events",
-]
-
-[[package]]
-name = "trellis-server-ports"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "object_store",
- "serde_json",
- "stack-common-auth",
- "stack-common-error",
- "stack-common-http",
- "stack-common-object-store",
- "stack-common-postgres",
- "tokio",
- "trellis-core",
- "trellis-service-client",
- "trellis-types",
-]
-
-[[package]]
-name = "trellis-service-client"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "base64 0.22.1",
- "integrity-cbor",
- "reqwest",
- "serde",
- "serde_json",
- "stack-common-auth",
- "stack-common-error",
- "stack-common-http",
- "stack-common-typeid",
- "tokio",
- "trellis-types",
  "utoipa",
  "wos-events",
 ]

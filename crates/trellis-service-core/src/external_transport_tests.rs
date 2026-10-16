@@ -229,7 +229,7 @@ async fn native_transport_child_server() {
     let mut state = TrellisServerState::new(
         Arc::new(PostgresEventRepository::new(pool.clone())),
         test_signing_key(),
-        TenantHeaderMode::MultiProducer,
+        crate::test_adapters::adapters(),
     )
     .with_bundle_index(Arc::new(crate::event_repository::PostgresBundleIndex::new(
         pool,

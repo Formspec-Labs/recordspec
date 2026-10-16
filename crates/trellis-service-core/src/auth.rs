@@ -9,7 +9,7 @@ use axum::{
 };
 use stack_common_error::{ErrorCode, StackError};
 use stack_common_http::{idempotency::TrustedReplayPartition, tenant::TenantScope};
-use trellis_server_ports::{AuthorizedScope, ScopeAction, ScopeAuthorization};
+use trellis_server_ports::{AuthorizedScope, CloseoutSource, ScopeAction, ScopeAuthorization};
 use trellis_service_client::SubstrateAppendBody;
 
 use crate::source_diagnostics::{self as diag, Outcome, Stage};
@@ -208,11 +208,9 @@ async fn admit_append(
             diag::observed(
                 selected,
                 Stage::SelectedNative,
-                crate::validate_source_content_append_closeout(
-                    &body.event_type,
-                    &body.payload,
-                    &selection.identity,
-                ),
+                state
+                    .native_closeout
+                    .validate(CloseoutSource::Append(&body), &selection.identity),
             )
             .map_err(IntoResponse::into_response)?;
             Some(selection)

@@ -21,14 +21,8 @@ const TEMPLATE: &str =
     include_str!("../../../reference/certificate-of-completion/template-v2/template.html");
 const MAX_BYTES: usize = 1024 * 1024;
 
-pub(crate) struct SigningFact {
-    pub(crate) principal: String,
-    pub(crate) response_hash: [u8; 32],
-    pub(crate) authored_at: TrellisTimestamp,
-}
-
 #[doc(inline)]
-pub use trellis_verify_wos::CompletionRecord;
+pub use crate::completion_selection::CompletionRecord;
 
 /// Binds owning records through the shared structural verifier.
 ///
@@ -39,7 +33,7 @@ pub fn completion_record_bindings(
     records: &[CompletionRecord],
     relevant_event_types: &[String],
 ) -> Result<Vec<[u8; 32]>, StackError> {
-    trellis_verify_wos::completion_record_bindings(prefix, records, relevant_event_types)
+    crate::completion_selection::completion_record_bindings(prefix, records, relevant_event_types)
         .map_err(StackError::conflict)
 }
 
@@ -148,26 +142,26 @@ pub trait CompletionSelector: Send + Sync {
     ) -> Result<SelectedCompletion, StackError>;
 }
 
-/// Completion adapter for the independently selected owning WOS service.
+/// Completion adapter for the independently selected owning service.
 ///
-/// The supplied client uses the fixed WOS origin and a current machine provider.
-/// WOS must independently qualify the Source case association, complete census,
+/// The supplied client uses the fixed owner origin and a current machine provider.
+/// The owner must independently qualify the Source case association, complete census,
 /// exact archive-to-prefix correspondence, and all current disclosure permissions.
 /// Callers release the scope lock before awaiting this external selection.
-pub struct WosCompletionSelector {
+pub struct RemoteCompletionSelector {
     client: trellis_service_client::TrellisServiceClient,
     tenant: Option<TenantScope>,
 }
 
-impl std::fmt::Debug for WosCompletionSelector {
+impl std::fmt::Debug for RemoteCompletionSelector {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("WosCompletionSelector")
+            .debug_struct("RemoteCompletionSelector")
             .finish_non_exhaustive()
     }
 }
 
-impl WosCompletionSelector {
+impl RemoteCompletionSelector {
     /// Fixes the deployment tenant for the normal startup composition.
     #[must_use]
     pub fn for_tenant(
@@ -191,7 +185,7 @@ impl WosCompletionSelector {
 }
 
 #[async_trait]
-impl CompletionSelector for WosCompletionSelector {
+impl CompletionSelector for RemoteCompletionSelector {
     async fn select(
         &self,
         tenant: &TenantScope,
@@ -268,7 +262,7 @@ mod startup_selection_tests {
             ),
         )
         .unwrap();
-        let selector = WosCompletionSelector::for_tenant(client, tenant.clone());
+        let selector = RemoteCompletionSelector::for_tenant(client, tenant.clone());
         let headers = HeaderMap::new();
         let caller = CompletionCallerContext::from_headers(&headers).unwrap();
         let request = CompletionRequest {
@@ -859,8 +853,9 @@ fn signing_summary(
     request: &CompletionRequest,
     selected: &SelectedCompletion,
 ) -> Result<Value, StackError> {
-    let _ = state;
-    let facts = crate::completion_signing_facts(prefix, &request.signing_events)?;
+    let facts = state
+        .export_profile
+        .signing_facts(prefix, &request.signing_events)?;
     let mut rows = Vec::new();
     for (fact, label) in facts.into_iter().zip(&selected.signer_labels) {
         if (
@@ -1152,7 +1147,7 @@ pub(crate) fn certificate_html(event: &StoredEvent) -> Result<Vec<u8>, StackErro
     Ok(html)
 }
 fn validate_prefix(events: &[StoredEvent], scope: &str) -> Result<(), StackError> {
-    trellis_verify_wos::validate_completion_prefix(events, scope.as_bytes())
+    crate::completion_selection::validate_completion_prefix(events, scope.as_bytes())
         .map_err(StackError::conflict)
 }
 fn refuse_certificate_collision(events: &[StoredEvent], id: &str) -> Result<(), StackError> {

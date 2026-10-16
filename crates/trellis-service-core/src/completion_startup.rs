@@ -23,31 +23,34 @@ use trellis_service_client::{
 };
 
 use crate::{
-    TrellisServerState,
+    ServerAdapters, TrellisServerState,
     completion::{
-        CompletionAttestor, CompletionSigner, CoseCompletionSigner, WosCompletionSelector,
+        CompletionAttestor, CompletionSigner, CoseCompletionSigner, RemoteCompletionSelector,
     },
     oidc_startup::read_private,
 };
 
 pub(crate) struct StartupCompletion {
-    selector: Option<WosCompletionSelector>,
+    selector: Option<RemoteCompletionSelector>,
     signer: Option<OperatorSigners>,
     source_content: Option<crate::SourceContentComposition>,
 }
 
 impl StartupCompletion {
-    pub(crate) fn from_env(tenant: &TenantScope) -> Result<Option<Self>, StackError> {
+    pub(crate) fn from_env(
+        tenant: &TenantScope,
+        adapters: &ServerAdapters,
+    ) -> Result<Option<Self>, StackError> {
         match (
-            std::env::var_os("TRELLIS_WOS_COMPLETION_CONFIG_FILE"),
+            std::env::var_os("TRELLIS_COMPLETION_CONFIG_FILE"),
             std::env::var_os("TRELLIS_COMPLETION_OPERATOR_CONFIG_FILE"),
         ) {
             (None, None) => Ok(None),
             (Some(service), Some(operator)) if !service.is_empty() && !operator.is_empty() => {
-                Self::load(Path::new(&service), Path::new(&operator), tenant).map(Some)
+                Self::load(Path::new(&service), Path::new(&operator), tenant, adapters).map(Some)
             }
             (Some(service), None) if !service.is_empty() => {
-                Self::load_selected(Path::new(&service), None, tenant)
+                Self::load_selected(Path::new(&service), None, tenant, adapters)
                     .map_err(|_| invalid())
                     .map(Some)
             }
@@ -55,14 +58,20 @@ impl StartupCompletion {
         }
     }
 
-    fn load(service: &Path, operator: &Path, tenant: &TenantScope) -> Result<Self, StackError> {
-        Self::load_selected(service, Some(operator), tenant)
+    fn load(
+        service: &Path,
+        operator: &Path,
+        tenant: &TenantScope,
+        adapters: &ServerAdapters,
+    ) -> Result<Self, StackError> {
+        Self::load_selected(service, Some(operator), tenant, adapters)
     }
 
     fn load_selected(
         service: &Path,
         operator: Option<&Path>,
         tenant: &TenantScope,
+        adapters: &ServerAdapters,
     ) -> Result<Self, StackError> {
         let profile: ServiceProfile =
             serde_json::from_slice(&read_private(service)?).map_err(|_| invalid())?;
@@ -70,7 +79,7 @@ impl StartupCompletion {
         let native_guard = profile
             .source_content
             .as_ref()
-            .map(|configuration| configuration.load(service))
+            .map(|configuration| configuration.load(service, adapters.native_closeout.clone()))
             .transpose()?;
         if operator.is_none() && native_guard.is_none() {
             return Err(invalid());
@@ -122,7 +131,7 @@ impl StartupCompletion {
         )
         .map_err(|_| invalid())?;
         let client_configuration =
-            TrellisServiceClientConfig::new(profile.origin, HeaderConfig::wos());
+            TrellisServiceClientConfig::new(profile.origin, profile.tenant_headers.into_config());
         let client_configuration = if profile.source_content.is_some() {
             client_configuration.with_timeout(
                 trellis_service_client::source_content::DEFAULT_SOURCE_CONTENT_CALLBACK_TIMEOUT,
@@ -192,6 +201,7 @@ impl StartupCompletion {
         let source_content = match (profile.source_content, native_guard) {
             (Some(configuration), Some(guard)) => Some(configuration.compose(
                 guard,
+                &adapters.source_content,
                 client.clone(),
                 tenant.clone(),
                 if operator.is_some() {
@@ -204,7 +214,8 @@ impl StartupCompletion {
             _ => return Err(invalid()),
         };
         Ok(Self {
-            selector: operator.map(|_| WosCompletionSelector::for_tenant(client, tenant.clone())),
+            selector: operator
+                .map(|_| RemoteCompletionSelector::for_tenant(client, tenant.clone())),
             signer: operator.map(|_| OperatorSigners(signers)),
             source_content,
         })
@@ -242,8 +253,47 @@ struct ServiceProfile {
     authentication: Authentication,
     assurance: Assurance,
     client_secret_file: PathBuf,
+    tenant_headers: ProfileTenantHeaders,
     #[serde(default)]
     source_content: Option<crate::source_content_startup::SourceContentStartupConfiguration>,
+}
+
+/// Header names the owning service reads its tenant tuple from.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProfileTenantHeaders {
+    tenant: String,
+    workspace: String,
+    environment: String,
+    cell: String,
+}
+
+impl ProfileTenantHeaders {
+    fn validate(&self) -> Result<(), StackError> {
+        for name in [&self.tenant, &self.workspace, &self.environment, &self.cell] {
+            // Lowercase HTTP token, so the name is valid in a header map unchanged.
+            if name.is_empty()
+                || name.len() > 128
+                || !name
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            {
+                return Err(invalid());
+            }
+        }
+        Ok(())
+    }
+
+    /// `HeaderConfig` holds `'static` names; the four strings live as long as the client.
+    fn into_config(self) -> HeaderConfig {
+        let leak = |name: String| -> &'static str { Box::leak(name.into_boxed_str()) };
+        HeaderConfig {
+            tenant: leak(self.tenant),
+            workspace: leak(self.workspace),
+            environment: leak(self.environment),
+            cell: leak(self.cell),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -290,6 +340,7 @@ impl ServiceProfile {
         if self.client_secret_file.as_os_str().is_empty() {
             return Err(invalid());
         }
+        self.tenant_headers.validate()?;
         text(&self.origin)?;
         // http::Uri discards fragments; refuse them before parsing.
         if self.origin.contains('#') {
@@ -396,7 +447,7 @@ mod tests {
         }
     }
     fn profile() -> Value {
-        json!({"origin":"https://wos.example", "tenantScope":{"tenant":"tenant-a","workspace":"workspace-a","environment":"environment-a","cell":"cell-a"},
+        json!({"origin":"https://wos.example", "tenantHeaders":{"tenant":"x-wos-tenant-id","workspace":"x-wos-workspace-id","environment":"x-wos-environment-id","cell":"x-wos-cell-id"}, "tenantScope":{"tenant":"tenant-a","workspace":"workspace-a","environment":"environment-a","cell":"cell-a"},
             "issuer":"https://issuer.example/realm", "audience":"wos-audience", "requiredScopes":["completion.read"], "allowedClients":["completion-client"],
             "profile":"keycloak", "clientId":"completion-client", "scopes":["completion.read"], "authentication":"clientSecretBasic", "assurance":"registeredClient", "clientSecretFile":"secret"})
     }
@@ -491,20 +542,52 @@ mod tests {
             &operator,
             &serde_json::to_vec(&json!([row.clone()])).unwrap(),
         );
-        assert!(StartupCompletion::load(&service, &operator, &tenant()).is_ok());
+        assert!(
+            StartupCompletion::load(
+                &service,
+                &operator,
+                &tenant(),
+                &crate::test_adapters::adapters()
+            )
+            .is_ok()
+        );
         private(
             &operator,
             &serde_json::to_vec(&json!([row.clone(), row.clone()])).unwrap(),
         );
-        assert!(StartupCompletion::load(&service, &operator, &tenant()).is_err());
+        assert!(
+            StartupCompletion::load(
+                &service,
+                &operator,
+                &tenant(),
+                &crate::test_adapters::adapters()
+            )
+            .is_err()
+        );
         let mut mismatch = row.clone();
         mismatch["publicKey"] = json!(vec![0u8; 32]);
         private(&operator, &serde_json::to_vec(&json!([mismatch])).unwrap());
-        assert!(StartupCompletion::load(&service, &operator, &tenant()).is_err());
+        assert!(
+            StartupCompletion::load(
+                &service,
+                &operator,
+                &tenant(),
+                &crate::test_adapters::adapters()
+            )
+            .is_err()
+        );
         let mut interval = row;
         interval["validUntil"] = json!([0, 0]);
         private(&operator, &serde_json::to_vec(&json!([interval])).unwrap());
-        assert!(StartupCompletion::load(&service, &operator, &tenant()).is_err());
+        assert!(
+            StartupCompletion::load(
+                &service,
+                &operator,
+                &tenant(),
+                &crate::test_adapters::adapters()
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -521,13 +604,27 @@ mod tests {
         selected["sourceContent"] = json!({"pins":{"providerSelectionHash":vec![1u8;32],"nativePolicyHash":vec![2u8;32],"recipientPolicyHash":vec![3u8;32]},
             "nativeHostSelectionFile":"owning.json","nativeHostSelectionSha256":stack_common_hash::sha256_prefixed(&owning)});
         private(&service, &serde_json::to_vec(&selected).unwrap());
-        let loaded = StartupCompletion::load_selected(&service, None, &tenant()).unwrap();
+        let loaded = StartupCompletion::load_selected(
+            &service,
+            None,
+            &tenant(),
+            &crate::test_adapters::adapters(),
+        )
+        .unwrap();
         assert!(loaded.selector.is_none());
         assert!(loaded.signer.is_none());
         assert!(loaded.source_content.is_some());
         // An unrelated formal profile retains its required operator dependency.
         private(&service, &serde_json::to_vec(&profile()).unwrap());
-        assert!(StartupCompletion::load_selected(&service, None, &tenant()).is_err());
+        assert!(
+            StartupCompletion::load_selected(
+                &service,
+                None,
+                &tenant(),
+                &crate::test_adapters::adapters()
+            )
+            .is_err()
+        );
     }
 
     #[tokio::test]

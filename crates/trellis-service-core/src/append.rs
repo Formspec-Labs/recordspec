@@ -17,8 +17,8 @@ use trellis_core::{AuthoredEvent, LedgerStore};
 use trellis_export_writer::PostureDeclaration as ExportPostureDeclaration;
 use trellis_export_writer::TrellisTimestamp;
 use trellis_server_ports::{
-    AdmissionEvent, AdmittedEvent, AppendUnitOfWork, ComputeContext, ComputeSensitivity,
-    DirectSubmitPolicy,
+    AdmissionEvent, AdmittedEvent, AppendUnitOfWork, CloseoutSource, ComputeContext,
+    ComputeSensitivity, DirectSubmitPolicy,
 };
 use trellis_service_client::{ClientAttestation, SubstrateAppendBody, SubstrateAppendResult};
 use trellis_types::StoredEvent;
@@ -118,9 +118,8 @@ impl<'a> AppendCoordinator<'a> {
         diag::observed(
             true,
             Stage::SelectedNative,
-            crate::validate_source_content_append_closeout(
-                &command.event_type,
-                &command.payload,
+            self.state.native_closeout.validate(
+                CloseoutSource::Append(source.body),
                 &source.selection.identity,
             ),
         )?;
@@ -203,7 +202,10 @@ impl<'a> AppendCoordinator<'a> {
                 .cloned()
                 .collect::<Vec<_>>();
             let prior_event_hash =
-                prior_event_hash_for(command.scope.as_str(), &replay_events, existing)?;
+                prior_event_hash_for(command.scope.as_str(), &replay_events, existing)
+                    .map_err(committed_unpublished)?;
+            // Source-content refusals (changed authority, selection or recipients) are the caller's
+            // current answer, not a fault after the commit, so they stay client errors.
             let (new_guard, protected) = self
                 .prefetch_source_content(
                     &command.scope,
@@ -227,7 +229,8 @@ impl<'a> AppendCoordinator<'a> {
                     protected.as_ref(),
                 )
                 .await,
-            )?;
+            )
+            .map_err(committed_unpublished)?;
             drop(scope_guard);
             diag::mark(selected, Stage::Receipt, Outcome::Enter);
             let result = diag::observed(
@@ -242,7 +245,8 @@ impl<'a> AppendCoordinator<'a> {
                     &bundle,
                     true,
                 ),
-            )?;
+            )
+            .map_err(committed_unpublished)?;
             return Ok(AppendOutcome {
                 result,
                 stored: existing.clone(),
@@ -316,7 +320,12 @@ impl<'a> AppendCoordinator<'a> {
     > {
         let Some(source) = source else {
             if let Some(composition) = &self.state.source_content {
-                composition.require_publication_purpose(scope.as_bytes(), planned, None)?;
+                composition.require_publication_purpose(
+                    scope.as_bytes(),
+                    planned,
+                    None,
+                    self.state.native_closeout.as_ref(),
+                )?;
             }
             return Ok((guard, None));
         };
@@ -361,7 +370,12 @@ impl<'a> AppendCoordinator<'a> {
         let protected = diag::observed(
             true,
             Stage::ContentRead,
-            crate::source_content::read_admitted(composition.contributor.as_ref(), &request).await,
+            crate::source_content::read_admitted(
+                composition,
+                self.state.native_closeout.as_ref(),
+                &request,
+            )
+            .await,
         )?;
         diag::mark(true, Stage::CurrentAuthority, Outcome::Enter);
         if diag::observed(
@@ -380,7 +394,7 @@ impl<'a> AppendCoordinator<'a> {
         diag::mark(true, Stage::Reacquire, Outcome::ReturnedOk);
         // Match maintained completion admission: authority may change while waiting
         // for the scope lock. This bounded authentication/grant check may consult
-        // OIDC, but no owning WOS selection or content callback runs under the lock.
+        // OIDC, but no owning selection or content callback runs under the lock.
         diag::mark(true, Stage::CurrentAuthority, Outcome::Enter);
         let current = diag::observed(
             true,
@@ -404,7 +418,12 @@ impl<'a> AppendCoordinator<'a> {
         diag::observed(
             true,
             Stage::FinalGuard,
-            composition.require_publication_purpose(scope.as_bytes(), planned, Some(&protected)),
+            composition.require_publication_purpose(
+                scope.as_bytes(),
+                planned,
+                Some(&protected),
+                self.state.native_closeout.as_ref(),
+            ),
         )?;
         Ok((guard, Some(protected)))
     }
@@ -429,7 +448,9 @@ impl<'a> AppendCoordinator<'a> {
         diag::observed(
             selected,
             Stage::Evidence,
-            crate::signature_evidence_members(scope.as_bytes(), &prefix),
+            self.state
+                .export_profile
+                .evidence_members(scope.as_bytes(), &prefix),
         )?;
         diag::mark(selected, Stage::RepositoryWrite, Outcome::Enter);
         diag::observed(
@@ -452,7 +473,8 @@ impl<'a> AppendCoordinator<'a> {
                 protected,
             )
             .await,
-        )?;
+        )
+        .map_err(committed_unpublished)?;
         diag::mark(selected, Stage::Receipt, Outcome::Enter);
         let result = diag::observed(
             selected,
@@ -466,8 +488,21 @@ impl<'a> AppendCoordinator<'a> {
                 &bundle,
                 true,
             ),
-        )?;
+        )
+        .map_err(committed_unpublished)?;
         Ok(AppendOutcome { result, stored })
+    }
+}
+
+/// Maps any failure after the repository write to a retryable 5xx.
+///
+/// The event is durable, so a same-key retry must re-execute and return the committed
+/// record; a 4xx here would be cached and hide it.
+pub(crate) fn committed_unpublished(error: StackError) -> StackError {
+    if error.status().is_server_error() {
+        error
+    } else {
+        StackError::unavailable("append committed; publication incomplete, retry the same key")
     }
 }
 

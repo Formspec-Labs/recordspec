@@ -1,0 +1,63 @@
+[package]
+name = "trellis-service-core"
+version.workspace = true
+edition.workspace = true
+description = "Producer-neutral Trellis substrate HTTP service; domain adapters are injected"
+license.workspace = true
+
+[features]
+default = []
+# Emits fixed Source-closeout stage labels on stderr (no request or error data); the composed
+# server's test-harness enables it.
+source-diagnostics = []
+
+[dependencies]
+async-trait = "0.1"
+axum = "0.8"
+base64 = "0.22"
+integrity-hpke = { path = "../../../integrity-stack/crates/integrity-hpke" }
+integrity-seam = { path = "../../../integrity-stack/crates/integrity-seam" }
+ciborium = "0.2"
+hex = "0.4"
+hkdf = "0.12"
+http = "1"
+integrity-bundle = { path = "../../../integrity-stack/crates/integrity-bundle" }
+integrity-cbor = { path = "../../../integrity-stack/crates/integrity-cbor", features = ["json"] }
+integrity-cose = { path = "../../../integrity-stack/crates/integrity-cose" }
+integrity-verify = { path = "../../../integrity-stack/crates/integrity-verify" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+sqlx = { version = "0.8", features = ["postgres", "runtime-tokio-rustls"] }
+sha2 = "0.10"
+stack-common-auth = { path = "../../../stack-common/crates/stack-common-auth", features = ["oidc"] }
+stack-common-error = { path = "../../../stack-common/crates/stack-common-error" }
+stack-common-hash = { path = "../../../stack-common/crates/stack-common-hash" }
+stack-common-http = { path = "../../../stack-common/crates/stack-common-http" }
+stack-common-idempotency = { path = "../../../stack-common/crates/stack-common-idempotency", default-features = false, features = ["replay"] }
+stack-common-private-file = { path = "../../../stack-common/crates/stack-common-private-file" }
+stack-common-ops = { path = "../../../stack-common/crates/stack-common-ops" }
+time = { version = "0.3", features = ["formatting"] }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+trellis-cddl = { path = "../trellis-cddl" }
+trellis-core = { path = "../trellis-core" }
+trellis-export-writer = { path = "../trellis-export-writer" }
+trellis-server-ports = { path = "../trellis-server-ports" }
+trellis-service-client = { path = "../trellis-service-client" }
+trellis-store-postgres-async = { path = "../trellis-store-postgres-async" }
+trellis-types = { path = "../trellis-types" }
+utoipa = "5"
+
+[dev-dependencies]
+# Tests drive the real adapters; production layering is enforced by deny.toml (dev-deps excluded).
+trellis-admission-formspec = { path = "../trellis-admission-formspec" }
+trellis-admission-wos = { path = "../trellis-admission-wos" }
+trellis-export-profile-wos = { path = "../trellis-export-profile-wos" }
+trellis-verify-wos = { path = "../trellis-verify-wos" }
+stack-common-typeid = { path = "../../../stack-common/crates/stack-common-typeid", features = ["testing"] }
+jsonwebtoken = "9"
+tempfile = "3"
+stack-common-postgres = { path = "../../../stack-common/crates/stack-common-postgres", default-features = false, features = ["testing"] }
+integrity-seam = { path = "../../../integrity-stack/crates/integrity-seam" }
+tower = { version = "0.5", features = ["util"] }
+wos-events = { path = "../../../work-spec/crates/wos-events" }

@@ -1,22 +1,60 @@
 # cargo-deny configuration (ADR 0008 ISC-05 hygiene contract).
 # Install: cargo install cargo-deny
 # Run: cargo deny check bans
+#
+# This file is also the Trellis layering gate: the generic server stays free of
+# WOS/Formspec by construction because the domain crates are unreachable from it
+# in the (non-dev) build graph. `make test` runs `cargo deny check bans`.
 
 [graph]
 targets = [
     { triple = "x86_64-unknown-linux-gnu" },
     { triple = "aarch64-apple-darwin" },
 ]
+# Test fixtures may drive the real adapters from dev-dependencies; layering is a
+# property of what ships.
+exclude-dev = true
+# Optional dependencies count: a feature-gated edge is still an edge.
+all-features = true
 
 [bans]
 multiple-versions = "warn"
 wildcards = "warn"
 
-# Ecosystem libraries are forbidden outside their designated adapter crate.
-# If a core crate (trellis-core, trellis-verify-wos, trellis-types) transitively
-# pulls in any of these, cargo-deny fails loud.
+# `wrappers` lists the only crates allowed to depend directly on the banned one.
 deny = [
+    # Ecosystem libraries are forbidden outside their designated adapter crate.
+    # If a core crate (trellis-core, trellis-verify-wos, trellis-types) transitively
+    # pulls in any of these, cargo-deny fails loud.
     { name = "c2pa", wrappers = ["trellis-interop-c2pa"] },
     { name = "ssi-*", wrappers = ["trellis-interop-did"] },
     { name = "did-method-key", wrappers = ["trellis-interop-did"] },
+
+    # Domain adapters: only the composition root (trellis-server) may name them,
+    # so trellis-service-core, trellis-server-ports, trellis-core and trellis-export-writer
+    # stay producer-neutral and the adapters cannot depend on each other.
+    { name = "trellis-admission-wos", wrappers = ["trellis-server"] },
+    { name = "trellis-admission-formspec", wrappers = ["trellis-server"] },
+    { name = "trellis-export-profile-wos", wrappers = ["trellis-server"] },
+
+    # Adapters depend on the ports crate only; the generic server is reachable from the composition root alone.
+    { name = "trellis-service-core", wrappers = ["trellis-server"] },
+    { name = "formspec-signature-trellis-binding" },
+
+    # Verifier, conformance and interop crates stay off the substrate core, the writer and the ports.
+    { name = "trellis-verify-wos", wrappers = ["trellis-cli", "trellis-export-profile-wos"] },
+    { name = "trellis-conformance", wrappers = ["trellis-cli"] },
+    { name = "trellis-interop-c2pa", wrappers = ["trellis-cli"] },
+    { name = "trellis-interop-did", wrappers = ["trellis-cli"] },
+
+    # WOS vocabulary: the WOS adapters, the WOS verifier, and trellis-service-client.
+    # The last is an accepted edge: its `wos_ext` typed-helper module (the shared WOS client
+    # surface) is why trellis-server-ports reaches wos-events transitively; `wrappers`
+    # only sees direct parents, so splitting that module out is the way to close it.
+    { name = "wos-events", wrappers = [
+        "trellis-admission-wos",
+        "trellis-export-profile-wos",
+        "trellis-service-client",
+        "trellis-verify-wos",
+    ] },
 ]

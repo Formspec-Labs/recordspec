@@ -5,7 +5,7 @@ mod support;
 
 use integrity_cbor::domain_separated_sha256;
 use std::time::Duration;
-use trellis_server::{EventRepository, PostgresEventRepository};
+use trellis_service_core::{EventRepository, PostgresEventRepository};
 use trellis_store_postgres_async::{append_event_in_tx, run_migrations};
 use trellis_types::StoredEvent;
 

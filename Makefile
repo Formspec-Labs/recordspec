@@ -15,7 +15,7 @@ PYTHON ?= uv run --frozen --extra dev --project $(CURDIR)/$(TRELLIS_PY_DIR) pyth
 CARGO = cargo
 PYTEST = $(PYTHON) -m pytest
 
-.PHONY: all help build test test-rust test-python test-scripts test-postgres check-specs check-specs-strict check-verifier-isolation lint fmt clean
+.PHONY: all help build test test-rust test-python test-scripts test-postgres check-specs check-specs-strict check-verifier-isolation check-layering lint fmt clean
 
 all: build test
 
@@ -32,6 +32,7 @@ help:
 	@echo "  make check-specs    Run spec discipline and coverage lint"
 	@echo "  make check-specs-strict  Run check-specs + vector-renumbering guard (CI variant)"
 	@echo "  make check-verifier-isolation  Assert integrity-verify stays HPKE-clean (Core §16)"
+	@echo "  make check-layering Assert the generic server cannot reach the domain adapters (deny.toml)"
 	@echo "  make lint           Run Rust clippy"
 	@echo "  make fmt            Check Rust formatting"
 	@echo "  make clean          Clean build artifacts"
@@ -41,7 +42,7 @@ build:
 	@echo "Building Rust workspace..."
 	$(CARGO) build --workspace
 
-test: test-rust test-python test-scripts check-specs check-verifier-isolation
+test: test-rust test-python test-scripts check-specs check-verifier-isolation check-layering
 
 test-rust:
 	@echo "Running Rust tests..."
@@ -105,6 +106,11 @@ check-specs-strict:
 # `make test`; standalone for fast iteration during dep-graph work.
 check-verifier-isolation:
 	@bash $(SCRIPTS_DIR)/check-verifier-isolation.sh
+
+# Layering is a build-graph property: deny.toml `wrappers` rules let only the
+# composition root (trellis-server) depend on the WOS/Formspec adapters.
+check-layering:
+	$(CARGO) deny check bans
 
 lint:
 	@echo "Running Rust clippy..."

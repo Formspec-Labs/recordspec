@@ -1,480 +1,108 @@
 // Rust guideline compliant 2026-02-21
-//! Composition root: the only Trellis-side module that wires concrete admission adapters.
+//! Assembles the shipped adapters into the generic server's injection points.
 //!
-//! Generic Trellis service modules (`append`, `http`, `state`, the support
-//! helpers in `lib.rs`) must not import this module. Only the crate root and
-//! `state.rs` consume composition. New ecosystem overlays should be added by
-//! introducing a `trellis-admission-*` adapter crate and registering it here.
+//! Adding an ecosystem overlay is a new `trellis-admission-*` adapter crate plus
+//! one `register_for_literals(...)` entry in [`default_admission_policy`].
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use integrity_cbor::sha256_bytes;
 use stack_common_error::StackError;
+use stack_common_http::tenant::HeaderConfig;
+use trellis_admission_formspec::accepted_attachment::{
+    FormspecAttachmentAdmission, accepted_attachment_event_type_spec,
+};
 use trellis_admission_formspec::{FormspecAppendAdmissionPolicy, formspec_event_type_specs};
-use trellis_admission_wos::{WosEventAdmissionPolicy, wos_event_type_specs};
-use trellis_server_ports::{
-    AdmissionEvent, AdmittedEvent, EventAdmissionPolicy, EventType, EventTypeRef,
-    EventTypeRegistry, EventTypeSpec, ReviewGateEventTypeRegistry,
-};
-use wos_events::ProvenanceKind;
-use wos_events::{WOS_CANONICAL_EVENT_LITERALS, WOS_NATIVE_PROVENANCE_EVENT_LITERAL};
+use trellis_admission_wos::{WosEventAdmissionPolicy, WosNativeCloseout, wos_event_type_specs};
+use trellis_export_profile_wos::WosExportProfile;
+use trellis_server_ports::{EventAdmissionPolicy, EventTypeSpec, NativeCloseout};
+use trellis_service_core::{AdmissionRouter, ServerAdapters, TenantHeaders};
 
-use crate::export_profile::PolicyClosureArtifact;
+use crate::source_content::source_content_parts;
 
-/// Formspec intake-proof append literal admitted at the Trellis service edge.
-///
-/// Re-exported through the composition module so generic Trellis service
-/// modules pull the literal through this single seam instead of depending on
-/// `trellis-admission-formspec` directly (Boundary Gate).
-pub use trellis_admission_formspec::{
-    FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH, FORMSPEC_RESPONSE_SUBMITTED,
-};
+/// The shipped WOS and Formspec adapters, accepting the given tenant headers.
+#[must_use]
+pub fn adapters(tenant_headers: TenantHeaders) -> ServerAdapters {
+    ServerAdapters {
+        admission_policy: default_admission_policy(),
+        event_type_specs: default_event_type_specs(),
+        external_attachment_admission: Arc::new(FormspecAttachmentAdmission),
+        export_profile: Arc::new(WosExportProfile),
+        native_closeout: native_closeout(),
+        source_content: Arc::new(source_content_parts),
+        tenant_headers,
+    }
+}
 
-/// Derives bounded062 and exact060 originals from actual admitted affirmations.
-///
-/// Preserves every prior affirmation. This pure operation grants no Source
-/// access and does not establish original signed Response/proof custody.
+/// WOS native-provenance closeout records for Source-content selection.
+#[must_use]
+pub fn native_closeout() -> Arc<dyn NativeCloseout> {
+    Arc::new(WosNativeCloseout)
+}
+
+/// Both producers' tenant headers, WOS first.
+#[must_use]
+pub fn mixed_tenant_headers() -> TenantHeaders {
+    TenantHeaders::new(HeaderConfig::wos()).or_else(HeaderConfig::formspec())
+}
+
+/// Reads `TRELLIS_TENANT_HEADER_SET=wos|formspec|mixed` (default `mixed`).
 ///
 /// # Errors
-/// Refuses invalid actual prefixes, unreadable or unrepresentable affirmations,
-/// hash conflicts and finite canonical-input/payload/catalog/member limits.
-pub(crate) fn signature_evidence_members(
-    scope: &[u8],
-    events: &[&trellis_types::StoredEvent],
-) -> Result<Vec<trellis_export_writer::ExportEvidenceMember>, StackError> {
-    use integrity_cbor::{
-        decode_cbor_value, domain_separated_sha256, map_lookup_bytes, map_lookup_map,
-    };
-    use std::collections::BTreeMap;
-    use trellis_export_writer::ExportEvidenceMember;
-    const MAX_BYTES: usize = 1024 * 1024;
-    const MAX_MEMBERS: usize = 256;
-    let mut affirmed = Vec::new();
-    for event in events {
-        if crate::event_summary(event)?.event_type == wos_signature_affirmation_event_type() {
-            if events.len() > MAX_MEMBERS {
-                return Err(StackError::bad_request(
-                    "signature prefix event count limit",
-                ));
-            }
-            affirmed.push(*event);
-        }
-    }
-    if affirmed.is_empty() {
-        return Ok(Vec::new());
-    }
-    if events.first().is_none_or(|event| event.scope() != scope) {
-        return Err(StackError::bad_request("signature export scope mismatch"));
-    }
-    let mut total = 0usize;
-    for event in events {
-        total = total
-            .checked_add(event.canonical_event().len())
-            .filter(|bytes| *bytes <= MAX_BYTES)
-            .ok_or_else(|| StackError::bad_request("signature evidence aggregate byte limit"))?;
-    }
-    let catalog =
-        trellis_verify_wos::encode_signature_affirmations_v1(events, MAX_MEMBERS, MAX_BYTES)
-            .map_err(|_| StackError::bad_request("actual signature affirmation inventory refused"))?
-            .ok_or_else(|| StackError::internal("actual affirmation catalog absent"))?;
-    total = total
-        .checked_add(catalog.len())
-        .filter(|bytes| *bytes <= MAX_BYTES)
-        .ok_or_else(|| StackError::bad_request("signature evidence aggregate byte limit"))?;
-    let mut originals = BTreeMap::<[u8; 32], Vec<u8>>::new();
-    for event in affirmed {
-        let canonical =
-            decode_cbor_value(event.canonical_event()).map_err(crate::cbor_bad_request)?;
-        let map = canonical
-            .as_map()
-            .ok_or_else(|| StackError::bad_request("invalid actual signature event"))?;
-        let reference = map_lookup_map(map, "payload_ref").map_err(crate::cbor_bad_request)?;
-        let bytes = map_lookup_bytes(reference, "ciphertext").map_err(crate::cbor_bad_request)?;
-        let hash = domain_separated_sha256(trellis_types::CONTENT_DOMAIN, &bytes);
-        if crate::event_summary(event)?.content_hash != hash {
-            return Err(StackError::bad_request(
-                "signature payload content hash mismatch",
-            ));
-        }
-        if let Some(existing) = originals.get(&hash) {
-            if existing != &bytes {
-                return Err(StackError::conflict(
-                    "signature original payload hash collision",
-                ));
-            }
-        } else {
-            total = total
-                .checked_add(bytes.len())
-                .filter(|bytes| *bytes <= MAX_BYTES)
-                .ok_or_else(|| {
-                    StackError::bad_request("signature evidence aggregate byte limit")
-                })?;
-            if originals.len() >= MAX_MEMBERS - 1 {
-                return Err(StackError::bad_request("signature evidence member limit"));
-            }
-            originals.insert(hash, bytes);
-        }
-    }
-    let mut members = originals
-        .into_iter()
-        .map(|(content_hash, bytes)| ExportEvidenceMember::Payload {
-            content_hash,
-            bytes,
-        })
-        .collect::<Vec<_>>();
-    members.push(ExportEvidenceMember::SignatureAffirmations { bytes: catalog });
-    Ok(members)
-}
-
-const POLICY_VALID_FROM: &str = "2026-05-16T00:00:00Z";
-
-/// Resolves consumer-owned signing facts through the maintained readable adapter.
-pub(crate) fn completion_signing_facts(
-    events: &[trellis_types::StoredEvent],
-    selected: &[[u8; 32]],
-) -> Result<Vec<crate::completion::SigningFact>, StackError> {
-    use integrity_cbor::{decode_cbor_value, map_lookup_bytes, map_lookup_map, map_lookup_text};
-    use integrity_verify::trellis::certificate_proof::ResponseProofResolver;
-    let invalid = || StackError::conflict("completion signing evidence unreadable or unqualified");
-    let first = events.first().ok_or_else(invalid)?;
-    signature_evidence_members(first.scope(), &events.iter().collect::<Vec<_>>())?;
-    let resolver = trellis_verify_wos::WosFormspecResolver::new();
-    selected
-        .iter()
-        .map(|hash| {
-            let event = events
-                .iter()
-                .find(|event| event.canonical_event_hash() == Some(hash))
-                .ok_or_else(invalid)?;
-            if crate::event_summary(event)?.event_type != wos_signature_affirmation_event_type() {
-                return Err(invalid());
-            }
-            let value =
-                decode_cbor_value(event.canonical_event()).map_err(crate::cbor_bad_request)?;
-            let reference = map_lookup_map(value.as_map().ok_or_else(invalid)?, "payload_ref")
-                .map_err(crate::cbor_bad_request)?;
-            if map_lookup_text(reference, "ref_type").map_err(crate::cbor_bad_request)? != "inline"
-            {
-                return Err(invalid());
-            }
-            let payload =
-                map_lookup_bytes(reference, "ciphertext").map_err(crate::cbor_bad_request)?;
-            Ok(crate::completion::SigningFact {
-                principal: resolver
-                    .resolve_principal_ref(&payload)
-                    .filter(|v| !v.trim().is_empty())
-                    .ok_or_else(invalid)?,
-                response_hash: resolver
-                    .resolve(&payload)
-                    .map_err(|_| invalid())?
-                    .ok_or_else(invalid)?
-                    .response_hash,
-                authored_at: crate::event_timestamp(event)?,
-            })
-        })
-        .collect()
-}
-const POLICY_VERSION: &str = "2026-05-16";
-const FORMSPEC_RESPONSE_SCHEMA: &[u8] =
-    include_bytes!("../../../../formspec/schemas/response.schema.json");
-const FORMSPEC_SIGNATURE_METHOD_REGISTRY: &[u8] =
-    include_bytes!("../../../../formspec/registries/signature-method-registry.json");
-const WOS_SIGNATURE_PROFILE_SPEC: &[u8] =
-    include_bytes!("../../../../work-spec/specs/profiles/signature.md");
-const WOS_PROVENANCE_SCHEMA: &[u8] =
-    include_bytes!("../../../../work-spec/schemas/wos-provenance-log.schema.json");
-
-/// Canonical WOS `SignatureAffirmation` event literal for export-profile composition.
-#[must_use]
-pub(crate) fn wos_signature_affirmation_event_type() -> &'static str {
-    ProvenanceKind::SignatureAffirmation
-        .canonical_event_literal()
-        .expect("SignatureAffirmation must carry a substrate canonical event literal")
-}
-
-/// Canonical WOS `SignatureAdmissionFailed` event literal for export-profile composition.
-#[must_use]
-pub(crate) fn wos_signature_admission_failed_event_type() -> &'static str {
-    ProvenanceKind::SignatureAdmissionFailed
-        .canonical_event_literal()
-        .expect("SignatureAdmissionFailed must carry a substrate canonical event literal")
-}
-
-/// Returns the default public policy evidence rows for WOS/Formspec signature exports.
-#[must_use]
-pub(crate) fn default_signature_policy_artifacts() -> Vec<PolicyClosureArtifact> {
-    vec![
-        policy_artifact(
-            "formspec",
-            "formspec.signing-intent-registry.v1",
-            "repo://formspec/schemas/response.schema.json",
-            FORMSPEC_RESPONSE_SCHEMA,
-        ),
-        policy_artifact(
-            "formspec",
-            "formspec.signature-method-registry.v1",
-            "repo://formspec/registries/signature-method-registry.json",
-            FORMSPEC_SIGNATURE_METHOD_REGISTRY,
-        ),
-        policy_artifact(
-            "wos",
-            "wos.signature-posture-floors.v1",
-            "repo://work-spec/specs/profiles/signature.md",
-            WOS_SIGNATURE_PROFILE_SPEC,
-        ),
-        policy_artifact(
-            "wos",
-            "wos.signer-authority-shape.v1",
-            "repo://work-spec/specs/profiles/signature.md",
-            WOS_SIGNATURE_PROFILE_SPEC,
-        ),
-        policy_artifact(
-            "wos",
-            "wos.identity-proofing-primitives.v1",
-            "repo://work-spec/specs/profiles/signature.md",
-            WOS_SIGNATURE_PROFILE_SPEC,
-        ),
-        policy_artifact(
-            "wos",
-            "wos.signature-defaults.v1",
-            "repo://work-spec/specs/profiles/signature.md",
-            WOS_SIGNATURE_PROFILE_SPEC,
-        ),
-        policy_artifact(
-            "wos",
-            "wos.signature-deny-rules.v1",
-            "repo://work-spec/specs/profiles/signature.md",
-            WOS_SIGNATURE_PROFILE_SPEC,
-        ),
-        policy_artifact(
-            "wos",
-            "wos.signature-tombstones.v1",
-            "repo://work-spec/schemas/wos-provenance-log.schema.json",
-            WOS_PROVENANCE_SCHEMA,
-        ),
-    ]
-}
-
-/// Verifies substrate bytes using the product-owned signing-proof resolver.
-///
-/// V2 certificates require every indexed response proof; generic no-op resolution
-/// cannot establish that binding. Domain parsing stays at this composition boundary.
-pub(crate) fn substrate_export_report(zip: &[u8]) -> integrity_verify::trellis::VerificationReport {
-    trellis_verify_wos::verify_export_zip(zip).trellis
-}
-
-/// Returns true when a profile-bearing export passes WOS/Formspec verification.
-#[must_use]
-pub(crate) fn wos_profile_export_verified(zip_bytes: &[u8]) -> bool {
-    trellis_verify_wos::verify_export_zip(zip_bytes).relying_party_valid()
-}
-
-fn policy_artifact(
-    owner: &'static str,
-    kind: &'static str,
-    reference: &'static str,
-    bytes: &[u8],
-) -> PolicyClosureArtifact {
-    PolicyClosureArtifact {
-        owner,
-        kind,
-        version: POLICY_VERSION,
-        reference,
-        digest: sha256_bytes(bytes),
-        valid_from: POLICY_VALID_FROM,
-        valid_to: None,
-    }
-}
-
-/// Register-style admission router: each adapter declares which literals it
-/// owns, and the router dispatches by literal lookup.
-///
-/// Adding a new ecosystem overlay (e.g. `trellis-admission-c2pa`) is one
-/// `register_for_literals(...)` call against the default builder — no if-else
-/// edits in this module, no struct-field churn. The router fails admission
-/// for unregistered literals so unknown event types reject before append.
-#[derive(Default, Clone)]
-pub struct AdmissionRouter {
-    by_literal: HashMap<EventType, Arc<dyn EventAdmissionPolicy<Error = StackError>>>,
-}
-
-impl std::fmt::Debug for AdmissionRouter {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AdmissionRouter")
-            .field("registered_literals", &self.by_literal.len())
-            .finish()
-    }
-}
-
-impl AdmissionRouter {
-    /// Creates an empty router. Add adapters with [`Self::register_for_literals`].
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Registers an adapter as the admission policy for every literal in `literals`.
-    ///
-    /// Later registrations for the same literal overwrite earlier ones, which
-    /// gives composition the final word when a test substitutes a counting
-    /// wrapper around an existing adapter.
-    #[must_use]
-    pub fn register_for_literals<I, S>(
-        mut self,
-        adapter: Arc<dyn EventAdmissionPolicy<Error = StackError>>,
-        literals: I,
-    ) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
+/// Refuses any other value.
+pub fn tenant_headers_from_env() -> Result<TenantHeaders, StackError> {
+    match std::env::var("TRELLIS_TENANT_HEADER_SET")
+        .unwrap_or_else(|_| "mixed".to_string())
+        .as_str()
     {
-        for literal in literals {
-            self.by_literal.insert(literal.into(), Arc::clone(&adapter));
-        }
-        self
-    }
-
-    /// Returns true when a literal is registered.
-    #[must_use]
-    pub fn handles(&self, event_type: &str) -> bool {
-        self.by_literal.contains_key(event_type)
+        "wos" => Ok(TenantHeaders::new(HeaderConfig::wos())),
+        "formspec" => Ok(TenantHeaders::new(HeaderConfig::formspec())),
+        "mixed" => Ok(mixed_tenant_headers()),
+        other => Err(StackError::bad_request(format!(
+            "unsupported TRELLIS_TENANT_HEADER_SET `{other}`"
+        ))),
     }
 }
 
-#[async_trait]
-impl EventAdmissionPolicy for AdmissionRouter {
-    type Error = StackError;
-
-    async fn admit(&self, event: &AdmissionEvent<'_>) -> Result<AdmittedEvent, Self::Error> {
-        let Some(adapter) = self.by_literal.get(event.event_type) else {
-            return Err(StackError::bad_request(format!(
-                "event type `{}` is not registered for admission",
-                event.event_type
-            )));
-        };
-        adapter.admit(event).await
-    }
-}
-
-/// Builds the default admission policy by registering every shipped adapter
-/// against the literals it owns. Adding a new overlay = one
-/// `register_for_literals(...)` chain entry.
+/// Registers every shipped adapter against the literals it owns.
 #[must_use]
 pub fn default_admission_policy() -> Arc<dyn EventAdmissionPolicy<Error = StackError>> {
-    let wos: Arc<dyn EventAdmissionPolicy<Error = StackError>> =
-        Arc::new(WosEventAdmissionPolicy::new());
-    let formspec: Arc<dyn EventAdmissionPolicy<Error = StackError>> =
-        Arc::new(FormspecAppendAdmissionPolicy::new());
-    let formspec_literals = formspec_event_type_specs()
-        .into_iter()
-        .map(|spec| spec.event_type)
-        .collect::<Vec<_>>();
+    let literals = |specs: Vec<EventTypeSpec>| {
+        specs
+            .into_iter()
+            .map(|spec| spec.event_type)
+            .collect::<Vec<_>>()
+    };
     Arc::new(
         AdmissionRouter::new()
             .register_for_literals(
-                wos,
-                WOS_CANONICAL_EVENT_LITERALS
-                    .iter()
-                    .copied()
-                    .chain(std::iter::once(WOS_NATIVE_PROVENANCE_EVENT_LITERAL)),
+                Arc::new(WosEventAdmissionPolicy::new()),
+                literals(wos_event_type_specs()),
             )
-            .register_for_literals(formspec, formspec_literals),
+            .register_for_literals(
+                Arc::new(FormspecAppendAdmissionPolicy::new()),
+                literals(formspec_event_type_specs()),
+            ),
     )
 }
 
-/// Returns the protected-attachment admission adapter the default server installs.
-#[must_use]
-pub(crate) fn default_external_attachment_admission()
--> Arc<dyn trellis_server_ports::ExternalAttachmentAdmission> {
-    Arc::new(trellis_admission_formspec::accepted_attachment::FormspecAttachmentAdmission)
-}
-
-/// Returns the combined event-type specifications the catalog projects.
-///
-/// Sourced from the admission adapters (`trellis-admission-wos`,
-/// `trellis-admission-formspec`) so generic Trellis service code never hand-
-/// builds vocabulary constants.
+/// The event-type vocabulary the shipped adapters declare.
 #[must_use]
 pub fn default_event_type_specs() -> Vec<EventTypeSpec> {
     let mut specs = wos_event_type_specs();
     specs.extend(formspec_event_type_specs());
-    specs.push(
-        trellis_admission_formspec::accepted_attachment::accepted_attachment_event_type_spec(),
-    );
-    specs.push(crate::completion::event_type_spec());
+    specs.push(accepted_attachment_event_type_spec());
     specs
-}
-
-/// Read-side snapshot of the event-type catalog after every admission adapter
-/// has registered its specs through the budget-review gate.
-///
-/// Generic Trellis service code (catalog projection, future dispatch) reads
-/// from this snapshot — never from the parallel `default_event_type_specs()`
-/// collection — so the registry trait is the single source of truth.
-#[derive(Clone, Debug)]
-pub struct EventTypeCatalog {
-    entries: Vec<EventTypeRef>,
-}
-
-impl EventTypeCatalog {
-    /// Builds the catalog by registering every default admission spec through
-    /// the [`ReviewGateEventTypeRegistry`] budget gate at startup.
-    ///
-    /// # Panics
-    /// Panics if any default admission spec fails the budget gate; the
-    /// adapter implementations are owned by this crate and the contract is
-    /// satisfied by construction.
-    #[must_use]
-    pub fn default_stack() -> Self {
-        let mut registry = ReviewGateEventTypeRegistry::default();
-        for spec in default_event_type_specs() {
-            registry
-                .register(spec)
-                .expect("default admission specs satisfy the budget gate by construction");
-        }
-        Self {
-            entries: registry.entries().cloned().collect(),
-        }
-    }
-
-    /// Iterates registered event-type entries in event-type lexicographic order.
-    pub fn entries(&self) -> impl Iterator<Item = &EventTypeRef> + '_ {
-        self.entries.iter()
-    }
-
-    /// Looks up the registered entry for an event-type literal.
-    #[must_use]
-    pub fn get(&self, event_type: &str) -> Option<&EventTypeRef> {
-        self.entries
-            .iter()
-            .find(|entry| entry.event_type == event_type)
-    }
-
-    /// Number of registered entries (for sizing tests + projection).
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    /// Returns true if no admission specs are registered.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-}
-
-impl Default for EventTypeCatalog {
-    fn default() -> Self {
-        Self::default_stack()
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use stack_common_typeid::testing::fixture_minter;
+    use trellis_admission_formspec::{
+        FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH, FORMSPEC_RESPONSE_SUBMITTED,
+    };
+    use trellis_server_ports::AdmissionEvent;
+    use wos_events::WOS_NATIVE_PROVENANCE_EVENT_LITERAL;
 
     #[tokio::test]
     async fn given_default_policy_when_wos_literal_admits_then_wos_metadata() {
@@ -550,52 +178,6 @@ mod tests {
             err.to_string().contains("not registered for admission"),
             "router must surface the registration gap; got: {err}"
         );
-    }
-
-    #[tokio::test]
-    async fn given_router_when_new_adapter_registers_then_dispatches_without_editing_core() {
-        // Demonstrates the plan-level criterion: adding an adapter is one
-        // `register_for_literals` chain entry. The router exposes the
-        // overlay through the EventAdmissionPolicy trait without editing
-        // generic Trellis code.
-        #[derive(Debug)]
-        struct ConstantAdapter(AdmittedEvent);
-
-        #[async_trait]
-        impl EventAdmissionPolicy for ConstantAdapter {
-            type Error = StackError;
-            async fn admit(
-                &self,
-                _event: &AdmissionEvent<'_>,
-            ) -> Result<AdmittedEvent, Self::Error> {
-                Ok(self.0.clone())
-            }
-        }
-
-        let adapter: Arc<dyn EventAdmissionPolicy<Error = StackError>> =
-            Arc::new(ConstantAdapter(AdmittedEvent {
-                event_type: "x-test.overlay.synthetic".to_string(),
-                event_family: trellis_server_ports::EventFamilyId::new("x-test.overlay").unwrap(),
-                schema_ref: trellis_server_ports::SchemaRef::new(
-                    "x-test://x-test.overlay.synthetic",
-                )
-                .unwrap(),
-                artifact_type: trellis_types::ArtifactType::Event,
-                direct_submit: trellis_server_ports::DirectSubmitPolicy::ServiceOnly,
-            }));
-
-        let router =
-            AdmissionRouter::new().register_for_literals(adapter, ["x-test.overlay.synthetic"]);
-        assert!(router.handles("x-test.overlay.synthetic"));
-        let admitted = router
-            .admit(&AdmissionEvent {
-                scope: b"x-test",
-                event_type: "x-test.overlay.synthetic",
-                payload: b"",
-            })
-            .await
-            .expect("registered overlay admits");
-        assert_eq!(admitted.artifact_type, trellis_types::ArtifactType::Event);
     }
 
     #[test]

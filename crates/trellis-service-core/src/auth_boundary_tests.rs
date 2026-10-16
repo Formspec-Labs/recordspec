@@ -136,7 +136,7 @@ fn external_state() -> (TrellisServerState, Controls) {
     let state = TrellisServerState::new(
         Arc::new(InMemoryEventRepository::new()),
         test_signing_key(),
-        TenantHeaderMode::MultiProducer,
+        crate::test_adapters::adapters(),
     )
     .with_access_token_verifier(Arc::new(CurrentVerifier {
         status: controls.verifier.clone(),
@@ -653,7 +653,7 @@ fn authorized_append_replay_external_mode_requires_injected_host_grants() {
     let state = TrellisServerState::new(
         Arc::new(InMemoryEventRepository::new()),
         test_signing_key(),
-        TenantHeaderMode::MultiProducer,
+        crate::test_adapters::adapters(),
     )
     .with_access_token_verifier(Arc::new(CurrentVerifier {
         status: Arc::new(AtomicU8::new(0)),

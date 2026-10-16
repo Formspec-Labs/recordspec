@@ -261,11 +261,13 @@ async fn admit(
 pub(crate) async fn append(
     State(state): State<TrellisServerState>,
     Extension(authorized): Extension<Arc<AuthorizedExternal>>,
-) -> Result<(StatusCode, Json<SubstrateAppendResult>), TransportError> {
+) -> Result<(StatusCode, Json<SubstrateAppendResult>), StackError> {
     let _guard = state.scope_locks.lock(authorized.scope.as_bytes()).await;
     let now = crate::now_timestamp()?;
     if !state.signing_key.is_active_at(now) {
-        return Err(StackError::bad_request("signing key inactive at append time").into());
+        return Err(StackError::bad_request(
+            "signing key inactive at append time",
+        ));
     }
     let factory = Factory {
         authorized: &authorized,
@@ -282,83 +284,63 @@ pub(crate) async fn append(
             &authorized.compute,
             &factory,
         )
-        .await
-        .map_err(TransportError::storage)?;
-    let events = state
-        .repository
-        .list_scope(authorized.scope.as_bytes())
-        .await
-        .map_err(TransportError::storage)?;
-    let update_head = events
-        .last()
-        .is_some_and(|event| event.sequence() == retained.event().sequence());
-    let prefix = events
-        .into_iter()
-        .filter(|event| event.sequence() <= retained.event().sequence())
-        .collect::<Vec<_>>();
-    let prior = retained
-        .event()
-        .sequence()
-        .checked_sub(1)
-        .map(|seq| {
-            prefix
-                .iter()
-                .find(|event| event.sequence() == seq)
-                .ok_or_else(|| StackError::internal("attachment predecessor absent"))
-                .and_then(|event| crate::event_hash(authorized.scope.as_bytes(), event))
-        })
-        .transpose()?;
-    let bundle = crate::publish_bundle(
+        .await?;
+    let result = publish_retained(
         &state,
-        authorized.scope.as_bytes(),
-        &prefix,
-        update_head,
-        &authorized.compute,
-    )
-    .await
-    .map_err(TransportError::storage)?;
-    let result = crate::append_result_for_event(
         &authorized.scope,
-        retained.event(),
-        prior,
-        trellis_types::ArtifactType::Event,
+        &retained,
+        &authorized.compute,
         state.external_attachment_admission.event_type(),
-        &bundle,
-        true,
-    )?;
+    )
+    .await?;
     Ok((StatusCode::CREATED, Json(result)))
 }
 
-/// Trusted handler evidence that one storage attempt may be retried.
-#[derive(Clone)]
-pub(crate) struct RetryableStorageAttempt;
-
-pub(crate) struct TransportError {
-    error: StackError,
-    retryable: bool,
-}
-impl From<StackError> for TransportError {
-    fn from(error: StackError) -> Self {
-        Self {
-            error,
-            retryable: false,
-        }
+/// Publishes the bundle for a committed attachment event and builds its receipt.
+///
+/// The event is durable, so every failure here is retryable (see `committed_unpublished`).
+pub(crate) async fn publish_retained(
+    state: &TrellisServerState,
+    scope: &str,
+    retained: &trellis_core::external_attachment::RetainedExternalAttachment,
+    compute: &ComputeContext,
+    event_type: &str,
+) -> Result<SubstrateAppendResult, StackError> {
+    async {
+        let events = state.repository.list_scope(scope.as_bytes()).await?;
+        let update_head = events
+            .last()
+            .is_some_and(|event| event.sequence() == retained.event().sequence());
+        let prefix = events
+            .into_iter()
+            .filter(|event| event.sequence() <= retained.event().sequence())
+            .collect::<Vec<_>>();
+        let prior = retained
+            .event()
+            .sequence()
+            .checked_sub(1)
+            .map(|seq| {
+                prefix
+                    .iter()
+                    .find(|event| event.sequence() == seq)
+                    .ok_or_else(|| StackError::internal("attachment predecessor absent"))
+                    .and_then(|event| crate::event_hash(scope.as_bytes(), event))
+            })
+            .transpose()?;
+        let bundle =
+            crate::publish_bundle(state, scope.as_bytes(), &prefix, update_head, compute).await?;
+        crate::append_result_for_event(
+            scope,
+            retained.event(),
+            prior,
+            trellis_types::ArtifactType::Event,
+            event_type,
+            &bundle,
+            true,
+        )
     }
-}
-impl TransportError {
-    fn storage(error: StackError) -> Self {
-        let retryable = error.status() == StatusCode::SERVICE_UNAVAILABLE;
-        Self { error, retryable }
-    }
-}
-impl IntoResponse for TransportError {
-    fn into_response(self) -> Response {
-        let mut response = self.error.into_response();
-        if self.retryable {
-            response.extensions_mut().insert(RetryableStorageAttempt);
-        }
-        response
-    }
+    .await
+    .map_err(crate::append::committed_unpublished)
 }
 
 struct Factory<'a> {
