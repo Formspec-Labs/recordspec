@@ -1,0 +1,21 @@
+id          = "verify/041-source-content-publication-catalog-string-reference-tag"
+op          = "verify"
+status      = "active"
+description = """Publication phase refusal. The intake catalog is wrapped in a string-reference namespace tag (256), which a decoder resolves silently; its root is then not an array, so both runtimes refuse it as `intake_handoff_catalog_invalid`."""
+
+[coverage]
+tr_core = ["TR-CORE-067"]
+tr_op = ["TR-OP-122"]
+
+[inputs]
+export_zip = "input-export.zip"
+verifier   = "source-content-publication"
+
+[expected.report]
+structure_verified   = true
+integrity_verified   = false
+readability_verified = true
+first_failure_kind   = "intake_handoff_catalog_invalid"
+
+[derivation]
+document = "derivation.md"

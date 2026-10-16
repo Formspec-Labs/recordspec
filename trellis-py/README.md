@@ -70,6 +70,10 @@ Native provenance records are validated as Rust validates them
 `date-time` and record-TypeID formats enforced, the signed-64-bit/finite-float/
 depth-128 subset, and the TypeID grammar. A missing schema refuses every record.
 
+Python also refuses CBOR reference tags (string-reference 25/256, value-sharing 28/29) before decoding, as Rust leaves them as tags and refuses them.
+
+Python refuses some RFC 3339 timestamps Rust accepts (lowercase `t`/`z`, `23:59:60`, year `0000`); that is the stricter side and intentional.
+
 Python rejects duplicate map keys anywhere in the 062/063 catalogs; Rust does so
 only in closed maps and takes the first match in 063 (fs-465t), so Python is the
 stricter side there.

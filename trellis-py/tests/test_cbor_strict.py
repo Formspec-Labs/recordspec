@@ -145,3 +145,24 @@ def test_tag_wrapped_map_walks_into_inner_map() -> None:
     data = _h("d2 a2 61 61 01 61 61 02")
     with pytest.raises(CborStrictError, match="duplicate"):
         reject_duplicate_canonical_map_keys(data)
+
+
+@pytest.mark.parametrize("tag", [25, 28, 29, 256])
+def test_reference_tags_are_refused_at_any_depth(tag):
+    import cbor2
+
+    for value in (
+        cbor2.CBORTag(tag, [1]),
+        [{"a": cbor2.CBORTag(tag, "x")}],
+    ):
+        with pytest.raises(CborStrictError):
+            reject_duplicate_canonical_map_keys(cbor2.dumps(value))
+
+
+def test_value_sharing_encoding_is_refused_and_other_tags_pass():
+    import cbor2
+
+    shared = ["x"]
+    with pytest.raises(CborStrictError):
+        reject_duplicate_canonical_map_keys(cbor2.dumps([shared, shared], value_sharing=True))
+    reject_duplicate_canonical_map_keys(cbor2.dumps(cbor2.CBORTag(18, [1])))

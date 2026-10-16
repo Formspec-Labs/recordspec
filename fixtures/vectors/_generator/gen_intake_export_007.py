@@ -504,12 +504,13 @@ def build_signed_append_event(
     sequence: int,
     prev_hash: bytes | None,
     record_id: str | None = None,
+    payload_bytes: bytes | None = None,
 ) -> dict:
     seed, pubkey = load_seed_and_pubkey(KEY_ISSUER_001)
     kid = derive_kid(SUITE_ID_PHASE_1, pubkey)
 
     scope = f"wos-case:{case_id}".encode("utf-8")
-    record_bytes = dcbor(record)
+    record_bytes = payload_bytes or dcbor(record)
     tuple_bytes = dcbor(wos_idempotency_tuple(case_id, record_id or record["id"]))
     idempotency_key = domain_separated_sha256(TAG_TRELLIS_WOS_IDEMPOTENCY_V1, tuple_bytes)
     content_hash = domain_separated_sha256(TAG_TRELLIS_CONTENT_V1, record_bytes)
@@ -1316,7 +1317,7 @@ def build_source_content_publication_vectors() -> None:
     row = cbor2.loads(data["063-intake-handoffs.cbor"])[0]
     response = json.loads(row["response_bytes"].decode("utf-8"))
 
-    def protected_bundle(path: Path, *, native_event_hash: bytes) -> bytes:
+    def protected_bundle(path: Path, *, native_event_hash: bytes, tag_256: bool = False) -> bytes:
         """Replaces the inline Response with a protected locator and re-signs the manifest."""
         protected_row = {k: v for k, v in row.items() if k != "response_bytes"}
         protected_row["protected_response"] = protected_response_locator(
@@ -1325,7 +1326,7 @@ def build_source_content_publication_vectors() -> None:
             response_id=response["id"],
             length=len(row["response_bytes"]),
         )
-        catalog = dcbor([protected_row])
+        catalog = dcbor(cbor2.CBORTag(256, [protected_row]) if tag_256 else [protected_row])
         manifest = copy.deepcopy(manifest_payload)
         manifest["extensions"][EXTENSION_KEY]["intake_catalog_digest"] = sha256(catalog)
         bundle = dict(data)
@@ -1426,6 +1427,24 @@ an archive, so structure fails before any catalog is consulted.
 """,
     )
 
+    stringref = SOURCE_CONTENT_VERIFY / "041-source-content-publication-catalog-string-reference-tag"
+    write_publication_vector(
+        out_dir=stringref,
+        vector_id="verify/041-source-content-publication-catalog-string-reference-tag",
+        description="Publication phase refusal. The intake catalog is wrapped in a string-reference namespace tag (256), which a decoder resolves silently; its root is then not an array, so both runtimes refuse it as `intake_handoff_catalog_invalid`.",
+        export_zip=protected_bundle(
+            stringref / "input-export.zip", native_event_hash=intake_hash, tag_256=True
+        ),
+        verifier=PUBLICATION_VERIFIER,
+        report={**refused, "first_failure_kind": "intake_handoff_catalog_invalid"},
+        derivation="""# Derivation — `verify/041-source-content-publication-catalog-string-reference-tag`
+
+As `verify/028`, but `063-intake-handoffs.cbor` is the protected catalog wrapped
+in tag 256. A decoder that resolves reference tags would read the same rows;
+the canonical profile never emits the tag, so the catalog is refused.
+""",
+    )
+
 
 def digest_of(label: str) -> bytes:
     return sha256(f"x-trellis-test/source-content/{label}".encode("utf-8"))
@@ -1468,7 +1487,7 @@ def build_source_task_publication_vectors() -> None:
     row = cbor2.loads(data_007["063-intake-handoffs.cbor"])[0]
     response = json.loads(row["response_bytes"].decode("utf-8"))
 
-    def chain(created_record: dict) -> tuple[list[bytes], bytes, bytes]:
+    def chain(created_record: dict, created_payload: bytes | None = None) -> tuple[list[bytes], bytes, bytes]:
         """The export's events plus the two native task records appended to the case ledger."""
         prev, native = prior_hash, []
         for sequence, (record, authored_at) in enumerate(
@@ -1483,6 +1502,7 @@ def build_source_task_publication_vectors() -> None:
                 sequence=sequence,
                 prev_hash=prev,
                 record_id=record["id"],
+                payload_bytes=created_payload if record is created_record else None,
             )
             prev = signed["canonical_event_hash"]
             native.append(signed)
@@ -1575,8 +1595,9 @@ def build_source_task_publication_vectors() -> None:
         task_ref: str = "correction",
         package_record_hash: bytes | None = None,
         created_record: dict = TASK_CREATED_RECORD,
+        created_payload: bytes | None = None,
     ) -> bytes:
-        events, created_hash, completed_hash = chain(created_record)
+        events, created_hash, completed_hash = chain(created_record, created_payload)
         signatures = dcbor([task_row(task_ref, created_hash, completed_hash)])
         original = {k: v for k, v in row.items() if k != "response_bytes"}
         original["protected_response"] = protected_response_locator(
@@ -1670,6 +1691,19 @@ phase checks closed shapes and exact native joins only."""
         bundle(package_record_hash=digest_of("foreign-package-record")), PUBLICATION_VERIFIER,
         {**refused, "first_failure_kind": "source_original_context_join_invalid"},
         "The original's `package_record_hash` differs from the task package's `record_hash`.",
+    )
+
+    # Reference tags make a decoder resolve one item into another: both runtimes refuse them.
+    shared = ["shared", "value"]
+    sharing_record = {**TASK_CREATED_RECORD, "data": {**TASK_CREATED_RECORD["data"], "a": shared, "b": shared}}
+    value_sharing = cbor2.dumps({"record": sharing_record}, value_sharing=True)
+    assert b"\xd8\x1c" in value_sharing and b"\xd8\x1d" in value_sharing  # tags 28 and 29
+    vector(
+        "040", "source-content-publication-native-record-value-sharing",
+        "Publication phase refusal. The `taskCreated` record is encoded with value-sharing tags (28/29), which a decoder would silently resolve; both runtimes refuse it as `native_provenance_invalid`.",
+        bundle(created_record=TASK_CREATED_RECORD, created_payload=value_sharing), PUBLICATION_VERIFIER,
+        {**refused, "first_failure_kind": "native_provenance_invalid"},
+        "The native payload shares a repeated list through tags 28 and 29.",
     )
 
     # The native record schema is WOS-owned: a record the owner refuses is refused here

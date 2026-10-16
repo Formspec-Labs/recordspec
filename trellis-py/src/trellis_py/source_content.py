@@ -19,7 +19,7 @@ from typing import Any, Optional
 from trellis_py import native_provenance
 from trellis_py import verify as core
 from trellis_py._cbor_canonical import encode_canonical_cbor_value
-from trellis_py._cbor_strict import CborStrictError, reject_duplicate_canonical_map_keys
+from trellis_py._cbor_strict import CborReferenceTagError, CborStrictError, reject_duplicate_canonical_map_keys
 
 MAX_CATALOG_BYTES = 1024 * 1024
 MAX_ROWS = 256
@@ -118,9 +118,12 @@ def _canonical_len(value: Any) -> int:
     return len(encode_canonical_cbor_value(value))
 
 
-def _decode(data: bytes) -> Any:
+def _decode(data: bytes, root_message: str = "catalog root is not an array") -> Any:
     try:
         reject_duplicate_canonical_map_keys(data)
+    except CborReferenceTagError as exc:
+        # Rust leaves a root reference tag as a tag, so the root is simply not an array.
+        raise _fail(root_message if exc.offset == 0 else f"catalog is not unambiguous CBOR: {exc}") from exc
     except CborStrictError as exc:
         raise _fail(f"catalog is not unambiguous CBOR: {exc}") from exc
     return core._decode_value(data)
@@ -333,9 +336,9 @@ def read_signature_catalog(data: bytes) -> tuple[list[dict], list[dict]]:
     """
     if len(data) > MAX_CATALOG_BYTES:
         raise _fail("catalog exceeds bound")
-    rows = _decode(data)
+    rows = _decode(data, "catalog must be array")
     if not isinstance(rows, list):
-        raise _fail("signature catalog root is not an array")
+        raise _fail("catalog must be array")
     if len(rows) > MAX_ROWS:
         raise _fail("catalog row limit")
     legacy: list[dict] = []
@@ -397,7 +400,7 @@ def _legacy_signature_row(entry: dict) -> dict[str, Any]:
 
 def read_intake_catalog(data: bytes) -> list[dict[str, Any]]:
     """Intake rows; each carries exactly one of inline `response_bytes` or a protected locator."""
-    rows = _decode(data)
+    rows = _decode(data, "intake handoff catalog root is not an array")
     if not isinstance(rows, list):
         raise _fail("intake handoff catalog root is not an array")
     out: list[dict[str, Any]] = []
