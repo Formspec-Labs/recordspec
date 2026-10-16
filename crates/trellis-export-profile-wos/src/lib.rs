@@ -71,21 +71,8 @@ impl ExportProfile for WosExportProfile {
                 report.trellis.warnings
             );
         }
-        let profile_present = integrity_bundle::read_stored_zip(zip).is_ok_and(|entries| {
-            entries.iter().any(|entry| {
-                matches!(
-                    entry.path().rsplit('/').next(),
-                    Some(
-                        trellis_export_writer::SIGNED_ACTS_MEMBER
-                            | trellis_export_writer::SIGNED_ACTS_MANIFEST_MEMBER
-                            | trellis_export_writer::POLICY_CLOSURE_MEMBER
-                    )
-                )
-            })
-        });
         ExportVerdict {
             substrate_verified,
-            profile_present,
             profile_verified: report.relying_party_valid(),
         }
     }

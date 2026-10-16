@@ -3915,7 +3915,6 @@ name = "trellis-export-profile-wos"
 version = "0.1.0"
 dependencies = [
  "hex",
- "integrity-bundle",
  "integrity-cbor",
  "integrity-verify",
  "stack-common-error",

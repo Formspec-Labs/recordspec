@@ -7,7 +7,6 @@ license.workspace = true
 
 [dependencies]
 hex = "0.4"
-integrity-bundle = { path = "../../../integrity-stack/crates/integrity-bundle" }
 integrity-cbor = { path = "../../../integrity-stack/crates/integrity-cbor" }
 integrity-verify = { path = "../../../integrity-stack/crates/integrity-verify" }
 stack-common-error = { path = "../../../stack-common/crates/stack-common-error", default-features = false }

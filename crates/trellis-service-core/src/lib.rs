@@ -322,7 +322,6 @@ pub(crate) async fn publish_bundle_with_source_content(
     let export_profile = state
         .export_profile
         .profile_members(scope, events, generated_at)?;
-    let profile_validation_required = export_profile.requires_profile_validation();
     let package = write_export(ExportWriterInput {
         scope: scope.to_vec(),
         events: events.to_vec(),
@@ -372,16 +371,14 @@ pub(crate) async fn publish_bundle_with_source_content(
             "published export bundle failed independent verification",
         ));
     }
-    if profile_validation_required {
-        match (&state.source_content, source) {
-            (Some(composition), Some(_)) => composition.verify_structural(&package.zip_bytes)?,
-            _ if !verdict.profile_verified => {
-                return Err(StackError::internal(
-                    "published export bundle failed profile verification",
-                ));
-            }
-            _ => {}
+    match (&state.source_content, source) {
+        (Some(composition), Some(_)) => composition.verify_structural(&package.zip_bytes)?,
+        _ if !verdict.profile_verified => {
+            return Err(StackError::internal(
+                "published export bundle failed profile verification",
+            ));
         }
+        _ => {}
     }
     if let Some(source) = source {
         source_content::archive_bound(&package.zip_bytes)?;
@@ -585,18 +582,14 @@ pub(crate) async fn read_verified_retained_publication(
             }
         }
     }
-    // Fixed history keeps the verifier it was published under: profile verification
-    // runs for bundles that carry profile members, and never retroactively demands them.
-    if verdict.profile_present {
-        match (&state.source_content, source) {
-            (Some(composition), Some(_)) => composition.verify_structural(&bytes)?,
-            _ if !verdict.profile_verified => {
-                return Err(StackError::internal(
-                    "retained export bundle failed profile verification",
-                ));
-            }
-            _ => {}
+    match (&state.source_content, source) {
+        (Some(composition), Some(_)) => composition.verify_structural(&bytes)?,
+        _ if !verdict.profile_verified => {
+            return Err(StackError::internal(
+                "retained export bundle failed profile verification",
+            ));
         }
+        _ => {}
     }
     Ok(bytes)
 }

@@ -21,23 +21,11 @@ pub struct ExportProfileMembers {
     pub policy_closure: Option<PolicyClosureMember>,
 }
 
-impl ExportProfileMembers {
-    /// Returns true when domain verification must run before publication.
-    #[must_use]
-    pub fn requires_profile_validation(&self) -> bool {
-        self.signed_acts_catalog.is_some()
-            || self.signed_acts_manifest.is_some()
-            || self.policy_closure.is_some()
-    }
-}
-
 /// Outcome of verifying one export ZIP.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExportVerdict {
     /// Structure and cryptographic integrity pass independent substrate verification.
     pub substrate_verified: bool,
-    /// The bundle carries domain profile members.
-    pub profile_present: bool,
     /// The domain verifier accepts the bundle for relying parties.
     pub profile_verified: bool,
 }
