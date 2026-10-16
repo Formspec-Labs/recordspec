@@ -8,12 +8,10 @@ SCRIPTS_DIR = scripts
 VECTORS_DIR = fixtures/vectors
 
 # Basic configuration
-# Python checks run in a repo-local venv built from trellis-py's own dependencies
-# (as CI provisions a fresh interpreter), so a global interpreter's pytest plugins
-# and site-packages never reach them. Override PYTHON to use another interpreter.
-VENV_PYTHON = $(CURDIR)/$(TRELLIS_PY_DIR)/.venv/bin/python
-PYTHON ?= $(VENV_PYTHON)
-PYTHON_DEP = $(if $(filter $(VENV_PYTHON),$(PYTHON)),$(VENV_PYTHON))
+# Python checks run through uv against trellis-py's lockfile (a locked, isolated
+# environment, so a global interpreter's pytest plugins never load). Override
+# PYTHON to use another interpreter.
+PYTHON ?= uv run --frozen --extra dev --project $(CURDIR)/$(TRELLIS_PY_DIR) python
 CARGO = cargo
 PYTEST = $(PYTHON) -m pytest
 
@@ -43,24 +41,19 @@ build:
 	@echo "Building Rust workspace..."
 	$(CARGO) build --workspace
 
-$(VENV_PYTHON): $(TRELLIS_PY_DIR)/pyproject.toml
-	python3 -m venv $(CURDIR)/$(TRELLIS_PY_DIR)/.venv
-	$(VENV_PYTHON) -m pip install -q -e "$(CURDIR)/$(TRELLIS_PY_DIR)[dev]"
-	@touch $(VENV_PYTHON)
-
 test: test-rust test-python test-scripts check-specs check-verifier-isolation
 
 test-rust:
 	@echo "Running Rust tests..."
 	$(CARGO) nextest run --workspace
 
-test-python: $(PYTHON_DEP)
+test-python:
 	@echo "Running Python conformance tests..."
 	cd $(TRELLIS_PY_DIR) && PYTHONPATH=src $(PYTHON) -m trellis_py.conformance --vectors ../$(VECTORS_DIR)
 	@echo "Running Python unit tests..."
 	cd $(TRELLIS_PY_DIR) && $(PYTEST) -q
 
-test-scripts: $(PYTHON_DEP)
+test-scripts:
 	@echo "Running script tests..."
 	$(PYTHON) $(SCRIPTS_DIR)/test_check_specs.py
 	$(PYTHON) $(SCRIPTS_DIR)/test_check_vector_renumbering.py
@@ -89,7 +82,7 @@ test-postgres:
 	$(CARGO) nextest run -p trellis-store-postgres-async
 	$(CARGO) nextest run -p trellis-conformance --test store_parity
 
-check-specs: $(PYTHON_DEP)
+check-specs:
 	@echo "Running spec checks..."
 	$(PYTHON) $(SCRIPTS_DIR)/check-specs.py
 
@@ -97,7 +90,7 @@ check-specs: $(PYTHON_DEP)
 # (`TRELLIS_CHECK_RENUMBERING=1`) that compares vector NNN- prefixes against
 # the base ref (default `origin/main`, override via `TRELLIS_RATIFICATION_REF`).
 # CI invokes this target; local dev uses `check-specs` (without the guard).
-check-specs-strict: $(PYTHON_DEP)
+check-specs-strict:
 	@echo "Running spec checks (strict, with renumbering guard)..."
 	TRELLIS_CHECK_RENUMBERING=1 $(PYTHON) $(SCRIPTS_DIR)/check-specs.py
 
