@@ -108,7 +108,7 @@ check-verifier-isolation:
 	@bash $(SCRIPTS_DIR)/check-verifier-isolation.sh
 
 # Layering is a build-graph property: deny.toml `wrappers` rules let only the
-# composition root (trellis-server-app) depend on the WOS/Formspec adapters.
+# composition root (trellis-server) depend on the WOS/Formspec adapters.
 check-layering:
 	$(CARGO) deny check bans
 
