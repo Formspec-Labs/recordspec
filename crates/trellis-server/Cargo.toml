@@ -7,6 +7,10 @@ license.workspace = true
 
 [features]
 default = []
+# The image's complete feature set (root ops/managed-single-cell compose passes FEATURES=deployment;
+# docker/cargo-image.sh builds with --no-default-features). Empty today; a production-only
+# capability would be listed here, never in `default`.
+deployment = []
 # Public fixture-backed state for cross-crate integration tests (dev-deps only).
 test-harness = []
 
