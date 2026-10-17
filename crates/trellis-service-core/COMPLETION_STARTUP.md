@@ -3,7 +3,7 @@
 The normal server first loads its required incoming OIDC profile and current resource grants. Completion and Source content are optional and use two additional private files:
 
 - `TRELLIS_COMPLETION_OPERATOR_CONFIG_FILE`: explicitly selected completion operator keys. Without it the seal route is unavailable. It requires the Source-content file, because the operator key attests whatever selection the caller sends: only that file's `publisher` may seal, checked before anything is reserved or signed (403 otherwise).
-- `TRELLIS_SOURCE_CONTENT_CONFIG_FILE`: the WOS Source publisher, provider pins, object store and native closeout policy. Without it a Source-content claim is refused and a final closeout append is refused.
+- `TRELLIS_SOURCE_CONTENT_CONFIG_FILE`: the WOS Source publisher, provider pins, object store and native closeout policy. Without it a Source-content claim is refused and no append is classified as a final closeout, so a closeout record appends as an ordinary event. With it, a final closeout that carries no Source-content claim is refused (`auth.rs`, the `(None, Some(composition))` arm).
 
 Both absent leaves both unselected. A file setting that is present but empty, or whose file is missing, fails startup. Both files are validated before ledger keys or database setup. Trellis holds no outgoing client, credential or origin for the owning service: the seal body carries the product's selection and the Source claim names an object Trellis reads from its own store.
 
