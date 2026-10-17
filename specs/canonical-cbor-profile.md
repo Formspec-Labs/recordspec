@@ -57,9 +57,9 @@ Maps MUST NOT contain duplicate keys, where "duplicate" means byte-identical can
 
 **Rust enforcement (encoder side).** After sorting, `canonicalize_cbor_value` at `:177–186` walks adjacent pairs via `entries.windows(2)` and returns `CborHelperError("duplicate canonical CBOR map key `<hex>`")` if any two adjacent sorted entries share the same encoded key.
 
-**Rust enforcement (decoder side).** `integrity-cbor` does not currently implement a standalone parse-side duplicate-key byte-walker. The emission-side check in `canonicalize_cbor_value` catches duplicates when re-encoding decoded values. A full parse-side guard (checking for duplicates before any `cbor2.loads` / `ciborium::from_reader` call, at every nesting depth) is a conformant defense-in-depth addition.
+**Rust enforcement (decoder side).** `integrity_cbor::decode_cbor_value` refuses any map that repeats a canonical-encoded key at any depth. `ciborium` keeps every map entry, so the check runs on the decoded value. The WOS 062/063 catalog and record parsers in `trellis-verify-wos` (`records.rs`) decode through it. Python's `trellis_py._cbor_strict.reject_duplicate_canonical_map_keys` walks the bytes before `cbor2.loads`, because Python dicts coalesce repeated keys.
 
-**Status.** Encoder-side fully enforced. Decoder-side parse-time rejection (before decode) is not currently in `integrity-cbor`; it is a forward-compatibility addition under development (Task A2b in the closeout plan).
+**Status.** Encoder-side fully enforced. Decoder-side fully enforced in `decode_cbor_value`. Vector `verify/042-source-content-publication-catalog-repeated-key` holds both runtimes to the same refusal. Private `ciborium::from_reader` calls that bypass `decode_cbor_value` do not yet carry the decoder-side check.
 
 ### R5 — Finite floats only; negative zero rejected
 

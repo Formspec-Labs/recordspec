@@ -1,0 +1,21 @@
+id          = "verify/042-source-content-publication-catalog-repeated-key"
+op          = "verify"
+status      = "active"
+description = """Publication phase refusal. The intake catalog row's `handoff` map carries `responseHash` twice, the genuine value first. Canonical CBOR rule R4 makes a repeated map key a decode failure at any depth, so both runtimes refuse it as `intake_handoff_catalog_invalid` instead of reading either copy."""
+
+[coverage]
+tr_core = ["TR-CORE-067"]
+tr_op = ["TR-OP-122"]
+
+[inputs]
+export_zip = "input-export.zip"
+verifier   = "source-content-publication"
+
+[expected.report]
+structure_verified   = true
+integrity_verified   = false
+readability_verified = true
+first_failure_kind   = "intake_handoff_catalog_invalid"
+
+[derivation]
+document = "derivation.md"

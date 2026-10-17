@@ -1317,7 +1317,9 @@ def build_source_content_publication_vectors() -> None:
     row = cbor2.loads(data["063-intake-handoffs.cbor"])[0]
     response = json.loads(row["response_bytes"].decode("utf-8"))
 
-    def protected_bundle(path: Path, *, native_event_hash: bytes, tag_256: bool = False) -> bytes:
+    def protected_bundle(
+        path: Path, *, native_event_hash: bytes, tag_256: bool = False, repeat_handoff_key: bool = False
+    ) -> bytes:
         """Replaces the inline Response with a protected locator and re-signs the manifest."""
         protected_row = {k: v for k, v in row.items() if k != "response_bytes"}
         protected_row["protected_response"] = protected_response_locator(
@@ -1326,7 +1328,17 @@ def build_source_content_publication_vectors() -> None:
             response_id=response["id"],
             length=len(row["response_bytes"]),
         )
-        catalog = dcbor(cbor2.CBORTag(256, [protected_row]) if tag_256 else [protected_row])
+        if repeat_handoff_key:
+            # The genuine responseHash stays first, so a first-match reader would admit the row.
+            handoff = cbor_map_keeping_repeats(
+                [(k, dcbor(v)) for k, v in sorted(protected_row["handoff"].items(), key=lambda kv: dcbor(kv[0]))]
+                + [("responseHash", dcbor("sha256:" + "00" * 32))]
+            )
+            catalog = b"\x81" + cbor_map_keeping_repeats(
+                [(k, handoff if k == "handoff" else dcbor(v)) for k, v in sorted(protected_row.items(), key=lambda kv: dcbor(kv[0]))]
+            )
+        else:
+            catalog = dcbor(cbor2.CBORTag(256, [protected_row]) if tag_256 else [protected_row])
         manifest = copy.deepcopy(manifest_payload)
         manifest["extensions"][EXTENSION_KEY]["intake_catalog_digest"] = sha256(catalog)
         bundle = dict(data)
@@ -1444,6 +1456,35 @@ in tag 256. A decoder that resolves reference tags would read the same rows;
 the canonical profile never emits the tag, so the catalog is refused.
 """,
     )
+
+    repeated = SOURCE_CONTENT_VERIFY / "042-source-content-publication-catalog-repeated-key"
+    write_publication_vector(
+        out_dir=repeated,
+        vector_id="verify/042-source-content-publication-catalog-repeated-key",
+        description="Publication phase refusal. The intake catalog row's `handoff` map carries `responseHash` twice, the genuine value first. Canonical CBOR rule R4 makes a repeated map key a decode failure at any depth, so both runtimes refuse it as `intake_handoff_catalog_invalid` instead of reading either copy.",
+        export_zip=protected_bundle(
+            repeated / "input-export.zip", native_event_hash=intake_hash, repeat_handoff_key=True
+        ),
+        verifier=PUBLICATION_VERIFIER,
+        report={**refused, "first_failure_kind": "intake_handoff_catalog_invalid"},
+        derivation="""# Derivation — `verify/042-source-content-publication-catalog-repeated-key`
+
+As `verify/028`, but the `063` row's `handoff` map is encoded by hand with a
+second `responseHash` entry after the genuine one. A reader that keeps the first
+copy would admit the row; canonical CBOR R4 refuses the whole catalog instead.
+The catalog digest and the signed manifest are recomputed over the repeated bytes.
+""",
+    )
+
+
+def cbor_map_keeping_repeats(pairs: list[tuple[str, bytes]]) -> bytes:
+    """Encodes a definite-length CBOR map from (text key, encoded value) pairs, keeping repeats.
+
+    cbor2 maps are dicts and coalesce repeated keys, so an R4 negative is built by hand.
+    """
+    count = len(pairs)
+    head = bytes([0xA0 | count]) if count < 24 else bytes([0xB8, count])
+    return head + b"".join(dcbor(key) + value for key, value in pairs)
 
 
 def digest_of(label: str) -> bytes:

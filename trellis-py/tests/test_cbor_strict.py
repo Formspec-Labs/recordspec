@@ -77,6 +77,13 @@ def test_root_duplicate_integer_key_explicitly_rejected() -> None:
         reject_duplicate_canonical_map_keys(data)
 
 
+def test_non_minimal_integer_key_is_the_same_key() -> None:
+    # {1: "x", 0x18 0x01: "y"}: two encodings of key 1, as Rust's decoder sees it.
+    data = _h("a2 01 61 78 18 01 61 79")
+    with pytest.raises(CborStrictError, match="duplicate canonical CBOR map key `01`"):
+        reject_duplicate_canonical_map_keys(data)
+
+
 def test_nested_duplicate_key_explicitly_rejected() -> None:
     # {"outer": {"a": 1, "a": 2}}
     # a1 65 6f 75 74 65 72 a2 61 61 01 61 61 02

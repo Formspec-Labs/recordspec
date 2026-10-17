@@ -18,9 +18,21 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass, field
 
+import cbor2
+
+from trellis_py._cbor_canonical import encode_canonical_cbor_value
+
 
 class CborStrictError(Exception):
     """Raised on duplicate map keys at any depth, on trailing bytes, or on a reference tag."""
+
+
+class CborDuplicateKeyError(CborStrictError):
+    """A map repeats the key whose canonical encoding is `canonical_key_hex`, at byte `offset`."""
+
+    def __init__(self, canonical_key_hex: str, offset: int) -> None:
+        super().__init__(f"duplicate canonical CBOR map key `{canonical_key_hex}` at offset {offset}")
+        self.canonical_key_hex = canonical_key_hex
 
 
 class CborReferenceTagError(CborStrictError):
@@ -217,12 +229,9 @@ class _Walker:
         key_start = self.offset
         self.walk_item()
         key_end = self.offset
-        key_bytes = self.buf[key_start:key_end]
+        key_bytes = _canonical_key(self.buf[key_start:key_end])
         if key_bytes in seen:
-            raise CborStrictError(
-                f"duplicate canonical CBOR map key `{key_bytes.hex()}` "
-                f"at offset {key_start}"
-            )
+            raise CborDuplicateKeyError(key_bytes.hex(), key_start)
         seen.add(key_bytes)
         # Walk value (which may itself contain nested maps).
         self.walk_item()
@@ -245,3 +254,16 @@ class _Walker:
             assert length is not None
             self._read(length)
         self._read_byte()  # consume break
+
+
+def _canonical_key(key_bytes: bytes) -> bytes:
+    """The key's canonical encoding, so differently encoded copies of one key collide (R4).
+
+    `0x01` and the non-minimal `0x18 0x01` are both key 1, as in Rust's
+    `integrity_cbor::decode_cbor_value`. A key the canonical emitter cannot
+    express (a tag) compares as written.
+    """
+    try:
+        return encode_canonical_cbor_value(cbor2.loads(key_bytes))
+    except Exception:  # noqa: BLE001 - any refusal leaves the written bytes as the identity
+        return key_bytes

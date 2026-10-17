@@ -12,7 +12,7 @@ pub(crate) use protected_response::{
 
 use ciborium::Value;
 use trellis_types::{
-    CborHelperError, map_lookup_array, map_lookup_bytes, map_lookup_fixed_bytes, map_lookup_map,
+    CborHelperError, decode_cbor_value, map_lookup_array, map_lookup_bytes, map_lookup_fixed_bytes, map_lookup_map,
     map_lookup_optional_fixed_bytes, map_lookup_optional_value, map_lookup_text,
 };
 
@@ -127,32 +127,15 @@ pub(crate) enum IntakeResponseContent {
     Protected(ProtectedResponseLocator),
 }
 
-// Only newly interpreted content selectors gain this rule; legacy unknown fields remain tolerated.
-fn unique_content_selectors(map: &[(Value, Value)], selectors: &[&str]) -> Result<(), ParseError> {
-    for selector in selectors {
-        if map
-            .iter()
-            .filter(|(key, _)| key.as_text() == Some(*selector))
-            .count()
-            > 1
-        {
-            return Err("catalog Response content selector is duplicated".into());
-        }
-    }
-    Ok(())
-}
-
 fn optional_protected_response(
     map: &[(Value, Value)],
 ) -> Result<Option<ProtectedResponseLocator>, ParseError> {
-    unique_content_selectors(map, &["protected_response"])?;
     map_lookup_optional_value(map, "protected_response")
         .map(protected_response::parse_protected_response)
         .transpose()
 }
 
 fn intake_response_content(map: &[(Value, Value)]) -> Result<IntakeResponseContent, ParseError> {
-    unique_content_selectors(map, &["response_bytes", "protected_response"])?;
     let inline = map_lookup_optional_value(map, "response_bytes");
     let protected = map_lookup_optional_value(map, "protected_response");
     match (inline, protected) {
@@ -608,8 +591,10 @@ pub(crate) fn bytes_array(bytes: &[u8]) -> [u8; 32] {
     bytes.try_into().expect("caller validates fixed size")
 }
 
+// R4: a map key repeated at any depth refuses the whole member, so no parser here
+// ever chooses between two copies of a field.
 fn decode_value(bytes: &[u8]) -> Result<Value, ParseError> {
-    ciborium::from_reader(bytes).map_err(|error| error.to_string().into())
+    Ok(decode_cbor_value(bytes)?)
 }
 
 // Reuses the owning closed locator parser for additive Source catalog rows.

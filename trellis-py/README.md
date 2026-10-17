@@ -74,10 +74,6 @@ Python also refuses CBOR reference tags (string-reference 25/256, value-sharing 
 
 Python refuses some RFC 3339 timestamps Rust accepts (lowercase `t`/`z`, `23:59:60`, year `0000`); that is the stricter side and intentional.
 
-Python rejects duplicate map keys anywhere in the 062/063 catalogs; Rust does so
-only in closed maps and takes the first match in 063 (fs-465t), so Python is the
-stricter side there.
-
 ## Dependencies
 
 `cbor2`, `cryptography` (Ed25519), `jsonschema` + `rfc3339-validator` (native provenance schema). No Rust runtime is required at import time.

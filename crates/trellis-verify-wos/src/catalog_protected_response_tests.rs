@@ -545,7 +545,20 @@ fn protected_signature_catalog() -> Value {
 }
 
 #[test]
-fn protected_response_outer_selectors_are_unique_with_legacy_unknown_tolerance() {
+fn catalog_rows_refuse_any_repeated_key_and_tolerate_single_legacy_unknowns() {
+    // R4: the first copy of a repeated key used to win; now the member refuses at any depth.
+    let mut value = catalog_value();
+    let handoff = field(row(&mut value), "handoff").clone();
+    row(&mut value).push((Value::Text("handoff".into()), handoff));
+    assert!(crate::records::parse_intake_manifest_entries(&trellis_types::encode_cbor_value(&value).unwrap()).is_err());
+    let mut value = catalog_value();
+    let handoff = field(row(&mut value), "handoff").as_map_mut().unwrap();
+    handoff.push((Value::Text("responseHash".into()), Value::Text("sha256:forged".into())));
+    assert!(crate::records::parse_intake_manifest_entries(&trellis_types::encode_cbor_value(&value).unwrap()).is_err());
+    let mut value = signature_catalog_value();
+    row(&mut value).push((Value::Text("legacy_extension".into()), Value::Bool(true)));
+    row(&mut value).push((Value::Text("legacy_extension".into()), Value::Bool(false)));
+    assert!(crate::records::parse_signature_manifest_entries(&trellis_types::encode_cbor_value(&value).unwrap()).is_err());
     for name in ["protected_response", "response_bytes"] {
         let mut value = catalog_value();
         let entry = row(&mut value);
