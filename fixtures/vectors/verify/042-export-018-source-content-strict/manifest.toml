@@ -1,0 +1,21 @@
+id          = "verify/042-export-018-source-content-strict"
+op          = "verify"
+status      = "active"
+description = """The bytes of `export/018` under the default strict phase. A generic verifier cannot open the protected Response that the service-assembled closeout export carries, so the bundle is refused with `protected_response_unavailable` at the intake event."""
+
+[coverage]
+tr_core = ["TR-CORE-067"]
+tr_op = ["TR-OP-122"]
+
+[inputs]
+export_zip = "input-export.zip"
+
+[expected.report]
+structure_verified   = true
+integrity_verified   = false
+readability_verified = true
+first_failure_kind   = "protected_response_unavailable"
+failing_event_id     = "41eac3af0534181f970ebca513b52b0143035f02420578c41d1e6d235f028827"
+
+[derivation]
+document = "derivation.md"

@@ -739,6 +739,58 @@ async fn a_purged_case_still_exports() {
     );
 }
 
+/// Given a closeout carrying a Source-content claim, appended over HTTP, then the export pinned
+/// at its checkpoint passes the publication phase and the strict verifier refuses its protected
+/// Response. With `TRELLIS_ASSEMBLED_EXPORT_VECTOR_DIR` set, the export is retained as the
+/// `export/` vector `018`; `verify/042` is its strict twin.
+#[tokio::test]
+async fn a_source_content_closeout_export_passes_publication_and_fails_strict_verification() {
+    let f = sourced(true, |_| {}).await;
+    let app = router(f.state.clone()).unwrap();
+    let receipt = post_append(&app, EVENTS, f.payload()).await;
+    let zip = pinned_zip(&app, "case_123", &receipt).await;
+
+    // Both events carry inline payloads, so the substrate is structurally sound and readable in
+    // either phase; only the protected Response separates them.
+    let substrate = integrity_verify::trellis::verify_export_zip(&zip);
+    assert!(
+        substrate.structure_verified
+            && substrate.integrity_verified
+            && substrate.readability_verified
+            && substrate.event_failures.is_empty(),
+        "{substrate:?}"
+    );
+    let publication = trellis_verify_wos::verify_source_content_publication(&zip, None);
+    assert!(
+        publication.publication_admitted(),
+        "{:?}",
+        publication.blocking_reasons()
+    );
+    assert!(publication.substrate().readability_verified);
+    let strict = trellis_verify_wos::verify_export_zip(&zip);
+    assert!(
+        strict.trellis.structure_verified
+            && strict.trellis.integrity_verified
+            && strict.trellis.readability_verified,
+        "{strict:?}"
+    );
+    let refusal = strict
+        .wos_findings
+        .iter()
+        .find(|finding| finding.severity == integrity_verify::trellis::Severity::Failure)
+        .expect("the strict verifier cannot open the protected Response");
+    assert_eq!(refusal.kind, "protected_response_unavailable");
+    let intake = f.batch.records[0].occurrence.occurrence_event_hash;
+    assert_eq!(refusal.event_hash, Some(intake));
+
+    if let Some(directory) = std::env::var_os("TRELLIS_ASSEMBLED_EXPORT_VECTOR_DIR") {
+        crate::export_vector::write_export_vector(
+            &std::path::PathBuf::from(directory).join("018-assembled-source-content-closeout"),
+            &zip,
+        );
+    }
+}
+
 #[tokio::test]
 async fn source_content_append_over_http_commits_with_the_object_and_no_person_credential() {
     let f = sourced(true, |_| {}).await;

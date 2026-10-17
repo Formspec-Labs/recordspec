@@ -849,7 +849,10 @@ SUBSTRATE_EXPORT_VERIFIER_VECTORS = [
         "readability_verified": True,
     },
     # Service-assembled exports (flat-cost append, Companion 18.5a): the bytes
-    # `export::assemble` produces at five and eight events must verify clean.
+    # `export::assemble` produces at five and eight events, and at a
+    # Source-content closeout (ADR 0163), must verify clean at the substrate.
+    # The closeout's WOS verdicts (publication admitted, strict refused) are
+    # asserted by both conformance runners through export/018 and verify/042.
     *(
         {
             "case_id": f"export/{name}",
@@ -862,6 +865,7 @@ SUBSTRATE_EXPORT_VERIFIER_VECTORS = [
         for name in (
             "016-assembled-five-events",
             "017-assembled-eight-events",
+            "018-assembled-source-content-closeout",
         )
     ),
 ]
