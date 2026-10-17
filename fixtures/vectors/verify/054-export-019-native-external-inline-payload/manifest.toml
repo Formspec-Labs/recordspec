@@ -1,0 +1,18 @@
+id          = "verify/054-export-019-native-external-inline-payload"
+op          = "verify"
+status      = "active"
+description = """Core §9.4.1: the attachment event keeps the external profile marker but carries its ciphertext inline. Inline carriage under the external marker MUST be rejected, so the export is rejected: fatal."""
+
+[coverage]
+tr_core = ["TR-CORE-182"]
+
+[inputs]
+export_zip = "input-export.zip"
+
+[expected.report]
+structure_verified   = false
+integrity_verified   = false
+readability_verified = false
+
+[derivation]
+document = "derivation.md"

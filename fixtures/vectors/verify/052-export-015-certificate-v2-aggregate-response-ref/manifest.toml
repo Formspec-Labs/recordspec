@@ -1,0 +1,18 @@
+id          = "verify/052-export-015-certificate-v2-aggregate-response-ref"
+op          = "verify"
+status      = "active"
+description = """ADR 0016 aggregate digest: the v2 certificate's `chain_summary` also carries the v1 aggregate `response_ref`. V2 decode MUST reject it, so the export is rejected: fatal."""
+
+[coverage]
+tr_core = ["TR-CORE-183"]
+
+[inputs]
+export_zip = "input-export.zip"
+
+[expected.report]
+structure_verified   = false
+integrity_verified   = false
+readability_verified = false
+
+[derivation]
+document = "derivation.md"

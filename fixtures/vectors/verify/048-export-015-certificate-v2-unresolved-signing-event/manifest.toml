@@ -1,0 +1,19 @@
+id          = "verify/048-export-015-certificate-v2-unresolved-signing-event"
+op          = "verify"
+status      = "active"
+description = """ADR 0016 absent proof: the v2 certificate's `signing_events[1]` names a digest no chain-present event has, so no response proof exists for row 1. Localizable failure `signing_event_unresolved` (Core §19 step 6c step 5)."""
+
+[coverage]
+tr_core = ["TR-CORE-183"]
+
+[inputs]
+export_zip = "input-export.zip"
+
+[expected.report]
+structure_verified   = true
+integrity_verified   = false
+readability_verified = true
+first_failure_kind   = "signing_event_unresolved"
+
+[derivation]
+document = "derivation.md"

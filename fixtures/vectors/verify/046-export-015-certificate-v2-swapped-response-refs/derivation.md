@@ -1,0 +1,7 @@
+# Derivation — `verify/046-export-015-certificate-v2-swapped-response-refs`
+
+Starts from `export/015-certificate-v2-distinct-responses/expected-export.zip` and mutates the payload of its last event as described below. The event's `author_event_hash` (Core §9.5) is recomputed and the event re-signed with the public fixture key `issuer-001`. Every member that binds the event is rebuilt: the events array, the Merkle root and the re-signed head checkpoint (Core §11.2–§11.3), the inclusion and consistency proofs (Core §11.4), any `061` row's `binding_event_hash`, the seal-fence fields including `export_attempt_id` (Core §18.3e), the README head lines, the archive root name, and the re-signed manifest with its digests. The verifier therefore reaches the obligation under test rather than a stale digest.
+
+Core §19 step 6c (v2): for every indexed signing event the resolved digest MUST match that row's `response_ref`; a wrong digest fails `response_ref_mismatch`. After the swap, row 0 carries row 1's digest and row 1 carries row 0's, so both rows are wrong. Both digests still exist in the certificate, which is why the swap shows that a verifier binds by index, not by set membership.
+
+The expected outcome is fixed by the spec text above and confirmed against the maintained Rust verifier (`trellis-conformance`). Bytes were produced by `_generator/gen_verify_resigned_export_negatives.py`, an authoring aid; this document, not the generator, is the reproduction authority.
