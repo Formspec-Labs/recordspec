@@ -1,8 +1,8 @@
 //! Startup posture for a Trellis server: what a production profile refuses.
 //!
-//! The rules live in `stack-common-posture`; this module only decides when production is in force
-//! (`TRELLIS_PROFILE`, production by default) and feeds the rules this server's settings. The development profile
-//! (the default) accepts fixture keys and in-memory storage so tests and local compose keep working.
+//! The rules live in `stack-common-posture`; this module reads the profile (production unless
+//! `TRELLIS_PROFILE=development`) and feeds the rules this server's settings. The development profile
+//! accepts fixture keys and in-memory storage so tests and local runs keep working.
 
 use stack_common_error::StackError;
 use stack_common_posture::{Profile, Refusals};
