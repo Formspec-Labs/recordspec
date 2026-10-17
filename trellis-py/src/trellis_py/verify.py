@@ -15,6 +15,11 @@ from cbor2 import CBORDecodeError, CBORTag
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from trellis_py._cbor_canonical import encode_canonical_cbor_value
+from trellis_py.external_attachment import (
+    PROFILE_EXTENSION,
+    ExternalAttachmentProfileError,
+    parse_external_attachment_profile,
+)
 from trellis_py.codec import (
     domain_separated_preimage,
     domain_separated_sha256,
@@ -89,6 +94,12 @@ class TrellisTimestamp:
 
 ATTACHMENT_EXPORT_EXTENSION = "trellis.export.attachments.v1"
 ATTACHMENT_EVENT_EXTENSION = "trellis.evidence-attachment-binding.v1"
+# Core §9.4.1 — the Rust verifier's wording for the same condition.
+PROTECTED_ORIGINALS_UNCHECKED_WARNING = (
+    "Supported protected external attachment: ciphertext integrity checks do not "
+    "establish decrypted original bytes or recipient permission; generic "
+    "verification does not perform those checks."
+)
 ERASURE_EVIDENCE_EVENT_EXTENSION = "trellis.erasure-evidence.v1"
 ERASURE_EVIDENCE_EXPORT_EXTENSION = "trellis.export.erasure-evidence.v1"
 ERASURE_EVIDENCE_CATALOG_MEMBER = "064-erasure-evidence.cbor"
@@ -509,6 +520,9 @@ class EventDetails:
     # step 4 (subject-equals-attestor) reads this.
     identity_attestation_subject: Optional[str] = None
     wrap_recipients: list[bytes] = field(default_factory=list)
+    # Core §9.4.1 — an external payload under the native protection profile.
+    # Its ciphertext is checked, but a generic verifier never reads the original.
+    payload_ref_protected: bool = False
 
 
 @dataclass
@@ -1511,6 +1525,16 @@ def _decode_event_details(
         raise VerifyError("event_type/classification")
     event_type = et.decode("utf-8")
     classification = cl.decode("utf-8")
+    exts = payload_value.get("extensions")
+    # Core §9.4.1 — the signed profile marker selects structural admission
+    # before any payload reaches a plaintext or domain reader; an unknown or
+    # inconsistent selection fails the event. Mirrors Rust `decode_event_details`.
+    protected = False
+    if isinstance(exts, dict) and PROFILE_EXTENSION in exts:
+        try:
+            protected = parse_external_attachment_profile(event.payload) is not None
+        except ExternalAttachmentProfileError as exc:
+            raise VerifyError(f"external attachment profile: {exc}") from exc
     pr = _map_lookup_str(payload_value, "payload_ref")
     if not isinstance(pr, dict):
         raise VerifyError("payload_ref")
@@ -1523,7 +1547,6 @@ def _decode_event_details(
         external = True
     else:
         raise VerifyError("payload_ref.ref_type unsupported")
-    exts = payload_value.get("extensions")
     if event_type == CERTIFICATE_V2_EVENT_EXTENSION and not (
         isinstance(exts, dict)
         and CERTIFICATE_V2_EVENT_EXTENSION in exts
@@ -1573,6 +1596,7 @@ def _decode_event_details(
         supersedes_chain=supersedes_chain,
         identity_attestation_subject=identity_attestation_subject,
         wrap_recipients=wrap_recipients,
+        payload_ref_protected=protected,
     )
 
 
@@ -1919,9 +1943,12 @@ def _affirmation_payload_bytes(
 ) -> Optional[bytes]:
     """Inline kernel bytes, or external bytes from `payload_blobs` keyed by
     `content_hash` (mirrors Rust `affirmation_payload_cow`). When
-    `payload_blobs` is absent, external rows are not resolvable in steps 2 / 7."""
+    `payload_blobs` is absent, external rows are not resolvable in steps 2 / 7.
+    A protected external original (Core §9.4.1) is never readable here."""
     if target.payload_ref_inline is not None:
         return target.payload_ref_inline
+    if target.payload_ref_protected:
+        return None
     if target.payload_ref_external and payload_blobs is not None:
         return payload_blobs.get(target.content_hash)
     return None
@@ -2596,6 +2623,7 @@ def _verify_event_set(
     previous_hash: Optional[bytes] = None
     previous_authored_at: Optional[TrellisTimestamp] = None
     skip_prev = initial_posture_declaration is not None and len(events) == 1
+    protected_originals_unchecked = False
 
     # Core §17.3 — Track every (ledger_scope, idempotency_key) identity seen
     # so far in this event set, mapped to the first canonical event's
@@ -2672,6 +2700,7 @@ def _verify_event_set(
                 else "event payload does not decode as a canonical Trellis event"
             )
             return VerificationReport.fatal(tamper_kind, warning)
+        protected_originals_unchecked |= details.payload_ref_protected
 
         if key_entry.status == 3:
             if key_entry.valid_to is None:
@@ -2919,7 +2948,8 @@ def _verify_event_set(
         and erasure_ok
         and certificate_ok
         and user_content_attestation_ok,
-        readability_verified=True,
+        # Core §9.4.1: a generic verifier never opens a protected original.
+        readability_verified=not protected_originals_unchecked,
         event_failures=event_failures,
         checkpoint_failures=[],
         proof_failures=[],
@@ -2927,7 +2957,7 @@ def _verify_event_set(
         erasure_evidence=erasure_evidence,
         certificates_of_completion=certificates_of_completion,
         user_content_attestations=user_content_attestations,
-        warnings=[],
+        warnings=[PROTECTED_ORIGINALS_UNCHECKED_WARNING] if protected_originals_unchecked else [],
     )
 
 
@@ -3804,8 +3834,8 @@ def _verify_certificate_attachment_lineage(
     if not report.certificates_of_completion:
         return
 
-    # Build attachment_id → AttachmentBindingDetails map.
-    binding_by_attachment_id: dict[str, AttachmentBindingDetails] = {}
+    # Build attachment_id → (binding, protected original) map.
+    binding_by_attachment_id: dict[str, tuple[AttachmentBindingDetails, bool]] = {}
     for event in events:
         try:
             details = _decode_event_details(event)
@@ -3813,7 +3843,8 @@ def _verify_certificate_attachment_lineage(
             continue
         if details.attachment_binding is not None:
             binding_by_attachment_id[details.attachment_binding.attachment_id] = (
-                details.attachment_binding
+                details.attachment_binding,
+                details.payload_ref_protected,
             )
 
     # Build (global event index → EventDetails) map for certificate events.
@@ -3842,10 +3873,16 @@ def _verify_certificate_attachment_lineage(
             continue
         canonical_hash_hex = _hex(details.canonical_event_hash)
         certificate = details.certificate
-        binding = binding_by_attachment_id.get(
+        bound = binding_by_attachment_id.get(
             certificate.presentation_artifact.attachment_id
         )
-        if binding is None:
+        # Core §9.4.1: a protected original never resolves from its ciphertext.
+        if bound is not None and bound[1]:
+            report.warnings.append(
+                f"Certificate {outcome.certificate_id}: protected presentation original "
+                "is unchecked; generic verification cannot resolve it from ciphertext."
+            )
+        if bound is None or bound[1]:
             outcome.attachment_resolved = False
             outcome.failures.append("presentation_artifact_attachment_missing")
             report.event_failures.append(
@@ -3854,6 +3891,7 @@ def _verify_certificate_attachment_lineage(
                 )
             )
             continue
+        binding = bound[0]
         attachment_bytes = payload_blobs.get(binding.payload_content_hash)
         if attachment_bytes is None:
             outcome.attachment_resolved = False
@@ -4256,6 +4294,9 @@ def _readable_payload_bytes(
 ) -> Optional[bytes]:
     if details.payload_ref_inline is not None:
         return details.payload_ref_inline
+    if details.payload_ref_protected:
+        # Core §9.4.1: ciphertext integrity grants no recipient permission.
+        return None
     if details.payload_ref_external:
         return payload_blobs.get(details.content_hash)
     return None
@@ -5228,7 +5269,7 @@ def verify_export_zip(
             for o in report.interop_sidecars
         )
     )
-    report.readability_verified = True
+    # Readability stays the event set's verdict (Core §9.4.1), as in Rust.
     return report
 
 

@@ -868,6 +868,19 @@ SUBSTRATE_EXPORT_VERIFIER_VECTORS = [
             "018-assembled-source-content-closeout",
         )
     ),
+    # Core §9.4.1 / TR-CORE-182: a service-assembled export whose one event
+    # carries a protected external attachment. The ciphertext verifies, but a
+    # generic verifier holds no recipient key, so it never claims the original
+    # readable (the Rust bare verifier's verdict, asserted when the bytes were
+    # generated).
+    {
+        "case_id": "export/019-assembled-native-external-attachment",
+        "vector": "export/019-assembled-native-external-attachment/expected-export.zip",
+        "expected_kind": None,
+        "structure_verified": True,
+        "integrity_verified": True,
+        "readability_verified": False,
+    },
 ]
 
 

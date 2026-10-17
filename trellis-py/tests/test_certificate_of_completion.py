@@ -549,6 +549,7 @@ def test_v1_unreadable_signing_event_payload_is_unresolved(monkeypatch):
         authored_at=cert.chain_summary.signer_display[0].signed_at,
         payload_ref_inline=None,
         payload_ref_external=False,
+        payload_ref_protected=False,
         content_hash=h,
     )
     monkeypatch.setattr(verify, "_decode_event_details", lambda event: stub)

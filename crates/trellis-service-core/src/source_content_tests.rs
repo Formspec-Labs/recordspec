@@ -420,11 +420,7 @@ async fn committed_original_fixture() -> (
         br#"{"id":"neutral-response","data":{"original":"complete"},"authoredSignatures":[]}"#;
     let original_sha = sha256_bytes(original);
     let context_key = b"neutral-source-response-context";
-    let public_key: [u8; 32] =
-        hex::decode("7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13")
-            .unwrap()
-            .try_into()
-            .unwrap();
+    let public_key = fixture_reader_public_key();
     let protected = protect_external_attachment(
         &integrity_seam::OsSecureRandom,
         AttachmentContext {
@@ -444,21 +440,7 @@ async fn committed_original_fixture() -> (
         },
     )
     .unwrap();
-    let entries = protected
-        .key_bag
-        .into_iter()
-        .map(|wrap| {
-            neutral_map(vec![
-                ("recipient", Value::Bytes(wrap.recipient)),
-                ("suite", Value::Integer(wrap.suite.into())),
-                (
-                    "ephemeral_pubkey",
-                    Value::Bytes(wrap.ephemeral_pubkey.to_vec()),
-                ),
-                ("wrapped_dek", Value::Bytes(wrap.wrapped_dek)),
-            ])
-        })
-        .collect();
+    let key_bag = key_bag_value(protected.key_bag);
     let response_hash = format!("sha256:{}", hex::encode(original_sha));
     let mut locator_rows = vec![
         ("version", Value::Integer(1.into())),
@@ -486,10 +468,7 @@ async fn committed_original_fixture() -> (
         ("public_policy_hash", Value::Bytes(vec![6; 32])),
         ("recipient_policy_hash", Value::Bytes(vec![7; 32])),
         ("nonce", Value::Bytes(protected.nonce.to_vec())),
-        (
-            "key_bag",
-            neutral_map(vec![("entries", Value::Array(entries))]),
-        ),
+        ("key_bag", key_bag),
     ];
     let protected_record = neutral_encoded(&neutral_map(vec![
         ("locator", neutral_map(locator_rows.clone())),

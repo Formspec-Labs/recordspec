@@ -1,0 +1,30 @@
+id          = "export/019-assembled-native-external-attachment"
+op          = "export"
+status      = "active"
+description = "Service-assembled export of one accepted attachment appended under the explicit native external profile (Core §9.4.1). The event selects `trellis.external-attachment-suite1.v1`, binds the attachment and carries a suite-1 key bag; `060-payloads` retains the ciphertext body. A verifier with the profile admits the ciphertext but holds no recipient key, so it never claims the original readable."
+
+[coverage]
+tr_core = [
+    "TR-CORE-062",  # export generator produces an independently verifiable export
+    "TR-CORE-063",  # export includes protected-payload references or payloads
+    "TR-CORE-134",  # Export Generator packages canonical records + verification material
+    "TR-CORE-182",  # explicit native external attachment profile, verified without readability
+]
+
+[inputs]
+ledger_state = "input-ledger-state.cbor"
+
+[expected]
+zip        = "expected-export.zip"
+zip_sha256 = "e2d4ed84d522dc285868dbc3eab2e301402e5553476e7a2d87a867082d96d858"
+
+[expected.report]
+structure_verified   = true
+integrity_verified   = true
+readability_verified = false
+
+[derivation]
+document = "derivation.md"
+
+[security]
+test_artifact = true
