@@ -866,6 +866,53 @@ async fn source_content_claim_without_a_composition_is_refused() {
     assert_eq!(f.ledger_len().await, 1);
 }
 
+/// Probe store: records each immutable key and proves the scope lock is free while it is written.
+struct LockProbeStore {
+    repository: Arc<dyn EventRepository>,
+    keys: std::sync::Mutex<Vec<String>>,
+    inner: crate::artifacts::InMemoryArtifactStore,
+}
+
+#[async_trait::async_trait]
+impl trellis_server_ports::ArtifactStore for LockProbeStore {
+    type Error = StackError;
+
+    async fn put(&self, key: &str, bytes: &[u8]) -> Result<ArtifactRef, StackError> {
+        self.inner.put(key, bytes).await
+    }
+
+    async fn put_immutable(&self, key: &str, bytes: &[u8]) -> Result<ArtifactRef, StackError> {
+        tokio::time::timeout(std::time::Duration::from_secs(2), self.repository.begin(b"case_123"))
+            .await
+            .expect("the scope lock is free while the batch copy is written")
+            .expect("begin");
+        self.keys.lock().unwrap().push(key.to_string());
+        self.inner.put_immutable(key, bytes).await
+    }
+
+    async fn get(&self, artifact_ref: &ArtifactRef) -> Result<Option<Vec<u8>>, StackError> {
+        self.inner.get(artifact_ref).await
+    }
+}
+
+/// The batch copy is written under the ledger scope's key, before the scope lock is taken.
+#[tokio::test]
+async fn source_content_batch_copy_is_scope_keyed_and_written_before_the_scope_lock() {
+    let f = sourced(true, |_| {}).await;
+    let probe = Arc::new(LockProbeStore {
+        repository: f.state.repository.clone(),
+        keys: Default::default(),
+        inner: Default::default(),
+    });
+    let state = f.state.clone().with_artifact_store(probe.clone());
+    let app = router(state.clone()).unwrap();
+    let response = app.oneshot(post_request(EVENTS, f.payload())).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let keys = probe.keys.lock().unwrap();
+    assert_eq!(keys.len(), 1);
+    assert!(keys[0].starts_with("case_123/source-content-batches/"), "{}", keys[0]);
+}
+
 #[tokio::test]
 async fn source_content_batch_copy_failure_commits_nothing_and_the_resend_succeeds() {
     // The copy is written before the commit, so a failed copy leaves no closeout behind, and the

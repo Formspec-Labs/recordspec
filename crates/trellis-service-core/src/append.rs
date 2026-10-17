@@ -190,6 +190,31 @@ impl<'a> AppendCoordinator<'a> {
         let content =
             EventContent::from_payload(&command.payload, command.idempotency_key.as_bytes())?;
 
+        // Trellis's own copy of a closeout's Source batch is written before the transaction opens,
+        // so the scope lock is never held across an object-store round trip. The key is scoped and
+        // content-addressed and the write is idempotent, so a refused or retried append leaves at
+        // worst an unreferenced object.
+        let source_binding = match source {
+            Some(source) => Some(
+                crate::source_content::retain_batch(
+                    self.state,
+                    &command.scope,
+                    &source.admitted.batch,
+                )
+                .await
+                .map_err(|error| {
+                    // Nothing is committed yet, so a copy failure is transient: surface it as
+                    // retryable, not as a cacheable client error that would wedge the key.
+                    if error.status().is_server_error() {
+                        error
+                    } else {
+                        StackError::unavailable("Source batch copy refused; retry the same key")
+                    }
+                })?,
+            ),
+            None => None,
+        };
+
         // The lock is the first statement of the unit of work, so every read below sees the latest
         // commit and a stale head cannot exist (Companion 18.5a).
         diag::mark(selected, Stage::Prefix, Outcome::Enter);
@@ -307,8 +332,14 @@ impl<'a> AppendCoordinator<'a> {
         diag::observed(
             selected,
             Stage::RepositoryWrite,
-            self.write(tx, &stored, &checkpoint, protected.as_ref(), source)
-                .await,
+            self.write(
+                tx,
+                &stored,
+                &checkpoint,
+                protected.as_ref(),
+                source_binding.as_ref(),
+            )
+            .await,
         )?;
         diag::mark(selected, Stage::Receipt, Outcome::Enter);
         let result = diag::observed(
@@ -320,33 +351,17 @@ impl<'a> AppendCoordinator<'a> {
     }
 
     /// Writes the event, its checkpoint and, for a Source closeout, Trellis's own copy of the
-    /// admitted batch. Nothing runs after the commit.
+    /// admitted batch's binding. Nothing runs after the commit.
     async fn write(
         &self,
         mut tx: Box<dyn ScopeTx>,
         stored: &StoredEvent,
         checkpoint: &trellis_types::StoredCheckpoint,
         protected: Option<&crate::source_content::ProtectedSourceMembersReady>,
-        source: Option<&crate::source_content::SourceContentAppendContext<'_>>,
+        binding: Option<&crate::event_repository::SourceContentBinding>,
     ) -> Result<(), StackError> {
-        let binding = match (protected, source) {
-            // Nothing is committed yet, so any copy failure is transient: surface it as retryable
-            // rather than as a cacheable client error that would wedge the key.
-            (Some(_), Some(source)) => Some(
-                crate::source_content::retain_batch(self.state, &source.admitted.batch)
-                    .await
-                    .map_err(|error| {
-                        if error.status().is_server_error() {
-                            error
-                        } else {
-                            StackError::unavailable("Source batch copy refused; retry the same key")
-                        }
-                    })?,
-            ),
-            _ => None,
-        };
         tx.insert(stored, checkpoint).await?;
-        if let Some(binding) = binding {
+        if let (Some(_), Some(binding)) = (protected, binding) {
             tx.insert_source_content(stored.sequence(), &binding)
                 .await?;
         }

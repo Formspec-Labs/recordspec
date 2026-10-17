@@ -507,12 +507,13 @@ const BATCH_KEY_ROOT: &str = "source-content-batches";
 ///
 /// WOS may purge its object once the closeout commits (ADR 0163), but the export at the closeout
 /// checkpoint must still carry the batch's members, so the copy is Trellis's and write-once. The
-/// key is the digest of the stored bytes, so a retry writes the same bytes to the same key.
+/// key is the ledger scope plus the digest of the stored bytes (ADR 0168 1.4: object keys live under the scope), so a retry writes the same bytes to the same key and no other scope can reach it.
 ///
 /// # Errors
 /// Refuses a batch over the byte budget or an unavailable artifact store.
 pub(crate) async fn retain_batch(
     state: &crate::TrellisServerState,
+    scope: &str,
     batch: &PreparedSourceContentBatchV1,
 ) -> Result<SourceContentBinding, StackError> {
     let bytes = serde_json::to_vec(batch).map_err(|_| refused())?;
@@ -523,7 +524,7 @@ pub(crate) async fn retain_batch(
     let reference = state
         .artifact_store
         .put_immutable(
-            &format!("{BATCH_KEY_ROOT}/{}", hex::encode(batch_hash)),
+            &format!("{scope}/{BATCH_KEY_ROOT}/{}", hex::encode(batch_hash)),
             &bytes,
         )
         .await?;
