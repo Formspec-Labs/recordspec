@@ -125,8 +125,10 @@ impl TrellisServerState {
         )
     }
 
+    /// State over a caller-supplied repository, so several servers (for example before and
+    /// after a key rotation) can share one ledger.
     #[must_use]
-    pub(crate) fn new(
+    pub fn new(
         repository: Arc<dyn EventRepository>,
         signing_key: ServerSigningKey,
         adapters: ServerAdapters,
