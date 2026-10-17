@@ -16,14 +16,14 @@ use crate::{
 };
 
 /// Path of every ledger-scoped route.
-#[derive(Clone, Debug, Serialize, Deserialize, IntoParams)]
+#[derive(Clone, Debug, Serialize, Deserialize, IntoParams, ToSchema)]
 pub struct ScopePath {
     /// Trellis ledger scope.
     pub scope: String,
 }
 
 /// Path of the pinned-bundle route.
-#[derive(Clone, Debug, Serialize, Deserialize, IntoParams)]
+#[derive(Clone, Debug, Serialize, Deserialize, IntoParams, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct BundlePath {
     /// Trellis ledger scope.
