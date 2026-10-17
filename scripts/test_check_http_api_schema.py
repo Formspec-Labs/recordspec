@@ -39,7 +39,11 @@ class TestCheckHttpApiSchema(unittest.TestCase):
         self.assertEqual(literals[0], "wos.ai.capability_invocation")
         kind_text = self.module.WOS_EVENTS_KIND_PATH.read_text(encoding="utf-8")
         from_kind = self.module.parse_substrate_event_literals_from_kind_rs(kind_text)
-        self.assertEqual(literals, from_kind)
+        native = self.module.parse_const_str(
+            self.module.WOS_EVENTS_NATIVE_PATH.read_text(encoding="utf-8"),
+            "WOS_NATIVE_PROVENANCE_EVENT_LITERAL",
+        )
+        self.assertEqual(literals, [*from_kind, native])
 
     def test_given_schema_requiring_a_bundle_ref_when_check_defs_then_error_emitted(self) -> None:
         schema = self.module.read_json(self.module.SCHEMA_PATH)
