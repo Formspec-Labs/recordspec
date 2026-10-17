@@ -254,6 +254,15 @@ impl<'a> AppendCoordinator<'a> {
         }
 
         diag::mark(selected, Stage::Replay, Outcome::ReturnedOk);
+        // Under the scope lock, after replay, so a retry of the append that filled the ledger replays
+        // and a concurrent caller cannot pass a stale count.
+        if let Some(max) = admitted.max_scope_events
+            && events.len() as u64 >= max
+        {
+            return Err(StackError::conflict(format!(
+                "scope holds the most events its event family accepts ({max})"
+            )));
+        }
         diag::mark(selected, Stage::Core, Outcome::Enter);
         let sequence = u64::try_from(events.len())
             .map_err(|_| StackError::internal("event count exceeds u64"))?;

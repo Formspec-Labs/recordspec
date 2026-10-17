@@ -35,6 +35,13 @@ pub const FORMSPEC_RESPONSE_SUBMITTED: &str = "substrate.append.response_submitt
 /// Logical event family for Response Actions session operation-batch appends.
 pub const FORMSPEC_RESPONSE_ACTION_EVENT_FAMILY: &str = "formspec.response_action";
 
+/// Most operation batches one respondent-session ledger holds.
+///
+/// Anonymous sessions mint their own ledgers and append rereads and republishes a ledger whole, so
+/// the per-append work an anonymous caller can demand is bounded here, as `FACTORY_PREFIX_MAX_EVENTS`
+/// bounds a protected attachment prefix.
+pub const RESPONSE_ACTION_SESSION_MAX_EVENTS: u64 = 256;
+
 /// Canonical Formspec Response Actions session operation-batch append literal.
 pub const FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH: &str =
     "substrate.append.response_action_session_op_batch";
@@ -97,6 +104,8 @@ impl FormspecAppendAdmissionPolicy {
             schema_ref,
             artifact_type: ArtifactType::Event,
             direct_submit: DirectSubmitPolicy::ServiceOnly,
+            max_scope_events: (event_type == FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH)
+                .then_some(RESPONSE_ACTION_SESSION_MAX_EVENTS),
         })
     }
 }
@@ -287,6 +296,21 @@ fn formspec_event_type_spec(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_session_op_batches_bound_their_scope() {
+        let session = FormspecAppendAdmissionPolicy::admitted_event_for(
+            FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH,
+        )
+        .unwrap();
+        assert_eq!(
+            session.max_scope_events,
+            Some(RESPONSE_ACTION_SESSION_MAX_EVENTS)
+        );
+        let receipt =
+            FormspecAppendAdmissionPolicy::admitted_event_for(FORMSPEC_RESPONSE_SUBMITTED).unwrap();
+        assert_eq!(receipt.max_scope_events, None);
+    }
+
     use super::*;
     use trellis_server_ports::{EventTypeRegistry, ReviewGateEventTypeRegistry};
 

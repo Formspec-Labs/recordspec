@@ -154,6 +154,7 @@ pub fn admit_accepted_attachment_descriptor(bytes: &[u8]) -> Result<AdmittedEven
             .map_err(|_| invalid("accepted attachment schema identity"))?,
         artifact_type: ArtifactType::Event,
         direct_submit: DirectSubmitPolicy::ServiceOnly,
+        max_scope_events: None,
     })
 }
 

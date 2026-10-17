@@ -123,6 +123,7 @@ impl WosEventAdmissionPolicy {
             schema_ref,
             artifact_type: ArtifactType::Event,
             direct_submit: DirectSubmitPolicy::ServiceOnly,
+            max_scope_events: None,
         })
     }
 }

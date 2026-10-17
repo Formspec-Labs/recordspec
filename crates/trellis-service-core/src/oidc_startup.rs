@@ -410,12 +410,37 @@ impl Action {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Grant {
     principal: String,
-    scope: String,
+    /// Exactly one of `scope` (one ledger) and `scopePrefix` (every ledger the prefix starts).
+    #[serde(default)]
+    scope: Option<String>,
+    /// A prefix ending in `.` or `_`, so it stops at a component boundary of a ledger name
+    /// (`<scope key>.<namespace>_<type>_<id>`) and cannot match half a component.
+    #[serde(default)]
+    scope_prefix: Option<String>,
     action: Action,
     #[serde(default)]
     actors: Vec<Actor>,
     #[serde(default)]
     payload_actors: Vec<PayloadActor>,
+}
+
+impl Grant {
+    /// The grant's exact scope or prefix, tagged so the two never collide in the uniqueness set.
+    fn selector(&self) -> Result<(bool, &str), StackError> {
+        match (&self.scope, &self.scope_prefix) {
+            (Some(scope), None) => Ok((false, scope)),
+            (None, Some(prefix)) if prefix.ends_with(['.', '_']) => Ok((true, prefix)),
+            _ => Err(invalid()),
+        }
+    }
+
+    fn admits(&self, scope: &str) -> bool {
+        match (&self.scope, &self.scope_prefix) {
+            (Some(exact), _) => exact == scope,
+            (None, Some(prefix)) => scope.starts_with(prefix.as_str()),
+            (None, None) => false,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -452,14 +477,15 @@ impl CurrentGrants {
         }
         let mut rows = BTreeSet::new();
         for grant in &file.grants {
-            nonempty(&grant.scope)?;
-            crate::http::validate_scope(&grant.scope).map_err(|_| invalid())?;
+            let (is_prefix, selector) = grant.selector()?;
+            nonempty(selector)?;
+            crate::http::validate_scope(selector).map_err(|_| invalid())?;
             if !self
                 .profile
                 .identities
                 .iter()
                 .any(|identity| identity.principal == grant.principal)
-                || !rows.insert((&grant.principal, &grant.scope, grant.action))
+                || !rows.insert((&grant.principal, is_prefix, selector, grant.action))
             {
                 return Err(invalid());
             }
@@ -539,7 +565,7 @@ impl ScopeAuthorizer for CurrentGrants {
             .iter()
             .find(|grant| {
                 grant.principal == principal.principal
-                    && grant.scope == scope
+                    && grant.admits(scope)
                     && grant.action.port() == request.action
             })
             .ok_or_else(denied)?;

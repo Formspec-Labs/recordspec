@@ -232,6 +232,7 @@ mod tests {
                 .unwrap(),
                 artifact_type: trellis_types::ArtifactType::Event,
                 direct_submit: trellis_server_ports::DirectSubmitPolicy::ServiceOnly,
+                max_scope_events: None,
             }));
         AdmissionRouter::new().register_for_literals(adapter, ["x-test.overlay.synthetic"])
     }

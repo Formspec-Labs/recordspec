@@ -532,6 +532,11 @@ pub struct AdmittedEvent {
     pub artifact_type: ArtifactType,
     /// Whether direct (non-service) client submission is permitted.
     pub direct_submit: DirectSubmitPolicy,
+    /// Most events a scope may hold when it carries this event type.
+    ///
+    /// Append rereads and republishes the scope's whole ledger, so a family whose
+    /// ledgers anonymous callers can grow bounds that work here. `None` is unbounded.
+    pub max_scope_events: Option<u64>,
 }
 
 /// Service-level event admission policy.
@@ -1504,6 +1509,7 @@ mod tests {
             schema_ref: SchemaRef::new("wos-events://wos.kernel.case_created").expect("schema"),
             artifact_type: ArtifactType::Event,
             direct_submit: DirectSubmitPolicy::ServiceOnly,
+            max_scope_events: None,
         };
         assert_eq!(admitted.event_type, "wos.kernel.case_created");
         assert_eq!(admitted.event_family.as_str(), "wos.kernel");
