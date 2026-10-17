@@ -2614,7 +2614,13 @@ mod tests {
         let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
         let doc: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         // The mounted route serves the document the committed copy is checked against.
-        assert_eq!(doc, serde_json::to_value(<crate::openapi::TrellisServerOpenApi as utoipa::OpenApi>::openapi()).unwrap());
+        assert_eq!(
+            doc,
+            serde_json::to_value(
+                <crate::openapi::TrellisServerOpenApi as utoipa::OpenApi>::openapi()
+            )
+            .unwrap()
+        );
     }
 
     /// Given a successful substrate append, when the same JSON body and idempotency key are
@@ -3097,6 +3103,73 @@ mod tests {
     fn idempotency_from_body(body: &[u8]) -> String {
         let value: serde_json::Value = serde_json::from_slice(body).unwrap();
         value["idempotencyKey"].as_str().unwrap().to_string()
+    }
+
+    /// Admission that bounds every scope to three events, as a family cap would.
+    struct ThreeEventScopes(Arc<dyn EventAdmissionPolicy<Error = StackError>>);
+
+    #[async_trait]
+    impl EventAdmissionPolicy for ThreeEventScopes {
+        type Error = StackError;
+
+        async fn admit(
+            &self,
+            event: &AdmissionEvent<'_>,
+        ) -> Result<trellis_server_ports::AdmittedEvent, Self::Error> {
+            let mut admitted = self.0.admit(event).await?;
+            admitted.max_scope_events = Some(3);
+            Ok(admitted)
+        }
+    }
+
+    /// Given a family cap of three, when eight appends race for one scope, then exactly three
+    /// commit, the rest are refused under the scope lock, and a retry of a committed key replays.
+    #[tokio::test]
+    async fn a_scope_refuses_appends_past_its_family_cap_under_concurrency() {
+        let state = Arc::new(
+            test_state().with_admission_policy(Arc::new(ThreeEventScopes(
+                test_adapters::admission_policy(),
+            ))),
+        );
+        let command = |index: usize| {
+            let body: SubstrateAppendBody =
+                serde_json::from_slice(&append_body(&format!("idem-cap-{index}"))).unwrap();
+            append::AppendCommand {
+                scope: "case_cap".to_string(),
+                event_type: body.event_type.clone(),
+                idempotency_key: body.idempotency_key.clone(),
+                payload: body.payload.clone(),
+                compute_context: append::port_compute_context(&body),
+                client_attestation: body.client_attestation.clone(),
+            }
+        };
+        let mut racers = tokio::task::JoinSet::new();
+        for index in 0..8 {
+            let state = state.clone();
+            let command = command(index);
+            racers.spawn(async move { state.append_coordinator().append(command).await });
+        }
+        let mut committed = 0;
+        let mut refused = 0;
+        while let Some(done) = racers.join_next().await {
+            match done.unwrap() {
+                Ok(_) => committed += 1,
+                Err(error) => {
+                    assert_eq!(error.status(), StatusCode::CONFLICT);
+                    refused += 1;
+                }
+            }
+        }
+        assert_eq!((committed, refused), (3, 5));
+        assert_eq!(
+            state
+                .repository
+                .list_scope(b"case_cap")
+                .await
+                .unwrap()
+                .len(),
+            3
+        );
     }
 
     struct CountingAdmissionPolicy {

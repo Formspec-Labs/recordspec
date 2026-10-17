@@ -216,6 +216,9 @@ impl ScopeLocks {
     pub(crate) async fn lock(&self, scope: &[u8]) -> OwnedMutexGuard<()> {
         let lock = {
             let mut locks = self.locks.lock().await;
+            // An entry only the map still references has no holder or waiter. Dropping those here
+            // keeps the map at the scopes in flight, not one entry per scope ever appended to.
+            locks.retain(|_, lock| Arc::strong_count(lock) > 1);
             locks
                 .entry(scope.to_vec())
                 .or_insert_with(|| Arc::new(Mutex::new(())))
@@ -231,6 +234,21 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
+
+    /// Given many scopes locked and released in turn, when the next scope locks, then the map
+    /// holds only the scopes still in flight.
+    #[tokio::test]
+    async fn scope_locks_forget_released_scopes() {
+        let locks = ScopeLocks::default();
+        for index in 0..100 {
+            drop(locks.lock(format!("scope-{index}").as_bytes()).await);
+        }
+        let held = locks.lock(b"scope-held").await;
+        assert_eq!(locks.locks.lock().await.len(), 1);
+        let _second = locks.lock(b"scope-other").await;
+        assert_eq!(locks.locks.lock().await.len(), 2);
+        drop(held);
+    }
 
     /// Given the default in-memory artifact store, when bytes are written and read back by ref,
     /// then the payload round-trips without loss (guards extraction of [`InMemoryArtifactStore`]).

@@ -391,11 +391,41 @@ async fn oidc_startup_revoked_payload_delegation_blocks_unchanged_cached_retry()
     );
 }
 
+#[tokio::test]
+async fn a_prefix_grant_admits_its_scopes_and_refuses_others() {
+    let mut files = Files::new();
+    files.grants["grants"] = json!([{"principal":"internal-producer","scopePrefix":"keya.",
+        "action":"append","actors":[{"kind":"service","subject":"wos-server"}]}]);
+    files.save();
+    let app = files.app(Arc::new(ProtocolHttp::new()));
+    let token = sign(&claims());
+    let append = |scope: &str| {
+        post_request_bearer(
+            &format!("/v1/scopes/{scope}/events"),
+            append_body("oidc-prefix"),
+            &token,
+        )
+    };
+    for (scope, expected) in [
+        ("keya.case_1", StatusCode::CREATED),
+        ("keya.case_2", StatusCode::CREATED),
+        ("keyb.case_1", StatusCode::FORBIDDEN),
+        ("keya", StatusCode::FORBIDDEN),
+        ("keyab.case_1", StatusCode::FORBIDDEN),
+    ] {
+        assert_eq!(
+            app.clone().oneshot(append(scope)).await.unwrap().status(),
+            expected,
+            "{scope}"
+        );
+    }
+}
+
 #[test]
 fn oidc_startup_closed_profile_and_current_grant_validation_refuse_ambiguous_authority() {
     let mut files = Files::new();
     let original = files.grants.clone();
-    for mutation in 0..7 {
+    for mutation in 0..9 {
         files.grants = original.clone();
         match mutation {
             0 => files.grants["tenantScope"]["workspace"] = json!("foreign"),
@@ -412,6 +442,11 @@ fn oidc_startup_closed_profile_and_current_grant_validation_refuse_ambiguous_aut
             5 => {
                 files.grants["grants"][0]["payloadActors"][0]["subjects"] =
                     json!(["duplicate", "duplicate"])
+            }
+            6 => files.grants["grants"][0]["scopePrefix"] = json!("key."),
+            7 => {
+                files.grants["grants"][1]["scopePrefix"] = json!("key");
+                files.grants["grants"][1].as_object_mut().unwrap().remove("scope");
             }
             _ => files.grants["unknown"] = json!(true),
         }
