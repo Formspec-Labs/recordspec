@@ -10,6 +10,7 @@
 
 mod append;
 mod bundle_publications;
+pub mod ledger;
 mod migrations;
 mod pool;
 
