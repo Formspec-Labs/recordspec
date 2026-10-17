@@ -236,6 +236,51 @@ fn identical_original_payloads_count_once_towards_the_byte_limit() {
     );
 }
 
+/// What the fold charges against [`MAX_BYTES`] after `kinds`.
+fn charged_bytes(kinds: &[Kind]) -> u64 {
+    let mut state = None;
+    for (index, kind) in kinds.iter().enumerate() {
+        state = Some(
+            fold_append(
+                SCOPE,
+                state.as_deref(),
+                &event(index as u64, kind),
+                index as u64 + 1,
+            )
+            .expect("under the limit while measuring"),
+        );
+    }
+    let state = SignatureExportState::decode(&state.unwrap()).unwrap();
+    array_header_len(state.affirmations)
+        + state.catalog_row_bytes
+        + state.event_bytes
+        + state.original_bytes
+}
+
+#[test]
+fn evidence_of_exactly_the_byte_limit_is_accepted_and_one_byte_more_is_refused() {
+    // One affirmation, then a note whose padding is tuned until the charge is exactly the limit.
+    let ledger = |pad: usize| vec![Kind::Affirm { act: 1, pad: 1000 }, Kind::Note { pad }];
+    let mut pad = 600_000;
+    loop {
+        let charged = charged_bytes(&ledger(pad));
+        if charged == MAX_BYTES as u64 {
+            break;
+        }
+        pad = (pad as i64 + MAX_BYTES as i64 - charged as i64) as usize;
+    }
+    assert_eq!(
+        assert_fold_agrees_with_the_whole_prefix(&ledger(pad)),
+        [true, true],
+        "evidence of exactly 1 MiB fits"
+    );
+    assert_eq!(
+        assert_fold_agrees_with_the_whole_prefix(&ledger(pad + 1)),
+        [true, false],
+        "one byte more does not"
+    );
+}
+
 #[test]
 fn a_malformed_affirmation_is_refused_by_both() {
     assert_eq!(
