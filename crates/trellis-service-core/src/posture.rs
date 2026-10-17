@@ -1,11 +1,11 @@
 //! Startup posture for a Trellis server: what a production profile refuses.
 //!
 //! The rules live in `stack-common-posture`; this module only decides when production is in force
-//! (`TRELLIS_PROFILE=production`) and feeds the rules this server's settings. The development profile
+//! (`TRELLIS_PROFILE`, production by default) and feeds the rules this server's settings. The development profile
 //! (the default) accepts fixture keys and in-memory storage so tests and local compose keep working.
 
 use stack_common_error::StackError;
-use stack_common_posture::Refusals;
+use stack_common_posture::{Profile, Refusals};
 
 use crate::ServerSigningKey;
 
@@ -23,24 +23,36 @@ const FIXTURE_SIGNING_KEY_KIDS: &[&str] = &[
     "b6d2352f6a28c81ad62e4e455405e31d", // ephemeral-042-recipient-001
 ];
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Profile {
-    Development,
-    Production,
+/// Reads `TRELLIS_PROFILE` (production unless it says `development`).
+pub(crate) fn profile_from_env() -> Result<Profile, StackError> {
+    Profile::from_setting(
+        "TRELLIS_PROFILE",
+        std::env::var("TRELLIS_PROFILE").ok().as_deref(),
+    )
+    .map_err(StackError::bad_request)
 }
 
-impl Profile {
-    /// Reads `TRELLIS_PROFILE` (`development` by default).
-    pub(crate) fn from_env() -> Result<Self, StackError> {
-        match std::env::var("TRELLIS_PROFILE").as_deref() {
-            Err(_) | Ok("" | "development") => Ok(Self::Development),
-            Ok("production") => Ok(Self::Production),
-            Ok(_) => Err(StackError::bad_request(
-                "TRELLIS_PROFILE must be development or production",
-            )),
-        }
-    }
+/// Reads the signing key. Production takes it only from an owner-only file (like WOS's grant keys),
+/// since committed fixture keys are world-readable; development reads any file.
+pub(crate) fn read_signing_key(profile: Profile, path: &str) -> Result<Vec<u8>, StackError> {
+    let read = if profile.is_production() {
+        stack_common_private_file::read_private_file(
+            std::path::Path::new(path),
+            SIGNING_KEY_MAX_BYTES,
+            stack_common_private_file::PrivateAccess::OwnerOnly,
+        )
+        .map_err(|error| error.to_string())
+    } else {
+        std::fs::read(path).map_err(|error| error.to_string())
+    };
+    read.map_err(|error| {
+        StackError::bad_request(format!(
+            "failed to read TRELLIS_SIGNING_KEY_COSE_PATH: {error}"
+        ))
+    })
 }
+
+const SIGNING_KEY_MAX_BYTES: u64 = 4096;
 
 /// Refuses a production start on in-memory storage or a publicly known signing key.
 pub(crate) fn check(
@@ -48,13 +60,11 @@ pub(crate) fn check(
     storage_is_memory: bool,
     signing_key: &ServerSigningKey,
 ) -> Result<(), StackError> {
-    if profile == Profile::Development {
+    if !profile.is_production() {
         return Ok(());
     }
     let mut refusals = Refusals::new();
-    if storage_is_memory {
-        refusals.push("TRELLIS_STORAGE=memory loses the ledger on restart; use Postgres");
-    }
+    refusals.durable_storage("TRELLIS_STORAGE=memory", storage_is_memory);
     refusals.not_a_known_key(
         "TRELLIS_SIGNING_KEY_COSE_PATH",
         &signing_key.kid_hex(),
@@ -128,11 +138,36 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn production_reads_the_signing_key_only_from_an_owner_only_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("key.cose_key");
+        std::fs::write(&path, b"key bytes").unwrap();
+        let path = path.to_str().unwrap();
+        for (mode, accepted) in [(0o644, false), (0o640, false), (0o600, true), (0o400, true)] {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+            assert_eq!(
+                read_signing_key(Profile::Production, path).is_ok(),
+                accepted,
+                "{mode:o}"
+            );
+            assert!(
+                read_signing_key(Profile::Development, path).is_ok(),
+                "development reads {mode:o}"
+            );
+        }
+    }
+
+    #[test]
     fn production_refuses_in_memory_storage() {
         let (_, key) = fixture_signing_keys().remove(0);
         let error = check(Profile::Production, true, &key)
             .unwrap_err()
             .to_string();
-        assert!(error.contains("TRELLIS_STORAGE=memory"), "{error}");
+        assert!(
+            error.contains("TRELLIS_STORAGE=memory selects in-memory"),
+            "{error}"
+        );
     }
 }
