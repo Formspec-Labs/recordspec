@@ -18,6 +18,12 @@ test-harness = ["trellis-service-core/source-diagnostics"]
 name = "trellis-server"
 path = "src/main.rs"
 
+# Builds the route declarations over the fixture-backed state: `--features test-harness`.
+[[bin]]
+name = "emit_openapi"
+path = "src/bin/emit_openapi.rs"
+required-features = ["test-harness"]
+
 [dependencies]
 async-trait = "0.1"
 axum = "0.8"
@@ -36,7 +42,7 @@ trellis-service-core = { path = "../trellis-service-core" }
 trellis-server-ports = { path = "../trellis-server-ports" }
 trellis-service-client = { path = "../trellis-service-client" }
 trellis-types = { path = "../trellis-types" }
-utoipa = "5"
+utoipa = "6"
 
 [dev-dependencies]
 stack-common-typeid = { path = "../../../stack-common/crates/stack-common-typeid", features = ["testing"] }

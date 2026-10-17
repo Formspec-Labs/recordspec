@@ -6,10 +6,8 @@ use async_trait::async_trait;
 use axum::{
     Json,
     body::{Body, to_bytes},
-    extract::{Extension, Path, Request, State},
+    extract::{Extension, Request, State},
     http::StatusCode,
-    middleware::Next,
-    response::{IntoResponse, Response},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use integrity_cbor::{Value, decode_cbor_value, map_lookup_optional_value};
@@ -20,7 +18,7 @@ use integrity_seam::SecureRandom;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use stack_common_error::StackError;
-use stack_common_http::{idempotency::TrustedReplayPartition, tenant::TenantScope};
+use stack_common_http::tenant::TenantScope;
 use std::sync::Arc;
 use trellis_core::external_attachment::{
     ExternalAppendLimits, ExternalAttachmentAppend, ExternalAttachmentHeader,
@@ -29,6 +27,7 @@ use trellis_core::external_attachment::{
 use trellis_server_ports::{
     AttachmentLimits, AuthorizedScope, ComputeContext, ComputeSensitivity, ScopeAction,
 };
+use trellis_service_client::endpoints::ACCEPTED_ATTACHMENT;
 use trellis_service_client::{AppendActor, SubstrateAppendBody, SubstrateAppendResult};
 use trellis_types::StoredEvent;
 
@@ -58,23 +57,21 @@ pub trait ExternalAttachmentRecipientSelector: Send + Sync {
     ) -> Result<Vec<ExternalAttachmentRecipient>, StackError>;
 }
 
-#[derive(Deserialize, utoipa::ToSchema)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct WireActor {
     kind: String,
     subject: String,
 }
-#[derive(Deserialize, utoipa::ToSchema)]
+/// The strict decoder of `AcceptedAttachmentAppendBody`, which is the documented shape.
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct WireRequest {
-    #[schema(min_length = 1, max_length = 64)]
     idempotency_key: String,
     actor: WireActor,
     // Kept as raw text: the configured admission adapter decodes its own closed type
     // strictly, so duplicate keys survive to rejection.
-    #[schema(schema_with = trellis_service_client::attachment_descriptor_openapi_schema)]
     descriptor: Box<serde_json::value::RawValue>,
-    #[schema(min_length = 4, max_length = 1398104, format = Byte)]
     original_bytes: String,
 }
 pub(crate) struct AuthorizedExternal {
@@ -125,25 +122,13 @@ fn selected_custody(
     Ok((policy, sensitivity))
 }
 
-pub(crate) async fn authorize(
-    State(state): State<TrellisServerState>,
-    Path(scope): Path<String>,
-    tenant: TenantScope,
-    mut request: Request,
-    next: Next,
-) -> Response {
-    match admit(&state, scope, &tenant, &mut request).await {
-        Ok(()) => next.run(request).await,
-        Err(error) => error.into_response(),
-    }
-}
-async fn admit(
+pub(crate) async fn admit(
     state: &TrellisServerState,
     scope: String,
     tenant: &TenantScope,
     request: &mut Request,
-) -> Result<(), StackError> {
-    let identity = state.authenticate(request.headers()).await?;
+) -> Result<String, StackError> {
+    let identity = state.bearer_identity(request.headers()).await?;
     crate::http::validate_scope(&scope)?;
     let raw = to_bytes(
         std::mem::replace(request.body_mut(), Body::empty()),
@@ -237,9 +222,6 @@ async fn admit(
         policy_fingerprint,
     ))
     .map_err(|_| StackError::internal("attachment replay partition encoding failed"))?;
-    request
-        .extensions_mut()
-        .insert(TrustedReplayPartition::new(partition));
     // Request extensions are process-local; retain raw body for maintained replay hashing.
     request
         .extensions_mut()
@@ -252,12 +234,10 @@ async fn admit(
             recipients,
         }));
     *request.body_mut() = Body::from(raw);
-    Ok(())
+    Ok(partition)
 }
 
-#[utoipa::path(post,path="/v1/scopes/{scope}/accepted-attachments",
-    params(("scope"=String,Path,description="Authorized Trellis scope"),("idempotency-key"=String,Header,description="Must match idempotencyKey")),
-    request_body=WireRequest,
+#[utoipa::path(post, path = ACCEPTED_ATTACHMENT.path(), request_body = trellis_service_client::AcceptedAttachmentAppendBody,
     responses((status=201,description="Protected event and its checkpoint committed",body=SubstrateAppendResult),(status=400,description="Invalid closed request"),(status=401,description="Authentication refused"),(status=403,description="Exact permission refused"),(status=409,description="Replay or prefix conflict"),(status=503,description="Storage or selected recipient policy unavailable")),tag="events")]
 pub(crate) async fn append(
     State(state): State<TrellisServerState>,

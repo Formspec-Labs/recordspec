@@ -1,130 +1,38 @@
-// Rust guideline compliant 2026-02-21
-//! OpenAPI document generation for the Trellis substrate HTTP API (TWREF-086).
+use utoipa::openapi::tag::TagBuilder;
+use utoipa::openapi::{InfoBuilder, LicenseBuilder, OpenApi, OpenApiBuilder, ServerBuilder};
 
-use axum::Json;
-use serde::Serialize;
-use stack_common_error::{ProblemJson, StackError};
-use trellis_service_client::{
-    AppendActor, ClientAttestation, ComputeContext, ComputeSensitivity, SubstrateAppendBody,
-    SubstrateAppendResult,
-};
-use utoipa::{OpenApi, ToSchema};
-
-/// OpenAPI registry for the Trellis substrate service.
-#[derive(Debug, OpenApi)]
-#[openapi(
-    info(
-        title = "Trellis Substrate API",
-        version = "1.0.0",
-        description = "HTTP boundary for appending events, reading Core exports assembled on request, and retrieving registry projections from the Trellis substrate service.",
-        license(name = "Apache-2.0"),
-    ),
-    servers(
-        (url = "/", description = "Trellis service root."),
-    ),
-    paths(
-        crate::http::append_event,
-        crate::http::reconcile_event,
-        crate::http::seal_completion,
-        crate::external_transport::append,
-        crate::http::head_bundle,
-        crate::http::pinned_bundle,
-        crate::http::signing_key_registry,
-        crate::http::event_type_registry,
-        openapi_json,
-    ),
-    components(schemas(
-        AppendActor,
-        trellis_service_client::AppendReconciliationRequest,
-        trellis_service_client::AppendReconciliation,
-        trellis_service_client::ReconciliationUnknown,
-        trellis_service_client::CompletionRequest,
-        crate::external_transport::WireRequest,
-        crate::external_transport::WireActor,
-        ClientAttestation,
-        ComputeContext,
-        ComputeSensitivity,
-        EventTypeRegistryEntry,
-        EventTypeRegistryView,
-        OpenApiDocument,
-        ProblemJson,
-        SubstrateAppendBody,
-        SubstrateAppendResult,
-    )),
-    tags(
-        (name = "events", description = "Append proof-bearing events into a Trellis scope."),
-        (name = "bundles", description = "Read Trellis export bundles by scope and checkpoint."),
-        (name = "registries", description = "Read registry snapshots bound into Trellis bundles."),
-        (name = "meta", description = "API description endpoints."),
-    ),
-)]
-pub struct TrellisServerOpenApi;
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct EventTypeRegistryEntry {
-    pub(crate) event_type: String,
-    pub(crate) schema_ref: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct EventTypeRegistryView {
-    pub(crate) registry_version: String,
-    pub(crate) event_types: Vec<EventTypeRegistryEntry>,
-}
-
-#[derive(Clone, Debug, Serialize, ToSchema)]
-pub(crate) struct OpenApiDocument {
-    pub(crate) openapi: String,
-    pub(crate) info: serde_json::Value,
-    pub(crate) paths: serde_json::Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) components: Option<serde_json::Value>,
-}
-
-/// Serves the OpenAPI document as JSON.
-#[utoipa::path(
-    get,
-    path = "/openapi.json",
-    responses(
-        (status = 200, description = "OpenAPI specification document.", body = OpenApiDocument)
-    ),
-    tag = "meta",
-    operation_id = "openapi_json",
-)]
-pub async fn openapi_json() -> Result<Json<serde_json::Value>, StackError> {
-    serde_json::to_value(TrellisServerOpenApi::openapi())
-        .map(Json)
-        .map_err(|error| StackError::internal(format!("OpenAPI serialization failed: {error}")))
+/// The document skeleton every route declaration is added to.
+pub(crate) fn base_document() -> OpenApi {
+    OpenApiBuilder::new()
+        .info(
+            InfoBuilder::new()
+                .title("Trellis Substrate API")
+                .version("1.0.0")
+                .description(Some("HTTP boundary for appending events, reading Core exports assembled on request, and retrieving registry projections from the Trellis substrate service."))
+                .license(Some(LicenseBuilder::new().name("Apache-2.0").build()))
+                .build(),
+        )
+        .servers(Some([ServerBuilder::new()
+            .url("/")
+            .description(Some("Trellis service root."))
+            .build()]))
+        .tags(Some([
+            TagBuilder::new().name("events").description(Some("Append proof-bearing events into a Trellis scope.")).build(),
+            TagBuilder::new().name("bundles").description(Some("Read Trellis export bundles by scope and checkpoint.")).build(),
+            TagBuilder::new().name("registries").description(Some("Read registry snapshots bound into Trellis bundles.")).build(),
+        ]))
+        .build()
 }
 
 #[cfg(test)]
 mod tests {
     use std::fs;
 
-    use utoipa::OpenApi as _;
     use wos_events::{WOS_CANONICAL_EVENT_LITERALS, WOS_NATIVE_PROVENANCE_EVENT_LITERAL};
 
     use crate::test_adapters::{
         FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH, FORMSPEC_RESPONSE_SUBMITTED,
     };
-
-    use super::*;
-
-    /// The committed document is regenerated from code; a route or schema change is a diff of it. Regenerate with
-    /// `cargo run -q -p trellis-server --bin emit_openapi > specs/trellis-server.openapi.json`.
-    #[test]
-    fn committed_openapi_document_equals_the_generated_one() {
-        // Compare parsed values, not bytes: feature unification may reorder serialization.
-        let committed: serde_json::Value =
-            serde_json::from_str(include_str!("../../../specs/trellis-server.openapi.json"))
-                .unwrap();
-        assert!(
-            committed == serde_json::to_value(TrellisServerOpenApi::openapi()).unwrap(),
-            "specs/trellis-server.openapi.json is stale; regenerate it with the command in this test's doc comment"
-        );
-    }
 
     #[test]
     fn openapi_append_contract_matches_json_schema() {
@@ -132,7 +40,7 @@ mod tests {
             .join("../../specs/trellis-http-api.schema.json");
         let schema: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(schema_path).expect("schema file")).unwrap();
-        let openapi = serde_json::to_value(TrellisServerOpenApi::openapi()).unwrap();
+        let openapi = serde_json::to_value(crate::tests::documents_of_test_state().stack).unwrap();
         let schema_events = schema["$defs"]["EventType"]["enum"]
             .as_array()
             .expect("schema EventType enum");
@@ -178,7 +86,7 @@ mod tests {
 
     #[test]
     fn openapi_registry_declares_trellis_append_response_shape() {
-        let doc = serde_json::to_value(TrellisServerOpenApi::openapi()).unwrap();
+        let doc = serde_json::to_value(crate::tests::documents_of_test_state().stack).unwrap();
         let schemas = doc["components"]["schemas"].as_object().unwrap();
         let append_properties = schemas["SubstrateAppendResult"]["properties"]
             .as_object()

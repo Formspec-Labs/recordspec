@@ -55,15 +55,6 @@ class TestCheckHttpApiSchema(unittest.TestCase):
             msg=errors,
         )
 
-    def test_given_missing_client_route_fragment_when_check_operations_then_error_emitted(self) -> None:
-        errors: list[str] = []
-        client_source = self.client_source.replace("/v1/scopes/{}/events", "/removed")
-        self.module.check_operations(self.schema, self.server_source, client_source, errors)
-        self.assertTrue(
-            any("trellis-service-client is missing route fragment" in error for error in errors),
-            msg=errors,
-        )
-
     def test_given_schema_missing_wos_event_when_check_defs_then_error_emitted(self) -> None:
         schema = self.module.read_json(self.module.SCHEMA_PATH)
         event_types = list(schema["$defs"]["EventType"]["enum"])

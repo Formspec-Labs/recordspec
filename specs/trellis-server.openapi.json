@@ -1,553 +1,40 @@
 {
-  "openapi": "3.1.0",
-  "info": {
-    "title": "Trellis Substrate API",
-    "description": "HTTP boundary for appending events, reading Core exports assembled on request, and retrieving registry projections from the Trellis substrate service.",
-    "license": {
-      "name": "Apache-2.0"
-    },
-    "version": "1.0.0"
-  },
-  "servers": [
-    {
-      "url": "/",
-      "description": "Trellis service root."
-    }
-  ],
-  "paths": {
-    "/openapi.json": {
-      "get": {
-        "tags": [
-          "meta"
-        ],
-        "summary": "Serves the OpenAPI document as JSON.",
-        "operationId": "openapi_json",
-        "responses": {
-          "200": {
-            "description": "OpenAPI specification document.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/OpenApiDocument"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/scopes/{scope}/accepted-attachments": {
-      "post": {
-        "tags": [
-          "events"
-        ],
-        "operationId": "append",
-        "parameters": [
-          {
-            "name": "scope",
-            "in": "path",
-            "description": "Authorized Trellis scope",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "idempotency-key",
-            "in": "header",
-            "description": "Must match idempotencyKey",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/WireRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "description": "Protected event and its checkpoint committed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SubstrateAppendResult"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid closed request"
-          },
-          "401": {
-            "description": "Authentication refused"
-          },
-          "403": {
-            "description": "Exact permission refused"
-          },
-          "409": {
-            "description": "Replay or prefix conflict"
-          },
-          "503": {
-            "description": "Storage or selected recipient policy unavailable"
-          }
-        }
-      }
-    },
-    "/v1/scopes/{scope}/bundles/head": {
-      "get": {
-        "tags": [
-          "bundles"
-        ],
-        "operationId": "getHeadBundle",
-        "parameters": [
-          {
-            "name": "scope",
-            "in": "path",
-            "description": "Trellis ledger scope.",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "The Core section 18 export at the head checkpoint, assembled on request under Read.",
-            "content": {
-              "application/zip": {}
-            }
-          },
-          "403": {
-            "description": "Current Read refused.",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Scope has no events.",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Stored rows or a retained Source batch contradict themselves.",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Ledger or artifact store unavailable.",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/scopes/{scope}/bundles/{checkpointDigest}": {
-      "get": {
-        "tags": [
-          "bundles"
-        ],
-        "operationId": "getBundleByCheckpointDigest",
-        "parameters": [
-          {
-            "name": "scope",
-            "in": "path",
-            "description": "Trellis ledger scope.",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "checkpointDigest",
-            "in": "path",
-            "description": "Checkpoint digest in `sha256:<64 hex>` form.",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "The Core section 18 export at the pinned checkpoint, assembled on request under Read.",
-            "content": {
-              "application/zip": {}
-            }
-          },
-          "400": {
-            "description": "Invalid checkpoint digest.",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "No checkpoint with that digest in the scope.",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Stored rows or a retained Source batch contradict themselves.",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Ledger or artifact store unavailable.",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/scopes/{scope}/completion": {
-      "post": {
-        "tags": [
-          "events"
-        ],
-        "operationId": "seal_completion",
-        "parameters": [
-          {
-            "name": "scope",
-            "in": "path",
-            "description": "Authorized ledger scope",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "idempotency-key",
-            "in": "header",
-            "description": "Must match closed request",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CompletionRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "description": "Certificate and archive retained",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SubstrateAppendResult"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Closed trigger or selection refused, including a status or impact outside the vocabulary"
-          },
-          "401": {
-            "description": "Current authentication refused"
-          },
-          "403": {
-            "description": "Current permission refused, or the caller is not the configured publisher"
-          },
-          "409": {
-            "description": "Snapshot, signing-evidence, different-principal or replay conflict"
-          },
-          "503": {
-            "description": "Composition not selected or dependency unavailable"
-          }
-        }
-      }
-    },
-    "/v1/scopes/{scope}/events": {
-      "post": {
-        "tags": [
-          "events"
-        ],
-        "operationId": "appendEvent",
-        "parameters": [
-          {
-            "name": "scope",
-            "in": "path",
-            "description": "Trellis ledger scope.",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "idempotency-key",
-            "in": "header",
-            "description": "HTTP replay key; must match body idempotencyKey.",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SubstrateAppendBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "description": "Event and its checkpoint committed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SubstrateAppendResult"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid append request.",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Service token rejected.",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Scope action forbidden.",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Idempotency key or sequence conflict.",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Substrate dependency unavailable.",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/scopes/{scope}/events/reconcile": {
-      "post": {
-        "tags": [
-          "events"
-        ],
-        "summary": "Looks up append identity with current read authority and no publication effects.",
-        "operationId": "reconcileEvent",
-        "parameters": [
-          {
-            "name": "scope",
-            "in": "path",
-            "description": "Authorized ledger scope",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AppendReconciliationRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Read-point disposition; lookup never appends or publishes",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AppendReconciliation"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid lookup identity"
-          },
-          "401": {
-            "description": "Current authentication refused"
-          },
-          "403": {
-            "description": "Current scope read permission refused"
-          }
-        }
-      }
-    },
-    "/v1/scopes/{scope}/registries/event-types": {
-      "get": {
-        "tags": [
-          "registries"
-        ],
-        "operationId": "getEventTypeRegistry",
-        "parameters": [
-          {
-            "name": "scope",
-            "in": "path",
-            "description": "Trellis ledger scope.",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Event-type registry projection.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/EventTypeRegistryView"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Registry unavailable.",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/scopes/{scope}/registries/signing-keys": {
-      "get": {
-        "tags": [
-          "registries"
-        ],
-        "operationId": "getSigningKeyRegistry",
-        "parameters": [
-          {
-            "name": "scope",
-            "in": "path",
-            "description": "Trellis ledger scope.",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "CBOR signing-key registry snapshot.",
-            "content": {
-              "application/cbor": {}
-            }
-          },
-          "503": {
-            "description": "Registry unavailable.",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  },
   "components": {
     "schemas": {
-      "AppendActor": {
-        "type": "object",
-        "description": "Actor block carried by the Trellis append wire body.",
+      "AcceptedAttachmentAppendBody": {
+        "additionalProperties": false,
+        "description": "Original attachment and accepted descriptor sent to the protected append route.\n\nThe server selects protection, recipients and compute disclosure. The descriptor\nremains generic JSON here; the server validates its closed domain schema and\nthe authenticated caller's authority. `original_bytes` uses standard padded Base64.",
+        "properties": {
+          "actor": {
+            "$ref": "#/components/schemas/ClosedAttachmentActor"
+          },
+          "descriptor": {
+            "description": "Accepted Source descriptor object; serialized metadata is limited to 64 KiB and the server validates its closed domain schema.",
+            "type": "object"
+          },
+          "idempotencyKey": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "originalBytes": {
+            "description": "Standard padded Base64 for one nonempty original, bounded to 1 MiB decoded.",
+            "format": "byte",
+            "maxLength": 1398104,
+            "minLength": 4,
+            "type": "string"
+          }
+        },
         "required": [
-          "kind",
-          "subject"
+          "idempotencyKey",
+          "actor",
+          "descriptor",
+          "originalBytes"
         ],
+        "type": "object"
+      },
+      "AppendActor": {
+        "description": "Actor block carried by the Trellis append wire body.",
         "properties": {
           "kind": {
             "type": "string"
@@ -555,53 +42,54 @@
           "subject": {
             "type": "string"
           }
-        }
+        },
+        "required": [
+          "kind",
+          "subject"
+        ],
+        "type": "object"
       },
       "AppendReconciliation": {
+        "description": "Read-only disposition of one original append identity.\n\nAbsence holds only at the reported read point, never for future sends. A committed event\nwithout a complete verified retained publication is unknown, not absent. JSON receipt\nfields are not an independent offline proof; consumers retain their existing proof checks.",
         "oneOf": [
           {
-            "type": "object",
-            "required": [
-              "receipt",
-              "status"
-            ],
             "properties": {
               "receipt": {
                 "$ref": "#/components/schemas/SubstrateAppendResult"
               },
               "status": {
-                "type": "string",
                 "enum": [
                   "committed"
-                ]
+                ],
+                "type": "string"
               }
-            }
-          },
-          {
-            "type": "object",
+            },
             "required": [
+              "receipt",
               "status"
             ],
+            "type": "object"
+          },
+          {
             "properties": {
               "status": {
-                "type": "string",
                 "enum": [
                   "conflict"
-                ]
+                ],
+                "type": "string"
               }
-            }
-          },
-          {
-            "type": "object",
+            },
             "required": [
-              "eventCount",
               "status"
             ],
+            "type": "object"
+          },
+          {
             "properties": {
               "eventCount": {
-                "type": "integer",
                 "format": "int64",
-                "minimum": 0
+                "minimum": 0,
+                "type": "integer"
               },
               "lastEventHash": {
                 "type": [
@@ -610,41 +98,41 @@
                 ]
               },
               "status": {
-                "type": "string",
                 "enum": [
                   "absent"
-                ]
+                ],
+                "type": "string"
               }
-            }
-          },
-          {
-            "type": "object",
+            },
             "required": [
-              "reason",
+              "eventCount",
               "status"
             ],
+            "type": "object"
+          },
+          {
             "properties": {
               "reason": {
                 "$ref": "#/components/schemas/ReconciliationUnknown"
               },
               "status": {
-                "type": "string",
                 "enum": [
                   "unknown"
-                ]
+                ],
+                "type": "string"
               }
-            }
+            },
+            "required": [
+              "reason",
+              "status"
+            ],
+            "type": "object"
           }
-        ],
-        "description": "Read-only disposition of one original append identity.\n\nAbsence holds only at the reported read point, never for future sends. A committed event\nwithout a complete verified retained publication is unknown, not absent. JSON receipt\nfields are not an independent offline proof; consumers retain their existing proof checks."
+        ]
       },
       "AppendReconciliationRequest": {
-        "type": "object",
+        "additionalProperties": false,
         "description": "Exact retained identity to reconcile: an event type and idempotency key, plus either the\ncanonical payload hash or, for the completion seal, the certificate id.\n\nThe seal's payload is the HTML Trellis renders, so its caller cannot compute a content\nhash: a [`COMPLETION_EVENT`] lookup names the `certificateId` instead, and every other event\ntype names the `contentHash`. Exactly one of the two is present. Actor, compute disclosure,\nthe Source-content claim and the original HTTP body digest are not retained replay identity.",
-        "required": [
-          "eventType",
-          "idempotencyKey"
-        ],
         "properties": {
           "certificateId": {
             "type": [
@@ -653,15 +141,15 @@
             ]
           },
           "contentHash": {
+            "items": {
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            },
             "type": [
               "array",
               "null"
-            ],
-            "items": {
-              "type": "integer",
-              "format": "int32",
-              "minimum": 0
-            }
+            ]
           },
           "eventType": {
             "type": "string"
@@ -670,15 +158,14 @@
             "type": "string"
           }
         },
-        "additionalProperties": false
+        "required": [
+          "eventType",
+          "idempotencyKey"
+        ],
+        "type": "object"
       },
       "ClientAttestation": {
-        "type": "object",
         "description": "Optional direct-client attestation block.\n\n**Trellis-server (2026-05-15):** Requests that include this field are rejected with\n`400`; `cose_sign1` is not cryptographically verified yet. Omit the field until\nverification lands (TWREF-0103). Durable deployments without `TRELLIS_PERMISSIVE_SCOPE_AUTH`\nuse the same HTTP admission as tests (TWREF-022 narrowing).",
-        "required": [
-          "kid",
-          "coseSign1"
-        ],
         "properties": {
           "coseSign1": {
             "type": "string"
@@ -686,16 +173,35 @@
           "kid": {
             "type": "string"
           }
-        }
+        },
+        "required": [
+          "kid",
+          "coseSign1"
+        ],
+        "type": "object"
+      },
+      "ClosedAttachmentActor": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "enum": [
+              "service"
+            ],
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "subject"
+        ],
+        "type": "object"
       },
       "CompletionAttestor": {
-        "type": "object",
+        "additionalProperties": false,
         "description": "Public operator authority the owner requires to attest the certificate.",
-        "required": [
-          "authority",
-          "authorityClass",
-          "publicKey"
-        ],
         "properties": {
           "authority": {
             "type": "string"
@@ -707,18 +213,16 @@
             "type": "string"
           }
         },
-        "additionalProperties": false
+        "required": [
+          "authority",
+          "authorityClass",
+          "publicKey"
+        ],
+        "type": "object"
       },
       "CompletionRequest": {
-        "type": "object",
+        "additionalProperties": false,
         "description": "Seal trigger for an exact prefix, carrying the product's selection.",
-        "required": [
-          "idempotencyKey",
-          "certificateId",
-          "expectedHead",
-          "signingEvents",
-          "selection"
-        ],
         "properties": {
           "certificateId": {
             "type": "string"
@@ -733,37 +237,36 @@
             "$ref": "#/components/schemas/CompletionSelection"
           },
           "signingEvents": {
-            "type": "array",
             "items": {
               "type": "string"
-            }
+            },
+            "type": "array"
           }
         },
-        "additionalProperties": false
+        "required": [
+          "idempotencyKey",
+          "certificateId",
+          "expectedHead",
+          "signingEvents",
+          "selection"
+        ],
+        "type": "object"
       },
       "CompletionSelection": {
-        "type": "object",
+        "additionalProperties": false,
         "description": "Owning facts from one current, complete, consistently read case snapshot.\n\nThe product computes this under its own permission checks and sends it in the seal\nbody. `workflow_status` describes processing disposition and does not imply approval.",
-        "required": [
-          "caseRef",
-          "workflowRef",
-          "workflowStatus",
-          "completedAt",
-          "signerLabels",
-          "requiredAttestors"
-        ],
         "properties": {
           "caseRef": {
             "type": "string"
           },
           "completedAt": {
-            "type": "array",
+            "description": "`[unix seconds, subsecond nanoseconds]`.",
             "items": {
-              "type": "integer",
               "format": "int64",
-              "minimum": 0
+              "minimum": 0,
+              "type": "integer"
             },
-            "description": "`[unix seconds, subsecond nanoseconds]`."
+            "type": "array"
           },
           "impactLevel": {
             "type": [
@@ -772,16 +275,16 @@
             ]
           },
           "requiredAttestors": {
-            "type": "array",
             "items": {
               "$ref": "#/components/schemas/CompletionAttestor"
-            }
+            },
+            "type": "array"
           },
           "signerLabels": {
-            "type": "array",
             "items": {
               "$ref": "#/components/schemas/CompletionSignerLabel"
-            }
+            },
+            "type": "array"
           },
           "workflowRef": {
             "type": "string"
@@ -790,15 +293,19 @@
             "type": "string"
           }
         },
-        "additionalProperties": false
+        "required": [
+          "caseRef",
+          "workflowRef",
+          "workflowStatus",
+          "completedAt",
+          "signerLabels",
+          "requiredAttestors"
+        ],
+        "type": "object"
       },
       "CompletionSignerLabel": {
-        "type": "object",
+        "additionalProperties": false,
         "description": "Disclosure label for one retained signing event.",
-        "required": [
-          "signingEvent",
-          "displayName"
-        ],
         "properties": {
           "displayName": {
             "type": "string"
@@ -813,16 +320,14 @@
             "type": "string"
           }
         },
-        "additionalProperties": false
+        "required": [
+          "signingEvent",
+          "displayName"
+        ],
+        "type": "object"
       },
       "ComputeContext": {
-        "type": "object",
         "description": "Required delegated-compute disclosure context for append producers.",
-        "required": [
-          "declarationId",
-          "actor",
-          "sensitivity"
-        ],
         "properties": {
           "actor": {
             "type": "string"
@@ -833,179 +338,156 @@
           "sensitivity": {
             "$ref": "#/components/schemas/ComputeSensitivity"
           }
-        }
+        },
+        "required": [
+          "declarationId",
+          "actor",
+          "sensitivity"
+        ],
+        "type": "object"
       },
       "ComputeSensitivity": {
-        "type": "string",
         "description": "Sensitivity class disclosed for a producer's compute path.",
         "enum": [
           "publicMetadata",
           "providerReadable",
           "readerHeld",
           "restricted"
-        ]
+        ],
+        "type": "string"
       },
       "ErrorCode": {
-        "type": "string",
-        "description": "Stable machine-readable stack error code. Prefixes are governed by ADR 0092a.\n\n <details><summary>JSON schema</summary>\n\n ```json\n{\n  \"description\": \"Stable machine-readable stack error code. Prefixes are governed by ADR 0092a.\",\n  \"examples\": [\n    \"WOS-1404\",\n    \"FORMSPEC-4001\",\n    \"STUDIO-4091\",\n    \"INFRA-5000\"\n  ],\n  \"type\": \"string\",\n  \"pattern\": \"^[A-Z]+-\\\\d{4}$\"\n}\n ```\n </details>"
+        "description": "Stable machine-readable stack error code. Prefixes are governed by ADR 0092a.\n\n <details><summary>JSON schema</summary>\n\n ```json\n{\n  \"description\": \"Stable machine-readable stack error code. Prefixes are governed by ADR 0092a.\",\n  \"examples\": [\n    \"WOS-1404\",\n    \"FORMSPEC-4001\",\n    \"STUDIO-4091\",\n    \"INFRA-5000\"\n  ],\n  \"type\": \"string\",\n  \"pattern\": \"^[A-Z]+-\\\\d{4}$\"\n}\n ```\n </details>",
+        "type": "string"
       },
       "EventTypeRegistryEntry": {
-        "type": "object",
+        "description": "One event type in the registry projection.",
+        "properties": {
+          "eventType": {
+            "description": "The event type literal.",
+            "type": "string"
+          },
+          "schemaRef": {
+            "description": "Reference to the schema that governs its payload.",
+            "type": "string"
+          }
+        },
         "required": [
           "eventType",
           "schemaRef"
         ],
-        "properties": {
-          "eventType": {
-            "type": "string"
-          },
-          "schemaRef": {
-            "type": "string"
-          }
-        }
+        "type": "object"
       },
       "EventTypeRegistryView": {
-        "type": "object",
+        "description": "The event-type registry projection, `GET .../registries/event-types`.",
+        "properties": {
+          "eventTypes": {
+            "description": "Registered event types.",
+            "items": {
+              "$ref": "#/components/schemas/EventTypeRegistryEntry"
+            },
+            "type": "array"
+          },
+          "registryVersion": {
+            "description": "Registry version.",
+            "type": "string"
+          }
+        },
         "required": [
           "registryVersion",
           "eventTypes"
         ],
-        "properties": {
-          "eventTypes": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/EventTypeRegistryEntry"
-            }
-          },
-          "registryVersion": {
-            "type": "string"
-          }
-        }
-      },
-      "OpenApiDocument": {
-        "type": "object",
-        "required": [
-          "openapi",
-          "info",
-          "paths"
-        ],
-        "properties": {
-          "components": {},
-          "info": {},
-          "openapi": {
-            "type": "string"
-          },
-          "paths": {}
-        }
+        "type": "object"
       },
       "Problem": {
-        "type": "object",
+        "additionalProperties": false,
         "description": "RFC 7807 problem details response with stack-generic machine code and optional context.\n\n <details><summary>JSON schema</summary>\n\n ```json\n{\n  \"description\": \"RFC 7807 problem details response with stack-generic machine code and optional context.\",\n  \"type\": \"object\",\n  \"required\": [\n    \"error_code\",\n    \"status\",\n    \"title\",\n    \"type\"\n  ],\n  \"properties\": {\n    \"context\": {\n      \"description\": \"Problem-specific diagnostic fields.\",\n      \"type\": \"object\",\n      \"additionalProperties\": true\n    },\n    \"detail\": {\n      \"description\": \"Human-readable detail specific to this occurrence.\",\n      \"examples\": [\n        \"No workflow process exists for the requested identifier.\"\n      ],\n      \"type\": \"string\",\n      \"x-wos\": {\n        \"openStringKind\": \"prose\"\n      }\n    },\n    \"error_code\": {\n      \"description\": \"Stable machine-readable stack error code.\",\n      \"examples\": [\n        \"WOS-1404\"\n      ],\n      \"$ref\": \"#/$defs/ErrorCode\"\n    },\n    \"instance\": {\n      \"description\": \"URI reference for the affected resource when a single resource caused the problem.\",\n      \"type\": \"string\",\n      \"format\": \"uri-reference\"\n    },\n    \"status\": {\n      \"description\": \"HTTP status code generated by the server for this problem.\",\n      \"examples\": [\n        404\n      ],\n      \"type\": \"integer\",\n      \"maximum\": 599.0,\n      \"minimum\": 400.0\n    },\n    \"title\": {\n      \"description\": \"Short human-readable summary of this problem type.\",\n      \"examples\": [\n        \"Resource not found\"\n      ],\n      \"type\": \"string\",\n      \"x-wos\": {\n        \"openStringKind\": \"prose\"\n      }\n    },\n    \"type\": {\n      \"description\": \"Dereferenceable URI for the documented error type.\",\n      \"examples\": [\n        \"https://schemas.formspec.io/wos-api/errors/WOS-1404\"\n      ],\n      \"type\": \"string\",\n      \"format\": \"uri-reference\"\n    }\n  },\n  \"additionalProperties\": false\n}\n ```\n </details>",
-        "required": [
-          "error_code",
-          "status",
-          "title",
-          "type"
-        ],
         "properties": {
           "context": {
-            "type": "object",
-            "description": "Problem-specific diagnostic fields.",
             "additionalProperties": {},
+            "description": "Problem-specific diagnostic fields.",
             "propertyNames": {
               "type": "string"
-            }
+            },
+            "type": "object"
           },
           "detail": {
+            "description": "Human-readable detail specific to this occurrence.",
             "type": [
               "string",
               "null"
-            ],
-            "description": "Human-readable detail specific to this occurrence."
+            ]
           },
           "error_code": {
             "$ref": "#/components/schemas/ErrorCode",
             "description": "Stable machine-readable stack error code."
           },
           "instance": {
+            "description": "URI reference for the affected resource when a single resource caused the problem.",
             "type": [
               "string",
               "null"
-            ],
-            "description": "URI reference for the affected resource when a single resource caused the problem."
+            ]
           },
           "status": {
-            "type": "integer",
+            "description": "HTTP status code generated by the server for this problem.",
             "format": "int64",
-            "description": "HTTP status code generated by the server for this problem."
+            "type": "integer"
           },
           "title": {
-            "type": "string",
-            "description": "Short human-readable summary of this problem type."
+            "description": "Short human-readable summary of this problem type.",
+            "type": "string"
           },
           "type": {
-            "type": "string",
-            "description": "Dereferenceable URI for the documented error type."
+            "description": "Dereferenceable URI for the documented error type.",
+            "type": "string"
           }
         },
-        "additionalProperties": false
+        "required": [
+          "error_code",
+          "status",
+          "title",
+          "type"
+        ],
+        "type": "object"
       },
       "ReconciliationUnknown": {
-        "type": "string",
         "description": "Why lookup cannot establish a complete verified receipt or read point.",
         "enum": [
           "storeUnavailable",
           "receiptUnavailable",
           "verificationFailed"
-        ]
+        ],
+        "type": "string"
       },
       "SourceContentClaim": {
-        "type": "object",
+        "additionalProperties": false,
         "description": "What WOS asserts about the batch object it wrote, built once at record build.\n\nEvery append attempt sends it unchanged in `SubstrateAppendBody::source_content`. The\nobject's address is not part of it: Trellis derives the key from its own tenant scope and\n`selection.preparation_key`. `hash` guards the stored bytes and `preparation_key` their meaning.",
-        "required": [
-          "hash",
-          "size",
-          "selection"
-        ],
         "properties": {
           "hash": {
-            "type": "string",
-            "description": "Lowercase hex SHA-256 of the exact stored object bytes."
+            "description": "Lowercase hex SHA-256 of the exact stored object bytes.",
+            "type": "string"
           },
           "selection": {
             "$ref": "#/components/schemas/SourceContentSelection"
           },
           "size": {
-            "type": "integer",
-            "format": "int64",
             "description": "Byte length of the stored object; bounds the read.",
-            "minimum": 0
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
           }
         },
-        "additionalProperties": false
+        "required": [
+          "hash",
+          "size",
+          "selection"
+        ],
+        "type": "object"
       },
       "SourceContentIdentityV1": {
-        "type": "object",
+        "additionalProperties": false,
         "description": "Exact native and independently selected provider identity for a committed batch.",
-        "required": [
-          "caseLedgerId",
-          "processId",
-          "nativePrefixDigest",
-          "reservedCloseoutRecordId",
-          "reservedNativeCloseoutRecordSha256",
-          "providerSelectionHash",
-          "nativePolicyHash",
-          "recipientPolicyHash",
-          "recipientSetSha256",
-          "workflowUrl",
-          "workflowVersion",
-          "tenantId",
-          "workspaceId",
-          "environmentId",
-          "cellId",
-          "sourceId",
-          "serviceBindingId"
-        ],
         "properties": {
           "caseLedgerId": {
             "type": "string"
@@ -1017,59 +499,59 @@
             "type": "string"
           },
           "nativePolicyHash": {
-            "type": "array",
             "items": {
-              "type": "integer",
               "format": "int32",
-              "minimum": 0
-            }
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
           },
           "nativePrefixDigest": {
-            "type": "array",
             "items": {
-              "type": "integer",
               "format": "int32",
-              "minimum": 0
-            }
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
           },
           "processId": {
             "type": "string"
           },
           "providerSelectionHash": {
-            "type": "array",
             "items": {
-              "type": "integer",
               "format": "int32",
-              "minimum": 0
-            }
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
           },
           "recipientPolicyHash": {
-            "type": "array",
             "items": {
-              "type": "integer",
               "format": "int32",
-              "minimum": 0
-            }
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
           },
           "recipientSetSha256": {
-            "type": "array",
+            "description": "WOS-derived digest of the canonical sorted actual recipient IDs and public keys.\n\nThis required identity field distinguishes key rotation under the same\nrecipient policy. Trellis carries and compares the owning digest; it\nneither computes the recipient-set algorithm nor grants read authority.",
             "items": {
-              "type": "integer",
               "format": "int32",
-              "minimum": 0
+              "minimum": 0,
+              "type": "integer"
             },
-            "description": "WOS-derived digest of the canonical sorted actual recipient IDs and public keys.\n\nThis required identity field distinguishes key rotation under the same\nrecipient policy. Trellis carries and compares the owning digest; it\nneither computes the recipient-set algorithm nor grants read authority."
+            "type": "array"
           },
           "reservedCloseoutRecordId": {
             "type": "string"
           },
           "reservedNativeCloseoutRecordSha256": {
-            "type": "array",
             "items": {
-              "type": "integer",
               "format": "int32",
-              "minimum": 0
-            }
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
           },
           "serviceBindingId": {
             "type": "string"
@@ -1090,69 +572,78 @@
             "type": "string"
           }
         },
-        "additionalProperties": false
+        "required": [
+          "caseLedgerId",
+          "processId",
+          "nativePrefixDigest",
+          "reservedCloseoutRecordId",
+          "reservedNativeCloseoutRecordSha256",
+          "providerSelectionHash",
+          "nativePolicyHash",
+          "recipientPolicyHash",
+          "recipientSetSha256",
+          "workflowUrl",
+          "workflowVersion",
+          "tenantId",
+          "workspaceId",
+          "environmentId",
+          "cellId",
+          "sourceId",
+          "serviceBindingId"
+        ],
+        "type": "object"
       },
       "SourceContentRecordPins": {
-        "type": "object",
+        "additionalProperties": false,
         "description": "Independently admitted public identity for one protected record.",
-        "required": [
-          "role",
-          "occurrenceEventHash",
-          "sourcePublicationHash",
-          "publicSigningPolicyHash",
-          "evaluationRegistrationHash",
-          "recordSha256",
-          "memberContentHash",
-          "locatorSha256"
-        ],
         "properties": {
           "evaluationRegistrationHash": {
-            "type": "array",
             "items": {
-              "type": "integer",
               "format": "int32",
-              "minimum": 0
-            }
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
           },
           "locatorSha256": {
-            "type": "array",
             "items": {
-              "type": "integer",
               "format": "int32",
-              "minimum": 0
-            }
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
           },
           "memberContentHash": {
-            "type": "array",
             "items": {
-              "type": "integer",
               "format": "int32",
-              "minimum": 0
-            }
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
           },
           "occurrenceEventHash": {
-            "type": "array",
             "items": {
-              "type": "integer",
               "format": "int32",
-              "minimum": 0
-            }
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
           },
           "publicSigningPolicyHash": {
-            "type": "array",
             "items": {
-              "type": "integer",
               "format": "int32",
-              "minimum": 0
-            }
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
           },
           "recordSha256": {
-            "type": "array",
             "items": {
-              "type": "integer",
               "format": "int32",
-              "minimum": 0
-            }
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
           },
           "responseId": {
             "type": [
@@ -1164,28 +655,92 @@
             "$ref": "#/components/schemas/SourceContentRoleV1"
           },
           "sourcePublicationHash": {
-            "type": "array",
             "items": {
-              "type": "integer",
               "format": "int32",
-              "minimum": 0
-            }
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
           }
         },
-        "additionalProperties": false
+        "required": [
+          "role",
+          "occurrenceEventHash",
+          "sourcePublicationHash",
+          "publicSigningPolicyHash",
+          "evaluationRegistrationHash",
+          "recordSha256",
+          "memberContentHash",
+          "locatorSha256"
+        ],
+        "type": "object"
       },
       "SourceContentRoleV1": {
-        "type": "string",
         "description": "Owning content family within the retained batch.",
         "enum": [
           "originalResponse",
           "correctionResponse",
           "taskProofPackage"
-        ]
+        ],
+        "type": "string"
       },
       "SourceContentSelection": {
-        "type": "object",
+        "additionalProperties": false,
         "description": "Independently admitted selection, never decoded from the returned batch.",
+        "properties": {
+          "identity": {
+            "$ref": "#/components/schemas/SourceContentIdentityV1"
+          },
+          "intakeCatalogSha256": {
+            "items": {
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "nativePrefixEventHashes": {
+            "description": "Complete ordered authenticated prefix before selected photos and closeout.\nIncludes independently bound WOS and Source events in their original order.\n`identity.native_prefix_digest` binds this entire prefix; the selected photo\nevents and reserved closeout follow it.",
+            "items": {
+              "items": {
+                "format": "int32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "type": "array"
+          },
+          "orderedPhotoEventHashes": {
+            "items": {
+              "items": {
+                "format": "int32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "type": "array"
+          },
+          "preparationKey": {
+            "type": "string"
+          },
+          "recordPins": {
+            "description": "Exact public inventory admitted by the existing owning selection.",
+            "items": {
+              "$ref": "#/components/schemas/SourceContentRecordPins"
+            },
+            "type": "array"
+          },
+          "taskCatalogSha256": {
+            "items": {
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
+          }
+        },
         "required": [
           "preparationKey",
           "identity",
@@ -1195,72 +750,10 @@
           "taskCatalogSha256",
           "recordPins"
         ],
-        "properties": {
-          "identity": {
-            "$ref": "#/components/schemas/SourceContentIdentityV1"
-          },
-          "intakeCatalogSha256": {
-            "type": "array",
-            "items": {
-              "type": "integer",
-              "format": "int32",
-              "minimum": 0
-            }
-          },
-          "nativePrefixEventHashes": {
-            "type": "array",
-            "items": {
-              "type": "array",
-              "items": {
-                "type": "integer",
-                "format": "int32",
-                "minimum": 0
-              }
-            },
-            "description": "Complete ordered authenticated prefix before selected photos and closeout.\nIncludes independently bound WOS and Source events in their original order.\n`identity.native_prefix_digest` binds this entire prefix; the selected photo\nevents and reserved closeout follow it."
-          },
-          "orderedPhotoEventHashes": {
-            "type": "array",
-            "items": {
-              "type": "array",
-              "items": {
-                "type": "integer",
-                "format": "int32",
-                "minimum": 0
-              }
-            }
-          },
-          "preparationKey": {
-            "type": "string"
-          },
-          "recordPins": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/SourceContentRecordPins"
-            },
-            "description": "Exact public inventory admitted by the existing owning selection."
-          },
-          "taskCatalogSha256": {
-            "type": "array",
-            "items": {
-              "type": "integer",
-              "format": "int32",
-              "minimum": 0
-            }
-          }
-        },
-        "additionalProperties": false
+        "type": "object"
       },
       "SubstrateAppendBody": {
-        "type": "object",
         "description": "JSON body for `POST /v1/scopes/{scope}/events`.",
-        "required": [
-          "eventType",
-          "idempotencyKey",
-          "actor",
-          "payload",
-          "computeContext"
-        ],
         "properties": {
           "actor": {
             "$ref": "#/components/schemas/AppendActor"
@@ -1268,11 +761,11 @@
           "clientAttestation": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/ClientAttestation",
                 "description": "Optional client attestation reserved for direct-signer flows — **omit** for\n`trellis-server` until verification is implemented (see [`ClientAttestation`])."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -1280,7 +773,6 @@
             "$ref": "#/components/schemas/ComputeContext"
           },
           "eventType": {
-            "type": "string",
             "description": "Admitted Trellis append literals: `wos-events` substrate registry plus Formspec appends.",
             "enum": [
               "substrate.append.response_action_session_op_batch",
@@ -1314,7 +806,8 @@
               "wos.kernel.signature_affirmation",
               "wos.kernel.state_transition",
               "wos.provenance.recorded"
-            ]
+            ],
+            "type": "string"
           },
           "idempotencyKey": {
             "type": "string"
@@ -1323,25 +816,26 @@
           "sourceContent": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/SourceContentClaim",
                 "description": "Claim about the prepared Source-content batch object (ADR 0163): the object's hash and\nsize and the selection WOS derived. Trellis reads the object from its own derived key,\nso no address or credential travels. The reconcile lookup identity ignores it."
+              },
+              {
+                "type": "null"
               }
             ]
           }
-        }
+        },
+        "required": [
+          "eventType",
+          "idempotencyKey",
+          "actor",
+          "payload",
+          "computeContext"
+        ],
+        "type": "object"
       },
       "SubstrateAppendResult": {
-        "type": "object",
         "description": "Append response returned by the Trellis service.\n\n`checkpoint_ref` names the signed checkpoint at `sequence + 1`, durable when the response is\nsent. The Core §18 export at that checkpoint (`GET .../bundles/{checkpointDigest}`) is the\nreceipt's proof; nothing is published at append time.",
-        "required": [
-          "eventId",
-          "sequence",
-          "canonicalEventHash",
-          "checkpointRef"
-        ],
         "properties": {
           "canonicalEventHash": {
             "type": "string"
@@ -1359,76 +853,672 @@
             ]
           },
           "sequence": {
-            "type": "integer",
             "format": "int64",
-            "minimum": 0
-          }
-        }
-      },
-      "WireActor": {
-        "type": "object",
-        "required": [
-          "kind",
-          "subject"
-        ],
-        "properties": {
-          "kind": {
-            "type": "string"
-          },
-          "subject": {
-            "type": "string"
+            "minimum": 0,
+            "type": "integer"
           }
         },
-        "additionalProperties": false
-      },
-      "WireRequest": {
-        "type": "object",
         "required": [
-          "idempotencyKey",
-          "actor",
-          "descriptor",
-          "originalBytes"
+          "eventId",
+          "sequence",
+          "canonicalEventHash",
+          "checkpointRef"
         ],
-        "properties": {
-          "actor": {
-            "$ref": "#/components/schemas/WireActor"
-          },
-          "descriptor": {
-            "type": "object",
-            "description": "Accepted Source descriptor object; serialized metadata is limited to 64 KiB and the server validates its closed domain schema."
-          },
-          "idempotencyKey": {
-            "type": "string",
-            "maxLength": 64,
-            "minLength": 1
-          },
-          "originalBytes": {
-            "type": "string",
-            "format": "byte",
-            "maxLength": 1398104,
-            "minLength": 4
-          }
-        },
-        "additionalProperties": false
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "bearerFormat": "JWT",
+        "scheme": "bearer",
+        "type": "http"
       }
     }
   },
+  "info": {
+    "description": "HTTP boundary for appending events, reading Core exports assembled on request, and retrieving registry projections from the Trellis substrate service.",
+    "license": {
+      "name": "Apache-2.0"
+    },
+    "title": "Trellis Substrate API",
+    "version": "1.0.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/v1/scopes/{scope}/accepted-attachments": {
+      "post": {
+        "operationId": "append",
+        "parameters": [
+          {
+            "description": "Trellis ledger scope.",
+            "in": "path",
+            "name": "scope",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Opaque token; keep its exact bytes across retries of the same request.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcceptedAttachmentAppendBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubstrateAppendResult"
+                }
+              }
+            },
+            "description": "Protected event and its checkpoint committed"
+          },
+          "400": {
+            "description": "Invalid closed request"
+          },
+          "401": {
+            "description": "Authentication refused"
+          },
+          "403": {
+            "description": "Exact permission refused"
+          },
+          "409": {
+            "description": "Replay or prefix conflict"
+          },
+          "503": {
+            "description": "Storage or selected recipient policy unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": [
+              "trellis.append"
+            ]
+          }
+        ],
+        "tags": [
+          "events"
+        ],
+        "x-access": {
+          "detail": [
+            "trellis.append"
+          ],
+          "kind": "scope"
+        },
+        "x-max-request-bytes": 2097152
+      }
+    },
+    "/v1/scopes/{scope}/bundles/head": {
+      "get": {
+        "operationId": "getHeadBundle",
+        "parameters": [
+          {
+            "description": "Trellis ledger scope.",
+            "in": "path",
+            "name": "scope",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/zip": {}
+            },
+            "description": "The Core section 18 export at the head checkpoint, assembled on request under Read."
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Current Read refused."
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Scope has no events."
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Stored rows or a retained Source batch contradict themselves."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Ledger or artifact store unavailable."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": [
+              "trellis.read"
+            ]
+          }
+        ],
+        "tags": [
+          "bundles"
+        ],
+        "x-access": {
+          "detail": [
+            "trellis.read"
+          ],
+          "kind": "scope"
+        }
+      }
+    },
+    "/v1/scopes/{scope}/bundles/{checkpointDigest}": {
+      "get": {
+        "operationId": "getBundleByCheckpointDigest",
+        "parameters": [
+          {
+            "description": "Trellis ledger scope.",
+            "in": "path",
+            "name": "scope",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Checkpoint digest in `sha256:<64 hex>` form.",
+            "in": "path",
+            "name": "checkpointDigest",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/zip": {}
+            },
+            "description": "The Core section 18 export at the pinned checkpoint, assembled on request under Read."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Invalid checkpoint digest."
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No checkpoint with that digest in the scope."
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Stored rows or a retained Source batch contradict themselves."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Ledger or artifact store unavailable."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": [
+              "trellis.read"
+            ]
+          }
+        ],
+        "tags": [
+          "bundles"
+        ],
+        "x-access": {
+          "detail": [
+            "trellis.read"
+          ],
+          "kind": "scope"
+        }
+      }
+    },
+    "/v1/scopes/{scope}/completion": {
+      "post": {
+        "operationId": "seal_completion",
+        "parameters": [
+          {
+            "description": "Trellis ledger scope.",
+            "in": "path",
+            "name": "scope",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Opaque token; keep its exact bytes across retries of the same request.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompletionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubstrateAppendResult"
+                }
+              }
+            },
+            "description": "Certificate and archive retained"
+          },
+          "400": {
+            "description": "Closed trigger or selection refused, including a status or impact outside the vocabulary"
+          },
+          "401": {
+            "description": "Current authentication refused"
+          },
+          "403": {
+            "description": "Current permission refused, or the caller is not the configured publisher"
+          },
+          "409": {
+            "description": "Snapshot, signing-evidence, different-principal or replay conflict"
+          },
+          "503": {
+            "description": "Composition not selected or dependency unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": [
+              "trellis.append",
+              "trellis.read"
+            ]
+          }
+        ],
+        "tags": [
+          "events"
+        ],
+        "x-access": {
+          "detail": [
+            "trellis.append",
+            "trellis.read"
+          ],
+          "kind": "scope"
+        },
+        "x-max-request-bytes": 1048576
+      }
+    },
+    "/v1/scopes/{scope}/events": {
+      "post": {
+        "operationId": "appendEvent",
+        "parameters": [
+          {
+            "description": "Trellis ledger scope.",
+            "in": "path",
+            "name": "scope",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Opaque token; keep its exact bytes across retries of the same request.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubstrateAppendBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubstrateAppendResult"
+                }
+              }
+            },
+            "description": "Event and its checkpoint committed."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Invalid append request."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service token rejected."
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Scope action forbidden."
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Idempotency key or sequence conflict."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Substrate dependency unavailable."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": [
+              "trellis.append"
+            ]
+          }
+        ],
+        "tags": [
+          "events"
+        ],
+        "x-access": {
+          "detail": [
+            "trellis.append"
+          ],
+          "kind": "scope"
+        },
+        "x-max-request-bytes": 2097152
+      }
+    },
+    "/v1/scopes/{scope}/events/reconcile": {
+      "post": {
+        "operationId": "reconcileEvent",
+        "parameters": [
+          {
+            "description": "Trellis ledger scope.",
+            "in": "path",
+            "name": "scope",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppendReconciliationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppendReconciliation"
+                }
+              }
+            },
+            "description": "Read-point disposition; lookup never appends or publishes"
+          },
+          "400": {
+            "description": "Invalid lookup identity"
+          },
+          "401": {
+            "description": "Current authentication refused"
+          },
+          "403": {
+            "description": "Current scope read permission refused"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": [
+              "trellis.read"
+            ]
+          }
+        ],
+        "summary": "Looks up append identity with current read authority and no publication effects.",
+        "tags": [
+          "events"
+        ],
+        "x-access": {
+          "detail": [
+            "trellis.read"
+          ],
+          "kind": "scope"
+        },
+        "x-max-request-bytes": 4096
+      }
+    },
+    "/v1/scopes/{scope}/registries/event-types": {
+      "get": {
+        "operationId": "getEventTypeRegistry",
+        "parameters": [
+          {
+            "description": "Trellis ledger scope.",
+            "in": "path",
+            "name": "scope",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventTypeRegistryView"
+                }
+              }
+            },
+            "description": "Event-type registry projection."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Registry unavailable."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": [
+              "trellis.read"
+            ]
+          }
+        ],
+        "tags": [
+          "registries"
+        ],
+        "x-access": {
+          "detail": [
+            "trellis.read"
+          ],
+          "kind": "scope"
+        }
+      }
+    },
+    "/v1/scopes/{scope}/registries/signing-keys": {
+      "get": {
+        "operationId": "getSigningKeyRegistry",
+        "parameters": [
+          {
+            "description": "Trellis ledger scope.",
+            "in": "path",
+            "name": "scope",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/cbor": {}
+            },
+            "description": "CBOR signing-key registry snapshot."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Registry unavailable."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": [
+              "trellis.read"
+            ]
+          }
+        ],
+        "tags": [
+          "registries"
+        ],
+        "x-access": {
+          "detail": [
+            "trellis.read"
+          ],
+          "kind": "scope"
+        }
+      }
+    }
+  },
+  "servers": [
+    {
+      "description": "Trellis service root.",
+      "url": "/"
+    }
+  ],
   "tags": [
     {
-      "name": "events",
-      "description": "Append proof-bearing events into a Trellis scope."
+      "description": "Append proof-bearing events into a Trellis scope.",
+      "name": "events"
     },
     {
-      "name": "bundles",
-      "description": "Read Trellis export bundles by scope and checkpoint."
+      "description": "Read Trellis export bundles by scope and checkpoint.",
+      "name": "bundles"
     },
     {
-      "name": "registries",
-      "description": "Read registry snapshots bound into Trellis bundles."
-    },
-    {
-      "name": "meta",
-      "description": "API description endpoints."
+      "description": "Read registry snapshots bound into Trellis bundles.",
+      "name": "registries"
     }
   ]
 }

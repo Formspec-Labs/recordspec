@@ -15,7 +15,9 @@ mod base64_bytes {
         serializer.serialize_str(&STANDARD.encode(bytes))
     }
 
-    pub(super) fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<u8>, D::Error> {
         STANDARD
             .decode(String::deserialize(deserializer)?)
             .map_err(serde::de::Error::custom)
@@ -268,10 +270,16 @@ pub(crate) mod tests {
         let encoded = serde_json::to_vec(&original).unwrap();
         // Ciphertext near the 8 MiB package bound must fit the 16 MiB batch bound.
         assert!(encoded.len() < MAX_PREPARED_SOURCE_CONTENT_BYTES);
-        assert_eq!(serde_json::from_slice::<PreparedSourceContentBatchV1>(&encoded).unwrap(), original);
+        assert_eq!(
+            serde_json::from_slice::<PreparedSourceContentBatchV1>(&encoded).unwrap(),
+            original
+        );
         let value = serde_json::to_value(&original).unwrap();
         assert!(value["records"][0]["protectedRecordBytes"].is_string());
-        assert_eq!(serde_json::from_value::<PreparedSourceContentBatchV1>(value).unwrap(), original);
+        assert_eq!(
+            serde_json::from_value::<PreparedSourceContentBatchV1>(value).unwrap(),
+            original
+        );
     }
 
     #[test]
@@ -288,7 +296,10 @@ pub(crate) mod tests {
         assert_eq!(value["size"], 1024);
         assert!(value["selection"]["orderedPhotoEventHashes"].is_array());
         assert!(value["selection"]["preparationKey"].is_string());
-        assert_eq!(serde_json::from_value::<SourceContentClaim>(value.clone()).unwrap(), claim());
+        assert_eq!(
+            serde_json::from_value::<SourceContentClaim>(value.clone()).unwrap(),
+            claim()
+        );
         let mut unknown = value;
         unknown["address"] = serde_json::json!("s3://elsewhere/key");
         assert!(serde_json::from_value::<SourceContentClaim>(unknown).is_err());
@@ -345,7 +356,12 @@ pub(crate) mod tests {
             ComputeContext::no_delegated_compute("wos-server"),
         )
         .unwrap();
-        assert!(serde_json::to_value(request.body()).unwrap().get("sourceContent").is_none());
+        assert!(
+            serde_json::to_value(request.body())
+                .unwrap()
+                .get("sourceContent")
+                .is_none()
+        );
         let sourced = request.with_source_content(claim());
         let value = serde_json::to_value(sourced.body()).unwrap();
         assert_eq!(value["sourceContent"]["size"], 1024);

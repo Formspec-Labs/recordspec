@@ -47,7 +47,8 @@ trellis-server-ports = { path = "../trellis-server-ports" }
 trellis-service-client = { path = "../trellis-service-client" }
 trellis-store-postgres-async = { path = "../trellis-store-postgres-async" }
 trellis-types = { path = "../trellis-types" }
-utoipa = "5"
+utoipa = "6"
+utoipa-axum = "0.3"
 
 [dev-dependencies]
 # Tests drive the real adapters; production layering is enforced by deny.toml (dev-deps excluded).

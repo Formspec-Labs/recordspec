@@ -316,7 +316,7 @@ impl TrellisServerState {
         crate::append::AppendCoordinator::new(self)
     }
 
-    pub(crate) async fn authenticate(
+    pub(crate) async fn bearer_identity(
         &self,
         headers: &HeaderMap,
     ) -> Result<AuthenticatedRequest, StackError> {

@@ -3,12 +3,12 @@
 use axum::{
     Json,
     body::{Body, to_bytes},
-    extract::{FromRequest, Path, Request, State},
-    middleware::Next,
+    extract::{FromRequest, FromRequestParts, Path, Request},
     response::{IntoResponse, Response},
 };
 use stack_common_error::{ErrorCode, StackError};
-use stack_common_http::{idempotency::TrustedReplayPartition, tenant::TenantScope};
+use stack_common_http::routes::{Authenticate, Authenticated, Authority, Declared, Requirement};
+use stack_common_http::tenant::TenantScope;
 use trellis_server_ports::{AuthorizedScope, ScopeAction, ScopeAuthorization};
 use trellis_service_client::SubstrateAppendBody;
 
@@ -22,30 +22,87 @@ pub(crate) struct AuthorizedAppend(
     pub(crate) Option<std::sync::Arc<crate::source_content::AdmittedSourceContent>>,
 );
 
-pub(crate) async fn authorize_append(
-    State(state): State<TrellisServerState>,
-    Path(scope): Path<String>,
-    tenant_scope: TenantScope,
-    mut request: Request,
-    next: Next,
-) -> Response {
-    match admit_append(&state, &scope, &tenant_scope, &mut request).await {
-        Ok(selected) => {
-            diag::mark(selected, Stage::ReplayAdmission, Outcome::Enter);
-            let response = next.run(request).await;
-            diag::mark(
-                selected,
-                Stage::ReplayAdmission,
-                if response.status().is_success() {
-                    Outcome::ReturnedOk
-                } else {
-                    Outcome::Refused
-                },
-            );
-            response
-        }
-        Err(response) => response,
+/// What a Trellis route requires of its caller: the scope names the bearer must hold and which
+/// admission runs before the handler. The deployment's `actionScopes` profile may rename the
+/// scopes; these are the names D1 and the shipped profile use.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Admission {
+    /// A bearer that may read the ledger scope.
+    Read,
+    /// A bearer that may append events; the body is admitted and the replay partition chosen
+    /// before replay lookup.
+    AppendEvent,
+    /// A bearer that may append and read, as the completion seal does.
+    SealCompletion,
+    /// A bearer that may append accepted attachments; the body is admitted before replay.
+    AcceptedAttachment,
+}
+
+impl Authority for Admission {
+    fn names(&self) -> Vec<String> {
+        let names: &[&str] = match self {
+            Self::Read => &["trellis.read"],
+            Self::AppendEvent | Self::AcceptedAttachment => &["trellis.append"],
+            Self::SealCompletion => &["trellis.append", "trellis.read"],
+        };
+        names.iter().map(|name| (*name).to_owned()).collect()
     }
+}
+
+#[async_trait::async_trait]
+impl Authenticate<Admission> for TrellisServerState {
+    async fn authenticate(
+        &self,
+        declared: &Declared<Admission>,
+        request: &mut Request,
+    ) -> Result<Authenticated, Response> {
+        match declared.access.requirement() {
+            Requirement::Scope(Admission::AppendEvent) => {
+                let (scope, tenant) = scope_and_tenant(self, request).await?;
+                let partition = admit_append(self, &scope, &tenant, request).await?;
+                Ok(Authenticated {
+                    principal: Some(partition),
+                })
+            }
+            Requirement::Scope(Admission::AcceptedAttachment) => {
+                let (scope, tenant) = scope_and_tenant(self, request).await?;
+                let partition = crate::external_transport::admit(self, scope, &tenant, request)
+                    .await
+                    .map_err(IntoResponse::into_response)?;
+                Ok(Authenticated {
+                    principal: Some(partition),
+                })
+            }
+            Requirement::Scope(Admission::Read | Admission::SealCompletion) => {
+                // The handler authorizes against the ledger scope; the bearer is refused here first.
+                self.bearer_identity(request.headers())
+                    .await
+                    .map_err(IntoResponse::into_response)?;
+                Ok(Authenticated::default())
+            }
+            _ => Err(StackError::internal("Trellis routes declare an admission").into_response()),
+        }
+    }
+}
+
+/// The ledger scope in the matched path and the tenant scope in the headers.
+async fn scope_and_tenant(
+    state: &TrellisServerState,
+    request: &mut Request,
+) -> Result<(String, TenantScope), Response> {
+    let (mut parts, body) = std::mem::replace(request, Request::new(Body::empty())).into_parts();
+    let extracted = async {
+        let Path(scope) = Path::<String>::from_request_parts(&mut parts, &())
+            .await
+            .map_err(IntoResponse::into_response)?;
+        let tenant = TenantScope::from_request_parts(&mut parts, state)
+            .await
+            .map_err(IntoResponse::into_response)?;
+        Ok((scope, tenant))
+    }
+    .await;
+    *request = Request::from_parts(parts, body);
+    extracted
 }
 
 async fn admit_append(
@@ -53,10 +110,10 @@ async fn admit_append(
     scope: &str,
     tenant_scope: &TenantScope,
     request: &mut Request,
-) -> Result<bool, Response> {
+) -> Result<String, Response> {
     let started = std::time::Instant::now();
     let identity = state
-        .authenticate(request.headers())
+        .bearer_identity(request.headers())
         .await
         .map_err(IntoResponse::into_response)?;
     // The claim rides in the body, so the diagnostic flag is known only once it is parsed.
@@ -170,7 +227,7 @@ async fn admit_append(
             let current = diag::observed(
                 selected,
                 Stage::RefreshedGrant,
-                state.authenticate(request.headers()).await,
+                state.bearer_identity(request.headers()).await,
             )
             .map_err(IntoResponse::into_response)?;
             let refreshed = diag::observed(
@@ -208,12 +265,10 @@ async fn admit_append(
         .map_err(|_| StackError::internal("replay partition encoding failed").into_response())?;
     request
         .extensions_mut()
-        .insert(TrustedReplayPartition::new(partition));
-    request
-        .extensions_mut()
         .insert(AuthorizedAppend(body, admitted));
     *request.body_mut() = Body::from(bytes);
-    Ok(selected)
+    diag::mark(selected, Stage::ReplayAdmission, Outcome::Enter);
+    Ok(partition)
 }
 
 pub(crate) async fn authorize_action(
