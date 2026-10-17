@@ -20,12 +20,28 @@ from dataclasses import dataclass, field
 
 
 class CborStrictError(Exception):
-    """Raised on duplicate map keys at any depth, or on trailing bytes."""
+    """Raised on duplicate map keys at any depth, on trailing bytes, or on a reference tag."""
+
+
+class CborReferenceTagError(CborStrictError):
+    """A reference tag (see :data:`REFERENCE_TAGS`) at byte `offset`."""
+
+    def __init__(self, tag: int, offset: int) -> None:
+        super().__init__(f"reference tag {tag} at offset {offset}")
+        self.offset = offset
+
+
+# String-reference (25 / 256) and value-sharing (28 / 29) tags make a decoder
+# resolve one item into another, so the bytes no longer say what they decode to.
+# The canonical profile never emits them and the Rust decoders leave them as
+# tags and refuse them; refuse them here, before any decoder can resolve them.
+REFERENCE_TAGS = frozenset({25, 28, 29, 256})
 
 
 def reject_duplicate_canonical_map_keys(data: bytes) -> None:
-    """Walk `data` and raise on (a) any duplicate map key at any depth or
-    (b) trailing bytes after the root CBOR item.
+    """Walk `data` and raise on (a) any duplicate map key at any depth,
+    (b) trailing bytes after the root CBOR item, or (c) a reference tag
+    (string-reference 25/256, value-sharing 28/29).
 
     Accepts both definite-length and indefinite-length CBOR (defence-in-depth
     against external producers; canonical Trellis bytes never use indefinite
@@ -148,7 +164,9 @@ class _Walker:
 
         if major == 6:
             # tagged item: argument is the tag number, then one nested item.
-            self._read_argument(info)
+            tag, _, _ = self._read_argument(info)
+            if tag in REFERENCE_TAGS:
+                raise CborReferenceTagError(tag, initial_offset)
             self.walk_item()
             return
 

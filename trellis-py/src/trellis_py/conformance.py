@@ -8,7 +8,7 @@ import json
 import sys
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import cbor2
 from cbor2 import CBORTag
@@ -25,7 +25,18 @@ from trellis_py.verify import (
 from trellis_py import verify_wos
 
 
+# `inputs.verifier` value selecting the Source-content publication phase.
+SOURCE_CONTENT_PUBLICATION = "source-content-publication"
+
 WOS_TAMPER_KINDS = {
+    "native_provenance_invalid",
+    "native_provenance_payload_unavailable",
+    "protected_response_native_binding_mismatch",
+    "protected_response_unavailable",
+    "source_original_context_join_invalid",
+    "source_task_catalog_duplicate",
+    "source_task_content_unavailable",
+    "source_task_native_join_mismatch",
     "case_created_event_type_mismatch",
     "case_created_event_unresolved",
     "case_created_handoff_mismatch",
@@ -175,19 +186,32 @@ def _assert_export(root: Path, manifest: dict[str, Any]) -> None:
     # Byte-identity alone says nothing about whether the bytes are a valid
     # export: the labelled outcome is checked by running the verifier on them.
     assert "report" in expected, "export vector must declare [expected.report]"
-    _assert_report_matches_zip(root, expected["report"], expected_zip)
+    _assert_report_matches_zip(root, expected["report"], expected_zip, inputs.get("verifier"))
 
 
 def _assert_verify(root: Path, manifest: dict[str, Any]) -> None:
     inputs = manifest["inputs"]
     expected_report = manifest["expected"]["report"]
-    _assert_report_matches_zip(root, expected_report, (root / inputs["export_zip"]).read_bytes())
+    _assert_report_matches_zip(
+        root, expected_report, (root / inputs["export_zip"]).read_bytes(), inputs.get("verifier")
+    )
+
+
+def _verify_export(export_zip: bytes, verifier: Optional[str]) -> verify_wos.WosVerificationReport:
+    """`verifier` selects a non-default phase; absent means strict verification."""
+    if verifier is None:
+        return verify_wos.verify_export_zip(export_zip)
+    assert verifier == SOURCE_CONTENT_PUBLICATION, f"unknown verifier {verifier!r}"
+    return verify_wos.verify_source_content_publication(export_zip).report
 
 
 def _assert_report_matches_zip(
-    root: Path, expected_report: dict[str, Any], export_zip: bytes
+    root: Path,
+    expected_report: dict[str, Any],
+    export_zip: bytes,
+    verifier: Optional[str] = None,
 ) -> None:
-    wos_report = verify_wos.verify_export_zip(export_zip)
+    wos_report = _verify_export(export_zip, verifier)
     expected_kind = expected_report.get("first_failure_kind")
     if expected_kind in WOS_TAMPER_KINDS:
         _assert_wos_report(root, expected_report, wos_report, expected_kind)

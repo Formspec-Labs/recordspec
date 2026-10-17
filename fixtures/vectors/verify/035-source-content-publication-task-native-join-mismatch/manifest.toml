@@ -1,0 +1,21 @@
+id          = "verify/035-source-content-publication-task-native-join-mismatch"
+op          = "verify"
+status      = "active"
+description = """Publication phase refusal. The catalog row names a task reference the `taskCreated` record does not carry, so the exact native join fails with `source_task_native_join_mismatch`."""
+
+[coverage]
+tr_core = ["TR-CORE-067"]
+tr_op = ["TR-OP-122"]
+
+[inputs]
+export_zip = "input-export.zip"
+verifier   = "source-content-publication"
+
+[expected.report]
+structure_verified   = true
+integrity_verified   = false
+readability_verified = true
+first_failure_kind   = "source_task_native_join_mismatch"
+
+[derivation]
+document = "derivation.md"

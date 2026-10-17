@@ -582,9 +582,10 @@ def load_pending_invariants(errors: list[str]) -> tuple[set[int], set[str]]:
     return data["pending_invariants"], data["pending_matrix_rows"]
 
 
-# Manifest keys whose string values are hex digests, not filesystem paths.
-# Extend this list if the schema grows new non-path string fields.
-MANIFEST_NON_PATH_STRING_KEYS = {"zip_sha256"}
+# Manifest keys whose string values are hex digests or enum selectors (e.g.
+# `inputs.verifier`), not filesystem paths. Extend this list if the schema
+# grows new non-path string fields.
+MANIFEST_NON_PATH_STRING_KEYS = {"zip_sha256", "verifier"}
 
 # Manifest sub-tables that carry inline structured data (not sibling-file
 # references). Per the G-3 fixture-system design, small structured outputs

@@ -29,6 +29,8 @@ pip install -e "./trellis/trellis-py"
 - `trellis_py.export_to_zip_bytes(entries: list[ExportEntry]) -> bytes`
 - `trellis_py.verify_export_zip(export_zip: bytes) -> VerificationReport`
 - `trellis_py.verify_tampered_ledger(registry: bytes, ledger: bytes, ...) -> VerificationReport`
+- `trellis_py.verify_wos.verify_export_zip(export_zip, authorities=None) -> WosVerificationReport` — strict WOS-domain verification; `authorities` is an externally trusted `CertificateAuthorityRegistry` (`{authority URI: TrustedCertificateAuthority}`) for operator attestations, otherwise authority is reported `unchecked`.
+- `trellis_py.verify_wos.verify_source_content_publication(export_zip, authorities=None) -> SourceContentPublicationReport` — ADR 0163 publication phase (`publication_admitted`, `substrate`, `findings`, `blocking_reasons`). Admits protected Response and Source task catalog rows without requiring their content; it is never final Source readiness.
 
 ## Conformance
 
@@ -51,9 +53,34 @@ python -m trellis_py.conformance --vectors /path/to/fixtures/vectors --write-rep
 
 Exit code `0` means every vector under `append/`, `export/`, `verify/`, `tamper/`, `projection/`, and `shred/` passed.
 
+## Source-content publication (ADR 0163)
+
+`verify_source_content_publication` is the counterpart of Rust
+`trellis_verify_wos::verify_source_content_publication`; catalog readers live in
+`trellis_py.source_content`. Both runtimes check the closed protected Response
+locator, the closed `sourceSignedCompletedTask` rows and their protected proof
+packages, the exact native `taskCreated` / `taskCompleted` join, and the
+original-context join. Neither opens protected content or verifies Source
+signatures, and the batch checks and Source-opening verifiers are Rust-only.
+
+Native provenance records are validated as Rust validates them
+(`trellis_py.native_provenance`): the owning JSON Schema ships as package data
+(`schemas/`, pinned byte-for-byte to
+`work-spec/schemas/wos-native-provenance-event.schema.json` by a test), with the
+`date-time` and record-TypeID formats enforced, the signed-64-bit/finite-float/
+depth-128 subset, and the TypeID grammar. A missing schema refuses every record.
+
+Python also refuses CBOR reference tags (string-reference 25/256, value-sharing 28/29) before decoding, as Rust leaves them as tags and refuses them.
+
+Python refuses some RFC 3339 timestamps Rust accepts (lowercase `t`/`z`, `23:59:60`, year `0000`); that is the stricter side and intentional.
+
+Python rejects duplicate map keys anywhere in the 062/063 catalogs; Rust does so
+only in closed maps and takes the first match in 063 (fs-465t), so Python is the
+stricter side there.
+
 ## Dependencies
 
-`cbor2`, `cryptography` (Ed25519). No Rust runtime is required at import time.
+`cbor2`, `cryptography` (Ed25519), `jsonschema` + `rfc3339-validator` (native provenance schema). No Rust runtime is required at import time.
 
 ## Out of scope (intentional)
 

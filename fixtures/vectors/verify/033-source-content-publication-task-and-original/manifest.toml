@@ -1,0 +1,20 @@
+id          = "verify/033-source-content-publication-task-and-original"
+op          = "verify"
+status      = "active"
+description = """Source-content publication phase (ADR 0163) for a mixed-family Source task joined to a protected original. Both catalogs carry protected content the phase does not require; the native task join and the original-context join are exact, so the bundle is admitted."""
+
+[coverage]
+tr_core = ["TR-CORE-067"]
+tr_op = ["TR-OP-122"]
+
+[inputs]
+export_zip = "input-export.zip"
+verifier   = "source-content-publication"
+
+[expected.report]
+structure_verified   = true
+integrity_verified   = true
+readability_verified = true
+
+[derivation]
+document = "derivation.md"

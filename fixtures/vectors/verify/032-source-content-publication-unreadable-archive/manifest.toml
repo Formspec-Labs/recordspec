@@ -1,0 +1,21 @@
+id          = "verify/032-source-content-publication-unreadable-archive"
+op          = "verify"
+status      = "active"
+description = """Publication phase refuses bytes that are not a ZIP archive."""
+
+[coverage]
+tr_core = ["TR-CORE-067"]
+tr_op = ["TR-OP-122"]
+
+[inputs]
+export_zip = "input-export.zip"
+verifier   = "source-content-publication"
+
+[expected.report]
+structure_verified   = false
+integrity_verified   = false
+readability_verified = false
+first_failure_kind   = "export_zip_invalid"
+
+[derivation]
+document = "derivation.md"

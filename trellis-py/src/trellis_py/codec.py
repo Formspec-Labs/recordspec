@@ -44,13 +44,18 @@ def encode_cose_suite_id_label() -> bytes:
     return encode_major_len(1, COSE_SUITE_ID_LABEL_MAGNITUDE)
 
 
+def domain_separated_preimage(tag: str, component: bytes) -> bytes:
+    """be32(len(tag)) || tag || be32(len(component)) || component."""
+    return (
+        struct.pack(">I", len(tag))
+        + tag.encode("utf-8")
+        + struct.pack(">I", len(component))
+        + component
+    )
+
+
 def domain_separated_sha256(tag: str, component: bytes) -> bytes:
-    h = hashlib.sha256()
-    h.update(struct.pack(">I", len(tag)))
-    h.update(tag.encode("utf-8"))
-    h.update(struct.pack(">I", len(component)))
-    h.update(component)
-    return h.digest()
+    return hashlib.sha256(domain_separated_preimage(tag, component)).digest()
 
 
 def sig_structure_bytes(protected_header: bytes, payload: bytes) -> bytes:

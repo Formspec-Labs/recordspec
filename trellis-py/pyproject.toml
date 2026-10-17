@@ -11,6 +11,10 @@ requires-python = ">=3.11"
 dependencies = [
   "cbor2>=5.6.0",
   "cryptography>=42.0.0",
+  # Native provenance records are validated against the WOS-owned JSON Schema
+  # (Draft 2020-12); `rfc3339-validator` makes the schema's `date-time` format enforced.
+  "jsonschema>=4.21.0",
+  "rfc3339-validator>=0.1.4",
 ]
 
 [project.optional-dependencies]
@@ -21,6 +25,9 @@ trellis-py-vectors = "trellis_py.conformance:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+trellis_py = ["schemas/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

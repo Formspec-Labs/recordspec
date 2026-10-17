@@ -1,0 +1,21 @@
+id          = "verify/040-source-content-publication-native-record-value-sharing"
+op          = "verify"
+status      = "active"
+description = """Publication phase refusal. The `taskCreated` record is encoded with value-sharing tags (28/29), which a decoder would silently resolve; both runtimes refuse it as `native_provenance_invalid`."""
+
+[coverage]
+tr_core = ["TR-CORE-067"]
+tr_op = ["TR-OP-122"]
+
+[inputs]
+export_zip = "input-export.zip"
+verifier   = "source-content-publication"
+
+[expected.report]
+structure_verified   = true
+integrity_verified   = false
+readability_verified = true
+first_failure_kind   = "native_provenance_invalid"
+
+[derivation]
+document = "derivation.md"
