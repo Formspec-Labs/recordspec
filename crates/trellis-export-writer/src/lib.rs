@@ -19,7 +19,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use integrity_bundle::{Bundle, BundleEntry};
 use integrity_cbor::{
     Value, decode_cbor_value, domain_separated_sha256, encode_bstr, encode_canonical_cbor_value,
-    encode_tstr, encode_uint, map_lookup_bytes, map_lookup_u64, sha256_bytes,
+    encode_tstr, encode_uint, map_lookup_array, map_lookup_bytes, map_lookup_map, map_lookup_u64,
+    sha256_bytes,
 };
 use integrity_cose::{
     derive_kid, sig_structure_bytes, sign_ed25519, sign1_bytes, substrate_protected_header,
@@ -1401,35 +1402,78 @@ fn checked_signing_key_registry(
             ));
         }
     }
-    let cited = |kid: Option<&[u8]>, what: &str| -> Result<(), StackError> {
-        let known = kid
+    // The verifier enforces `valid_to` only for revoked keys, so a mistyped window would ship
+    // unnoticed: the writer refuses any signature made outside its key's window.
+    let cited = |kid: Option<&[u8]>, signed_at: (u64, u32), what: &str| -> Result<(), StackError> {
+        let row = kid
             .and_then(|kid| <[u8; 16]>::try_from(kid).ok())
-            .is_some_and(|kid| rows.contains_key(&kid));
-        if known {
-            Ok(())
-        } else {
-            Err(StackError::bad_request(format!(
+            .and_then(|kid| rows.get(&kid));
+        let Some(row) = row else {
+            return Err(StackError::bad_request(format!(
                 "signing-key registry has no row for the kid {what} cites"
-            )))
+            )));
+        };
+        let pair = |t: TrellisTimestamp| (t.unix_secs, t.subsec_nanos);
+        if signed_at < pair(row.valid_from) || row.valid_to.is_some_and(|to| signed_at > pair(to)) {
+            return Err(StackError::bad_request(format!(
+                "{what} was signed outside the validity window of its signing key"
+            )));
         }
+        Ok(())
     };
-    cited(Some(&input.signing_key.kid()), "the manifest")?;
+    if !rows.contains_key(&input.signing_key.kid()) {
+        return Err(StackError::bad_request(
+            "signing-key registry has no row for the kid the manifest cites",
+        ));
+    }
     for entry in rows.values() {
-        if let Some(prior) = entry.supersedes {
-            cited(Some(&prior), "a supersedes link")?;
+        if entry
+            .supersedes
+            .is_some_and(|prior| !rows.contains_key(&prior))
+        {
+            return Err(StackError::bad_request(
+                "signing-key registry has no row for the kid a supersedes link cites",
+            ));
         }
     }
     for event in events {
         let signed = integrity_cose::decode_cose_sign1(&event.signed_event)
             .map_err(|error| StackError::bad_request(format!("event COSE_Sign1: {error}")))?;
-        cited(signed.kid(), "an event")?;
+        cited(
+            signed.kid(),
+            authored_at(&event.canonical_event)?,
+            "an event",
+        )?;
     }
     for checkpoint in &input.checkpoints {
         let signed = integrity_cose::decode_cose_sign1(&checkpoint.checkpoint)
             .map_err(|error| StackError::bad_request(format!("checkpoint COSE_Sign1: {error}")))?;
-        cited(signed.kid(), "a checkpoint")?;
+        let payload = CheckpointPayload::from_sign1(&checkpoint.checkpoint)
+            .map_err(|error| StackError::bad_request(format!("checkpoint payload: {error}")))?;
+        cited(signed.kid(), payload.timestamp, "a checkpoint")?;
     }
     encode_signing_key_registry(&input.signing_key_registry)
+}
+
+/// `header.authored_at` of a canonical event payload.
+fn authored_at(canonical_event: &[u8]) -> Result<(u64, u32), StackError> {
+    let invalid = || StackError::bad_request("event header authored_at is invalid");
+    let value = decode_cbor_value(canonical_event).map_err(|_| invalid())?;
+    let header =
+        map_lookup_map(value.as_map().ok_or_else(invalid)?, "header").map_err(|_| invalid())?;
+    let pair = map_lookup_array(header, "authored_at").map_err(|_| invalid())?;
+    let integer = |value: &Value| {
+        value
+            .as_integer()
+            .and_then(|integer| u64::try_from(i128::from(integer)).ok())
+    };
+    match pair {
+        [secs, nanos] => Ok((
+            integer(secs).ok_or_else(invalid)?,
+            u32::try_from(integer(nanos).ok_or_else(invalid)?).map_err(|_| invalid())?,
+        )),
+        _ => Err(invalid()),
+    }
 }
 
 /// The checkpoints an export carries, checked against the events it carries.
@@ -2326,6 +2370,27 @@ mod tests {
             verification.trellis.structure_verified && verification.trellis.integrity_verified,
             "witness member must not break export verification: {verification:?}"
         );
+    }
+
+    #[test]
+    fn rejects_an_export_signed_outside_its_keys_validity_window() {
+        let root = fixtures_root();
+        // The fixture's events and checkpoints are signed at 1745000000.
+        let window = |from: u64, to: Option<u64>| {
+            let mut input = crate::export_001_writer_input(root.as_path());
+            input.signing_key_registry[0].valid_from = TrellisTimestamp::new(from, 0).unwrap();
+            input.signing_key_registry[0].valid_to =
+                to.map(|to| TrellisTimestamp::new(to, 0).unwrap());
+            write_export(input)
+        };
+        window(1_745_000_000, Some(1_745_000_100)).expect("a window holding the signatures");
+        for (from, to) in [(1_745_000_001, None), (0, Some(1_744_999_999))] {
+            let error = window(from, to).expect_err("out-of-window signatures must be refused");
+            assert!(
+                error.to_string().contains("outside the validity window"),
+                "{error}"
+            );
+        }
     }
 
     #[test]
