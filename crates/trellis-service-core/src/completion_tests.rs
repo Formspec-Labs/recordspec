@@ -466,8 +466,6 @@ async fn completion_binds_two_distinct_signed_responses_in_one_certificate() {
     // Explicit fixture generation retains actual Rust-authored bytes after verification.
     if let Some(directory) = std::env::var_os("TRELLIS_COMPLETION_V2_VECTOR_DIR") {
         let directory = std::path::PathBuf::from(directory);
-        assert!(directory.is_absolute());
-        std::fs::create_dir(&directory).unwrap();
         struct FixtureStore;
         impl trellis_core::LedgerStore for FixtureStore {
             type Error = StackError;
@@ -510,34 +508,10 @@ async fn completion_binds_two_distinct_signed_responses_in_one_certificate() {
                 "presentation-artifact.bin",
                 crate::completion::certificate_html(&events[2]).unwrap(),
             ),
-            ("expected-export.zip", zip.clone()),
         ] {
             std::fs::write(directory.join(name), bytes).unwrap();
         }
-        let entries = integrity_bundle::read_stored_zip(&zip).unwrap();
-        let root = entries
-            .iter()
-            .find_map(|entry| entry.path().strip_suffix("/010-events.cbor"))
-            .unwrap();
-        let prefix = format!("{root}/");
-        let mut members = Vec::new();
-        for entry in &entries {
-            let member = entry.path().strip_prefix(&prefix).unwrap();
-            let path = directory.join(member);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(path, entry.bytes()).unwrap();
-            members.push(Value::Text(member.into()));
-        }
-        let ledger = crate::text_map(vec![
-            ("root_dir", Value::Text(root.into())),
-            ("members", Value::Array(members)),
-        ])
-        .unwrap();
-        std::fs::write(
-            directory.join("input-ledger-state.cbor"),
-            integrity_cbor::encode_cbor_value(&ledger).unwrap(),
-        )
-        .unwrap();
+        crate::export_vector::write_export_vector(&directory, &zip);
     }
 }
 

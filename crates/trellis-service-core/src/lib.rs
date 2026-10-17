@@ -42,6 +42,8 @@ mod artifacts;
 mod auth;
 mod completion;
 mod export;
+#[cfg(test)]
+mod export_vector;
 mod ledger;
 mod reconciliation;
 #[cfg(test)]

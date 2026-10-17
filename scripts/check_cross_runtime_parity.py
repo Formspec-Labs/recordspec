@@ -848,6 +848,22 @@ SUBSTRATE_EXPORT_VERIFIER_VECTORS = [
         "integrity_verified": False,
         "readability_verified": True,
     },
+    # Service-assembled exports (flat-cost append, Companion 18.5a): the bytes
+    # `export::assemble` produces at five and eight events must verify clean.
+    *(
+        {
+            "case_id": f"export/{name}",
+            "vector": f"export/{name}/expected-export.zip",
+            "expected_kind": None,
+            "structure_verified": True,
+            "integrity_verified": True,
+            "readability_verified": True,
+        }
+        for name in (
+            "016-assembled-five-events",
+            "017-assembled-eight-events",
+        )
+    ),
 ]
 
 
@@ -888,6 +904,13 @@ def check_substrate_export_verifier_vectors() -> None:
                 f"{report.readability_verified}, expected "
                 f"{case['readability_verified']}"
             )
+        if case["expected_kind"] is None:
+            if report.event_failures:
+                raise AssertionError(
+                    f"{case['case_id']}: expected a clean verdict; got "
+                    f"{[(f.kind, f.location) for f in report.event_failures]!r}"
+                )
+            continue
         matching = [
             f
             for f in report.event_failures
@@ -907,7 +930,8 @@ def run_substrate_export_verifier_gate() -> bool:
     """Parity gate for substrate-only export-verifier fixtures (NOT
     WOS-routed). Fixture 023 (`bundle_unbound_member`, TR-CORE-181)
     is the first registered case; further substrate-only verify
-    fixtures land here as they're added.
+    fixtures land here as they're added. Positive cases (`expected_kind` None) are
+    service-assembled exports that must verify with no findings.
     """
     _print_gate_header("substrate-export-verifier")
     runtime = (

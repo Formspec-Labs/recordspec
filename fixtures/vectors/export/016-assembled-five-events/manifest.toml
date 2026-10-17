@@ -1,0 +1,26 @@
+id          = "export/016-assembled-five-events"
+op          = "export"
+status      = "active"
+description = "Service-assembled export of a five-event ledger: the bytes the reference server's on-request assembly produces at the head checkpoint, with the frontier-derived checkpoint chain and the O(log n) proofs a flat-cost append keeps."
+
+[coverage]
+tr_core = [
+    "TR-CORE-062",  # export generator produces an independently verifiable export
+    "TR-CORE-063",  # export includes sufficient material for offline verification
+    "TR-CORE-134",  # Export Generator packages canonical records + verification material
+]
+
+[inputs]
+ledger_state = "input-ledger-state.cbor"
+
+[expected]
+zip        = "expected-export.zip"
+zip_sha256 = "612b984bc85cfe55763d2bbe5f26c1ae1aa358e13807eedd89634a5fd716043a"
+
+[expected.report]
+structure_verified   = true
+integrity_verified   = true
+readability_verified = true
+
+[derivation]
+document = "derivation.md"

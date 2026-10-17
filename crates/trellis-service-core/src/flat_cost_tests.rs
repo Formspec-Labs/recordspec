@@ -552,3 +552,32 @@ fn a_history_that_does_not_end_at_the_current_key_is_refused() {
     .unwrap();
     assert!(key_b.with_history_json(&unretired).is_err());
 }
+
+/// Given ledgers of five and eight events, then the export assembled at each head verifies with
+/// the maintained verifier; with `TRELLIS_ASSEMBLED_EXPORT_VECTOR_DIR` set, the exports are
+/// retained as the `export/` vectors `016` (five events) and `017` (eight).
+#[tokio::test]
+async fn exports_assembled_at_five_and_eight_events_verify() {
+    let state = test_state();
+    let app = router(state.clone()).expect("router");
+    let mut zips = Vec::new();
+    for index in 1..=8 {
+        let receipt = post_append(
+            &app,
+            "/v1/scopes/case_assembled/events",
+            append_body(&format!("idem-assembled-{index}")),
+        )
+        .await;
+        if index == 5 || index == 8 {
+            let zip = pinned_zip(&app, "case_assembled", &receipt).await;
+            let report = trellis_verify_wos::verify_export_zip(&zip);
+            assert!(report.trellis.integrity_verified, "{index} events: {report:?}");
+            zips.push(zip);
+        }
+    }
+    if let Some(directory) = std::env::var_os("TRELLIS_ASSEMBLED_EXPORT_VECTOR_DIR") {
+        let directory = std::path::PathBuf::from(directory);
+        crate::export_vector::write_export_vector(&directory.join("016-assembled-five-events"), &zips[0]);
+        crate::export_vector::write_export_vector(&directory.join("017-assembled-eight-events"), &zips[1]);
+    }
+}
