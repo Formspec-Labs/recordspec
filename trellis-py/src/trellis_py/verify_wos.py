@@ -8,6 +8,7 @@ WOS-specific catalog interpretation.
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
 
@@ -225,6 +226,88 @@ def _is_projection_finding(finding: WosFinding) -> bool:
         "signed_acts_catalog_unbound",
         "signed_acts_render_drift",
     }
+
+
+_AUTHORITY_ROW_FIELDS = frozenset(
+    {"authority", "publicKey", "authorityClass", "allowedPurpose", "validFrom", "validUntil"}
+)
+_AUTHORITY_PURPOSES = frozenset({core.CERTIFICATE_EVENT_EXTENSION, core.CERTIFICATE_V2_EVENT_EXTENSION})
+
+
+def certificate_authorities_from_json(data: bytes) -> core.CertificateAuthorityRegistry:
+    """Load a closed external operator registry; the file must be independently trusted.
+
+    Each row binds an exact authority URI to a public key, class, purpose and
+    inclusive completed_at interval. Keys embedded in an export never establish
+    trust. Mirrors Rust `trellis_verify_wos::certificate_authorities_from_json`,
+    including its serde shape: camelCase fields, no unknown or duplicate
+    fields, `publicKey` as 32 byte values, and intervals as [seconds, nanos].
+
+    Raises ValueError for a malformed, duplicate, unknown-purpose or unbounded row.
+    """
+    if len(data) > 32 * 1024:
+        raise ValueError("certificate authority registry exceeds limit")
+
+    def unique_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        fields = dict(pairs)
+        if len(fields) != len(pairs):
+            raise ValueError("invalid certificate authority registry: duplicate field")
+        return fields
+
+    try:
+        rows = json.loads(data, object_pairs_hook=unique_fields)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid certificate authority registry: {exc}") from exc
+    if not isinstance(rows, list) or not all(
+        isinstance(row, dict) and set(row) == _AUTHORITY_ROW_FIELDS for row in rows
+    ):
+        raise ValueError("invalid certificate authority registry: row shape")
+    if len(rows) > 8:
+        raise ValueError("certificate authority registry exceeds row limit")
+    registry: core.CertificateAuthorityRegistry = {}
+    for row in rows:
+        authority = row["authority"]
+        key = row["publicKey"]
+        valid_from = _authority_instant(row["validFrom"])
+        valid_until = _authority_instant(row["validUntil"])
+        if (
+            not isinstance(authority, str)
+            or not authority.strip()
+            or len(authority.encode("utf-8")) > 1024
+            or not isinstance(key, list)
+            or len(key) != 32
+            or not all(_json_uint(byte, 0xFF) for byte in key)
+            or row["authorityClass"] not in ("prior", "new")
+            or row["allowedPurpose"] not in _AUTHORITY_PURPOSES
+            or valid_from >= valid_until
+        ):
+            raise ValueError("invalid certificate authority binding")
+        if authority in registry:
+            raise ValueError("duplicate certificate authority")
+        registry[authority] = core.TrustedCertificateAuthority(
+            public_key=bytes(key),
+            authority_class=row["authorityClass"],
+            allowed_purpose=row["allowedPurpose"],
+            valid_from=core.TrellisTimestamp(*valid_from),
+            valid_until=core.TrellisTimestamp(*valid_until),
+        )
+    return registry
+
+
+def _json_uint(value: Any, maximum: int) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= maximum
+
+
+def _authority_instant(value: Any) -> tuple[int, int]:
+    """A `[seconds, nanos]` pair: a u64 and a u32 whose nanos are below one second."""
+    if (
+        not isinstance(value, list)
+        or len(value) != 2
+        or not _json_uint(value[0], 2**64 - 1)
+        or not _json_uint(value[1], 999_999_999)
+    ):
+        raise ValueError("invalid certificate authority binding")
+    return value[0], value[1]
 
 
 def verify_export_zip(

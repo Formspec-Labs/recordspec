@@ -1,0 +1,10 @@
+[
+  {
+    "authority": "urn:test:operator",
+    "publicKey": [113, 222, 59, 78, 147, 58, 167, 24, 166, 245, 196, 88, 69, 238, 131, 175, 128, 0, 164, 80, 249, 87, 45, 76, 243, 147, 230, 129, 200, 20, 65, 145],
+    "authorityClass": "new",
+    "allowedPurpose": "trellis.certificate-of-completion.v2",
+    "validFrom": [0, 0],
+    "validUntil": [4102444800, 0]
+  }
+]
