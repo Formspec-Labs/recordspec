@@ -1,33 +1,32 @@
 // Rust guideline compliant 2026-02-21
-//! Append orchestration: admission, scope lock, core append, persistence, bundle publish.
+//! Append orchestration: admission, scope-locked unit of work, core append, checkpoint, commit.
 //!
 //! [`AppendCoordinator`] owns everything after HTTP validation/authentication passes:
-//! admission, per-scope serialization, ledger key replay, canonical event construction via
-//! `trellis_core`, repository append, deterministic export ZIP publication with independent
-//! verification, and materialized substrate receipt fields. Bearer tokens, outer
+//! admission, ledger key replay, canonical event construction via `trellis_core`, the checkpoint
+//! that commits to the new tree, and the one transaction that writes both. An append costs a
+//! few point reads and two inserts whatever the ledger's length; nothing is published and
+//! nothing runs after the commit. Bearer tokens, outer
 //! `ScopeAuthorizer`, and HTTP body replay/idempotency live in the parent HTTP handlers and
 //! middleware, not inside this module (TWREF-021).
 
 use async_trait::async_trait;
 use hkdf::Hkdf;
-use integrity_cbor::{Value, json_to_dcbor_bytes};
+use integrity_cbor::Value;
 use sha2::{Digest, Sha256};
 use stack_common_error::StackError;
 use trellis_core::{AuthoredEvent, LedgerStore};
 use trellis_export_writer::PostureDeclaration as ExportPostureDeclaration;
 use trellis_export_writer::TrellisTimestamp;
 use trellis_server_ports::{
-    AdmissionEvent, AdmittedEvent, AppendUnitOfWork, CloseoutSource, ComputeContext,
-    ComputeSensitivity, DirectSubmitPolicy,
+    AdmissionEvent, CloseoutSource, ComputeContext, ComputeSensitivity, DirectSubmitPolicy,
 };
-use trellis_service_client::{ClientAttestation, SubstrateAppendBody, SubstrateAppendResult};
+use trellis_service_client::{ClientAttestation, SubstrateAppendResult};
 use trellis_types::StoredEvent;
 
+use crate::event_repository::ScopeTx;
+use crate::ledger::{append_result, authored_at_after, prior_event_hash};
 use crate::source_diagnostics::{self as diag, Outcome, Stage};
-use crate::{
-    TrellisServerState, append_result_for_event, event_hash, now_timestamp,
-    validate_existing_replay,
-};
+use crate::{TrellisServerState, event_hash, now_timestamp, validate_existing_replay};
 
 /// Command accepted by the append coordinator after HTTP validation and authorization.
 #[derive(Clone, Debug)]
@@ -36,7 +35,6 @@ pub struct AppendCommand {
     pub event_type: String,
     pub idempotency_key: String,
     pub payload: serde_json::Value,
-    pub compute_context: ComputeContext,
     /// Optional COSE_Sign1 attestation supplied by a direct-client submission.
     /// The coordinator rejects this when the admitted event family is
     /// `DirectSubmitPolicy::ServiceOnly` (current production posture pending
@@ -81,10 +79,17 @@ impl AppendRunner for DefaultAppendRunner {
     }
 }
 
-/// Owns the append transaction boundary: admission → lock → build → commit → publish.
+/// Owns the append transaction boundary: admission, then one scope-locked unit of work that
+/// reads the head, signs the event and its checkpoint, and commits both.
 #[derive(Clone, Copy)]
 pub struct AppendCoordinator<'a> {
     state: &'a TrellisServerState,
+}
+
+/// Which events a Source closeout admission judges: a new append, or the replay of a committed one.
+enum Planned<'a> {
+    New(&'a StoredEvent),
+    Replay(&'a StoredEvent),
 }
 
 impl<'a> AppendCoordinator<'a> {
@@ -93,10 +98,11 @@ impl<'a> AppendCoordinator<'a> {
         Self { state }
     }
 
-    /// Runs admission once, then either replays an idempotent commit or commits a new unit of work.
+    /// Runs admission once, then either replays an idempotent commit or commits a new event with
+    /// its checkpoint.
     ///
     /// # Errors
-    /// Returns an error when admission, core append, persistence, or bundle publication fails.
+    /// Returns an error when admission, core append or persistence fails.
     pub async fn append(&self, command: AppendCommand) -> Result<AppendOutcome, StackError> {
         self.append_inner(command, None).await
     }
@@ -158,6 +164,14 @@ impl<'a> AppendCoordinator<'a> {
                 .await,
         )?;
 
+        // The structural role admission declares must be the one this append produces (ADR 0109).
+        if admitted.artifact_type != trellis_types::ArtifactType::Event {
+            return Err(StackError::internal(format!(
+                "admission declared artifact_type `{}` for an event append",
+                admitted.artifact_type
+            )));
+        }
+
         // Direct-submit policy is metadata-driven (TODO acceptance line 294):
         // reject a `clientAttestation`-bearing submission when admitted
         // metadata says the event family is service-submitted only. ADR-0103
@@ -173,102 +187,113 @@ impl<'a> AppendCoordinator<'a> {
             )));
         }
 
-        diag::mark(selected, Stage::Prefix, Outcome::Enter);
-        let scope_guard = self.state.scope_locks.lock(command.scope.as_bytes()).await;
-        let mut events = diag::observed(
-            selected,
-            Stage::Prefix,
-            self.state
-                .repository
-                .list_scope(command.scope.as_bytes())
-                .await,
-        )?;
         let content =
             EventContent::from_payload(&command.payload, command.idempotency_key.as_bytes())?;
 
+        // Trellis's own copy of a closeout's Source batch is written before the transaction opens,
+        // so the scope lock is never held across an object-store round trip. The key is scoped and
+        // content-addressed and the write is idempotent, so a refused or retried append leaves at
+        // worst an unreferenced object.
+        let source_binding = match source {
+            Some(source) => Some(
+                crate::source_content::retain_batch(
+                    self.state,
+                    &command.scope,
+                    &source.admitted.batch,
+                )
+                .await
+                .map_err(|error| {
+                    // Nothing is committed yet, so a copy failure is transient: surface it as
+                    // retryable, not as a cacheable client error that would wedge the key.
+                    if error.status().is_server_error() {
+                        error
+                    } else {
+                        StackError::unavailable("Source batch copy refused; retry the same key")
+                    }
+                })?,
+            ),
+            None => None,
+        };
+
+        // The lock is the first statement of the unit of work, so every read below sees the latest
+        // commit and a stale head cannot exist (Companion 18.5a).
+        diag::mark(selected, Stage::Prefix, Outcome::Enter);
+        let mut tx = diag::observed(
+            selected,
+            Stage::Prefix,
+            self.state.repository.begin(command.scope.as_bytes()).await,
+        )?;
+        let head = diag::observed(selected, Stage::Prefix, tx.head().await)?;
+        let last = match head {
+            Some(_) => diag::observed(selected, Stage::Prefix, tx.last_event().await)?,
+            None => None,
+        };
+        let existing = diag::observed(
+            selected,
+            Stage::Prefix,
+            tx.event_by_key(command.idempotency_key.as_bytes()).await,
+        )?;
+
         diag::mark(selected, Stage::Replay, Outcome::Enter);
-        if let Some(existing) = events
-            .iter()
-            .find(|event| event.idempotency_key() == Some(command.idempotency_key.as_bytes()))
-        {
+        if let Some(existing) = existing {
             diag::observed(
                 selected,
                 Stage::Replay,
-                validate_existing_replay(existing, &admitted.event_type, content.content_hash),
+                validate_existing_replay(&existing, &admitted.event_type, content.content_hash),
             )?;
-            let replay_events = events
-                .iter()
-                .filter(|event| event.sequence() <= existing.sequence())
-                .cloned()
-                .collect::<Vec<_>>();
-            let prior_event_hash =
-                prior_event_hash_for(command.scope.as_str(), &replay_events, existing)
-                    .map_err(committed_unpublished)?;
+            let checkpoint = tx
+                .checkpoint_at(existing.sequence() + 1)
+                .await?
+                .ok_or_else(|| StackError::internal("committed event has no checkpoint"))?;
             // Source-content refusals (changed authority, selection or recipients) are the caller's
             // current answer, not a fault after the commit, so they stay client errors.
-            let protected = self.admit_source_content(&command.scope, &replay_events, source)?;
-            diag::mark(selected, Stage::ZipPublish, Outcome::Enter);
-            let bundle = diag::observed(
-                selected,
-                Stage::ZipPublish,
-                crate::publish_bundle_with_source_content(
-                    self.state,
-                    command.scope.as_bytes(),
-                    &replay_events,
-                    false,
-                    &command.compute_context,
-                    protected.as_ref(),
-                )
-                .await,
+            let tail = [existing.clone()];
+            self.admit_source_content(
+                tx.as_mut(),
+                &command.scope,
+                &tail,
+                Planned::Replay(&existing),
+                source,
             )
-            .map_err(committed_unpublished)?;
-            drop(scope_guard);
+            .await?;
+            drop(tx);
             diag::mark(selected, Stage::Receipt, Outcome::Enter);
             let result = diag::observed(
                 selected,
                 Stage::Receipt,
-                append_result_for_event(
-                    &command.scope,
-                    existing,
-                    prior_event_hash,
-                    admitted.artifact_type,
-                    &admitted.event_type,
-                    &bundle,
-                    true,
-                ),
-            )
-            .map_err(committed_unpublished)?;
+                prior_event_hash(&existing)
+                    .and_then(|prior| append_result(&command.scope, &existing, prior, &checkpoint)),
+            )?;
             return Ok(AppendOutcome {
                 result,
-                stored: existing.clone(),
+                stored: existing,
             });
         }
 
         diag::mark(selected, Stage::Replay, Outcome::ReturnedOk);
-        // Under the scope lock, after replay, so a retry of the append that filled the ledger replays
-        // and a concurrent caller cannot pass a stale count.
+        // Under the scope lock, after replay, so a retry of the append that filled the ledger
+        // replays and a concurrent caller cannot pass a stale count.
+        let tree_size = head.as_ref().map_or(0, |head| head.tree_size);
         if let Some(max) = admitted.max_scope_events
-            && events.len() as u64 >= max
+            && tree_size >= max
         {
             return Err(StackError::conflict(format!(
                 "scope holds the most events its event family accepts ({max})"
             )));
         }
         diag::mark(selected, Stage::Core, Outcome::Enter);
-        let sequence = u64::try_from(events.len())
-            .map_err(|_| StackError::internal("event count exceeds u64"))?;
-        let prev_hash = events
-            .last()
+        let prev_hash = last
+            .as_ref()
             .map(|event| event_hash(command.scope.as_bytes(), event))
             .transpose()?;
         let authored = build_authored_event(AuthoredEventInput {
             scope: command.scope.as_bytes(),
-            sequence,
+            sequence: tree_size,
             prev_hash,
             event_type: &admitted.event_type,
             idempotency_key: command.idempotency_key.as_bytes(),
             content,
-            authored_at: now_timestamp()?,
+            authored_at: authored_at_after(last.as_ref(), now_timestamp()?)?,
             extensions: Value::Null,
         })?;
         let mut capture = CapturingLedgerStore::default();
@@ -283,39 +308,87 @@ impl<'a> AppendCoordinator<'a> {
             .ok_or_else(|| StackError::internal("trellis core did not emit a stored event"))?
             .with_canonical_event_hash(Some(artifacts.canonical_event_hash));
         diag::mark(selected, Stage::Core, Outcome::ReturnedOk);
-        let mut planned = events.clone();
-        planned.push(stored.clone());
-        let protected = self.admit_source_content(&command.scope, &planned, source)?;
-        let unit = AppendUnitOfWork::new(stored, command.compute_context);
-        let outcome = self
-            .commit_unit(
+
+        // The profile's finite export limits are checked by folding this one event into the
+        // running state stored with the head, not by re-reading the prefix.
+        diag::mark(selected, Stage::Evidence, Outcome::Enter);
+        let (stored, checkpoint) = diag::observed(
+            selected,
+            Stage::Evidence,
+            self.state.checkpointer().after(head.as_ref(), &stored),
+        )?;
+
+        let tail: Vec<StoredEvent> = last.iter().chain([&stored]).cloned().collect();
+        let protected = self
+            .admit_source_content(
+                tx.as_mut(),
                 &command.scope,
-                &admitted,
-                &mut events,
-                unit,
-                true,
-                protected.as_ref(),
+                &tail,
+                Planned::New(&stored),
+                source,
             )
-            .await;
-        drop(scope_guard);
-        outcome
+            .await?;
+        diag::mark(selected, Stage::RepositoryWrite, Outcome::Enter);
+        diag::observed(
+            selected,
+            Stage::RepositoryWrite,
+            self.write(
+                tx,
+                &stored,
+                &checkpoint,
+                protected.as_ref(),
+                source_binding.as_ref(),
+            )
+            .await,
+        )?;
+        diag::mark(selected, Stage::Receipt, Outcome::Enter);
+        let result = diag::observed(
+            selected,
+            Stage::Receipt,
+            append_result(&command.scope, &stored, prev_hash, &checkpoint),
+        )?;
+        Ok(AppendOutcome { result, stored })
     }
 
-    /// Admits the held Source batch against the planned prefix. Pure CPU under the scope
-    /// lock: the object was read and hash-checked in `admit_append` (ADR 0163 5.4).
-    fn admit_source_content(
+    /// Writes the event, its checkpoint and, for a Source closeout, Trellis's own copy of the
+    /// admitted batch's binding. Nothing runs after the commit.
+    async fn write(
         &self,
+        mut tx: Box<dyn ScopeTx>,
+        stored: &StoredEvent,
+        checkpoint: &trellis_types::StoredCheckpoint,
+        protected: Option<&crate::source_content::ProtectedSourceMembersReady>,
+        binding: Option<&crate::event_repository::SourceContentBinding>,
+    ) -> Result<(), StackError> {
+        tx.insert(stored, checkpoint).await?;
+        if let (Some(_), Some(binding)) = (protected, binding) {
+            tx.insert_source_content(stored.sequence(), &binding)
+                .await?;
+        }
+        tx.commit().await
+    }
+
+    /// Judges the append against the configured Source-content policy.
+    ///
+    /// `tail` is the last event before the append (if any) followed by the new event: by
+    /// induction every earlier append was classified, so a closeout can only be the last event and
+    /// the tail decides. Only a closeout reads the (bounded) whole prefix, which its selection
+    /// names event by event.
+    async fn admit_source_content(
+        &self,
+        tx: &mut dyn ScopeTx,
         scope: &str,
-        planned: &[StoredEvent],
+        tail: &[StoredEvent],
+        planned: Planned<'_>,
         source: Option<&crate::source_content::SourceContentAppendContext<'_>>,
     ) -> Result<Option<crate::source_content::ProtectedSourceMembersReady>, StackError> {
         let Some(source) = source else {
             if let Some(composition) = &self.state.source_content {
                 composition.require_publication_purpose(
-                    scope.as_bytes(),
-                    planned,
+                    composition
+                        .final_prefix_guard
+                        .classify(scope.as_bytes(), tail)?,
                     None,
-                    self.state.native_closeout.as_ref(),
                 )?;
             }
             return Ok(None);
@@ -326,29 +399,37 @@ impl<'a> AppendCoordinator<'a> {
             .source_content
             .as_ref()
             .ok_or_else(|| StackError::unavailable("Source content composition is absent"))?;
-        if !matches!(
-            composition
-                .final_prefix_guard
-                .classify(scope.as_bytes(), planned)
-                .map_err(|error| {
-                    diag::mark(true, Stage::FinalGuard, Outcome::Refused);
-                    error
-                })?,
-            crate::SourceContentPrefixClass::FinalCloseout { .. }
-        ) {
+        let class = composition
+            .final_prefix_guard
+            .classify(scope.as_bytes(), tail)
+            .map_err(|error| {
+                diag::mark(true, Stage::FinalGuard, Outcome::Refused);
+                error
+            })?;
+        if !matches!(class, crate::SourceContentPrefixClass::FinalCloseout { .. }) {
             diag::mark(true, Stage::FinalGuard, Outcome::Refused);
             return Err(StackError::conflict(
                 "Source publication is not the selected final closeout",
             ));
         }
         diag::mark(true, Stage::FinalGuard, Outcome::ReturnedOk);
+        // The closeout's selection names every event of the (bounded) prefix, so it is read whole.
+        let bound = trellis_types::completion_selection::MAX_COMPLETION_EVENTS as u64 + 1;
+        let mut planned_prefix = tx.prefix(bound).await?;
+        match planned {
+            Planned::New(event) => planned_prefix.push(event.clone()),
+            Planned::Replay(event) => {
+                planned_prefix
+                    .truncate(usize::try_from(event.sequence() + 1).unwrap_or(usize::MAX));
+            }
+        }
         diag::mark(true, Stage::ContentRead, Outcome::Enter);
         let protected = diag::observed(
             true,
             Stage::ContentRead,
             crate::source_content::admit_batch(
                 scope.as_bytes(),
-                planned,
+                &planned_prefix,
                 &source.admitted.claim.selection,
                 &source.admitted.batch,
                 composition.batch_checker.as_ref(),
@@ -358,110 +439,13 @@ impl<'a> AppendCoordinator<'a> {
         diag::observed(
             true,
             Stage::FinalGuard,
-            composition.require_publication_purpose(
-                scope.as_bytes(),
-                planned,
-                Some(&protected),
-                self.state.native_closeout.as_ref(),
-            ),
+            composition.require_publication_purpose(class, Some(&protected)),
         )?;
         Ok(Some(protected))
     }
-
-    async fn commit_unit(
-        &self,
-        scope: &str,
-        admitted: &AdmittedEvent,
-        events: &mut Vec<StoredEvent>,
-        unit: AppendUnitOfWork,
-        update_head: bool,
-        protected: Option<&crate::source_content::ProtectedSourceMembersReady>,
-    ) -> Result<AppendOutcome, StackError> {
-        let selected = protected.is_some();
-        let compute = unit.compute_context().clone();
-        let stored = unit.event().clone();
-        let prefix = events
-            .iter()
-            .chain(std::iter::once(&stored))
-            .collect::<Vec<_>>();
-        diag::mark(selected, Stage::Evidence, Outcome::Enter);
-        diag::observed(
-            selected,
-            Stage::Evidence,
-            self.state
-                .export_profile
-                .evidence_members(scope.as_bytes(), &prefix),
-        )?;
-        diag::mark(selected, Stage::RepositoryWrite, Outcome::Enter);
-        diag::observed(
-            selected,
-            Stage::RepositoryWrite,
-            self.state.repository.append_event(stored.clone()).await,
-        )?;
-        let prior_event_hash = prior_event_hash_for(scope, events, &stored)?;
-        events.push(stored.clone());
-        diag::mark(selected, Stage::ZipPublish, Outcome::Enter);
-        let bundle = diag::observed(
-            selected,
-            Stage::ZipPublish,
-            crate::publish_bundle_with_source_content(
-                self.state,
-                scope.as_bytes(),
-                events,
-                update_head,
-                &compute,
-                protected,
-            )
-            .await,
-        )
-        .map_err(committed_unpublished)?;
-        diag::mark(selected, Stage::Receipt, Outcome::Enter);
-        let result = diag::observed(
-            selected,
-            Stage::Receipt,
-            append_result_for_event(
-                scope,
-                &stored,
-                prior_event_hash,
-                admitted.artifact_type,
-                &admitted.event_type,
-                &bundle,
-                true,
-            ),
-        )
-        .map_err(committed_unpublished)?;
-        Ok(AppendOutcome { result, stored })
-    }
 }
 
-/// Maps any failure after the repository write to a retryable 5xx.
-///
-/// The event is durable, so a same-key retry must re-execute and return the committed
-/// record; a 4xx here would be cached and hide it.
-pub(crate) fn committed_unpublished(error: StackError) -> StackError {
-    if error.status().is_server_error() {
-        error
-    } else {
-        StackError::unavailable("append committed; publication incomplete, retry the same key")
-    }
-}
-
-fn prior_event_hash_for(
-    scope: &str,
-    events: &[StoredEvent],
-    event: &StoredEvent,
-) -> Result<Option<[u8; 32]>, StackError> {
-    let Some(prior_sequence) = event.sequence().checked_sub(1) else {
-        return Ok(None);
-    };
-    let prior = events
-        .iter()
-        .find(|candidate| candidate.sequence() == prior_sequence)
-        .ok_or_else(|| StackError::internal("Trellis append predecessor event missing"))?;
-    event_hash(scope.as_bytes(), prior).map(Some)
-}
-
-/// Public-metadata posture used when republishing bundles outside an append receipt.
+/// Public-metadata posture of an export assembled outside an append.
 #[must_use]
 pub fn default_public_compute_context() -> ComputeContext {
     ComputeContext {
@@ -497,12 +481,6 @@ pub fn export_posture_from_compute(compute: &ComputeContext) -> ExportPostureDec
         recovery_without_user: false,
         metadata_leakage_summary,
     }
-}
-
-/// Clones compute context from the shared wire DTO (`trellis-service-client`).
-#[must_use]
-pub fn port_compute_context(body: &SubstrateAppendBody) -> ComputeContext {
-    body.compute_context.clone()
 }
 
 #[derive(Clone, Debug)]
@@ -639,6 +617,8 @@ impl LedgerStore for CapturingLedgerStore {
 
 #[cfg(test)]
 mod tests {
+    use integrity_cbor::json_to_dcbor_bytes;
+
     use super::*;
     use crate::ServerSigningKey;
     use trellis_export_writer::TrellisTimestamp;

@@ -21,15 +21,6 @@ pub struct ExportProfileMembers {
     pub policy_closure: Option<PolicyClosureMember>,
 }
 
-/// Outcome of verifying one export ZIP.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ExportVerdict {
-    /// Structure and cryptographic integrity pass independent substrate verification.
-    pub substrate_verified: bool,
-    /// The domain verifier accepts the bundle for relying parties.
-    pub profile_verified: bool,
-}
-
 /// Consumer-owned signing facts resolved from one actual signature event.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SigningFact {
@@ -38,8 +29,30 @@ pub struct SigningFact {
     pub authored_at: TrellisTimestamp,
 }
 
-/// Domain export profile: member derivation, bundle verification and signing facts.
+/// Domain export profile: member derivation, the append-time fold and signing facts.
 pub trait ExportProfile: Send + Sync {
+    /// Folds one appended event into the profile's running state for its scope.
+    ///
+    /// The state is opaque to the server: it stores the returned bytes with the event's
+    /// checkpoint and hands them back, unread, to the next append. Folding event `n` into the state
+    /// of events `0..n` MUST accept exactly when [`Self::evidence_members`] accepts events `0..=n`,
+    /// and cost the same whatever `n` is. That equivalence is what lets an append check the
+    /// profile's finite export limits without reading the prefix.
+    ///
+    /// `prior` is `None` for the first event of a scope; `tree_size` counts the events including
+    /// this one.
+    ///
+    /// # Errors
+    /// Refuses an unreadable event, a corrupt `prior`, or a prefix that would exceed the profile's
+    /// finite limits.
+    fn fold_append(
+        &self,
+        scope: &[u8],
+        prior: Option<&[u8]>,
+        event: &StoredEvent,
+        tree_size: u64,
+    ) -> Result<Vec<u8>, StackError>;
+
     /// Derives evidence members from actual admitted events (empty when none apply).
     ///
     /// # Errors
@@ -60,9 +73,6 @@ pub trait ExportProfile: Send + Sync {
         events: &[StoredEvent],
         generated_at: TrellisTimestamp,
     ) -> Result<ExportProfileMembers, StackError>;
-
-    /// Verifies a finished export ZIP in one pass.
-    fn verify(&self, zip: &[u8]) -> ExportVerdict;
 
     /// Resolves signing facts for the selected signature events.
     ///

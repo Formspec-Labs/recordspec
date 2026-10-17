@@ -17,6 +17,8 @@ use std::time::Duration;
 use stack_common_http::tenant::TenantScope;
 use trellis_server_ports::{ArtifactRef, S3CompatibleArtifactStore, source_content_object_key};
 
+use crate::event_repository::SourceContentBinding;
+
 // Match the owner's encoded auxiliary/read and final archive budget.
 const MAX_BATCH_BYTES: usize =
     trellis_service_client::source_content::MAX_PREPARED_SOURCE_CONTENT_BYTES;
@@ -173,13 +175,16 @@ pub trait SourceContentFinalPrefixGuard: Send + Sync {
 
     /// Classifies the actual append body before cached HTTP responses can be returned.
     ///
+    /// `last` is the ledger's most recent event. A closeout can only be the last event, so the body
+    /// and `last` decide without reading the rest of the ledger.
+    ///
     /// # Errors
     /// Refuses unsupported native body or existing closeout relationships.
     fn classify_append(
         &self,
         scope: &[u8],
         body: &trellis_service_client::SubstrateAppendBody,
-        prefix: &[StoredEvent],
+        last: Option<&StoredEvent>,
     ) -> Result<SourceContentPrefixClass, StackError>;
 }
 
@@ -234,14 +239,14 @@ impl std::fmt::Debug for SourceContentComposition {
     }
 }
 impl SourceContentComposition {
+    /// Checks that the classified prefix and the admitted Source members agree: an ordinary
+    /// prefix carries none, a final closeout carries exactly the members its selection names.
     pub(crate) fn require_publication_purpose(
         &self,
-        scope: &[u8],
-        events: &[StoredEvent],
+        class: SourceContentPrefixClass,
         source: Option<&ProtectedSourceMembersReady>,
-        closeout: &dyn NativeCloseout,
     ) -> Result<(), StackError> {
-        match (self.final_prefix_guard.classify(scope, events)?, source) {
+        match (class, source) {
             (SourceContentPrefixClass::Ordinary, None) => Ok(()),
             (
                 SourceContentPrefixClass::FinalCloseout {
@@ -253,7 +258,7 @@ impl SourceContentComposition {
                 == reserved_closeout_record_id
                 && source.selection.identity.native_policy_hash == native_policy_hash =>
             {
-                validate_prefix(scope, events, &source.selection, closeout)
+                Ok(())
             }
             (SourceContentPrefixClass::FinalCloseout { .. }, None) => Err(StackError::unavailable(
                 "final closeout requires committed Source content",
@@ -267,11 +272,10 @@ impl SourceContentComposition {
     }
 }
 
-/// Complete protected member admission; actual Source opening remains the reader gate.
+/// A batch admitted against its selection; actual Source opening remains the reader gate.
 #[derive(Clone, Debug)]
 pub(crate) struct ProtectedSourceMembersReady {
     pub(crate) selection: SourceContentSelection,
-    members: Vec<ExportEvidenceMember>,
 }
 
 fn refused() -> StackError {
@@ -358,7 +362,6 @@ pub(crate) fn admit_batch(
         .check_batch(selected, batch)
         .map_err(|error| refused().with_detail(error.title().to_owned()))?;
     let mut records = BTreeSet::new();
-    let mut members = Vec::with_capacity(batch.records.len() + 2);
     for (record, pins) in batch.records.iter().zip(&selected.record_pins) {
         let actual = SourceContentRecordPins {
             role: record.occurrence.role,
@@ -391,6 +394,17 @@ pub(crate) fn admit_batch(
             return Err(refused());
         }
         decode_cbor_value(&record.locator_cbor).map_err(|_| refused())?;
+    }
+    Ok(ProtectedSourceMembersReady {
+        selection: selected.clone(),
+    })
+}
+
+/// The export members a Source batch carries: each protected record, the intake handoffs and the
+/// signed tasks, in the order the writer binds them.
+fn batch_members(batch: &PreparedSourceContentBatchV1) -> Vec<ExportEvidenceMember> {
+    let mut members = Vec::with_capacity(batch.records.len() + 2);
+    for record in &batch.records {
         members.push(ExportEvidenceMember::Payload {
             content_hash: record.member_content_hash,
             bytes: record.protected_record_bytes.clone(),
@@ -402,10 +416,7 @@ pub(crate) fn admit_batch(
     members.push(ExportEvidenceMember::SignatureAffirmations {
         bytes: batch.source_signed_tasks.clone(),
     });
-    Ok(ProtectedSourceMembersReady {
-        selection: selected.clone(),
-        members,
-    })
+    members
 }
 
 fn preserved_catalog(original: &[u8], prepared: &[u8]) -> Result<(), StackError> {
@@ -433,93 +444,127 @@ fn preserved_catalog(original: &[u8], prepared: &[u8]) -> Result<(), StackError>
     Ok(())
 }
 
-impl ProtectedSourceMembersReady {
-    pub(crate) fn verify_retained_members(&self, zip: &[u8]) -> Result<(), StackError> {
-        archive_bound(zip)?;
-        let entries = integrity_bundle::read_stored_zip(zip).map_err(|_| refused())?;
-        for member in &self.members {
-            let (path, expected) = match member {
-                ExportEvidenceMember::Payload {
-                    content_hash,
-                    bytes,
-                } => (
-                    format!("060-payloads/{}.bin", hex::encode(content_hash)),
-                    bytes,
-                ),
-                ExportEvidenceMember::IntakeHandoffs { bytes } => {
-                    ("063-intake-handoffs.cbor".into(), bytes)
-                }
-                ExportEvidenceMember::SignatureAffirmations { bytes } => {
-                    ("062-signature-affirmations.cbor".into(), bytes)
-                }
-                _ => return Err(refused()),
-            };
-            let suffix = format!("/{path}");
-            let mut found = entries
-                .iter()
-                .filter(|entry| entry.path().ends_with(&suffix));
-            let actual = found.next().ok_or_else(refused)?;
-            if found.next().is_some() || actual.bytes() != expected {
-                return Err(refused());
-            }
-        }
-        Ok(())
-    }
-
-    pub(crate) fn merge_members(
-        &self,
-        existing: Vec<ExportEvidenceMember>,
-    ) -> Result<Vec<ExportEvidenceMember>, StackError> {
-        let mut members = Vec::with_capacity(existing.len() + self.members.len());
-        for member in existing {
-            let replacement = match &member {
-                ExportEvidenceMember::SignatureAffirmations { bytes } => {
-                    self.members.iter().find_map(|candidate| match candidate {
-                        ExportEvidenceMember::SignatureAffirmations { bytes: prepared } => {
-                            Some((bytes, prepared))
-                        }
-                        _ => None,
-                    })
-                }
-                ExportEvidenceMember::IntakeHandoffs { bytes } => {
-                    self.members.iter().find_map(|candidate| match candidate {
-                        ExportEvidenceMember::IntakeHandoffs { bytes: prepared } => {
-                            Some((bytes, prepared))
-                        }
-                        _ => None,
-                    })
-                }
-                _ => None,
-            };
-            if let Some((old, prepared)) = replacement {
-                preserved_catalog(old, prepared)?;
-            } else {
-                members.push(member);
-            }
-        }
-        for member in &self.members {
-            if let ExportEvidenceMember::Payload {
-                content_hash,
-                bytes,
-            } = member
-            {
-                if let Some(previous) = members.iter().find_map(|candidate| match candidate {
-                    ExportEvidenceMember::Payload {
-                        content_hash: hash,
-                        bytes,
-                    } if hash == content_hash => Some(bytes),
-                    _ => None,
-                }) {
-                    if previous != bytes {
-                        return Err(refused());
+/// Merges a Source batch's members into the profile-derived ones: catalogs must preserve every
+/// existing row, and a payload present in both must be the same bytes.
+pub(crate) fn merge_source_members(
+    existing: Vec<ExportEvidenceMember>,
+    source: &[ExportEvidenceMember],
+) -> Result<Vec<ExportEvidenceMember>, StackError> {
+    let mut members = Vec::with_capacity(existing.len() + source.len());
+    for member in existing {
+        let replacement = match &member {
+            ExportEvidenceMember::SignatureAffirmations { bytes } => {
+                source.iter().find_map(|candidate| match candidate {
+                    ExportEvidenceMember::SignatureAffirmations { bytes: prepared } => {
+                        Some((bytes, prepared))
                     }
-                    continue;
-                }
+                    _ => None,
+                })
             }
-            members.push(member.clone());
+            ExportEvidenceMember::IntakeHandoffs { bytes } => {
+                source.iter().find_map(|candidate| match candidate {
+                    ExportEvidenceMember::IntakeHandoffs { bytes: prepared } => {
+                        Some((bytes, prepared))
+                    }
+                    _ => None,
+                })
+            }
+            _ => None,
+        };
+        if let Some((old, prepared)) = replacement {
+            preserved_catalog(old, prepared)?;
+        } else {
+            members.push(member);
         }
-        Ok(members)
     }
+    for member in source {
+        if let ExportEvidenceMember::Payload {
+            content_hash,
+            bytes,
+        } = member
+        {
+            if let Some(previous) = members.iter().find_map(|candidate| match candidate {
+                ExportEvidenceMember::Payload {
+                    content_hash: hash,
+                    bytes,
+                } if hash == content_hash => Some(bytes),
+                _ => None,
+            }) {
+                if previous != bytes {
+                    return Err(refused());
+                }
+                continue;
+            }
+        }
+        members.push(member.clone());
+    }
+    Ok(members)
+}
+
+const BATCH_KEY_ROOT: &str = "source-content-batches";
+
+/// Writes Trellis's own copy of an admitted batch before the closeout commits.
+///
+/// WOS may purge its object once the closeout commits (ADR 0163), but the export at the closeout
+/// checkpoint must still carry the batch's members, so the copy is Trellis's and write-once. The
+/// key is the ledger scope plus the digest of the stored bytes (ADR 0168 1.4: object keys live under the scope), so a retry writes the same bytes to the same key and no other scope can reach it.
+///
+/// # Errors
+/// Refuses a batch over the byte budget or an unavailable artifact store.
+pub(crate) async fn retain_batch(
+    state: &crate::TrellisServerState,
+    scope: &str,
+    batch: &PreparedSourceContentBatchV1,
+) -> Result<SourceContentBinding, StackError> {
+    let bytes = serde_json::to_vec(batch).map_err(|_| refused())?;
+    if bytes.len() > MAX_BATCH_BYTES {
+        return Err(StackError::bad_request("Source batch byte limit"));
+    }
+    let batch_hash = sha256_bytes(&bytes);
+    let reference = state
+        .artifact_store
+        .put_immutable(
+            &format!("{scope}/{BATCH_KEY_ROOT}/{}", hex::encode(batch_hash)),
+            &bytes,
+        )
+        .await?;
+    Ok(SourceContentBinding {
+        batch_hash,
+        size: bytes.len() as u64,
+        artifact_ref: reference.uri,
+    })
+}
+
+/// The export members of the batch Trellis retained for the closeout at `sequence`.
+///
+/// # Errors
+/// Unavailable when no batch is bound to the closeout or its bytes are gone, a conflict when they
+/// differ from the binding.
+pub(crate) async fn stored_members(
+    state: &crate::TrellisServerState,
+    scope: &[u8],
+    sequence: u64,
+) -> Result<Vec<ExportEvidenceMember>, StackError> {
+    let binding = state
+        .repository
+        .source_content(scope, sequence)
+        .await?
+        .ok_or_else(|| {
+            StackError::unavailable("final closeout requires committed Source content")
+        })?;
+    let bytes = state
+        .artifact_store
+        .get(&ArtifactRef::new(binding.artifact_ref))
+        .await?
+        .ok_or_else(|| StackError::unavailable("retained Source batch unavailable"))?;
+    if bytes.len() as u64 != binding.size || sha256_bytes(&bytes) != binding.batch_hash {
+        return Err(StackError::conflict(
+            "retained Source batch differs from its binding",
+        ));
+    }
+    let batch: PreparedSourceContentBatchV1 =
+        serde_json::from_slice(&bytes).map_err(|_| refused())?;
+    Ok(batch_members(&batch))
 }
 
 pub(crate) fn archive_bound(zip: &[u8]) -> Result<(), StackError> {
@@ -676,11 +721,11 @@ impl SourceContentFinalPrefixGuard for ConfiguredNativeCloseoutGuard {
         &self,
         scope: &[u8],
         body: &trellis_service_client::SubstrateAppendBody,
-        prefix: &[StoredEvent],
+        last: Option<&StoredEvent>,
     ) -> Result<SourceContentPrefixClass, StackError> {
         if let Some(id) = self.rule.matching_record_id(CloseoutSource::Append(body))? {
             return Ok(self.final_closeout(id));
         }
-        self.classify(scope, prefix)
+        self.classify(scope, last.map(std::slice::from_ref).unwrap_or_default())
     }
 }

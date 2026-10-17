@@ -5,7 +5,7 @@
 use std::path::Path;
 
 use integrity_cbor::{Value, decode_cbor_value};
-use trellis_types::StoredEvent;
+use trellis_types::{StoredCheckpoint, StoredEvent};
 
 use crate::{
     ExportWriterInput, PostureDeclaration, RegistrySnapshot, SigningKeyMaterial, TrellisTimestamp,
@@ -45,6 +45,44 @@ fn integer_label_fixed_32(map: &[(Value, Value)], label: i128) -> [u8; 32] {
     })
 }
 
+/// Issues the checkpoints a ledger of `events` would have stored: one per prefix, each timestamped
+/// `timestamps[i]`, signed with the COSE key `signing_key`.
+///
+/// # Panics
+/// Panics if the key or an event is malformed; fixture inputs are trusted.
+#[must_use]
+pub fn issue_checkpoints(
+    scope: &[u8],
+    events: &[StoredEvent],
+    signing_key: &[u8],
+    timestamps: &[TrellisTimestamp],
+) -> Vec<StoredCheckpoint> {
+    let key = trellis_core::SigningKeyMaterial::new(signing_key.to_vec());
+    let mut prior: Option<trellis_core::checkpoint::IssuedCheckpoint> = None;
+    events
+        .iter()
+        .zip(timestamps)
+        .map(|(event, timestamp)| {
+            let issued = trellis_core::checkpoint::issue_checkpoint(
+                &key,
+                scope,
+                prior
+                    .as_ref()
+                    .map(|prior| trellis_core::checkpoint::PriorCheckpoint {
+                        digest: prior.digest,
+                        frontier: &prior.frontier,
+                    }),
+                crate::canonical_event_hash(scope, event.canonical_event()),
+                (timestamp.unix_secs, timestamp.subsec_nanos),
+            )
+            .expect("fixture checkpoint issues");
+            let stored = issued.stored(scope, Vec::new());
+            prior = Some(issued);
+            stored
+        })
+        .collect()
+}
+
 /// Builds deterministic export writer input matching `export/001-two-event-chain`.
 ///
 /// `vectors_root` is the `fixtures/vectors` directory.
@@ -70,43 +108,44 @@ pub fn export_001_writer_input(vectors_root: &Path) -> ExportWriterInput {
         vectors_root,
         "append/009-signing-key-revocation/input-domain-registry.cbor",
     );
-    let (private_seed, public_key) =
-        parse_fixture_ed25519_cose_key(&read_fixture(vectors_root, "_keys/issuer-001.cose_key"));
+    let cose_key = read_fixture(vectors_root, "_keys/issuer-001.cose_key");
+    let (private_seed, public_key) = parse_fixture_ed25519_cose_key(&cose_key);
 
-    ExportWriterInput {
-        scope: b"test-response-ledger".to_vec(),
-        events: vec![
-            StoredEvent::new(
-                b"test-response-ledger".to_vec(),
-                0,
-                payload_001,
-                event_001_bytes,
-            ),
-            StoredEvent::new(
-                b"test-response-ledger".to_vec(),
-                1,
-                payload_005,
-                event_005_bytes,
-            ),
+    let scope = b"test-response-ledger".to_vec();
+    let events = vec![
+        StoredEvent::new(scope.clone(), 0, payload_001, event_001_bytes),
+        StoredEvent::new(scope.clone(), 1, payload_005, event_005_bytes),
+    ];
+    let checkpoints = issue_checkpoints(
+        &scope,
+        &events,
+        &cose_key,
+        &[
+            TrellisTimestamp::new(1_745_000_050, 0).expect("valid timestamp"),
+            TrellisTimestamp::new(1_745_000_060, 0).expect("valid timestamp"),
         ],
+    );
+
+    let signing_key = SigningKeyMaterial {
+        private_seed,
+        public_key,
+        valid_from: TrellisTimestamp::new(1_745_000_000, 0).expect("valid timestamp"),
+        valid_to: None,
+    };
+    ExportWriterInput {
+        scope,
+        events,
+        checkpoints,
         registries: vec![RegistrySnapshot {
             bytes: registry,
             registry_format: 1,
             registry_version: "x-trellis-test/registry-009-v1".to_string(),
             bound_at_sequence: 0,
         }],
-        signing_key: SigningKeyMaterial {
-            private_seed,
-            public_key,
-            valid_from: TrellisTimestamp::new(1_745_000_000, 0).expect("valid timestamp"),
-            valid_to: None,
-        },
+        signing_key: signing_key.clone(),
+        signing_key_registry: vec![signing_key.registry_entry()],
         generator: "x-trellis-test/export-generator-001".to_string(),
         generated_at: TrellisTimestamp::new(1_745_000_060, 0).expect("valid timestamp"),
-        checkpoint_timestamps: vec![
-            TrellisTimestamp::new(1_745_000_050, 0).expect("valid timestamp"),
-            TrellisTimestamp::new(1_745_000_060, 0).expect("valid timestamp"),
-        ],
         posture_declaration: PostureDeclaration {
             provider_readable: true,
             reader_held: false,

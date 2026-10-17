@@ -703,15 +703,13 @@ Trellis Core §17 (Append Idempotency Contract) fixes the **byte-level** contrac
 
 ### 18.5a Reference-service append reconciliation
 
-The reference `GET /v1/scopes/{scope}/bundles/head` operation reads the exact current repository prefix at its ordered-read point. With current tenant/scope Read permission, it may return only the already published seal for that complete prefix after validating its deterministic publication identity and retained signed bytes. It returns the same bytes that passed verification and rechecks current Read authority before disclosure. A concurrent later append does not change the captured read point; an older indexed head is never substituted for a missing current seal.
-
-Creating a missing publication still requires the same reader's explicit Administer permission. Missing or corrupt bytes for an existing immutable publication remain unavailable or conflicting, without regeneration. The Source final-closeout guard still refuses a bare final prefix through this generic head path. Receipt-pinned bundle retrieval and its existing publication fallback are unchanged. These are reference-service operation rules, not new publication grants or a recovery authorization.
+The reference `GET /v1/scopes/{scope}/bundles/head` operation reads the head checkpoint, then assembles the Core §18 (Export Package Layout) export at that checkpoint on request. With current tenant/scope Read permission it returns the export for the exact stored prefix the head checkpoint commits to, and rechecks current Read authority before disclosure. `GET /v1/scopes/{scope}/bundles/{checkpointDigest}` does the same for any stored checkpoint. An export is a function of the stored events, the stored checkpoints, and the server's signing configuration (the signing key and its public key history): for a fixed signing configuration the same checkpoint always yields the same bytes; a different key, or a history grown by a rotation, yields different manifest bytes for the same checkpoint. Every export carries the full signing-key history as registry rows (Core §8 (Key Registry): every cited key resolves, retired rows stay), so a ledger written before a rotation still verifies. The server reads that history from a public-key file, oldest first and ending at the configured signing key, and refuses to start when the file does not end there. Nothing is published or retained at append time, and no export operation requires more than Read. A concurrent later append does not change the checkpoint a response was assembled at. The Source final-closeout guard still refuses a bare final prefix through the head path: its export is assembled only with the Source batch the server retained at the closeout.
 
 The reference HTTP service exposes `POST /v1/scopes/{scope}/events/reconcile` under current tenant/scope read permission. The request carries the original idempotency key, event type, and `CONTENT_DOMAIN` hash of the canonical dCBOR payload. This is the existing append replay identity; it does not prove equality of the original HTTP body, actor, or compute selection. `AppendReconciliationRequest::from_append_body` derives it through the maintained shared payload encoder.
 
-The closed result distinguishes `committed` (a fully verified, already-retained exact-prefix publication and its existing append receipt), `conflict`, `absent` at a serialized read point, and `unknown`. An event without sufficient retained receipt proof remains unknown. Lookup creates no event, publication reservation, bundle, or Source fetch; current read authority is checked again after awaited verification. The machine JSON receipt is not a substitute for the consumer's independent proof checks.
+The closed result distinguishes `committed` (the event found by key, with the checkpoint stored at its sequence plus one, and the append receipt built from them), `conflict`, `absent` at a serialized read point, and `unknown`. An event whose checkpoint row is missing remains unknown. Lookup creates no event, checkpoint, or Source fetch; current read authority is checked again before the answer is returned. The machine JSON receipt is not a substitute for the consumer's independent proof checks, which run over the export at the receipt's checkpoint.
 
-Memory snapshots use the existing repository mutex. PostgreSQL snapshots use the existing transaction scope lock shared with append and a subsequent READ COMMITTED query, releasing the transaction before immutable artifact verification. Absence reports the captured count/head, never that an operation was never sent or cannot commit later. Lookup and a later send are separate operations. A separately authorized continuation retains the identical native key and payload identity; existing atomic key uniqueness and replay/conflict handling prevent duplicate canonical commits, but a racing caller may still receive a refusal. Owner settlement, case leases and local attempt persistence remain consumer responsibilities.
+Every read point is a transaction that takes the scope's lock first and then reads at `READ COMMITTED`, so it sees every append that committed before the lock was granted (PostgreSQL: the scope advisory lock shared with append; memory: the repository mutex). Absence reports the captured count and head, never that an operation was never sent or cannot commit later. Lookup and a later send are separate operations. A separately authorized continuation retains the identical native key and payload identity; atomic key uniqueness and replay handling prevent duplicate canonical commits. A racing append is never answered `409` for losing the lock: it waits, then commits at the next sequence. A unique-key violation that survives the lock is answered `503`, because the HTTP idempotency layer caches every non-5xx response and a cached `409` would pin the caller's key. Owner settlement, case leases and local attempt persistence remain consumer responsibilities.
 
 ### 18.6 Idempotent-Acceptance Consequences
 
@@ -723,38 +721,11 @@ Memory snapshots use the existing repository mutex. PostgreSQL snapshots use the
 
 **OC-62 (MUST).** Any proof material or referenced state required to recover or verify a canonical record within the declared export scope MUST be durably recoverable no later than the declared durable-append boundary.
 
+**Reference-service boundary (informative).** The reference service's durable-append boundary is the single database commit that writes an event, its signed checkpoint (the checkpoint at the event's sequence plus one, with the Merkle frontier and the running domain-member state the next append continues from) and, for a Source closeout, the binding to the server's own copy of the admitted batch. Nothing runs after that commit: there is no publication step, no post-commit verification and no second write that can fail while the event is durable. A response that names the checkpoint therefore names a checkpoint that already exists, and the export at it can be assembled by any replica.
+
 ### 18.8 Replica Completion Is Not Canonical
 
 **OC-63 (MUST).** Replica completion state MUST remain operational state, not canonical truth. The presence, absence, or synchronization lag of any individual replica is a derived condition and MUST NOT be treated as modifying canonical facts.
-
-### 18.9 Bundle-Publication Reservation Lifecycle
-
-**OC-63a (SHOULD).** Operators backing the bundle-publication index with a durable store that reserves the bundle scope (Phase-1 Postgres reference adapter: column `scope`; the bundle scope identity is Core §1 (Introduction) "Phase 1 scope") and `seal_version` as a composite primary key before artifact writes — the Phase-1 adapter does this via the `trellis_bundle_publications` table at `crates/trellis-store-postgres-async/src/migrations.rs:62-75` with `ON CONFLICT DO NOTHING` on `PRIMARY KEY (scope, seal_version)` — MUST account for dead reservations: rows where the reservation landed but the artifact-ref population path did not complete (process crash between reservation and ZIP write, network failure mid-upload). A dead reservation is hidden from `get_bundle_publication_by_digest` lookups by design — it does not falsely satisfy reads — but it blocks same-identity retries with different inputs because the PK is already occupied.
-
-**Operational guidance (non-normative).** For Phase-1 single-tenant deployments, manual SQL cleanup is acceptable. The Phase-1 schema at `crates/trellis-store-postgres-async/src/migrations.rs::trellis_bundle_publications` carries a `created_at TIMESTAMPTZ NOT NULL DEFAULT now()` column (reservation timestamp) and a `published_at TIMESTAMPTZ NULL` column (publication timestamp); a dead reservation is `artifact_ref IS NULL AND published_at IS NULL` aged past the operator's threshold:
-
-```sql
--- Identify dead reservations older than 1 hour (Phase-1 schema; reservation
--- timestamp lives in created_at; published_at is set when the artifact lands).
-SELECT scope, seal_version, created_at
-FROM trellis_bundle_publications
-WHERE artifact_ref IS NULL
-  AND published_at IS NULL
-  AND created_at < NOW() - INTERVAL '1 hour';
-
--- Remove a specific dead reservation (operator-judgment; never invoked mid-publish).
-DELETE FROM trellis_bundle_publications
-WHERE scope = '<scope>'
-  AND seal_version = <version>
-  AND artifact_ref IS NULL
-  AND published_at IS NULL;
-```
-
-The retention threshold is operator policy; one hour is a reference value, not a normative bound. The cleanup MUST NOT race a legitimate in-flight publish; `created_at` aging gives the in-flight path bounded time to complete before its row becomes a janitor candidate.
-
-**Multi-tenant evolution path (informative).** When multi-tenant scale or distributed publication arrives, two approaches are tractable: (a) add an explicit `reserved_at` TTL column (or repurpose `created_at` with documented semantics) plus a periodic janitor task that DELETEs dead reservations under the aging filter, or (b) hold the reservation in a Postgres advisory lock with transaction scope (auto-released on process exit) instead of a durable row. The Phase-1 PK-reservation pattern survives both evolutions; only the cleanup mechanism changes. Track at the platform-level when a real multi-tenant trigger appears (see formspec-stack `thoughts/plans/2026-05-18-end-state-substrate-closeout.md` long-term question 2 on `ScopedAdvisoryLease` backend neutrality).
-
-**Why this is operational, not Core.** Core §17 (Append Idempotency Contract) fixes byte-level append idempotency; bundle publication is downstream of append and uses a different identity (`(scope, seal_version)`, not `(ledger_scope, idempotency_key)`). The dead-reservation concern is adapter-shaped: bundle publication today only ships in the Postgres adapter (`crates/trellis-store-postgres-async/`); the in-memory store has no bundle-publication implementation at all, and any future SQLite (or other relational) adapter would design its reservation path against this same lifecycle rule. Conformant Phase-1 verifiers do not observe this state; this subsection is operator-facing.
 
 ---
 

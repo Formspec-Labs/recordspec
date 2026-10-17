@@ -96,6 +96,45 @@ CREATE TABLE trellis_external_attachments (
 );
 ",
     },
+    Migration {
+        version: 6,
+        name: "flat_cost_checkpoints",
+        up_sql: "\
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM trellis_events) THEN
+        RAISE EXCEPTION 'trellis_events holds ledgers written before checkpoint rows existed; recreate the database';
+    END IF;
+END
+$$;
+
+ALTER TABLE trellis_events ALTER COLUMN canonical_event_hash SET NOT NULL;
+
+DROP TABLE trellis_bundle_publications;
+
+CREATE TABLE trellis_checkpoints (
+    scope BYTEA NOT NULL,
+    tree_size BIGINT NOT NULL CHECK (tree_size >= 1),
+    digest BYTEA NOT NULL CHECK (octet_length(digest) = 32),
+    checkpoint BYTEA NOT NULL,
+    frontier BYTEA NOT NULL,
+    profile_state BYTEA NOT NULL,
+    PRIMARY KEY (scope, tree_size),
+    UNIQUE (scope, digest),
+    CHECK (octet_length(frontier) = 32 * bit_count(tree_size::bit(64)))
+);
+
+CREATE TABLE trellis_source_contents (
+    scope BYTEA NOT NULL,
+    sequence BIGINT NOT NULL,
+    batch_hash BYTEA NOT NULL CHECK (octet_length(batch_hash) = 32),
+    size BIGINT NOT NULL CHECK (size > 0),
+    artifact_ref TEXT NOT NULL CHECK (length(artifact_ref) BETWEEN 1 AND 2048),
+    PRIMARY KEY (scope, sequence),
+    FOREIGN KEY (scope, sequence) REFERENCES trellis_events (scope, sequence)
+);
+",
+    },
 ];
 
 /// Error returned by async migration setup.

@@ -11,18 +11,23 @@
 //!
 //! This is also the first-class integration test exercising the
 //! transaction-composition surface
-//! ([`trellis_store_postgres_async::append_event_in_tx`]) against the full
-//! append corpus.
+//! ([`trellis_store_postgres_async::append_checkpointed_in_tx`]) against the full
+//! append corpus, and that the checkpoint stored beside each event is the
+//! checkpoint `trellis-core` issued, byte for byte.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use sqlx::PgPool;
 use stack_common_postgres::testing::EphemeralCluster;
+use trellis_core::checkpoint::{IssuedCheckpoint, PriorCheckpoint, issue_checkpoint};
 use trellis_core::{AuthoredEvent, SigningKeyMaterial, append_event};
 use trellis_store_memory::MemoryStore;
-use trellis_store_postgres_async::{append_event_in_tx, build_pool, run_migrations};
-use trellis_types::StoredEvent;
+use trellis_store_postgres_async::{
+    append_checkpointed_in_tx, build_pool, checkpoint_at, run_migrations,
+};
+use trellis_types::merkle::{Frontier, TrellisHasher};
+use trellis_types::{StoredCheckpoint, StoredEvent};
 
 fn fixtures_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/vectors")
@@ -85,7 +90,7 @@ async fn append_corpus_byte_parity_memory_vs_postgres() {
         let mut runner = MemoryStore::new();
         let postgres_artifacts = append_event(
             &mut runner,
-            &SigningKeyMaterial::new(signing_key),
+            &SigningKeyMaterial::new(signing_key.clone()),
             &AuthoredEvent::new(authored_event),
         )
         .unwrap();
@@ -97,13 +102,31 @@ async fn append_corpus_byte_parity_memory_vs_postgres() {
         // fresh write. Byte parity is the assertion under test, not
         // multi-fixture replay (which the wider conformance suite covers). CASCADE because
         // `trellis_external_attachments` references `trellis_events`.
-        sqlx::query("TRUNCATE TABLE trellis_events CASCADE")
+        sqlx::query("TRUNCATE TABLE trellis_events, trellis_checkpoints CASCADE")
             .execute(&pool)
             .await
             .unwrap();
+        let runner_stored = runner_stored
+            .clone()
+            .with_canonical_event_hash(Some(postgres_artifacts.canonical_event_hash));
+        let issued = issue_checkpoint_for(&runner_stored, &signing_key);
+        let stored_checkpoint = issued.stored(runner_stored.scope(), b"profile-state".to_vec());
         let mut tx = pool.begin().await.unwrap();
-        append_event_in_tx(&mut tx, runner_stored).await.unwrap();
+        append_checkpointed_in_tx(&mut tx, &runner_stored, &stored_checkpoint)
+            .await
+            .unwrap();
         tx.commit().await.unwrap();
+        let read_back = checkpoint_at(&pool, runner_stored.scope(), runner_stored.sequence() + 1)
+            .await
+            .unwrap()
+            .expect("the checkpoint committed with the event");
+        assert_eq!(
+            read_back,
+            stored_checkpoint,
+            "checkpoint bytes must survive the store unchanged for {}",
+            dir.display()
+        );
+        assert_eq!(read_back.frontier().unwrap(), issued.frontier);
 
         let postgres_stored =
             load_scope_event(&pool, memory_stored.scope(), memory_stored.sequence())
@@ -131,8 +154,8 @@ async fn append_corpus_byte_parity_memory_vs_postgres() {
         );
         assert_eq!(
             postgres_stored.canonical_event_hash(),
-            memory_stored.canonical_event_hash(),
-            "stored canonical_event_hash mismatch memory vs postgres for {}",
+            Some(&memory_artifacts.canonical_event_hash),
+            "stored canonical_event_hash must be the one core computed for {}",
             dir.display()
         );
         assert_eq!(
@@ -157,8 +180,7 @@ async fn transaction_composition_atomic_with_caller_projections() {
     // append + a caller-supplied projection update commit atomically OR
     // roll back together. This is the architectural invariant VISION.md
     // §VIII rejection of dual-write rests on.
-    let (_cluster, pool) =
-        started_pool().await;
+    let (_cluster, pool) = started_pool().await;
 
     // Composition root would create this kind of table per its own schema; we
     // model the seam with a simple side table.
@@ -170,12 +192,10 @@ async fn transaction_composition_atomic_with_caller_projections() {
     // Happy path: canonical + projection commit together.
     {
         let mut tx = pool.begin().await.unwrap();
-        append_event_in_tx(
-            &mut tx,
-            &StoredEvent::new(b"case-1".to_vec(), 0, vec![0xab], vec![0xcd]),
-        )
-        .await
-        .unwrap();
+        let (event, checkpoint) = first_event_and_checkpoint(b"case-1", vec![0xab], vec![0xcd]);
+        append_checkpointed_in_tx(&mut tx, &event, &checkpoint)
+            .await
+            .unwrap();
         sqlx::query("INSERT INTO projection_demo (case_id, status) VALUES ($1, $2)")
             .bind("case-1")
             .bind("open")
@@ -189,12 +209,10 @@ async fn transaction_composition_atomic_with_caller_projections() {
     // Sad path: projection write fails -> canonical event MUST roll back.
     {
         let mut tx = pool.begin().await.unwrap();
-        append_event_in_tx(
-            &mut tx,
-            &StoredEvent::new(b"case-2".to_vec(), 0, vec![0xee], vec![0xff]),
-        )
-        .await
-        .unwrap();
+        let (event, checkpoint) = first_event_and_checkpoint(b"case-2", vec![0xee], vec![0xff]);
+        append_checkpointed_in_tx(&mut tx, &event, &checkpoint)
+            .await
+            .unwrap();
         // PK conflict against case-1 row.
         let projection_err =
             sqlx::query("INSERT INTO projection_demo (case_id, status) VALUES ($1, $2)")
@@ -209,6 +227,47 @@ async fn transaction_composition_atomic_with_caller_projections() {
         scope_event_count(&pool, b"case-2").await == 0,
         "rolled-back tx left canonical event visible"
     );
+}
+
+/// The checkpoint a service would issue for `event`: a corpus event at sequence `n` follows `n`
+/// earlier leaves, which stand in as arbitrary hashes since only this event's bytes are in play.
+fn issue_checkpoint_for(event: &StoredEvent, signing_key: &[u8]) -> IssuedCheckpoint {
+    let mut earlier = Frontier::new();
+    for index in 0..event.sequence() {
+        earlier.push(&TrellisHasher, &index.to_be_bytes());
+    }
+    let prior = (event.sequence() > 0).then_some(PriorCheckpoint {
+        digest: [0x5a; 32],
+        frontier: &earlier,
+    });
+    issue_checkpoint(
+        &trellis_core::SigningKeyMaterial::new(signing_key.to_vec()),
+        event.scope(),
+        prior,
+        *event.canonical_event_hash().expect("hash set"),
+        (1_700_000_000, 0),
+    )
+    .unwrap()
+}
+
+fn first_event_and_checkpoint(
+    scope: &[u8],
+    canonical: Vec<u8>,
+    signed: Vec<u8>,
+) -> (StoredEvent, StoredCheckpoint) {
+    let event = StoredEvent::new(scope.to_vec(), 0, canonical, signed)
+        .with_canonical_event_hash(Some([0x11; 32]));
+    let mut frontier = Frontier::new();
+    frontier.push(&TrellisHasher, &[0x11; 32]);
+    let checkpoint = StoredCheckpoint {
+        scope: scope.to_vec(),
+        tree_size: 1,
+        digest: [0x22; 32],
+        checkpoint: b"sign1".to_vec(),
+        frontier: frontier.to_bytes(),
+        profile_state: Vec::new(),
+    };
+    (event, checkpoint)
 }
 
 async fn started_pool() -> (EphemeralCluster, PgPool) {

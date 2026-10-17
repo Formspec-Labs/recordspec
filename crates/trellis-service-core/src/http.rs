@@ -15,9 +15,9 @@ use trellis_server_ports::ScopeAction;
 use trellis_service_client::{ComputeSensitivity, SubstrateAppendBody, SubstrateAppendResult};
 
 use crate::append;
+use crate::event_type_registry_view;
 use crate::openapi::EventTypeRegistryView;
 use crate::state::{TrellisHealthProbe, TrellisServerState};
-use crate::{event_type_registry_view, publish_bundle};
 
 /// Seal body limit. The worst case the request validator admits is about 0.84 MiB (measured
 /// by `completion_route_body_limit_admits_the_worst_case_selection_and_no_more`): 141 text
@@ -150,7 +150,7 @@ pub(crate) async fn seal_completion(
     ),
     request_body = SubstrateAppendBody,
     responses(
-        (status = 201, description = "Event appended and proof bundle published.", body = SubstrateAppendResult),
+        (status = 201, description = "Event and its checkpoint committed.", body = SubstrateAppendResult),
         (status = 400, description = "Invalid append request.", body = ProblemJson, content_type = "application/problem+json"),
         (status = 401, description = "Service token rejected.", body = ProblemJson, content_type = "application/problem+json"),
         (status = 403, description = "Scope action forbidden.", body = ProblemJson, content_type = "application/problem+json"),
@@ -172,7 +172,6 @@ pub(crate) async fn append_event(
         event_type: body.event_type.clone(),
         idempotency_key: body.idempotency_key.clone(),
         payload: body.payload.clone(),
-        compute_context: append::port_compute_context(&body),
         client_attestation: body.client_attestation.clone(),
     };
     let outcome = match admitted {
@@ -202,11 +201,11 @@ pub(crate) async fn append_event(
     path = "/v1/scopes/{scope}/bundles/head",
     params(("scope" = String, Path, description = "Trellis ledger scope.")),
     responses(
-        (status = 200, description = "Verified retained current bundle under Read, or an Administer-authorized publication.", content_type = "application/zip"),
-        (status = 403, description = "Current Read refused, or publication requires Administer.", body = ProblemJson, content_type = "application/problem+json"),
-        (status = 404, description = "Scope has no bundle.", body = ProblemJson, content_type = "application/problem+json"),
-        (status = 409, description = "Bundle artifact or seal identity conflict.", body = ProblemJson, content_type = "application/problem+json"),
-        (status = 503, description = "Bundle store unavailable.", body = ProblemJson, content_type = "application/problem+json")
+        (status = 200, description = "The Core section 18 export at the head checkpoint, assembled on request under Read.", content_type = "application/zip"),
+        (status = 403, description = "Current Read refused.", body = ProblemJson, content_type = "application/problem+json"),
+        (status = 404, description = "Scope has no events.", body = ProblemJson, content_type = "application/problem+json"),
+        (status = 409, description = "Stored rows or a retained Source batch contradict themselves.", body = ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Ledger or artifact store unavailable.", body = ProblemJson, content_type = "application/problem+json")
     ),
     tag = "bundles",
     operation_id = "getHeadBundle",
@@ -217,71 +216,18 @@ pub(crate) async fn head_bundle(
     tenant_scope: TenantScope,
     headers: HeaderMap,
 ) -> Result<Response, StackError> {
-    let (identity, read_permit) = read_authorized(&state, &scope, &tenant_scope, &headers).await?;
-    let response = {
-        let _scope_guard = state.scope_locks.lock(scope.as_bytes()).await;
-        // The ordered repository read defines this response's current prefix.
-        // A later append never substitutes an older or arbitrary indexed head.
-        let events = crate::reconciliation::checked_prefix(
-            scope.as_bytes(),
-            state.repository.list_scope(scope.as_bytes()).await?,
-        )?;
-        // Retained reads preserve the existing refusal of a bare Source closeout.
-        if let Some(composition) = &state.source_content {
-            composition.require_publication_purpose(
-                scope.as_bytes(),
-                &events,
-                None,
-                state.native_closeout.as_ref(),
-            )?;
-        }
-        let seal = u64::try_from(events.len())
-            .map_err(|_| StackError::internal("event count exceeds u64"))?;
-        let retained = state.bundles.get_by_seal(scope.as_bytes(), seal).await?;
-        if let Some(record) = retained {
-            let last = events
-                .last()
-                .ok_or_else(|| StackError::conflict("retained empty head differs"))?;
-            let attempt = crate::export_attempt_id(
-                scope.as_bytes(),
-                seal,
-                last.sequence(),
-                crate::event_hash(scope.as_bytes(), last)?,
-            )?;
-            if record.seal_version != seal || record.export_attempt_id != attempt {
-                return Err(StackError::conflict(
-                    "retained head publication identity differs",
-                ));
-            }
-            // Return the same immutable bytes that passed verification, without
-            // entering the publisher's retained-hit index update or fetching twice.
-            let bytes = crate::read_verified_retained_publication(
-                &state,
-                scope.as_bytes(),
-                &events,
-                &record,
-                None,
-            )
-            .await?;
-            bytes_response("application/zip", bytes)
-        } else {
-            crate::auth::authorize_publication(&state, &identity, &read_permit).await?;
-            let bundle = publish_bundle(
-                &state,
-                scope.as_bytes(),
-                &events,
-                true,
-                &append::default_public_compute_context(),
-            )
-            .await?;
-            bundle_response(&state, &bundle).await?
-        }
-    };
+    let (_, read_permit) = read_authorized(&state, &scope, &tenant_scope, &headers).await?;
+    let head = state
+        .repository
+        .head_checkpoint(scope.as_bytes())
+        .await?
+        .ok_or_else(|| StackError::not_found("scope has no events"))?;
+    let bytes = crate::export::assemble(&state, scope.as_bytes(), &head).await?;
     let (_, after) = read_authorized(&state, &scope, &tenant_scope, &headers).await?;
     if after != read_permit {
         return Err(StackError::unavailable("bundle read authority changed"));
     }
-    Ok(response)
+    Ok(bytes_response("application/zip", bytes))
 }
 
 #[utoipa::path(
@@ -292,11 +238,11 @@ pub(crate) async fn head_bundle(
         ("checkpointDigest" = String, Path, description = "Checkpoint digest in `sha256:<64 hex>` form.")
     ),
     responses(
-        (status = 200, description = "Pinned Trellis export bundle.", content_type = "application/zip"),
+        (status = 200, description = "The Core section 18 export at the pinned checkpoint, assembled on request under Read.", content_type = "application/zip"),
         (status = 400, description = "Invalid checkpoint digest.", body = ProblemJson, content_type = "application/problem+json"),
-        (status = 404, description = "Pinned checkpoint bundle not found.", body = ProblemJson, content_type = "application/problem+json"),
-        (status = 409, description = "Bundle artifact or seal identity conflict.", body = ProblemJson, content_type = "application/problem+json"),
-        (status = 503, description = "Bundle store unavailable.", body = ProblemJson, content_type = "application/problem+json")
+        (status = 404, description = "No checkpoint with that digest in the scope.", body = ProblemJson, content_type = "application/problem+json"),
+        (status = 409, description = "Stored rows or a retained Source batch contradict themselves.", body = ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Ledger or artifact store unavailable.", body = ProblemJson, content_type = "application/problem+json")
     ),
     tag = "bundles",
     operation_id = "getBundleByCheckpointDigest",
@@ -307,35 +253,19 @@ pub(crate) async fn pinned_bundle(
     tenant_scope: TenantScope,
     headers: HeaderMap,
 ) -> Result<Response, StackError> {
-    let (identity, read_permit) = read_authorized(&state, &scope, &tenant_scope, &headers).await?;
-    let digest = normalize_checkpoint_digest(&checkpoint_digest)?;
-    let record = {
-        let _scope_guard = state.scope_locks.lock(scope.as_bytes()).await;
-        let record = state
-            .bundles
-            .get_by_digest(scope.as_bytes(), &digest)
-            .await?;
-        if let Some(record) = record {
-            record
-        } else {
-            crate::auth::authorize_publication(&state, &identity, &read_permit).await?;
-            let events = state.repository.list_scope(scope.as_bytes()).await?;
-            let head = publish_bundle(
-                &state,
-                scope.as_bytes(),
-                &events,
-                true,
-                &append::default_public_compute_context(),
-            )
-            .await?;
-            if head.checkpoint_digest == digest {
-                head
-            } else {
-                return Err(StackError::not_found("checkpoint bundle not found"));
-            }
-        }
-    };
-    bundle_response(&state, &record).await
+    let (_, read_permit) = read_authorized(&state, &scope, &tenant_scope, &headers).await?;
+    let digest = parse_checkpoint_digest(&checkpoint_digest)?;
+    let checkpoint = state
+        .repository
+        .checkpoint_by_digest(scope.as_bytes(), &digest)
+        .await?
+        .ok_or_else(|| StackError::not_found("checkpoint bundle not found"))?;
+    let bytes = crate::export::assemble(&state, scope.as_bytes(), &checkpoint).await?;
+    let (_, after) = read_authorized(&state, &scope, &tenant_scope, &headers).await?;
+    if after != read_permit {
+        return Err(StackError::unavailable("bundle read authority changed"));
+    }
+    Ok(bytes_response("application/zip", bytes))
 }
 
 #[utoipa::path(
@@ -407,18 +337,6 @@ async fn read_authorized(
     )
     .await?;
     Ok((identity, permit))
-}
-
-async fn bundle_response(
-    state: &TrellisServerState,
-    bundle: &crate::artifacts::BundleRecord,
-) -> Result<Response, StackError> {
-    let bytes = state
-        .artifact_store
-        .get(&bundle.artifact_ref)
-        .await?
-        .ok_or_else(|| StackError::not_found("bundle artifact bytes not found"))?;
-    Ok(bytes_response("application/zip", bytes))
 }
 
 fn bytes_response(content_type: &'static str, bytes: Vec<u8>) -> Response {
@@ -493,14 +411,13 @@ pub(crate) fn validate_scope(scope: &str) -> Result<(), StackError> {
     Ok(())
 }
 
-fn normalize_checkpoint_digest(value: &str) -> Result<String, StackError> {
-    if let Some(hex) = value.strip_prefix("sha256:") {
-        validate_digest_hex(hex)?;
-        Ok(format!("sha256:{}", hex.to_ascii_lowercase()))
-    } else {
-        validate_digest_hex(value)?;
-        Ok(format!("sha256:{}", value.to_ascii_lowercase()))
-    }
+fn parse_checkpoint_digest(value: &str) -> Result<[u8; 32], StackError> {
+    let hex_digits = value.strip_prefix("sha256:").unwrap_or(value);
+    validate_digest_hex(hex_digits)?;
+    let mut digest = [0u8; 32];
+    hex::decode_to_slice(hex_digits, &mut digest)
+        .map_err(|_| StackError::bad_request("checkpoint digest must be sha256:<64 hex chars>"))?;
+    Ok(digest)
 }
 
 fn validate_digest_hex(value: &str) -> Result<(), StackError> {

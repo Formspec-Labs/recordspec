@@ -88,7 +88,7 @@
           {
             "status": 200,
             "contentType": "application/zip",
-            "description": "Verified retained current-prefix bundle under Read; creating a missing publication additionally requires Administer."
+            "description": "The Core section 18 export at the head checkpoint, assembled on request under Read."
           },
           {
             "status": "4xx/5xx",
@@ -114,7 +114,7 @@
           {
             "status": 200,
             "contentType": "application/zip",
-            "description": "Deterministic Trellis export bundle bytes pinned by checkpoint digest."
+            "description": "The Core section 18 export at the pinned checkpoint, assembled on request under Read. Deterministic: the same checkpoint always yields the same bytes."
           },
           {
             "status": "4xx/5xx",
@@ -210,11 +210,6 @@
         }
       },
       "additionalProperties": false
-    },
-    "ArtifactUri": {
-      "type": "string",
-      "description": "Opaque artifact-store URI returned by the Trellis service. Seed adapters emit memory:// and s3:// URIs.",
-      "pattern": "^[a-z][a-z0-9+.-]*://.+$"
     },
     "Base64Url": {
       "type": "string",
@@ -499,14 +494,12 @@
     },
     "SubstrateAppendResult": {
       "type": "object",
-      "description": "Append response returned after the canonical record crosses the durable append boundary and a bundle reference is available.",
+      "description": "Append response returned when the event and its checkpoint have committed. checkpointRef names the checkpoint at sequence + 1; the Core section 18 export at that checkpoint (GET /v1/scopes/{scope}/bundles/{checkpointDigest}) is the receipt's proof.",
       "required": [
         "eventId",
         "sequence",
         "canonicalEventHash",
-        "checkpointRef",
-        "bundleRef",
-        "verificationReceipt"
+        "checkpointRef"
       ],
       "properties": {
         "eventId": {
@@ -526,38 +519,6 @@
         "checkpointRef": {
           "type": "string",
           "pattern": "^trellis://[^/]+/checkpoints/sha256:[0-9a-f]{64}$"
-        },
-        "bundleRef": {
-          "$ref": "#/$defs/ArtifactUri"
-        },
-        "verificationReceipt": {
-          "$ref": "#/$defs/VerificationReceipt"
-        }
-      },
-      "additionalProperties": false
-    },
-    "VerificationReceipt": {
-      "type": "object",
-      "required": [
-        "verified",
-        "artifactType",
-        "eventType"
-      ],
-      "properties": {
-        "verified": {
-          "type": "boolean",
-          "description": "True only when the emitted export bundle passed the same independent verifier used in conformance (structure and integrity) at append time."
-        },
-        "artifactType": {
-          "type": "string",
-          "enum": [
-            "event",
-            "checkpoint",
-            "manifest"
-          ]
-        },
-        "eventType": {
-          "$ref": "#/$defs/EventType"
         }
       },
       "additionalProperties": false

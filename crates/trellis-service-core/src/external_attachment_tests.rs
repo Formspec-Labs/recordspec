@@ -7,7 +7,6 @@ use crate::external_attachment::custody_selection;
 use integrity_cbor::decode_cbor_value;
 use trellis_server_ports::AttachmentBinding;
 use trellis_service_client::{SubstrateAppendBody, SubstrateAppendResult};
-use trellis_types::ArtifactType;
 use axum::http::HeaderMap;
 use stack_common_auth::{AccessTokenError, AccessTokenVerifier, VerifiedAccessIdentity};
 use stack_common_http::tenant::TenantScope;
@@ -273,7 +272,6 @@ async fn append_prepared_external_attachment(
         ));
     }
     let scope = scope.to_owned();
-    let _guard = state.scope_locks.lock(scope.as_bytes()).await;
     let now = crate::now_timestamp()?;
     if !state.signing_key.is_active_at(now) {
         return Err(StackError::bad_request(
@@ -282,15 +280,22 @@ async fn append_prepared_external_attachment(
     }
     input.header.authored_at_seconds = now.unix_secs;
     input.header.authored_at_nanos = now.subsec_nanos;
-    let retained = state
-        .repository
-        .append_external_attachment(
-            input,
-            &state.signing_key.core_key(),
-            &authorization.compute_context,
-        )
-        .await?;
-    crate::external_transport::publish_retained(state, &scope, &retained, &authorization.compute_context, event_type).await
+    let key = input.idempotency_key.clone();
+    let appended = crate::external_repository::append_with(
+        state,
+        scope.as_bytes(),
+        &key,
+        &authorization.compute_context,
+        &crate::external_repository::FixedInputFactory(input),
+    )
+    .await?;
+    let event = appended.retained.event();
+    crate::ledger::append_result(
+        &scope,
+        event,
+        crate::ledger::prior_event_hash(event)?,
+        &appended.checkpoint,
+    )
 }
 
 fn binding_of(
@@ -429,57 +434,19 @@ async fn native_bundle(
     state: &TrellisServerState,
     result: &trellis_service_client::SubstrateAppendResult,
 ) -> Vec<u8> {
-    state
-        .artifact_store
-        .get(&ArtifactRef::new(&result.bundle_ref))
+    let digest = hex::decode(result.checkpoint_ref.rsplit("sha256:").next().unwrap())
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let checkpoint = state
+        .repository
+        .checkpoint_by_digest(b"case_123", &digest)
         .await
         .unwrap()
+        .unwrap();
+    crate::export::assemble(state, b"case_123", &checkpoint)
+        .await
         .unwrap()
-}
-
-#[derive(Default)]
-struct PublicationHead {
-    inner: crate::artifacts::BundleIndex,
-    head: tokio::sync::Mutex<Option<crate::artifacts::BundleRecord>>,
-}
-
-#[async_trait]
-impl crate::artifacts::BundleIndexPort for PublicationHead {
-    async fn reserve_publishable(
-        &self,
-        scope: &[u8],
-        identity: &crate::artifacts::BundleIdentity,
-    ) -> Result<(), StackError> {
-        self.inner.reserve_publishable(scope, identity).await
-    }
-    async fn get_by_seal(
-        &self,
-        scope: &[u8],
-        seal: u64,
-    ) -> Result<Option<crate::artifacts::BundleRecord>, StackError> {
-        self.inner.get_by_seal(scope, seal).await
-    }
-    async fn get_by_digest(
-        &self,
-        scope: &[u8],
-        digest: &str,
-    ) -> Result<Option<crate::artifacts::BundleRecord>, StackError> {
-        self.inner.get_by_digest(scope, digest).await
-    }
-    async fn insert_published_record(
-        &self,
-        scope: &[u8],
-        record: &crate::artifacts::BundleRecord,
-        update_head: bool,
-    ) -> Result<(), StackError> {
-        self.inner
-            .insert_published_record(scope, record, update_head)
-            .await?;
-        if update_head {
-            *self.head.lock().await = Some(record.clone());
-        }
-        Ok(())
-    }
 }
 
 #[tokio::test]
@@ -512,7 +479,7 @@ async fn native_service_append_exports_verified_ciphertext_and_recipient_opens_o
     .await
     .unwrap();
     result
-        .validate_for_event_append("case_123", ACCEPTED_ATTACHMENT_EVENT)
+        .validate_for_event_append("case_123")
         .unwrap();
     let zip = native_bundle(&state, &result).await;
     let report = integrity_verify::trellis::verify_export_zip(&zip);
@@ -572,9 +539,7 @@ async fn native_service_append_exports_verified_ciphertext_and_recipient_opens_o
 
 #[tokio::test]
 async fn native_exact_replay_after_head_advance_preserves_original_event_and_export() {
-    let (mut state, _, _) = native_state();
-    let publications = Arc::new(PublicationHead::default());
-    state.bundles = publications.clone();
+    let (state, _, _) = native_state();
     let (descriptor, input, original) = external_fixture_input();
     let prepared = descriptor
         .clone()
@@ -614,8 +579,6 @@ async fn native_exact_replay_after_head_advance_preserves_original_event_and_exp
         .await
         .unwrap();
     assert_eq!(continuation.status(), StatusCode::CREATED);
-    let published_head = publications.head.lock().await.clone().unwrap();
-    assert_ne!(published_head.artifact_ref.uri, first.bundle_ref);
     let replay = append_prepared_external_attachment(
         &state,
         &headers,
@@ -638,11 +601,6 @@ async fn native_exact_replay_after_head_advance_preserves_original_event_and_exp
     let events = state.repository.list_scope(b"case_123").await.unwrap();
     assert_eq!(events.len(), 2);
     assert_eq!(events[0], before);
-    assert_eq!(
-        *publications.head.lock().await,
-        Some(published_head),
-        "old exact retry must preserve the later published head"
-    );
 }
 
 #[tokio::test]
@@ -734,12 +692,14 @@ async fn native_changed_preparation_wrap_and_body_conflict_without_replacing_ret
         before
     );
     assert_eq!(
-        state
-            .repository
-            .external_attachment_body(b"case_123", &prepared.content_hash())
-            .await
-            .unwrap()
-            .unwrap(),
+        crate::external_repository::body_by_hash(
+            state.repository.as_ref(),
+            b"case_123",
+            &prepared.content_hash()
+        )
+        .await
+        .unwrap()
+        .unwrap(),
         input.ciphertext
     );
     assert!(!native_bundle(&state, &first).await.is_empty());
@@ -882,123 +842,4 @@ async fn native_replay_rechecks_current_identity_grant_tenant_and_service_actor(
             .len(),
         1
     );
-}
-
-struct RetryPublication {
-    inner: crate::artifacts::InMemoryArtifactStore,
-    unavailable: Arc<AtomicBool>,
-    /// Fail with a client-class error instead of 503.
-    client_error: bool,
-}
-
-impl RetryPublication {
-    fn fault(&self) -> StackError {
-        if self.client_error {
-            StackError::conflict("controlled publication refusal")
-        } else {
-            StackError::unavailable("controlled publication failure")
-        }
-    }
-}
-
-#[async_trait]
-impl ArtifactStore for RetryPublication {
-    type Error = StackError;
-    async fn put(&self, key: &str, bytes: &[u8]) -> Result<ArtifactRef, StackError> {
-        if self.unavailable.load(Ordering::SeqCst) {
-            return Err(self.fault());
-        }
-        self.inner.put(key, bytes).await
-    }
-    async fn put_immutable(&self, key: &str, bytes: &[u8]) -> Result<ArtifactRef, StackError> {
-        if self.unavailable.load(Ordering::SeqCst) {
-            return Err(self.fault());
-        }
-        self.inner.put_immutable(key, bytes).await
-    }
-    async fn get(&self, reference: &ArtifactRef) -> Result<Option<Vec<u8>>, StackError> {
-        self.inner.get(reference).await
-    }
-}
-
-#[tokio::test]
-async fn native_publication_failure_retries_committed_operation_without_new_protection() {
-    native_publication_fault_retries_committed_operation(false).await;
-}
-
-/// A client-class refusal after the commit must surface as retryable, not as a cacheable 4xx.
-#[tokio::test]
-async fn native_publication_client_error_after_commit_is_retryable() {
-    native_publication_fault_retries_committed_operation(true).await;
-}
-
-async fn native_publication_fault_retries_committed_operation(client_error: bool) {
-    let (state, _, _) = native_state();
-    let unavailable = Arc::new(AtomicBool::new(true));
-    let state = state.with_artifact_store(Arc::new(RetryPublication {
-        inner: Default::default(),
-        unavailable: unavailable.clone(),
-        client_error,
-    }));
-    let (descriptor, input, original) = external_fixture_input();
-    let prepared = descriptor
-        .clone()
-        .prepare(
-            &input.scope,
-            &original,
-            &input.ciphertext,
-            &[],
-            preparation_limits(),
-        )
-        .unwrap();
-    let authorization = native_authorization(&descriptor, &input);
-    let headers = native_headers(&authorization.idempotency_key);
-    let error = append_prepared_external_attachment(
-        &state,
-        &headers,
-        &native_tenant(),
-        &authorization,
-        b"case_123",
-        trellis_admission_formspec::accepted_attachment::ACCEPTED_ATTACHMENT_EVENT,
-        &serde_json::to_value(&descriptor).unwrap(),
-        &binding_of(&prepared),
-        input.clone(),
-        &recipient_policy(),
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(error.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let committed = state.repository.list_scope(b"case_123").await.unwrap();
-    assert_eq!(committed.len(), 1);
-    assert_eq!(
-        state
-            .repository
-            .external_attachment_body(b"case_123", &prepared.content_hash())
-            .await
-            .unwrap()
-            .unwrap(),
-        input.ciphertext
-    );
-    unavailable.store(false, Ordering::SeqCst);
-    let recovered = append_prepared_external_attachment(
-        &state,
-        &headers,
-        &native_tenant(),
-        &authorization,
-        b"case_123",
-        trellis_admission_formspec::accepted_attachment::ACCEPTED_ATTACHMENT_EVENT,
-        &serde_json::to_value(&descriptor).unwrap(),
-        &binding_of(&prepared),
-        input.clone(),
-        &recipient_policy(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        state.repository.list_scope(b"case_123").await.unwrap(),
-        committed
-    );
-    let zip = native_bundle(&state, &recovered).await;
-    assert!(export_bundle_cryptographically_verified(&zip));
-    assert_eq!(recovered.sequence, 0);
 }

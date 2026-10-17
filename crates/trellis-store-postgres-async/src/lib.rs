@@ -8,18 +8,20 @@
 
 #![forbid(unsafe_code)]
 
-mod append;
-mod bundle_publications;
+mod attachments;
+mod ledger;
 mod migrations;
 mod pool;
 
 #[doc(inline)]
-pub use append::{AppendError, append_event_in_tx};
+pub use attachments::{
+    AttachmentRow, attachment_by_content_hash, attachment_by_key, insert_attachment,
+};
 #[doc(inline)]
-pub use bundle_publications::{
-    BundlePublicationError, BundlePublicationIdentity, BundlePublicationRecord,
-    get_bundle_publication_by_digest, get_bundle_publication_by_seal, publish_bundle_publication,
-    reserve_bundle_publication,
+pub use ledger::{
+    AppendError, ReadError, SourceContentBinding, append_checkpointed_in_tx, begin_scope,
+    checkpoint_at, checkpoint_by_digest, checkpoints_through, event_by_key, events_before,
+    head_checkpoint, insert_source_content, last_event, source_content,
 };
 #[doc(inline)]
 pub use migrations::{MigrationError, run_migrations};

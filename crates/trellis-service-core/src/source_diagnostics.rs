@@ -19,7 +19,6 @@ pub(crate) enum Stage {
     ContentRead,
     Evidence,
     RepositoryWrite,
-    ZipPublish,
     Receipt,
 }
 impl Stage {
@@ -41,7 +40,6 @@ impl Stage {
             Self::ContentRead => "content_read",
             Self::Evidence => "evidence",
             Self::RepositoryWrite => "repository_write",
-            Self::ZipPublish => "zip_publish",
             Self::Receipt => "receipt",
         }
     }

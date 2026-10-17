@@ -9,15 +9,16 @@
 #![forbid(unsafe_code)]
 
 pub mod completion_selection;
+pub mod merkle;
 
 pub use integrity_cbor::{
-    canonicalize_cbor_value, decode_cbor_value, domain_separated_preimage, domain_separated_sha256,
-    encode_bstr, encode_canonical_cbor_value, encode_cbor_negative_int, encode_cbor_value,
-    encode_tstr, encode_uint, map_lookup_array, map_lookup_bool, map_lookup_bytes,
-    map_lookup_fixed_bytes, map_lookup_integer_label_bytes, map_lookup_integer_label_value,
-    map_lookup_map, map_lookup_optional_bytes, map_lookup_optional_fixed_bytes,
-    map_lookup_optional_map, map_lookup_optional_text, map_lookup_optional_value, map_lookup_text,
-    map_lookup_u64, map_lookup_value, sha256_bytes, CborHelperError, Value,
+    CborHelperError, Value, canonicalize_cbor_value, decode_cbor_value, domain_separated_preimage,
+    domain_separated_sha256, encode_bstr, encode_canonical_cbor_value, encode_cbor_negative_int,
+    encode_cbor_value, encode_tstr, encode_uint, map_lookup_array, map_lookup_bool,
+    map_lookup_bytes, map_lookup_fixed_bytes, map_lookup_integer_label_bytes,
+    map_lookup_integer_label_value, map_lookup_map, map_lookup_optional_bytes,
+    map_lookup_optional_fixed_bytes, map_lookup_optional_map, map_lookup_optional_text,
+    map_lookup_optional_value, map_lookup_text, map_lookup_u64, map_lookup_value, sha256_bytes,
 };
 
 /// Domain tag for `author_event_hash`.
@@ -339,11 +340,132 @@ pub fn checkpoint_digest(scope: &[u8], payload_bytes: &[u8]) -> [u8; 32] {
     domain_separated_sha256(CHECKPOINT_DOMAIN, &preimage)
 }
 
+/// Core §11.2 checkpoint payload: the fields the substrate itself reads back.
+///
+/// `version` is 1, `anchor_ref` and `extensions` are null in Phase 1.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CheckpointPayload {
+    pub scope: Vec<u8>,
+    pub tree_size: u64,
+    pub tree_head_hash: [u8; 32],
+    /// `[seconds UTC, nanos]` (Core timestamp wire shape).
+    pub timestamp: (u64, u32),
+    pub prev_checkpoint_hash: Option<[u8; 32]>,
+}
+
+impl CheckpointPayload {
+    /// Canonical dCBOR bytes: the payload a checkpoint signs and [`checkpoint_digest`] hashes.
+    ///
+    /// # Errors
+    /// Returns an error if CBOR encoding fails.
+    pub fn encode(&self) -> Result<Vec<u8>, CborHelperError> {
+        let text = |key: &str| Value::Text(key.to_string());
+        let uint = |value: u64| Value::Integer(value.into());
+        encode_canonical_cbor_value(&Value::Map(vec![
+            (text("version"), uint(1)),
+            (text("scope"), Value::Bytes(self.scope.clone())),
+            (text("tree_size"), uint(self.tree_size)),
+            (
+                text("tree_head_hash"),
+                Value::Bytes(self.tree_head_hash.to_vec()),
+            ),
+            (
+                text("timestamp"),
+                Value::Array(vec![
+                    uint(self.timestamp.0),
+                    uint(u64::from(self.timestamp.1)),
+                ]),
+            ),
+            (text("anchor_ref"), Value::Null),
+            (
+                text("prev_checkpoint_hash"),
+                self.prev_checkpoint_hash
+                    .map_or(Value::Null, |digest| Value::Bytes(digest.to_vec())),
+            ),
+            (text("extensions"), Value::Null),
+        ]))
+    }
+
+    /// Reads the payload of a COSE_Sign1 checkpoint (signature not checked).
+    ///
+    /// # Errors
+    /// Returns an error unless `sign1` is a tagged four-element COSE_Sign1 whose payload is a
+    /// checkpoint map with every field this type carries.
+    pub fn from_sign1(sign1: &[u8]) -> Result<Self, CborHelperError> {
+        let shape = |what: &str| CborHelperError(format!("checkpoint {what} invalid"));
+        let Value::Tag(18, inner) = decode_cbor_value(sign1)? else {
+            return Err(shape("COSE tag"));
+        };
+        let payload = inner
+            .as_array()
+            .filter(|fields| fields.len() == 4)
+            .and_then(|fields| fields[2].as_bytes())
+            .ok_or_else(|| shape("COSE_Sign1 payload"))?;
+        let value = decode_cbor_value(payload)?;
+        let map = value.as_map().ok_or_else(|| shape("payload map"))?;
+        let timestamp = map_lookup_array(map, "timestamp")?;
+        let pair = |index: usize| {
+            timestamp
+                .get(index)
+                .and_then(Value::as_integer)
+                .and_then(|integer| u64::try_from(integer).ok())
+                .ok_or_else(|| shape("timestamp"))
+        };
+        Ok(Self {
+            scope: map_lookup_bytes(map, "scope")?,
+            tree_size: map_lookup_u64(map, "tree_size")?,
+            tree_head_hash: map_lookup_fixed_bytes(map, "tree_head_hash", 32)?
+                .try_into()
+                .map_err(|_| shape("tree_head_hash"))?,
+            timestamp: (
+                pair(0)?,
+                u32::try_from(pair(1)?).map_err(|_| shape("timestamp"))?,
+            ),
+            prev_checkpoint_hash: match map_lookup_value(map, "prev_checkpoint_hash")? {
+                Value::Null => None,
+                Value::Bytes(bytes) => Some(
+                    bytes
+                        .as_slice()
+                        .try_into()
+                        .map_err(|_| shape("prev_checkpoint_hash"))?,
+                ),
+                _ => return Err(shape("prev_checkpoint_hash")),
+            },
+        })
+    }
+}
+
+/// A signed checkpoint as stored beside its event: one row per `tree_size`.
+///
+/// `checkpoint` is the COSE_Sign1 the export's `040-checkpoints.cbor` carries verbatim. The
+/// `frontier` (the concatenated [`merkle::Frontier`] hashes, `popcount(tree_size)` of them) and
+/// `profile_state` (an export profile's opaque fold of the prefix) let the next append continue
+/// without reading any earlier row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredCheckpoint {
+    pub scope: Vec<u8>,
+    pub tree_size: u64,
+    pub digest: [u8; 32],
+    pub checkpoint: Vec<u8>,
+    pub frontier: Vec<u8>,
+    pub profile_state: Vec<u8>,
+}
+
+impl StoredCheckpoint {
+    /// The stored frontier, checked against `tree_size`.
+    ///
+    /// # Errors
+    /// [`merkle::MerkleError::FrontierShape`] when the stored hashes do not match `tree_size`.
+    pub fn frontier(&self) -> Result<merkle::Frontier, merkle::MerkleError> {
+        merkle::Frontier::from_bytes(self.tree_size, &self.frontier)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        encode_cose_artifact_type_label, encode_cose_suite_id_label, encode_uint, ArtifactType,
-        ArtifactTypeError,
+        ArtifactType, ArtifactTypeError, encode_cose_artifact_type_label,
+        encode_cose_suite_id_label, encode_uint,
     };
 
     #[test]

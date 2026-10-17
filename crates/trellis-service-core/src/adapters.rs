@@ -30,7 +30,7 @@ pub struct ServerAdapters {
     pub event_type_specs: Vec<EventTypeSpec>,
     /// Protected-attachment descriptor admission.
     pub external_attachment_admission: Arc<dyn ExternalAttachmentAdmission>,
-    /// Export-profile members, bundle verification and signing facts.
+    /// Export-profile members, the append-time fold and signing facts.
     pub export_profile: Arc<dyn ExportProfile>,
     /// Native closeout records for Source-content selection.
     pub native_closeout: Arc<dyn NativeCloseout>,

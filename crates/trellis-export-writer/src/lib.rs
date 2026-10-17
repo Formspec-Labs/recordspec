@@ -19,14 +19,18 @@ use std::collections::{BTreeMap, BTreeSet};
 use integrity_bundle::{Bundle, BundleEntry};
 use integrity_cbor::{
     Value, decode_cbor_value, domain_separated_sha256, encode_bstr, encode_canonical_cbor_value,
-    encode_tstr, encode_uint, map_lookup_bytes, map_lookup_u64, sha256_bytes,
+    encode_tstr, encode_uint, map_lookup_array, map_lookup_bytes, map_lookup_map, map_lookup_u64,
+    sha256_bytes,
 };
 use integrity_cose::{
     derive_kid, sig_structure_bytes, sign_ed25519, sign1_bytes, substrate_protected_header,
 };
 pub use integrity_hpke::{HPKE_SUITE1_AAD, HPKE_SUITE1_INFO};
 use stack_common_error::StackError;
-use trellis_types::{ArtifactType, StoredEvent};
+use trellis_types::merkle::{MerkleHasher, MerkleTree, TrellisHasher};
+use trellis_types::{
+    ArtifactType, CheckpointPayload, StoredCheckpoint, StoredEvent, checkpoint_digest,
+};
 #[doc(inline)]
 pub use trellis_witness_registry::WitnessKeyRegistry;
 
@@ -34,12 +38,9 @@ pub use trellis_witness_registry::WitnessKeyRegistry;
 mod export_001_fixture_input;
 
 #[cfg(any(test, feature = "fixture-inputs"))]
-pub use export_001_fixture_input::export_001_writer_input;
+pub use export_001_fixture_input::{export_001_writer_input, issue_checkpoints};
 
 const EVENT_DOMAIN: &str = "trellis-event-v1";
-const CHECKPOINT_DOMAIN: &str = "trellis-checkpoint-v1";
-const MERKLE_LEAF_DOMAIN: &str = "trellis-merkle-leaf-v1";
-const MERKLE_INTERIOR_DOMAIN: &str = "trellis-merkle-interior-v1";
 const EXPORT_MANIFEST_DOMAIN: &str = "trellis-export-manifest-v1";
 const EXPORT_ATTEMPT_DOMAIN: &str = "trellis-export-attempt-v1";
 const SUITE_ID_PHASE_1: u64 = 1;
@@ -128,6 +129,74 @@ impl SigningKeyMaterial {
     pub fn kid(&self) -> [u8; 16] {
         derive_kid(SUITE_ID_PHASE_1, self.public_key)
     }
+
+    /// The registry row of a key that has never been rotated: active, superseding nothing.
+    #[must_use]
+    pub fn registry_entry(&self) -> SigningKeyRegistryEntry {
+        SigningKeyRegistryEntry {
+            kid: self.kid(),
+            public_key: self.public_key,
+            status: SigningKeyStatus::Active,
+            valid_from: self.valid_from,
+            valid_to: self.valid_to,
+            supersedes: None,
+        }
+    }
+}
+
+/// Core §8.4 lifecycle status of a registry row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SigningKeyStatus {
+    Active = 0,
+    Retired = 2,
+    Revoked = 3,
+}
+
+/// One Core §8.2 `SigningKeyEntry`: public material only.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SigningKeyRegistryEntry {
+    pub kid: [u8; 16],
+    pub public_key: [u8; 32],
+    pub status: SigningKeyStatus,
+    pub valid_from: TrellisTimestamp,
+    pub valid_to: Option<TrellisTimestamp>,
+    /// The `kid` this entry replaces.
+    pub supersedes: Option<[u8; 16]>,
+}
+
+/// Encodes registry rows as the dCBOR array `030-signing-key-registry.cbor` carries.
+///
+/// # Errors
+/// Returns an error if CBOR encoding fails.
+pub fn encode_signing_key_registry(
+    entries: &[SigningKeyRegistryEntry],
+) -> Result<Vec<u8>, StackError> {
+    let rows = entries
+        .iter()
+        .map(|entry| {
+            text_map(vec![
+                ("kid", Value::Bytes(entry.kid.to_vec())),
+                ("pubkey", Value::Bytes(entry.public_key.to_vec())),
+                ("suite_id", uint(SUITE_ID_PHASE_1)),
+                ("status", uint(entry.status as u64)),
+                ("valid_from", entry.valid_from.to_value()),
+                (
+                    "valid_to",
+                    entry
+                        .valid_to
+                        .map_or(Value::Null, TrellisTimestamp::to_value),
+                ),
+                (
+                    "supersedes",
+                    entry
+                        .supersedes
+                        .map_or(Value::Null, |kid| Value::Bytes(kid.to_vec())),
+                ),
+                ("attestation", Value::Null),
+            ])
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    encode_value(&Value::Array(rows))
 }
 
 /// Immutable domain-registry bytes to embed under `050-registries/`.
@@ -275,9 +344,16 @@ pub struct ExportWriterInput {
     pub events: Vec<StoredEvent>,
     pub registries: Vec<RegistrySnapshot>,
     pub signing_key: SigningKeyMaterial,
+    /// The public key history the export embeds (Core §8.5): a row for every `kid` any event,
+    /// checkpoint or the manifest cites, and for every key those supersede. Data, not derived
+    /// from `signing_key`: after a rotation the ledger still holds entries signed by retired keys.
+    pub signing_key_registry: Vec<SigningKeyRegistryEntry>,
     pub generator: String,
     pub generated_at: TrellisTimestamp,
-    pub checkpoint_timestamps: Vec<TrellisTimestamp>,
+    /// The signed checkpoints for tree sizes `1..=events.len()`, as issued at append time
+    /// (Core §11.2). The writer assembles them verbatim and re-signs nothing: it checks that they
+    /// chain, number the prefixes in order and commit to the tree it builds from `events`.
+    pub checkpoints: Vec<StoredCheckpoint>,
     pub posture_declaration: PostureDeclaration,
     pub omitted_payload_checks: Vec<Value>,
     pub readme_title: String,
@@ -386,26 +462,27 @@ pub fn write_export(input: ExportWriterInput) -> Result<ExportPackage, StackErro
     validate_top_level_input(&input)?;
     let events = prepare_events(&input)?;
     validate_seal_fence(&input, &events)?;
-    let tree_head_hash = merkle_root(
-        &events
-            .iter()
-            .map(|event| event.leaf_hash)
-            .collect::<Vec<_>>(),
-    )?;
+    let hasher = TrellisHasher;
+    let tree = MerkleTree::from_leaf_hashes(
+        &hasher,
+        events.iter().map(|event| event.leaf_hash).collect(),
+    );
+    let tree_head_hash = tree.root(events.len() as u64).map_err(merkle_error)?;
 
     let events_cbor =
         array_of_raw_cbor_values(events.iter().map(|event| event.signed_event.as_slice()))?;
     let registry_material = registry_binding_material(&input.registries)?;
-    let signing_key_registry_cbor = signing_key_registry_cbor(&input.signing_key)?;
-    let checkpoints = checkpoint_chain(&input, &events)?;
+    let signing_key_registry_cbor = checked_signing_key_registry(&input, &events)?;
+    let checkpoints = supplied_checkpoints(&input, tree_head_hash)?;
     let checkpoints_cbor = array_of_raw_cbor_values(
         checkpoints
             .iter()
-            .map(|checkpoint| checkpoint.sign1.as_slice()),
+            .map(|checkpoint| checkpoint.checkpoint.as_slice()),
     )?;
-    let inclusion_proofs_cbor = inclusion_proofs_cbor(&events)?;
-    let consistency_proofs_cbor = consistency_proofs_cbor(&events)?;
-    let head_checkpoint_digest = checkpoints
+    let inclusion_proofs_cbor = inclusion_proofs_cbor(&events, &tree)?;
+    let consistency_proofs_cbor = consistency_proofs_cbor(&events, &tree)?;
+    let head_checkpoint_digest = input
+        .checkpoints
         .last()
         .map(|checkpoint| checkpoint.digest)
         .ok_or_else(|| StackError::internal("checkpoint chain unexpectedly empty"))?;
@@ -966,10 +1043,10 @@ fn validate_top_level_input(input: &ExportWriterInput) -> Result<(), StackError>
             "export requires at least one stored event",
         ));
     }
-    if input.events.len() != input.checkpoint_timestamps.len() {
+    if input.events.len() != input.checkpoints.len() {
         return Err(StackError::bad_request(format!(
-            "checkpoint timestamp count {} does not match event count {}",
-            input.checkpoint_timestamps.len(),
+            "checkpoint count {} does not match event count {}",
+            input.checkpoints.len(),
             input.events.len()
         )));
     }
@@ -1244,7 +1321,7 @@ fn prepare_events(input: &ExportWriterInput) -> Result<Vec<PreparedEvent>, Stack
                 event.sequence()
             )));
         }
-        let leaf_hash = merkle_leaf_hash(canonical_event_hash);
+        let leaf_hash = TrellisHasher.leaf(&canonical_event_hash);
         prepared.push(PreparedEvent {
             sequence: event.sequence(),
             canonical_event: event.canonical_event().to_vec(),
@@ -1304,98 +1381,168 @@ fn registry_binding_material(
     Ok(material)
 }
 
-fn signing_key_registry_cbor(signing_key: &SigningKeyMaterial) -> Result<Vec<u8>, StackError> {
-    let entry = text_map(vec![
-        ("kid", Value::Bytes(signing_key.kid().to_vec())),
-        ("pubkey", Value::Bytes(signing_key.public_key.to_vec())),
-        ("suite_id", uint(SUITE_ID_PHASE_1)),
-        ("status", uint(0)),
-        ("valid_from", signing_key.valid_from.to_value()),
-        (
-            "valid_to",
-            signing_key
-                .valid_to
-                .map_or(Value::Null, TrellisTimestamp::to_value),
-        ),
-        ("supersedes", Value::Null),
-        ("attestation", Value::Null),
-    ])?;
-    encode_value(&Value::Array(vec![entry]))
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct SignedCheckpoint {
-    digest: [u8; 32],
-    sign1: Vec<u8>,
-}
-
-fn checkpoint_chain(
+/// Encodes the supplied key history after checking it is complete for this export (Core §8.5).
+///
+/// Every `kid` an event, a checkpoint or the manifest cites must resolve to a row, every
+/// `supersedes` must resolve to a row, and `kid`s are unique and equal to the key they name.
+fn checked_signing_key_registry(
     input: &ExportWriterInput,
     events: &[PreparedEvent],
-) -> Result<Vec<SignedCheckpoint>, StackError> {
-    let leaves = events
-        .iter()
-        .map(|event| event.leaf_hash)
-        .collect::<Vec<_>>();
-    let mut prior_digest = None;
-    let mut checkpoints = Vec::with_capacity(events.len());
-    for tree_size in 1..=events.len() {
-        let tree_head_hash = merkle_root(&leaves[..tree_size])?;
-        let payload = checkpoint_payload(
-            &input.scope,
-            u64::try_from(tree_size).map_err(|_| StackError::internal("tree size exceeds u64"))?,
-            tree_head_hash,
-            input.checkpoint_timestamps[tree_size - 1],
-            prior_digest,
-        )?;
-        let payload_bytes = encode_value(&payload)?;
-        let digest = checkpoint_digest(&input.scope, &payload_bytes);
-        let sign1 = sign_cose(&input.signing_key, ArtifactType::Checkpoint, &payload_bytes);
-        prior_digest = Some(digest);
-        checkpoints.push(SignedCheckpoint { digest, sign1 });
+) -> Result<Vec<u8>, StackError> {
+    let mut rows = BTreeMap::new();
+    for entry in &input.signing_key_registry {
+        if entry.kid != derive_kid(SUITE_ID_PHASE_1, entry.public_key) {
+            return Err(StackError::bad_request(
+                "signing-key registry kid is not derived from its public key",
+            ));
+        }
+        if rows.insert(entry.kid, entry).is_some() {
+            return Err(StackError::bad_request(
+                "signing-key registry repeats a kid",
+            ));
+        }
     }
-    Ok(checkpoints)
+    // The verifier enforces `valid_to` only for revoked keys, so a mistyped window would ship
+    // unnoticed: the writer refuses any signature made outside its key's window.
+    let cited = |kid: Option<&[u8]>, signed_at: (u64, u32), what: &str| -> Result<(), StackError> {
+        let row = kid
+            .and_then(|kid| <[u8; 16]>::try_from(kid).ok())
+            .and_then(|kid| rows.get(&kid));
+        let Some(row) = row else {
+            return Err(StackError::bad_request(format!(
+                "signing-key registry has no row for the kid {what} cites"
+            )));
+        };
+        let pair = |t: TrellisTimestamp| (t.unix_secs, t.subsec_nanos);
+        if signed_at < pair(row.valid_from) || row.valid_to.is_some_and(|to| signed_at > pair(to)) {
+            return Err(StackError::bad_request(format!(
+                "{what} was signed outside the validity window of its signing key"
+            )));
+        }
+        Ok(())
+    };
+    if !rows.contains_key(&input.signing_key.kid()) {
+        return Err(StackError::bad_request(
+            "signing-key registry has no row for the kid the manifest cites",
+        ));
+    }
+    for entry in rows.values() {
+        if entry
+            .supersedes
+            .is_some_and(|prior| !rows.contains_key(&prior))
+        {
+            return Err(StackError::bad_request(
+                "signing-key registry has no row for the kid a supersedes link cites",
+            ));
+        }
+    }
+    for event in events {
+        let signed = integrity_cose::decode_cose_sign1(&event.signed_event)
+            .map_err(|error| StackError::bad_request(format!("event COSE_Sign1: {error}")))?;
+        cited(
+            signed.kid(),
+            authored_at(&event.canonical_event)?,
+            "an event",
+        )?;
+    }
+    for checkpoint in &input.checkpoints {
+        let signed = integrity_cose::decode_cose_sign1(&checkpoint.checkpoint)
+            .map_err(|error| StackError::bad_request(format!("checkpoint COSE_Sign1: {error}")))?;
+        let payload = CheckpointPayload::from_sign1(&checkpoint.checkpoint)
+            .map_err(|error| StackError::bad_request(format!("checkpoint payload: {error}")))?;
+        cited(signed.kid(), payload.timestamp, "a checkpoint")?;
+    }
+    encode_signing_key_registry(&input.signing_key_registry)
 }
 
-fn checkpoint_payload(
-    scope: &[u8],
-    tree_size: u64,
+/// `header.authored_at` of a canonical event payload.
+fn authored_at(canonical_event: &[u8]) -> Result<(u64, u32), StackError> {
+    let invalid = || StackError::bad_request("event header authored_at is invalid");
+    let value = decode_cbor_value(canonical_event).map_err(|_| invalid())?;
+    let header =
+        map_lookup_map(value.as_map().ok_or_else(invalid)?, "header").map_err(|_| invalid())?;
+    let pair = map_lookup_array(header, "authored_at").map_err(|_| invalid())?;
+    let integer = |value: &Value| {
+        value
+            .as_integer()
+            .and_then(|integer| u64::try_from(i128::from(integer)).ok())
+    };
+    match pair {
+        [secs, nanos] => Ok((
+            integer(secs).ok_or_else(invalid)?,
+            u32::try_from(integer(nanos).ok_or_else(invalid)?).map_err(|_| invalid())?,
+        )),
+        _ => Err(invalid()),
+    }
+}
+
+/// The checkpoints an export carries, checked against the events it carries.
+///
+/// A supplied checkpoint is trusted only as far as the writer can see without a key: one per
+/// prefix in order, each digest recomputed from its own payload, each chained to the one before,
+/// and the head committing to the tree root built here. Signatures are the verifier's concern.
+fn supplied_checkpoints(
+    input: &ExportWriterInput,
     tree_head_hash: [u8; 32],
-    timestamp: TrellisTimestamp,
-    prev_checkpoint_hash: Option<[u8; 32]>,
-) -> Result<Value, StackError> {
-    text_map(vec![
-        ("version", uint(1)),
-        ("scope", Value::Bytes(scope.to_vec())),
-        ("tree_size", uint(tree_size)),
-        ("tree_head_hash", Value::Bytes(tree_head_hash.to_vec())),
-        ("timestamp", timestamp.to_value()),
-        ("anchor_ref", Value::Null),
-        (
-            "prev_checkpoint_hash",
-            prev_checkpoint_hash.map_or(Value::Null, |digest| Value::Bytes(digest.to_vec())),
-        ),
-        ("extensions", Value::Null),
-    ])
+) -> Result<&[StoredCheckpoint], StackError> {
+    let mismatch = |tree_size: usize, what: &str| {
+        StackError::internal(format!("supplied checkpoint {tree_size}: {what}"))
+    };
+    let mut prior_digest = None;
+    for (index, checkpoint) in input.checkpoints.iter().enumerate() {
+        let tree_size = index + 1;
+        let payload = CheckpointPayload::from_sign1(&checkpoint.checkpoint)
+            .map_err(|error| mismatch(tree_size, &error.to_string()))?;
+        if payload.scope != input.scope
+            || checkpoint.scope != input.scope
+            || payload.tree_size != tree_size as u64
+            || checkpoint.tree_size != tree_size as u64
+        {
+            return Err(mismatch(
+                tree_size,
+                "scope or tree size differs from its position",
+            ));
+        }
+        let encoded = payload
+            .encode()
+            .map_err(|error| mismatch(tree_size, &error.to_string()))?;
+        if checkpoint_digest(&input.scope, &encoded) != checkpoint.digest {
+            return Err(mismatch(tree_size, "digest differs from its payload"));
+        }
+        if payload.prev_checkpoint_hash != prior_digest {
+            return Err(mismatch(
+                tree_size,
+                "does not chain to the checkpoint before it",
+            ));
+        }
+        prior_digest = Some(checkpoint.digest);
+        if tree_size == input.checkpoints.len() && payload.tree_head_hash != tree_head_hash {
+            return Err(mismatch(
+                tree_size,
+                "head root differs from the exported events",
+            ));
+        }
+    }
+    Ok(&input.checkpoints)
 }
 
-fn inclusion_proofs_cbor(events: &[PreparedEvent]) -> Result<Vec<u8>, StackError> {
-    let leaves = events
-        .iter()
-        .map(|event| event.leaf_hash)
-        .collect::<Vec<_>>();
+fn merkle_error(error: trellis_types::merkle::MerkleError) -> StackError {
+    StackError::internal(format!("Merkle tree: {error}"))
+}
+
+fn inclusion_proofs_cbor<H: MerkleHasher>(
+    events: &[PreparedEvent],
+    tree: &MerkleTree<'_, H>,
+) -> Result<Vec<u8>, StackError> {
+    let tree_size = events.len() as u64;
     let mut proofs = Vec::with_capacity(events.len());
     for event in events {
-        let audit_path = inclusion_proof(&leaves, event.sequence as usize)?;
+        let audit_path = tree
+            .inclusion_proof(event.sequence, tree_size)
+            .map_err(merkle_error)?;
         let proof = text_map(vec![
             ("leaf_index", uint(event.sequence)),
-            (
-                "tree_size",
-                uint(
-                    u64::try_from(events.len())
-                        .map_err(|_| StackError::internal("event count exceeds u64"))?,
-                ),
-            ),
+            ("tree_size", uint(tree_size)),
             ("leaf_hash", Value::Bytes(event.leaf_hash.to_vec())),
             (
                 "audit_path",
@@ -1413,29 +1560,19 @@ fn inclusion_proofs_cbor(events: &[PreparedEvent]) -> Result<Vec<u8>, StackError
     encode_value(&value)
 }
 
-fn consistency_proofs_cbor(events: &[PreparedEvent]) -> Result<Vec<u8>, StackError> {
-    let leaves = events
-        .iter()
-        .map(|event| event.leaf_hash)
-        .collect::<Vec<_>>();
+fn consistency_proofs_cbor<H: MerkleHasher>(
+    events: &[PreparedEvent],
+    tree: &MerkleTree<'_, H>,
+) -> Result<Vec<u8>, StackError> {
+    let to_tree_size = events.len() as u64;
     let mut records = Vec::new();
-    for from_tree_size in 1..events.len() {
-        let proof_path = consistency_proof(&leaves, from_tree_size, events.len())?;
+    for from_tree_size in 1..to_tree_size {
+        let proof_path = tree
+            .consistency_proof(from_tree_size, to_tree_size)
+            .map_err(merkle_error)?;
         let record = text_map(vec![
-            (
-                "from_tree_size",
-                uint(
-                    u64::try_from(from_tree_size)
-                        .map_err(|_| StackError::internal("tree size exceeds u64"))?,
-                ),
-            ),
-            (
-                "to_tree_size",
-                uint(
-                    u64::try_from(events.len())
-                        .map_err(|_| StackError::internal("tree size exceeds u64"))?,
-                ),
-            ),
+            ("from_tree_size", uint(from_tree_size)),
+            ("to_tree_size", uint(to_tree_size)),
             (
                 "proof_path",
                 Value::Array(
@@ -1635,18 +1772,6 @@ fn canonical_event_hash(scope: &[u8], canonical_event_bytes: &[u8]) -> [u8; 32] 
     domain_separated_sha256(EVENT_DOMAIN, &preimage)
 }
 
-fn checkpoint_digest(scope: &[u8], checkpoint_payload_bytes: &[u8]) -> [u8; 32] {
-    let mut preimage = Vec::new();
-    preimage.push(0xa3);
-    preimage.extend_from_slice(&encode_tstr("scope"));
-    preimage.extend_from_slice(&encode_bstr(scope));
-    preimage.extend_from_slice(&encode_tstr("version"));
-    preimage.extend_from_slice(&encode_uint(1));
-    preimage.extend_from_slice(&encode_tstr("checkpoint_payload"));
-    preimage.extend_from_slice(checkpoint_payload_bytes);
-    domain_separated_sha256(CHECKPOINT_DOMAIN, &preimage)
-}
-
 fn export_manifest_digest(scope: &[u8], manifest_payload_bytes: &[u8]) -> [u8; 32] {
     let mut preimage = Vec::new();
     preimage.push(0xa3);
@@ -1676,96 +1801,6 @@ fn export_attempt_id(
     ])?;
     let digest = domain_separated_sha256(EXPORT_ATTEMPT_DOMAIN, &encode_value(&material)?);
     Ok(format!("sha256:{}", hex_lower(&digest)))
-}
-
-fn merkle_leaf_hash(canonical_hash: [u8; 32]) -> [u8; 32] {
-    domain_separated_sha256(MERKLE_LEAF_DOMAIN, &canonical_hash)
-}
-
-fn merkle_interior_hash(left: [u8; 32], right: [u8; 32]) -> [u8; 32] {
-    let mut joined = Vec::with_capacity(64);
-    joined.extend_from_slice(&left);
-    joined.extend_from_slice(&right);
-    domain_separated_sha256(MERKLE_INTERIOR_DOMAIN, &joined)
-}
-
-fn merkle_root(leaves: &[[u8; 32]]) -> Result<[u8; 32], StackError> {
-    match leaves.len() {
-        0 => Err(StackError::bad_request(
-            "Merkle tree requires at least one leaf",
-        )),
-        1 => Ok(leaves[0]),
-        len => {
-            let split = largest_power_of_two_less_than(len);
-            Ok(merkle_interior_hash(
-                merkle_root(&leaves[..split])?,
-                merkle_root(&leaves[split..])?,
-            ))
-        }
-    }
-}
-
-fn inclusion_proof(leaves: &[[u8; 32]], index: usize) -> Result<Vec<[u8; 32]>, StackError> {
-    if leaves.is_empty() || index >= leaves.len() {
-        return Err(StackError::bad_request(
-            "inclusion proof index is out of range",
-        ));
-    }
-    if leaves.len() == 1 {
-        return Ok(Vec::new());
-    }
-    let split = largest_power_of_two_less_than(leaves.len());
-    if index < split {
-        let mut proof = inclusion_proof(&leaves[..split], index)?;
-        proof.push(merkle_root(&leaves[split..])?);
-        Ok(proof)
-    } else {
-        let mut proof = inclusion_proof(&leaves[split..], index - split)?;
-        proof.push(merkle_root(&leaves[..split])?);
-        Ok(proof)
-    }
-}
-
-fn consistency_proof(
-    leaves: &[[u8; 32]],
-    from_tree_size: usize,
-    to_tree_size: usize,
-) -> Result<Vec<[u8; 32]>, StackError> {
-    if from_tree_size == 0 || from_tree_size > to_tree_size || to_tree_size > leaves.len() {
-        return Err(StackError::bad_request(
-            "consistency proof tree sizes are invalid",
-        ));
-    }
-    consistency_subproof(&leaves[..to_tree_size], from_tree_size, true)
-}
-
-fn consistency_subproof(
-    leaves: &[[u8; 32]],
-    from_tree_size: usize,
-    complete_subtree: bool,
-) -> Result<Vec<[u8; 32]>, StackError> {
-    if from_tree_size == leaves.len() {
-        return if complete_subtree {
-            Ok(Vec::new())
-        } else {
-            Ok(vec![merkle_root(leaves)?])
-        };
-    }
-    let split = largest_power_of_two_less_than(leaves.len());
-    if from_tree_size <= split {
-        let mut proof = consistency_subproof(&leaves[..split], from_tree_size, complete_subtree)?;
-        proof.push(merkle_root(&leaves[split..])?);
-        Ok(proof)
-    } else {
-        let mut proof = consistency_subproof(&leaves[split..], from_tree_size - split, false)?;
-        proof.push(merkle_root(&leaves[..split])?);
-        Ok(proof)
-    }
-}
-
-fn largest_power_of_two_less_than(value: usize) -> usize {
-    debug_assert!(value > 1);
-    1usize << (usize::BITS - (value - 1).leading_zeros() - 1)
 }
 
 fn array_of_raw_cbor_values<'a>(
@@ -2261,9 +2296,10 @@ mod tests {
                 valid_from: TrellisTimestamp::new(1, 0).expect("valid timestamp"),
                 valid_to: None,
             },
+            signing_key_registry: Vec::new(),
             generator: "test".to_string(),
             generated_at: TrellisTimestamp::new(1, 0).expect("valid timestamp"),
-            checkpoint_timestamps: Vec::new(),
+            checkpoints: Vec::new(),
             posture_declaration: PostureDeclaration {
                 provider_readable: true,
                 reader_held: false,
@@ -2334,6 +2370,27 @@ mod tests {
             verification.trellis.structure_verified && verification.trellis.integrity_verified,
             "witness member must not break export verification: {verification:?}"
         );
+    }
+
+    #[test]
+    fn rejects_an_export_signed_outside_its_keys_validity_window() {
+        let root = fixtures_root();
+        // The fixture's events and checkpoints are signed at 1745000000.
+        let window = |from: u64, to: Option<u64>| {
+            let mut input = crate::export_001_writer_input(root.as_path());
+            input.signing_key_registry[0].valid_from = TrellisTimestamp::new(from, 0).unwrap();
+            input.signing_key_registry[0].valid_to =
+                to.map(|to| TrellisTimestamp::new(to, 0).unwrap());
+            write_export(input)
+        };
+        window(1_745_000_000, Some(1_745_000_100)).expect("a window holding the signatures");
+        for (from, to) in [(1_745_000_001, None), (0, Some(1_744_999_999))] {
+            let error = window(from, to).expect_err("out-of-window signatures must be refused");
+            assert!(
+                error.to_string().contains("outside the validity window"),
+                "{error}"
+            );
+        }
     }
 
     #[test]
@@ -2886,24 +2943,57 @@ mod tests {
     }
 
     #[test]
-    fn merkle_proofs_cover_non_power_of_two_tree() {
-        let leaves = (0u8..5)
-            .map(|value| merkle_leaf_hash([value; 32]))
-            .collect::<Vec<_>>();
-        let root = merkle_root(&leaves).expect("root");
-        for index in 0..leaves.len() {
-            let proof = inclusion_proof(&leaves, index).expect("inclusion proof");
-            let computed = root_from_inclusion_proof(leaves[index], index, leaves.len(), &proof);
-            assert_eq!(computed, root);
-        }
+    fn an_export_refuses_checkpoints_that_are_out_of_order_or_commit_to_other_events() {
+        let mut swapped = native_input();
+        swapped.checkpoints.reverse();
+        let error = write_export(swapped).expect_err("swapped checkpoints must reject");
+        assert!(
+            error.to_string().contains("supplied checkpoint 1"),
+            "{error}"
+        );
 
-        for from_size in 1..leaves.len() {
-            let proof = consistency_proof(&leaves, from_size, leaves.len()).expect("consistency");
-            let old_root = merkle_root(&leaves[..from_size]).expect("old root");
-            let new_root = root_from_consistency_proof(from_size, leaves.len(), old_root, &proof)
-                .expect("consistency proof verifies");
-            assert_eq!(new_root, root);
-        }
+        let mut repeated = native_input();
+        repeated.checkpoints[1] = repeated.checkpoints[0].clone();
+        let error = write_export(repeated).expect_err("a repeated checkpoint must reject");
+        assert!(
+            error.to_string().contains("supplied checkpoint 2"),
+            "{error}"
+        );
+
+        // Checkpoints issued for a different second event chain correctly but commit to a
+        // different tree head.
+        let honest = native_input();
+        let mut other_events = honest.events.clone();
+        other_events[1] = StoredEvent::new(
+            honest.scope.clone(),
+            1,
+            honest.events[0].canonical_event().to_vec(),
+            honest.events[1].signed_event().to_vec(),
+        );
+        let key = read(&fixtures_root(), "_keys/issuer-001.cose_key");
+        let mut foreign = honest.clone();
+        foreign.checkpoints = crate::issue_checkpoints(
+            &honest.scope,
+            &other_events,
+            &key,
+            &[
+                TrellisTimestamp::new(1_745_000_050, 0).unwrap(),
+                TrellisTimestamp::new(1_745_000_060, 0).unwrap(),
+            ],
+        );
+        let error = write_export(foreign).expect_err("a foreign head must reject");
+        assert!(error.to_string().contains("head root differs"), "{error}");
+    }
+
+    #[test]
+    fn an_export_refuses_a_checkpoint_count_that_differs_from_the_event_count() {
+        let mut short = native_input();
+        short.checkpoints.pop();
+        let error = write_export(short).expect_err("one checkpoint per event");
+        assert!(
+            error.to_string().contains("does not match event count"),
+            "{error}"
+        );
     }
 
     fn fixtures_root() -> PathBuf {
@@ -2916,118 +3006,5 @@ mod tests {
         std::fs::read(root.join(relative)).unwrap_or_else(|error| {
             panic!("failed to read fixture {relative}: {error}");
         })
-    }
-
-    fn root_from_inclusion_proof(
-        leaf_hash: [u8; 32],
-        index: usize,
-        size: usize,
-        proof: &[[u8; 32]],
-    ) -> [u8; 32] {
-        if size == 1 {
-            return leaf_hash;
-        }
-        let split = largest_power_of_two_less_than(size);
-        if index < split {
-            let left =
-                root_from_inclusion_proof(leaf_hash, index, split, &proof[..proof.len() - 1]);
-            merkle_interior_hash(left, *proof.last().expect("right sibling"))
-        } else {
-            let right = root_from_inclusion_proof(
-                leaf_hash,
-                index - split,
-                size - split,
-                &proof[..proof.len() - 1],
-            );
-            merkle_interior_hash(*proof.last().expect("left sibling"), right)
-        }
-    }
-
-    fn root_from_consistency_proof(
-        size1: usize,
-        size2: usize,
-        root1: [u8; 32],
-        proof: &[[u8; 32]],
-    ) -> Result<[u8; 32], StackError> {
-        if size2 < size1 {
-            return Err(StackError::bad_request("invalid consistency sizes"));
-        }
-        if size1 == size2 {
-            if !proof.is_empty() {
-                return Err(StackError::bad_request("same-size proof must be empty"));
-            }
-            return Ok(root1);
-        }
-        if size1 == 0 || proof.is_empty() {
-            return Err(StackError::bad_request("invalid consistency proof"));
-        }
-        let (mut inner, border) = decomp_inclusion_proof((size1 - 1) as u64, size2 as u64);
-        let shift = (size1 as u64).trailing_zeros() as usize;
-        if inner < shift {
-            return Err(StackError::bad_request("invalid consistency proof shape"));
-        }
-        inner -= shift;
-        let mut seed = proof[0];
-        let mut start = 1usize;
-        if size1 == 1usize << shift {
-            seed = root1;
-            start = 0;
-        }
-        if proof.len() != start + inner + border {
-            return Err(StackError::bad_request("invalid consistency proof length"));
-        }
-        let suffix = &proof[start..];
-        let mask = ((size1 - 1) as u64) >> shift;
-        let hash1 = chain_inner_right_merkle(seed, &suffix[..inner], mask);
-        let hash1 = chain_border_right_merkle(hash1, &suffix[inner..]);
-        if hash1 != root1 {
-            return Err(StackError::bad_request(
-                "consistency proof does not recover old root",
-            ));
-        }
-        let hash2 = chain_inner_merkle(seed, &suffix[..inner], mask);
-        Ok(chain_border_right_merkle(hash2, &suffix[inner..]))
-    }
-
-    fn decomp_inclusion_proof(index: u64, size: u64) -> (usize, usize) {
-        let inner = inner_proof_size(index, size);
-        let border = (index >> inner).count_ones() as usize;
-        (inner, border)
-    }
-
-    fn inner_proof_size(index: u64, size: u64) -> usize {
-        let xor = index ^ (size - 1);
-        if xor == 0 {
-            0
-        } else {
-            (u64::BITS - xor.leading_zeros()) as usize
-        }
-    }
-
-    fn chain_inner_merkle(mut seed: [u8; 32], proof: &[[u8; 32]], index: u64) -> [u8; 32] {
-        for (i, sibling) in proof.iter().enumerate() {
-            if (index >> i) & 1 == 0 {
-                seed = merkle_interior_hash(seed, *sibling);
-            } else {
-                seed = merkle_interior_hash(*sibling, seed);
-            }
-        }
-        seed
-    }
-
-    fn chain_inner_right_merkle(mut seed: [u8; 32], proof: &[[u8; 32]], index: u64) -> [u8; 32] {
-        for (i, sibling) in proof.iter().enumerate() {
-            if (index >> i) & 1 == 1 {
-                seed = merkle_interior_hash(*sibling, seed);
-            }
-        }
-        seed
-    }
-
-    fn chain_border_right_merkle(mut seed: [u8; 32], proof: &[[u8; 32]]) -> [u8; 32] {
-        for sibling in proof {
-            seed = merkle_interior_hash(*sibling, seed);
-        }
-        seed
     }
 }

@@ -59,6 +59,7 @@ test-scripts:
 	$(PYTHON) $(SCRIPTS_DIR)/test_check_specs.py
 	$(PYTHON) $(SCRIPTS_DIR)/test_check_vector_renumbering.py
 	$(PYTHON) $(SCRIPTS_DIR)/test_check_verifier_isolation.py
+	$(PYTHON) $(SCRIPTS_DIR)/test_check_http_api_schema.py
 	$(PYTHON) $(SCRIPTS_DIR)/check-http-api-schema.py
 	# Refactor G-6 slice: Python gen_export_001.py vs committed export/001-two-event-chain (not ratification G-6 spec lint).
 	# Rust writer + verifier legs: trellis-export-writer crate test + trellis-conformance replay — see ratification-checklist.md#gate-label-crosswalk-refactoring-tracker.

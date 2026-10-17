@@ -58,9 +58,6 @@ pub fn encode_signature_affirmations_v1(
         return Err(E::Limit);
     }
     let scope = events[0].scope();
-    if scope.is_empty() {
-        return Err(E::EventIdentity);
-    }
     let mut total = 0usize;
     for event in events {
         total = total
@@ -73,71 +70,12 @@ pub fn encode_signature_affirmations_v1(
     let mut seen = BTreeSet::new();
     let mut rows = Vec::new();
     for (index, event) in events.iter().enumerate() {
-        if event.scope() != scope || event.sequence() != index as u64 {
+        let row = signature_catalog_row(scope, index as u64, event)?;
+        let hash = event.canonical_event_hash().ok_or(E::EventIdentity)?;
+        if !seen.insert(*hash) {
             return Err(E::EventIdentity);
         }
-        let hash = domain_separated_sha256(
-            EVENT_DOMAIN,
-            &canonical_event_hash_preimage(scope, event.canonical_event()),
-        );
-        if event.canonical_event_hash() != Some(&hash) || !seen.insert(hash) {
-            return Err(E::EventIdentity);
-        }
-        let canonical = decode_cbor_value(event.canonical_event()).map_err(|_| E::EventIdentity)?;
-        let map = canonical.as_map().ok_or(E::EventIdentity)?;
-        if map_lookup_bytes(map, "ledger_scope").map_err(|_| E::EventIdentity)? != scope
-            || map_lookup_u64(map, "sequence").map_err(|_| E::EventIdentity)? != event.sequence()
-        {
-            return Err(E::EventIdentity);
-        }
-        let header = map_lookup_map(map, "header").map_err(|_| E::EventIdentity)?;
-        let literal = map_lookup_bytes(header, "event_type").map_err(|_| E::EventIdentity)?;
-        if literal != wos_signature_affirmation_event_type().as_bytes() {
-            continue;
-        }
-        let reference = map_lookup_map(map, "payload_ref").map_err(|_| E::Record)?;
-        if map_lookup_text(reference, "ref_type").map_err(|_| E::Record)? != "inline" {
-            return Err(E::Record);
-        }
-        let payload = map_lookup_bytes(reference, "ciphertext").map_err(|_| E::Record)?;
-        let content = domain_separated_sha256(CONTENT_DOMAIN, &payload);
-        if map_lookup_bytes(map, "content_hash").map_err(|_| E::Record)? != content {
-            return Err(E::Record);
-        }
-        let record =
-            parse_signature_affirmation_record(&payload, wos_signature_affirmation_event_type())
-                .map_err(|_| E::Record)?;
-        // The maintained catalog requires a genuine signing-act ID; never synthesize one.
-        if record.signing_act_id.is_none() {
-            return Err(E::Record);
-        }
-        let value = decode_cbor_value(&payload).map_err(|_| E::Record)?;
-        let data =
-            map_lookup_map(value.as_map().ok_or(E::Record)?, "data").map_err(|_| E::Record)?;
-        let mut row = vec![(
-            Value::Text("canonical_event_hash".into()),
-            Value::Bytes(hash.to_vec()),
-        )];
-        for (source, target) in FIELDS {
-            if let Some((_, value)) = data
-                .iter()
-                .find(|(key, _)| key == &Value::Text((*source).into()))
-            {
-                row.push((Value::Text((*target).into()), value.clone()));
-            }
-        }
-        // The maintained parser accepts this historical field alias. Emit one canonical name.
-        row.push((
-            Value::Text("formspec_response_ref".into()),
-            Value::Text(record.formspec_response_ref.clone()),
-        ));
-        let encoded = encode_canonical_cbor_value(&Value::Array(vec![Value::Map(row.clone())]))
-            .map_err(|_| E::Encoding)?;
-        let parsed = parse_signature_manifest_entries(&encoded).map_err(|_| E::Encoding)?;
-        if parsed.len() != 1 || !signature_entry_matches_record(&parsed[0], &record) {
-            return Err(E::Encoding);
-        }
-        rows.push(Value::Map(row));
+        rows.extend(row);
     }
     if rows.is_empty() {
         return Ok(None);
@@ -147,6 +85,91 @@ pub fn encode_signature_affirmations_v1(
         return Err(E::Limit);
     }
     Ok(Some(bytes))
+}
+
+/// Checks one event of a contiguous same-scope prefix and returns its catalog row when it is a
+/// signature affirmation.
+///
+/// This is the whole of [`encode_signature_affirmations_v1`] that depends on a single event: the
+/// identity checks (scope, sequence `index`, recomputed canonical hash) and the affirmation's row.
+/// An appending server runs it for the one new event instead of re-reading the prefix.
+///
+/// # Errors
+/// Refuses an empty scope, a foreign or misnumbered event, a wrong stored hash, an unreadable
+/// affirmation or one the maintained parser and matcher do not agree on.
+pub fn signature_catalog_row(
+    scope: &[u8],
+    index: u64,
+    event: &StoredEvent,
+) -> Result<Option<Value>, SignatureCatalogError> {
+    use SignatureCatalogError as E;
+    if scope.is_empty() {
+        return Err(E::EventIdentity);
+    }
+    if event.scope() != scope || event.sequence() != index {
+        return Err(E::EventIdentity);
+    }
+    let hash = domain_separated_sha256(
+        EVENT_DOMAIN,
+        &canonical_event_hash_preimage(scope, event.canonical_event()),
+    );
+    if event.canonical_event_hash() != Some(&hash) {
+        return Err(E::EventIdentity);
+    }
+    let canonical = decode_cbor_value(event.canonical_event()).map_err(|_| E::EventIdentity)?;
+    let map = canonical.as_map().ok_or(E::EventIdentity)?;
+    if map_lookup_bytes(map, "ledger_scope").map_err(|_| E::EventIdentity)? != scope
+        || map_lookup_u64(map, "sequence").map_err(|_| E::EventIdentity)? != event.sequence()
+    {
+        return Err(E::EventIdentity);
+    }
+    let header = map_lookup_map(map, "header").map_err(|_| E::EventIdentity)?;
+    let literal = map_lookup_bytes(header, "event_type").map_err(|_| E::EventIdentity)?;
+    if literal != wos_signature_affirmation_event_type().as_bytes() {
+        return Ok(None);
+    }
+    let reference = map_lookup_map(map, "payload_ref").map_err(|_| E::Record)?;
+    if map_lookup_text(reference, "ref_type").map_err(|_| E::Record)? != "inline" {
+        return Err(E::Record);
+    }
+    let payload = map_lookup_bytes(reference, "ciphertext").map_err(|_| E::Record)?;
+    let content = domain_separated_sha256(CONTENT_DOMAIN, &payload);
+    if map_lookup_bytes(map, "content_hash").map_err(|_| E::Record)? != content {
+        return Err(E::Record);
+    }
+    let record =
+        parse_signature_affirmation_record(&payload, wos_signature_affirmation_event_type())
+            .map_err(|_| E::Record)?;
+    // The maintained catalog requires a genuine signing-act ID; never synthesize one.
+    if record.signing_act_id.is_none() {
+        return Err(E::Record);
+    }
+    let value = decode_cbor_value(&payload).map_err(|_| E::Record)?;
+    let data = map_lookup_map(value.as_map().ok_or(E::Record)?, "data").map_err(|_| E::Record)?;
+    let mut row = vec![(
+        Value::Text("canonical_event_hash".into()),
+        Value::Bytes(hash.to_vec()),
+    )];
+    for (source, target) in FIELDS {
+        if let Some((_, value)) = data
+            .iter()
+            .find(|(key, _)| key == &Value::Text((*source).into()))
+        {
+            row.push((Value::Text((*target).into()), value.clone()));
+        }
+    }
+    // The maintained parser accepts this historical field alias. Emit one canonical name.
+    row.push((
+        Value::Text("formspec_response_ref".into()),
+        Value::Text(record.formspec_response_ref.clone()),
+    ));
+    let encoded = encode_canonical_cbor_value(&Value::Array(vec![Value::Map(row.clone())]))
+        .map_err(|_| E::Encoding)?;
+    let parsed = parse_signature_manifest_entries(&encoded).map_err(|_| E::Encoding)?;
+    if parsed.len() != 1 || !signature_entry_matches_record(&parsed[0], &record) {
+        return Err(E::Encoding);
+    }
+    Ok(Some(Value::Map(row)))
 }
 
 const FIELDS: &[(&str, &str)] = &[

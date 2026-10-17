@@ -7,3 +7,7 @@ license.workspace = true
 [dependencies]
 integrity-cbor = { path = "../../../integrity-stack/crates/integrity-cbor" }
 serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+ct-merkle = "0.3"
+sha2 = "0.11"

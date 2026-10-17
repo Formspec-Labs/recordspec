@@ -1,0 +1,26 @@
+id          = "export/017-assembled-eight-events"
+op          = "export"
+status      = "active"
+description = "Service-assembled export of a eight-event ledger: the bytes the reference server's on-request assembly produces at the head checkpoint, with the frontier-derived checkpoint chain and the O(log n) proofs a flat-cost append keeps."
+
+[coverage]
+tr_core = [
+    "TR-CORE-062",  # export generator produces an independently verifiable export
+    "TR-CORE-063",  # export includes sufficient material for offline verification
+    "TR-CORE-134",  # Export Generator packages canonical records + verification material
+]
+
+[inputs]
+ledger_state = "input-ledger-state.cbor"
+
+[expected]
+zip        = "expected-export.zip"
+zip_sha256 = "79fad683dc79a205c1c3d007103ebd6de74dbccac17b51488628565da5524331"
+
+[expected.report]
+structure_verified   = true
+integrity_verified   = true
+readability_verified = true
+
+[derivation]
+document = "derivation.md"

@@ -16,14 +16,8 @@ async fn committed_state(
     let lookup =
         AppendReconciliationRequest::from_append_body(&serde_json::from_slice(&body).unwrap())
             .unwrap();
-    let response = router(state.clone())
-        .unwrap()
-        .oneshot(post_request("/v1/scopes/scope-a/events", body))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::CREATED);
-    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    (state, lookup, serde_json::from_slice(&bytes).unwrap())
+    let receipt = post_append(&router(state.clone()).unwrap(), "/v1/scopes/scope-a/events", body).await;
+    (state, lookup, receipt)
 }
 
 #[derive(Clone)]
@@ -44,7 +38,7 @@ impl ArtifactStore for ReadOnlyArtifacts {
 }
 
 #[tokio::test]
-async fn reconciliation_returns_exact_verified_receipt_and_conflict_without_effects() {
+async fn reconciliation_returns_the_exact_stored_receipt_and_conflict_without_effects() {
     let (mut state, lookup, receipt) = committed_state("neutral-committed").await;
     state.artifact_store = Arc::new(ReadOnlyArtifacts(state.artifact_store.clone()));
     let before = state.repository.list_scope(b"scope-a").await.unwrap();
@@ -71,11 +65,13 @@ async fn reconciliation_returns_exact_verified_receipt_and_conflict_without_effe
 }
 
 #[tokio::test]
-async fn reconciliation_distinguishes_event_without_receipt_from_absence() {
+async fn reconciliation_distinguishes_event_without_checkpoint_from_absence() {
     let (source, lookup, _) = committed_state("neutral-missing-receipt").await;
     let mut state = test_state();
-    state.repository = source.repository;
-    state.artifact_store = Arc::new(ReadOnlyArtifacts(state.artifact_store.clone()));
+    state.repository = Arc::new(crate::repository_probes::FaultyRepository {
+        inner: source.repository,
+        fault: Arc::new(crate::repository_probes::Fault::HideCheckpoints),
+    });
     assert_eq!(
         crate::reconciliation::reconcile(&state, "scope-a", &lookup).await,
         AppendReconciliation::Unknown {
@@ -116,8 +112,14 @@ async fn reconciliation_refuses_cached_hash_and_signed_key_corruption() {
     ] {
         let mut state = source.clone();
         let repo = InMemoryEventRepository::new();
-        repo.append_event(corrupted).await.unwrap();
+        // Store the corrupted row as a faulty writer would have left it.
+        let (corrupted, checkpoint) = state.checkpointer().after(None, &corrupted).unwrap();
+        let mut tx = repo.begin(b"scope-a").await.unwrap();
+        tx.insert(&corrupted, &checkpoint).await.unwrap();
+        tx.commit().await.unwrap();
         state.repository = Arc::new(repo);
+        let mut lookup = lookup.clone();
+        lookup.idempotency_key = String::from_utf8_lossy(corrupted.idempotency_key().unwrap()).into_owned();
         assert_eq!(
             crate::reconciliation::reconcile(&state, "scope-a", &lookup).await,
             AppendReconciliation::Unknown {
@@ -173,72 +175,11 @@ async fn reconciliation_rechecks_current_read_authority_before_disclosure() {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
-#[tokio::test]
-async fn reconciliation_refuses_tampered_proof_and_changed_attempt_identity() {
-    struct TamperedProof(Arc<dyn ArtifactStore<Error = StackError>>);
-    #[async_trait]
-    impl ArtifactStore for TamperedProof {
-        type Error = StackError;
-        async fn put(&self, _: &str, _: &[u8]) -> Result<ArtifactRef, StackError> {
-            panic!("unexpected write")
-        }
-        async fn put_immutable(&self, _: &str, _: &[u8]) -> Result<ArtifactRef, StackError> {
-            panic!("unexpected immutable write")
-        }
-        async fn get(&self, reference: &ArtifactRef) -> Result<Option<Vec<u8>>, StackError> {
-            let mut bytes = self.0.get(reference).await?;
-            if let Some(bytes) = &mut bytes {
-                bytes[0] ^= 1;
-            }
-            Ok(bytes)
-        }
-    }
-    let (source, lookup, _) = committed_state("neutral-proof").await;
-    let mut tampered = source.clone();
-    tampered.artifact_store = Arc::new(TamperedProof(source.artifact_store.clone()));
-    assert_eq!(
-        crate::reconciliation::reconcile(&tampered, "scope-a", &lookup).await,
-        AppendReconciliation::Unknown {
-            reason: ReconciliationUnknown::VerificationFailed
-        }
-    );
-    let mut changed = test_state();
-    changed.repository = source.repository.clone();
-    changed.artifact_store = Arc::new(ReadOnlyArtifacts(source.artifact_store.clone()));
-    let mut record = source
-        .bundles
-        .get_by_seal(b"scope-a", 1)
-        .await
-        .unwrap()
-        .unwrap();
-    record.export_attempt_id = "sha256:changed-attempt".into();
-    changed
-        .bundles
-        .insert_published_record(b"scope-a", &record, false)
-        .await
-        .unwrap();
-    assert_eq!(
-        crate::reconciliation::reconcile(&changed, "scope-a", &lookup).await,
-        AppendReconciliation::Unknown {
-            reason: ReconciliationUnknown::VerificationFailed
-        }
-    );
-}
 
 #[tokio::test]
-async fn reconciliation_unsupported_store_is_unknown_without_unserialized_fallback() {
-    struct Unsupported;
-    #[async_trait]
-    impl EventRepository for Unsupported {
-        async fn list_scope(&self, _: &[u8]) -> Result<Vec<StoredEvent>, StackError> {
-            panic!("unsupported snapshot must not fall back")
-        }
-        async fn append_event(&self, _: StoredEvent) -> Result<(), StackError> {
-            panic!("unexpected append")
-        }
-    }
+async fn reconciliation_with_an_unreachable_store_is_unknown() {
     let mut state = test_state();
-    state.repository = Arc::new(Unsupported);
+    state.repository = Arc::new(crate::repository_probes::UnreachableRepository);
     let lookup = AppendReconciliationRequest {
         event_type: "neutral.event".into(),
         idempotency_key: "neutral-key".into(),
@@ -287,7 +228,7 @@ async fn reconciliation_route_requires_current_authentication_and_exact_scope_gr
 }
 
 #[tokio::test]
-async fn reconciliation_route_reports_read_point_absence_without_publishing() {
+async fn reconciliation_route_reports_read_point_absence_without_writing() {
     let state = test_state();
     let response = router(state.clone())
         .unwrap()
@@ -317,8 +258,8 @@ async fn reconciliation_route_reports_read_point_absence_without_publishing() {
     );
     assert!(
         state
-            .bundles
-            .get_by_seal(b"scope-a", 1)
+            .repository
+            .head_checkpoint(b"scope-a")
             .await
             .unwrap()
             .is_none()

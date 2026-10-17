@@ -105,7 +105,6 @@ pub(super) async fn fixture_on(state: TrellisServerState) -> (
             event_type: body.event_type,
             idempotency_key: body.idempotency_key,
             payload: body.payload,
-            compute_context: body.compute_context,
             client_attestation: None,
         })
         .await
@@ -135,32 +134,27 @@ pub(super) async fn fixture_on(state: TrellisServerState) -> (
 
 #[tokio::test]
 async fn completion_postgres_reopened_state_retries_exact_retained_bytes() {
-    let (template, headers, tenant, request) = fixture().await;
     let cluster = stack_common_postgres::testing::EphemeralCluster::start_required();
     let pool = postgres_support::tls_pool(&cluster, 2).await;
     trellis_store_postgres_async::run_migrations(&pool)
         .await
         .unwrap();
-    let repository = Arc::new(PostgresEventRepository::new(pool.clone()));
-    let initial = template
-        .repository
-        .list_scope(b"case_completion")
-        .await
-        .unwrap();
-    repository.append_event(initial[0].clone()).await.unwrap();
+    let composed = |pool: &sqlx::PgPool, artifacts: Option<Arc<dyn trellis_server_ports::ArtifactStore<Error = StackError>>>| {
+        let state = TrellisServerState::new(
+            Arc::new(PostgresEventRepository::new(pool.clone())),
+            test_signing_key(),
+            crate::test_adapters::adapters(),
+        )
+        .with_scope_authorizer(Arc::new(MappedAuthorizer))
+        .with_completion(Arc::new(Signer { calls: AtomicUsize::new(0), corrupt: false }), PUBLISHER);
+        match artifacts {
+            Some(artifacts) => state.with_artifact_store(artifacts),
+            None => state,
+        }
+    };
+    let (state, headers, tenant, request) = fixture_on(composed(&pool, None)).await;
     // The artifact service survives application state recreation, like external object storage.
-    let artifacts = template.artifact_store.clone();
-    let state = TrellisServerState::new(
-        repository,
-        test_signing_key(),
-        crate::test_adapters::adapters(),
-    )
-    .with_scope_authorizer(Arc::new(MappedAuthorizer))
-    .with_completion(Arc::new(Signer { calls: AtomicUsize::new(0), corrupt: false }), PUBLISHER)
-    .with_artifact_store(artifacts.clone())
-    .with_bundle_index(Arc::new(crate::event_repository::PostgresBundleIndex::new(
-        pool.clone(),
-    )));
+    let artifacts = state.artifact_store.clone();
     let signer = Signer {
         calls: AtomicUsize::new(0),
         corrupt: false,
@@ -182,32 +176,20 @@ async fn completion_postgres_reopened_state_retries_exact_retained_bytes() {
         .unwrap();
     assert_eq!(committed.len(), 2);
     let html = crate::completion::certificate_html(&committed[1]).unwrap();
-    let published = state
-        .bundles
-        .get_by_seal(b"case_completion", 2)
+    let head = state
+        .repository
+        .head_checkpoint(b"case_completion")
         .await
         .unwrap()
         .unwrap();
-    let zip = artifacts
-        .get(&published.artifact_ref)
+    let zip = crate::export::assemble(&state, b"case_completion", &head)
         .await
-        .unwrap()
         .unwrap();
     drop(state);
     pool.close().await;
 
     let reopened_pool = postgres_support::tls_pool(&cluster, 2).await;
-    let reopened = TrellisServerState::new(
-        Arc::new(PostgresEventRepository::new(reopened_pool.clone())),
-        test_signing_key(),
-        crate::test_adapters::adapters(),
-    )
-    .with_scope_authorizer(Arc::new(MappedAuthorizer))
-    .with_completion(Arc::new(Signer { calls: AtomicUsize::new(0), corrupt: false }), PUBLISHER)
-    .with_artifact_store(artifacts.clone())
-    .with_bundle_index(Arc::new(crate::event_repository::PostgresBundleIndex::new(
-        reopened_pool.clone(),
-    )));
+    let reopened = composed(&reopened_pool, Some(artifacts.clone()));
     let retry_signer = Signer {
         calls: AtomicUsize::new(0),
         corrupt: true,
@@ -239,33 +221,15 @@ async fn completion_postgres_reopened_state_retries_exact_retained_bytes() {
         assert_eq!(before.signed_event(), after.signed_event());
     }
     assert_eq!(crate::completion::certificate_html(&rows[1]).unwrap(), html);
-    let publication = reopened
-        .bundles
-        .get_by_seal(b"case_completion", 2)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(publication.artifact_ref, published.artifact_ref);
+    // The export is a function of the stored rows, so a reopened server assembles the same bytes.
     assert_eq!(
-        artifacts
-            .get(&publication.artifact_ref)
+        crate::export::assemble(&reopened, b"case_completion", &head)
             .await
-            .unwrap()
             .unwrap(),
         zip
     );
     // A different request must be refused even before any replay cache is repopulated.
-    let changed_state = TrellisServerState::new(
-        Arc::new(PostgresEventRepository::new(reopened_pool.clone())),
-        test_signing_key(),
-        crate::test_adapters::adapters(),
-    )
-    .with_scope_authorizer(Arc::new(MappedAuthorizer))
-    .with_completion(Arc::new(Signer { calls: AtomicUsize::new(0), corrupt: false }), PUBLISHER)
-    .with_artifact_store(artifacts.clone())
-    .with_bundle_index(Arc::new(crate::event_repository::PostgresBundleIndex::new(
-        reopened_pool.clone(),
-    )));
+    let changed_state = composed(&reopened_pool, Some(artifacts.clone()));
     let mut changed = request.clone();
     changed.certificate_id = "urn:test:changed-retry".into();
     let refused = seal_completion(
@@ -336,23 +300,18 @@ async fn completion_manual_exports_exact_html_and_retries_without_signing() {
     let html = std::str::from_utf8(&bytes).unwrap();
     assert!(html.contains("&lt;script&gt;"));
     assert!(!html.contains("<script>"));
-    let record = state
-        .bundles
-        .get_by_seal(b"case_completion", 2)
+    let head = state
+        .repository
+        .head_checkpoint(b"case_completion")
         .await
         .unwrap()
         .unwrap();
-    let zip = state
-        .artifact_store
-        .get(&record.artifact_ref)
+    assert_eq!(head.tree_size, 2);
+    let zip = crate::export::assemble(&state, b"case_completion", &head)
         .await
-        .unwrap()
         .unwrap();
     assert!(export_bundle_cryptographically_verified(&zip));
-    assert!(crate::test_adapters::adapters()
-            .export_profile
-            .verify(&zip)
-            .profile_verified);
+    assert!(trellis_verify_wos::verify_export_zip(&zip).relying_party_valid());
     use integrity_verify::trellis::{
         CertificateAttestationAuthorityStatus, CertificateAuthorityRegistry,
         TrustedCertificateAuthority,
@@ -448,7 +407,6 @@ async fn completion_binds_two_distinct_signed_responses_in_one_certificate() {
             event_type: body.event_type,
             idempotency_key: body.idempotency_key,
             payload: body.payload,
-            compute_context: body.compute_context,
             client_attestation: None,
         })
         .await
@@ -492,17 +450,15 @@ async fn completion_binds_two_distinct_signed_responses_in_one_certificate() {
             expected
         );
     }
-    let record = state
-        .bundles
-        .get_by_seal(b"case_completion", 3)
+    let head = state
+        .repository
+        .head_checkpoint(b"case_completion")
         .await
         .unwrap()
         .unwrap();
-    let zip = state
-        .artifact_store
-        .get(&record.artifact_ref)
+    assert_eq!(head.tree_size, 3);
+    let zip = crate::export::assemble(&state, b"case_completion", &head)
         .await
-        .unwrap()
         .unwrap();
     let report = trellis_verify_wos::verify_export_zip(&zip);
     assert!(report.trellis.integrity_verified, "{report:?}");
@@ -510,8 +466,6 @@ async fn completion_binds_two_distinct_signed_responses_in_one_certificate() {
     // Explicit fixture generation retains actual Rust-authored bytes after verification.
     if let Some(directory) = std::env::var_os("TRELLIS_COMPLETION_V2_VECTOR_DIR") {
         let directory = std::path::PathBuf::from(directory);
-        assert!(directory.is_absolute());
-        std::fs::create_dir(&directory).unwrap();
         struct FixtureStore;
         impl trellis_core::LedgerStore for FixtureStore {
             type Error = StackError;
@@ -554,34 +508,10 @@ async fn completion_binds_two_distinct_signed_responses_in_one_certificate() {
                 "presentation-artifact.bin",
                 crate::completion::certificate_html(&events[2]).unwrap(),
             ),
-            ("expected-export.zip", zip.clone()),
         ] {
             std::fs::write(directory.join(name), bytes).unwrap();
         }
-        let entries = integrity_bundle::read_stored_zip(&zip).unwrap();
-        let root = entries
-            .iter()
-            .find_map(|entry| entry.path().strip_suffix("/010-events.cbor"))
-            .unwrap();
-        let prefix = format!("{root}/");
-        let mut members = Vec::new();
-        for entry in &entries {
-            let member = entry.path().strip_prefix(&prefix).unwrap();
-            let path = directory.join(member);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(path, entry.bytes()).unwrap();
-            members.push(Value::Text(member.into()));
-        }
-        let ledger = crate::text_map(vec![
-            ("root_dir", Value::Text(root.into())),
-            ("members", Value::Array(members)),
-        ])
-        .unwrap();
-        std::fs::write(
-            directory.join("input-ledger-state.cbor"),
-            integrity_cbor::encode_cbor_value(&ledger).unwrap(),
-        )
-        .unwrap();
+        crate::export_vector::write_export_vector(&directory, &zip);
     }
 }
 
@@ -676,8 +606,7 @@ async fn completion_retry_with_a_different_selection_is_a_changed_retry() {
     )
     .with_scope_authorizer(Arc::new(MappedAuthorizer))
     .with_completion(Arc::new(Signer { calls: AtomicUsize::new(0), corrupt: false }), PUBLISHER)
-    .with_artifact_store(state.artifact_store.clone())
-    .with_bundle_index(state.bundles.clone());
+    .with_artifact_store(state.artifact_store.clone());
     for edit in 0..4 {
         let mut other = request.clone();
         match edit {
@@ -721,10 +650,10 @@ impl trellis_server_ports::ScopeAuthorizer for MappedAuthorizer {
     }
 }
 
-/// Appends a foreign event the first time the certificate object is written, as a
-/// concurrent writer would between the lock windows.
+/// Appends a valid foreign event the first time the certificate object is written, as a
+/// concurrent writer would while the operator signs and the object is stored.
 struct ForeignEventOnCertificateWrite {
-    repository: Arc<dyn crate::EventRepository>,
+    foreign: TrellisServerState,
     inner: Arc<dyn trellis_server_ports::ArtifactStore<Error = StackError>>,
     fired: AtomicBool,
 }
@@ -744,14 +673,17 @@ impl trellis_server_ports::ArtifactStore for ForeignEventOnCertificateWrite {
         bytes: &[u8],
     ) -> Result<trellis_server_ports::ArtifactRef, StackError> {
         if key.starts_with("certificates/") && !self.fired.swap(true, Ordering::SeqCst) {
-            let events = self.repository.list_scope(b"case_completion").await?;
-            self.repository
-                .append_event(StoredEvent::new(
-                    b"case_completion".to_vec(),
-                    events.len() as u64,
-                    b"concurrent census change".to_vec(),
-                    b"concurrent signed bytes".to_vec(),
-                ))
+            let body: SubstrateAppendBody =
+                serde_json::from_slice(&append_body("concurrent-census-change")).unwrap();
+            self.foreign
+                .append_coordinator()
+                .append(crate::append::AppendCommand {
+                    scope: "case_completion".into(),
+                    event_type: body.event_type,
+                    idempotency_key: body.idempotency_key,
+                    payload: body.payload,
+                    client_attestation: None,
+                })
                 .await?;
         }
         self.inner.put_immutable(key, bytes).await
@@ -765,10 +697,15 @@ impl trellis_server_ports::ArtifactStore for ForeignEventOnCertificateWrite {
 }
 
 #[tokio::test]
-async fn completion_refuses_a_native_census_change_between_lock_windows() {
+async fn completion_refuses_a_native_census_change_between_reading_the_prefix_and_committing() {
     let (state, headers, tenant, request) = fixture().await;
+    let foreign = TrellisServerState::new(
+        state.repository.clone(),
+        test_signing_key(),
+        crate::test_adapters::adapters(),
+    );
     let state = state.clone().with_artifact_store(Arc::new(ForeignEventOnCertificateWrite {
-        repository: state.repository.clone(),
+        foreign,
         inner: state.artifact_store.clone(),
         fired: AtomicBool::new(false),
     }));
@@ -779,14 +716,18 @@ async fn completion_refuses_a_native_census_change_between_lock_windows() {
     let error = seal_completion(&state, &headers, &tenant, "case_completion", &request, &signer)
         .await
         .unwrap_err();
-    assert!(error.to_string().contains("native snapshot changed"), "{error}");
+    assert_eq!(error.status(), StatusCode::CONFLICT);
+    assert!(error.to_string().contains("head changed"), "{error}");
     let events = state
         .repository
         .list_scope(b"case_completion")
         .await
         .unwrap();
     assert_eq!(events.len(), 2, "only the foreign event; the certificate is not committed");
-    assert_eq!(events[1].canonical_event(), b"concurrent census change");
+    assert_eq!(
+        events[1].idempotency_key(),
+        Some(b"concurrent-census-change".as_slice())
+    );
 }
 
 struct CompletionRevokingAuthorizer(Arc<AtomicBool>);
@@ -871,37 +812,6 @@ impl trellis_server_ports::ArtifactStore for RevokingStore {
     ) -> Result<Option<Vec<u8>>, StackError> {
         self.inner.get(reference).await
     }
-}
-#[tokio::test]
-async fn completion_refuses_locator_when_scope_authority_is_revoked_during_publication() {
-    let (state, headers, tenant, request) = fixture().await;
-    let revoked = Arc::new(AtomicBool::new(false));
-    let state =
-        state.with_scope_authorizer(Arc::new(CompletionRevokingAuthorizer(revoked.clone())));
-    // The bundle write is the last awaited step; revoke after it.
-    let state = state.clone().with_artifact_store(Arc::new(RevokingStore {
-        inner: state.artifact_store.clone(),
-        revoked: revoked.clone(),
-        trigger: |key| key.ends_with(".zip"),
-    }));
-    let signer = Signer {
-        calls: AtomicUsize::new(0),
-        corrupt: false,
-    };
-    let error = seal_completion(&state, &headers, &tenant, "case_completion", &request, &signer)
-        .await
-        .unwrap_err();
-    assert!(revoked.load(Ordering::SeqCst));
-    assert!(error.to_string().contains("scope permission revoked"));
-    assert_eq!(
-        state
-            .repository
-            .list_scope(b"case_completion")
-            .await
-            .unwrap()
-            .len(),
-        2
-    );
 }
 #[tokio::test]
 async fn completion_refuses_stale_prefix_changed_retry_and_duplicate_certificate_id() {
@@ -1149,7 +1059,7 @@ async fn completion_reconcile_by_certificate_id_is_absent_then_committed_without
         .await
         .unwrap();
     let committed = state.repository.list_scope(b"case_completion").await.unwrap();
-    // From here the artifact store refuses every write: reconcile must never publish.
+    // From here the artifact store refuses every write: reconcile must never write.
     state.artifact_store = Arc::new(super::reconciliation_tests::ReadOnlyArtifacts(
         state.artifact_store.clone(),
     ));
@@ -1223,7 +1133,12 @@ async fn completion_reconcile_route_takes_the_certificate_id_identity() {
     let body: serde_json::Value =
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
     assert_eq!(body["status"], "committed");
-    assert_eq!(body["receipt"]["verificationReceipt"]["eventType"], COMPLETION_EVENT);
+    assert!(
+        body["receipt"]["checkpointRef"]
+            .as_str()
+            .unwrap()
+            .starts_with("trellis://case_completion/checkpoints/sha256:")
+    );
     // A completion lookup that names a content hash is not a valid identity.
     let both = serde_json::json!({"eventType": COMPLETION_EVENT, "idempotencyKey": "k",
         "contentHash": vec![0u8; 32], "certificateId": "c"});
@@ -1288,7 +1203,6 @@ async fn seal_refuses_signing_events_that_are_not_this_ledgers_signatures() {
             event_type: body.event_type,
             idempotency_key: body.idempotency_key,
             payload: body.payload,
-            compute_context: body.compute_context,
             client_attestation: None,
         })
         .await
