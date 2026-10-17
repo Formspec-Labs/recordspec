@@ -501,6 +501,8 @@ fn tenant_replay_scope(tenant_headers: &TenantHeaders, call: &IdempotencyCall) -
 /// - `TRELLIS_OIDC_CONFIG_FILE` (strict current provider and exact resource grants)
 ///
 /// Optional:
+/// - `TRELLIS_PROFILE=development|production` (default `production`); production refuses in-memory
+///   storage, a signing key file other users can read, and any publicly known fixture signing key
 /// - `TRELLIS_STORAGE=memory` (in-memory repository; skips `TRELLIS_DATABASE_URL`)
 /// - `TRELLIS_COMPLETION_OPERATOR_CONFIG_FILE` (completion operator signing keys)
 /// - `TRELLIS_SOURCE_CONTENT_CONFIG_FILE` (Source-content publisher, pins, object store, native policy)
@@ -521,15 +523,13 @@ pub async fn state_from_env(adapters: ServerAdapters) -> Result<TrellisServerSta
 
     let signing_key_path = env::var("TRELLIS_SIGNING_KEY_COSE_PATH")
         .map_err(|_| StackError::bad_request("TRELLIS_SIGNING_KEY_COSE_PATH is required"))?;
-    let signing_key_bytes = fs::read(&signing_key_path).map_err(|error| {
-        StackError::bad_request(format!(
-            "failed to read TRELLIS_SIGNING_KEY_COSE_PATH: {error}"
-        ))
-    })?;
+    let profile = crate::posture::profile_from_env()?;
+    let signing_key_bytes = crate::posture::read_signing_key(profile, &signing_key_path)?;
     let signing_key_valid_to = env_optional_timestamp("TRELLIS_SIGNING_KEY_VALID_TO_UNIX_SECS")?;
     let signing_key =
         ServerSigningKey::from_cose_key_bytes(signing_key_bytes, TrellisTimestamp::new(0, 0)?)?
             .with_valid_to(signing_key_valid_to);
+    crate::posture::check(profile, trellis_storage_is_memory, &signing_key)?;
 
     let (repository, bundle_index): (Arc<dyn EventRepository>, Option<Arc<dyn BundleIndexPort>>) =
         if trellis_storage_is_memory {
