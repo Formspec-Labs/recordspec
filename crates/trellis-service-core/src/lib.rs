@@ -46,19 +46,17 @@ mod source_content;
 mod source_content_startup;
 mod source_diagnostics;
 pub use completion::{
-    CompletionAttestor, CompletionCallerContext, CompletionRequest, CompletionSelector,
-    CompletionSigner, CompletionSignerLabel, CoseCompletionSigner, RemoteCompletionSelector,
-    SelectedCompletion, seal_completion,
+    CompletionAttestor, CompletionRequest, CompletionSigner, CompletionSignerLabel,
+    CoseCompletionSigner, SelectedCompletion, seal_completion,
 };
 #[doc(inline)]
 pub use source_content::{
     ConfiguredSourceContentPins, PreparedSourceContentBatchV1, PreparedSourceContentRecordV1,
-    SourceContentComposition, SourceContentContributor, SourceContentFactory,
+    SourceContentBatchChecker, SourceContentClaim, SourceContentComposition, SourceContentFactory,
     SourceContentFinalPrefixGuard, SourceContentIdentityV1, SourceContentInputs,
-    SourceContentOccurrenceV1, SourceContentParts, SourceContentPrefixClass,
-    SourceContentRecordPins, SourceContentRequest, SourceContentRoleV1, SourceContentSelection,
-    SourceContentSelectionRequest, SourceContentSelectionResolver,
-    StructuralSourcePublicationVerifier, source_content_batch_key,
+    SourceContentObjectReader, SourceContentOccurrenceV1, SourceContentParts,
+    SourceContentPrefixClass, SourceContentRecordPins, SourceContentRoleV1, SourceContentSelection,
+    StoreSourceContentReader, StructuralSourcePublicationVerifier, source_content_batch_key,
 };
 #[doc(inline)]
 pub use source_content_startup::source_content_composition_from_configuration;
@@ -2898,6 +2896,7 @@ mod tests {
                 "formspec-server",
             ),
             client_attestation: None,
+            source_content: None,
         };
         serde_json::to_vec(&body).unwrap()
     }
@@ -2928,6 +2927,7 @@ mod tests {
                 "wos-server",
             ),
             client_attestation: None,
+            source_content: None,
         };
         serde_json::to_vec(&body).unwrap()
     }
@@ -3005,6 +3005,7 @@ mod tests {
                 "wos-server",
             ),
             client_attestation: None,
+            source_content: None,
         };
         serde_json::to_vec(&body).unwrap()
     }
@@ -3056,6 +3057,7 @@ mod tests {
                 "wos-server",
             ),
             client_attestation: None,
+            source_content: None,
         };
         serde_json::to_vec(&body).unwrap()
     }

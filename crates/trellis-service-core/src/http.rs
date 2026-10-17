@@ -19,6 +19,12 @@ use crate::openapi::EventTypeRegistryView;
 use crate::state::{TrellisHealthProbe, TrellisServerState};
 use crate::{event_type_registry_view, publish_bundle};
 
+/// Seal body limit. The worst case the request validator admits is about 0.84 MiB (measured
+/// by `completion_route_body_limit_admits_the_worst_case_selection_and_no_more`): 141 text
+/// fields of 1024 bytes that JSON escapes to at most six bytes each, plus about 20 KiB of
+/// hashes and keys as JSON number arrays.
+const SEAL_BODY_LIMIT: usize = 1024 * 1024;
+
 /// Builds the Trellis Axum router.
 ///
 /// # Errors
@@ -60,7 +66,7 @@ pub fn router(state: TrellisServerState) -> Result<Router, StackError> {
         )
         .route(
             "/v1/scopes/{scope}/completion",
-            post(seal_completion).layer(axum::extract::DefaultBodyLimit::max(32 * 1024)),
+            post(seal_completion).layer(axum::extract::DefaultBodyLimit::max(SEAL_BODY_LIMIT)),
         )
         .route(
             "/v1/scopes/{scope}/accepted-attachments",
@@ -115,7 +121,7 @@ pub(crate) async fn reconcile_event(
 #[utoipa::path(post, path="/v1/scopes/{scope}/completion",
     params(("scope"=String,Path,description="Authorized ledger scope"), ("idempotency-key"=String,Header,description="Must match closed request")),
     request_body=trellis_service_client::CompletionRequest,
-    responses((status=201,description="Certificate and archive retained",body=SubstrateAppendResult),(status=400,description="Closed trigger refused"),(status=401,description="Current authentication refused"),(status=403,description="Current permission refused"),(status=409,description="Snapshot or replay conflict"),(status=503,description="Composition not selected or dependency unavailable")),tag="events")]
+    responses((status=201,description="Certificate and archive retained",body=SubstrateAppendResult),(status=400,description="Closed trigger or selection refused, including a status or impact outside the vocabulary"),(status=401,description="Current authentication refused"),(status=403,description="Current permission refused, or the caller is not the configured publisher"),(status=409,description="Snapshot, signing-evidence, different-principal or replay conflict"),(status=503,description="Composition not selected or dependency unavailable")),tag="events")]
 pub(crate) async fn seal_completion(
     State(state): State<TrellisServerState>,
     Path(scope): Path<String>,
@@ -125,20 +131,13 @@ pub(crate) async fn seal_completion(
 ) -> Result<(StatusCode, Json<SubstrateAppendResult>), StackError> {
     // Authenticate before revealing configuration availability.
     state.authenticate(&headers).await?;
-    let (selector, signer) = state
+    let (signer, _) = state
         .completion
         .as_ref()
         .ok_or_else(|| StackError::unavailable("completion composition is not selected"))?;
-    let result = crate::seal_completion(
-        &state,
-        &headers,
-        &tenant,
-        &scope,
-        &request,
-        Some(selector.as_ref()),
-        signer.as_ref(),
-    )
-    .await?;
+    let result =
+        crate::seal_completion(&state, &headers, &tenant, &scope, &request, signer.as_ref())
+            .await?;
     Ok((StatusCode::CREATED, Json(result)))
 }
 
@@ -164,11 +163,9 @@ pub(crate) async fn seal_completion(
 pub(crate) async fn append_event(
     State(state): State<TrellisServerState>,
     Path(scope): Path<String>,
-    Extension(crate::auth::AuthorizedAppend(body, source_selection)): Extension<
+    Extension(crate::auth::AuthorizedAppend(body, admitted)): Extension<
         crate::auth::AuthorizedAppend,
     >,
-    tenant: TenantScope,
-    headers: HeaderMap,
 ) -> Result<(StatusCode, Json<SubstrateAppendResult>), StackError> {
     let command = append::AppendCommand {
         scope: scope.clone(),
@@ -178,15 +175,13 @@ pub(crate) async fn append_event(
         compute_context: append::port_compute_context(&body),
         client_attestation: body.client_attestation.clone(),
     };
-    let outcome = match source_selection {
+    let outcome = match admitted {
         None => state.append_runner.run_append(&state, command).await?,
-        Some(selection) => {
+        Some(admitted) => {
             use crate::source_diagnostics::{self as diag, Outcome, Stage};
             diag::mark(true, Stage::Handler, Outcome::Enter);
             let source = crate::source_content::SourceContentAppendContext {
-                selection: &selection,
-                headers: &headers,
-                tenant: &tenant,
+                admitted: &admitted,
                 body: &body,
             };
             diag::observed(

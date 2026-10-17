@@ -9,9 +9,7 @@ use std::fs;
 
 use integrity_verify::trellis::CertificateAuthorityRegistry;
 use stack_common_error::StackError;
-use stack_common_http::tenant::TenantScope;
 use trellis_export_writer::TrellisTimestamp;
-use trellis_service_client::TrellisServiceClient;
 use trellis_service_core::{
     ServerSigningKey, SourceContentComposition, TrellisServerState,
     source_content_composition_from_configuration as compose_source_content,
@@ -70,15 +68,11 @@ pub fn fixture_signing_key_registry_cbor() -> Result<Vec<u8>, StackError> {
 pub fn source_content_composition_from_configuration(
     configuration: &[u8],
     service_profile: &std::path::Path,
-    client: TrellisServiceClient,
-    tenant: TenantScope,
     authorities: Option<CertificateAuthorityRegistry>,
 ) -> Result<SourceContentComposition, StackError> {
     compose_source_content(
         configuration,
         service_profile,
-        client,
-        tenant,
         authorities,
         &composition::adapters(composition::mixed_tenant_headers()),
     )

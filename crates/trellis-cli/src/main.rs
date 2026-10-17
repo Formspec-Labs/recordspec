@@ -39,7 +39,7 @@ fn main() {
 }
 
 fn usage_top_level() -> String {
-    "usage: trellis-cli <seal-completion|certificate|append-001|append-002|verify-001|verify-002|verify-export <bundle.zip> [--certificate-authorities <registry.json>]>\n\
+    "usage: trellis-cli <certificate|append-001|append-002|verify-001|verify-002|verify-export <bundle.zip> [--certificate-authorities <registry.json>]>\n\
      \n\
      Fixture commands mirror a small smoke subset of the Trellis append corpus.\n\
      `verify-export` verifies a Trellis/WOS export ZIP through trellis-verify-wos.\n\
@@ -62,7 +62,6 @@ fn dispatch_command(args: &[String], command: &str) -> Result<(), String> {
         "verify-001" => verify_fixture_command(&FIXTURE_001),
         "verify-002" => verify_fixture_command(&FIXTURE_002),
         "verify-export" => verify_export_command(args),
-        "seal-completion" => seal_completion_command(args),
         "certificate" => certificate_command(args),
         _ => Err(format!("unknown command `{command}`")),
     }
@@ -151,83 +150,6 @@ fn verify_export_command(args: &[String]) -> Result<(), String> {
             "export verification failed with {failures} failure finding(s)"
         ))
     }
-}
-
-fn seal_completion_command(args: &[String]) -> Result<(), String> {
-    #[derive(serde::Deserialize)]
-    #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    struct ClientConfig {
-        endpoint: String,
-        tenant: stack_common_http::tenant::TenantScope,
-        bearer_token_file: String,
-        caller_bearer_token_file: Option<String>,
-    }
-    if args.len() != 5 {
-        return Err(
-            "usage: trellis-cli seal-completion <client-config.json> <scope> <request.json>".into(),
-        );
-    }
-    let config: ClientConfig = serde_json::from_slice(&read_bounded(&args[2], 32 * 1024)?)
-        .map_err(|_| "invalid completion client configuration")?;
-    let request: trellis_service_client::CompletionRequest =
-        serde_json::from_slice(&read_bounded(&args[4], 32 * 1024)?)
-            .map_err(|_| "invalid closed completion request")?;
-    request.validate().map_err(|e| e.to_string())?;
-    // A single manual call uses a token independently acquired by the caller.
-    // The server verifies current identity/permissions; no CLI key or closure claim is accepted.
-    let token_bytes = read_bounded(&config.bearer_token_file, 16 * 1024)?;
-    let token = std::str::from_utf8(&token_bytes)
-        .map_err(|_| "invalid bearer token file")?
-        .trim();
-    let caller_authorization = config
-        .caller_bearer_token_file
-        .as_ref()
-        .map(|path| {
-            let bytes = read_bounded(path, 8 * 1024)?;
-            let token = std::str::from_utf8(&bytes)
-                .map_err(|_| "invalid caller bearer token file")?
-                .trim();
-            let authorization = format!("Bearer {token}");
-            trellis_service_client::validate_completion_caller_authorization(&authorization)
-                .map_err(|_| "invalid caller bearer token file")?;
-            Ok::<_, String>(authorization)
-        })
-        .transpose()?;
-    let client = trellis_service_client::TrellisServiceClient::new(
-        trellis_service_client::TrellisServiceClientConfig::new(
-            config.endpoint,
-            stack_common_http::tenant::HeaderConfig::wos(),
-        )
-        .with_service_bearer_token(token),
-    )
-    .map_err(|_| "completion HTTP client configuration failed")?;
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|_| "completion runtime unavailable")?;
-    let result = runtime
-        .block_on(async {
-            if let Some(authorization) = caller_authorization.as_deref() {
-                client
-                    .seal_completion_with_caller_authorization(
-                        &args[3],
-                        &config.tenant,
-                        &request,
-                        authorization,
-                    )
-                    .await
-            } else {
-                client
-                    .seal_completion(&args[3], &config.tenant, &request)
-                    .await
-            }
-        })
-        .map_err(|e| e.to_string())?;
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&result).map_err(|_| "completion receipt encoding failed")?
-    );
-    Ok(())
 }
 
 fn certificate_command(args: &[String]) -> Result<(), String> {

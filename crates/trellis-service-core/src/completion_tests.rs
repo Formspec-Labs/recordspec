@@ -1,5 +1,6 @@
 use super::*;
 use crate::completion::*;
+use trellis_service_client::CompletionSelection;
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -10,48 +11,31 @@ mod postgres_support {
     ));
 }
 
-struct Selection {
-    refuse: bool,
-}
-#[async_trait]
-impl CompletionSelector for Selection {
-    async fn select(
-        &self,
-        _tenant: &stack_common_http::tenant::TenantScope,
-        principal: &str,
-        _caller: &CompletionCallerContext<'_>,
-        _scope: &str,
-        request: &CompletionRequest,
-        prefix: &[StoredEvent],
-    ) -> Result<SelectedCompletion, StackError> {
-        assert_eq!(principal, "internal-operator");
-        if self.refuse {
-            return Err(StackError::conflict("workflow evidence is unsettled"));
-        }
-        Ok(SelectedCompletion {
-            selection_revision: [1; 32],
-            case_ref: "case-test".into(),
-            workflow_ref: "workflow-test".into(),
-            workflow_status: "completed".into(),
-            completed_at: crate::event_summary(prefix.last().unwrap())?.authored_at,
-            impact_level: None,
-            signer_labels: request
-                .signing_events
-                .iter()
-                .map(|hash| CompletionSignerLabel {
-                    signing_event: *hash,
-                    display_name: "Applicant <script>alert(1)</script>".into(),
-                    display_role: Some("applicant".into()),
-                })
-                .collect(),
-            required_attestors: vec![CompletionAttestor {
-                authority: "urn:test:operator".into(),
-                authority_class: "new".into(),
-                public_key: fixture_key(-2),
-            }],
-        })
+/// The facts a product would send: one label per signing event and the last event's time.
+pub(super) fn selection_for(signing_events: &[[u8; 32]], last: &StoredEvent) -> CompletionSelection {
+    let at = crate::event_summary(last).unwrap().authored_at;
+    CompletionSelection {
+        case_ref: "case-test".into(),
+        workflow_ref: "workflow-test".into(),
+        workflow_status: "completed".into(),
+        completed_at: (at.unix_secs, at.subsec_nanos),
+        impact_level: None,
+        signer_labels: signing_events
+            .iter()
+            .map(|hash| CompletionSignerLabel {
+                signing_event: *hash,
+                display_name: "Applicant <script>alert(1)</script>".into(),
+                display_role: Some("applicant".into()),
+            })
+            .collect(),
+        required_attestors: vec![CompletionAttestor {
+            authority: "urn:test:operator".into(),
+            authority_class: "new".into(),
+            public_key: fixture_key(-2),
+        }],
     }
 }
+
 fn fixture_key(label: i64) -> [u8; 32] {
     let value = integrity_cbor::decode_cbor_value(include_bytes!(
         "../../../fixtures/vectors/_keys/issuer-001.cose_key"
@@ -73,9 +57,11 @@ fn fixture_key(label: i64) -> [u8; 32] {
         .try_into()
         .unwrap()
 }
-struct Signer {
-    calls: AtomicUsize,
-    corrupt: bool,
+/// The principal `MappedAuthorizer` admits and the configured publisher the seal pins.
+pub(super) const PUBLISHER: &str = "internal-operator";
+pub(super) struct Signer {
+    pub(super) calls: AtomicUsize,
+    pub(super) corrupt: bool,
 }
 #[async_trait]
 impl CompletionSigner for Signer {
@@ -97,7 +83,17 @@ async fn fixture() -> (
     stack_common_http::tenant::TenantScope,
     CompletionRequest,
 ) {
-    let state = test_state().with_scope_authorizer(Arc::new(MappedAuthorizer));
+    let state = test_state().with_scope_authorizer(Arc::new(MappedAuthorizer))
+    .with_completion(Arc::new(Signer { calls: AtomicUsize::new(0), corrupt: false }), PUBLISHER);
+    fixture_on(state).await
+}
+/// The same case ledger (one retained signing event) on a state the caller composed.
+pub(super) async fn fixture_on(state: TrellisServerState) -> (
+    TrellisServerState,
+    axum::http::HeaderMap,
+    stack_common_http::tenant::TenantScope,
+    CompletionRequest,
+) {
     let body: SubstrateAppendBody = serde_json::from_slice(&signature_affirmation_append_body(
         "completion-signing-evidence",
     ))
@@ -132,6 +128,7 @@ async fn fixture() -> (
             certificate_id: "urn:test:certificate".into(),
             expected_head: hash,
             signing_events: vec![hash],
+            selection: selection_for(&[hash], &outcome.stored),
         },
     )
 }
@@ -159,6 +156,7 @@ async fn completion_postgres_reopened_state_retries_exact_retained_bytes() {
         crate::test_adapters::adapters(),
     )
     .with_scope_authorizer(Arc::new(MappedAuthorizer))
+    .with_completion(Arc::new(Signer { calls: AtomicUsize::new(0), corrupt: false }), PUBLISHER)
     .with_artifact_store(artifacts.clone())
     .with_bundle_index(Arc::new(crate::event_repository::PostgresBundleIndex::new(
         pool.clone(),
@@ -173,7 +171,6 @@ async fn completion_postgres_reopened_state_retries_exact_retained_bytes() {
         &tenant,
         "case_completion",
         &request,
-        Some(&Selection { refuse: false }),
         &signer,
     )
     .await
@@ -206,6 +203,7 @@ async fn completion_postgres_reopened_state_retries_exact_retained_bytes() {
         crate::test_adapters::adapters(),
     )
     .with_scope_authorizer(Arc::new(MappedAuthorizer))
+    .with_completion(Arc::new(Signer { calls: AtomicUsize::new(0), corrupt: false }), PUBLISHER)
     .with_artifact_store(artifacts.clone())
     .with_bundle_index(Arc::new(crate::event_repository::PostgresBundleIndex::new(
         reopened_pool.clone(),
@@ -220,7 +218,6 @@ async fn completion_postgres_reopened_state_retries_exact_retained_bytes() {
         &tenant,
         "case_completion",
         &request,
-        Some(&Selection { refuse: false }),
         &retry_signer,
     )
     .await
@@ -264,6 +261,7 @@ async fn completion_postgres_reopened_state_retries_exact_retained_bytes() {
         crate::test_adapters::adapters(),
     )
     .with_scope_authorizer(Arc::new(MappedAuthorizer))
+    .with_completion(Arc::new(Signer { calls: AtomicUsize::new(0), corrupt: false }), PUBLISHER)
     .with_artifact_store(artifacts.clone())
     .with_bundle_index(Arc::new(crate::event_repository::PostgresBundleIndex::new(
         reopened_pool.clone(),
@@ -276,7 +274,6 @@ async fn completion_postgres_reopened_state_retries_exact_retained_bytes() {
         &tenant,
         "case_completion",
         &changed,
-        Some(&Selection { refuse: false }),
         &retry_signer,
     )
     .await
@@ -310,7 +307,6 @@ async fn completion_manual_exports_exact_html_and_retries_without_signing() {
         &tenant,
         "case_completion",
         &request,
-        Some(&Selection { refuse: false }),
         &signer,
     )
     .await
@@ -321,7 +317,6 @@ async fn completion_manual_exports_exact_html_and_retries_without_signing() {
         &tenant,
         "case_completion",
         &request,
-        Some(&Selection { refuse: false }),
         &signer,
     )
     .await
@@ -461,13 +456,13 @@ async fn completion_binds_two_distinct_signed_responses_in_one_certificate() {
     let second = *outcome.stored.canonical_event_hash().unwrap();
     request.expected_head = second;
     request.signing_events.push(second);
+    request.selection = selection_for(&request.signing_events, &outcome.stored);
     seal_completion(
         &state,
         &headers,
         &tenant,
         "case_completion",
         &request,
-        Some(&Selection { refuse: false }),
         &Signer {
             calls: AtomicUsize::new(0),
             corrupt: false,
@@ -591,28 +586,26 @@ async fn completion_binds_two_distinct_signed_responses_in_one_certificate() {
 }
 
 #[tokio::test]
-async fn completion_refuses_unselected_unsettled_and_bad_operator_signature() {
+async fn completion_refuses_bad_vocabulary_and_bad_operator_signature_without_committing() {
     let (state, headers, tenant, request) = fixture().await;
-    let signer = Signer {
+    let corrupt = Signer {
         calls: AtomicUsize::new(0),
         corrupt: true,
     };
-    for selection in [
-        None,
-        Some(&Selection { refuse: true } as &dyn CompletionSelector),
-        Some(&Selection { refuse: false } as &dyn CompletionSelector),
-    ] {
-        assert!(seal_completion(
-            &state,
-            &headers,
-            &tenant,
-            "case_completion",
-            &request,
-            selection,
-            &signer
-        )
-        .await
-        .is_err());
+    let good = Signer {
+        calls: AtomicUsize::new(0),
+        corrupt: false,
+    };
+    let mut unsettled = request.clone();
+    unsettled.selection.workflow_status = "in-progress".into();
+    let mut unknown_impact = request.clone();
+    unknown_impact.selection.impact_level = Some("catastrophic".into());
+    for (request, signer) in [(&unsettled, &good), (&unknown_impact, &good), (&request, &corrupt)] {
+        assert!(
+            seal_completion(&state, &headers, &tenant, "case_completion", request, signer)
+                .await
+                .is_err()
+        );
         assert_eq!(
             state
                 .repository
@@ -623,6 +616,92 @@ async fn completion_refuses_unselected_unsettled_and_bad_operator_signature() {
             1
         );
     }
+}
+
+#[tokio::test]
+async fn completion_bad_selection_is_a_400_before_any_effect() {
+    let (state, headers, tenant, request) = fixture().await;
+    let signer = Signer {
+        calls: AtomicUsize::new(0),
+        corrupt: false,
+    };
+    let mut label_count = request.clone();
+    label_count.selection.signer_labels.clear();
+    let mut blank = request.clone();
+    blank.selection.signer_labels[0].display_name = "   ".into();
+    let mut no_case = request.clone();
+    no_case.selection.case_ref = String::new();
+    let mut nanos = request;
+    nanos.selection.completed_at.1 = 1_000_000_000;
+    for bad in [&label_count, &blank, &no_case, &nanos] {
+        let error = seal_completion(&state, &headers, &tenant, "case_completion", bad, &signer)
+            .await
+            .unwrap_err();
+        assert_eq!(error.status(), StatusCode::BAD_REQUEST);
+    }
+    assert_eq!(signer.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        state
+            .repository
+            .list_scope(b"case_completion")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn completion_retry_with_a_different_selection_is_a_changed_retry() {
+    let (state, headers, tenant, request) = fixture().await;
+    let signer = Signer {
+        calls: AtomicUsize::new(0),
+        corrupt: false,
+    };
+    seal_completion(&state, &headers, &tenant, "case_completion", &request, &signer)
+        .await
+        .unwrap();
+    let mut changed = request.clone();
+    changed.selection.signer_labels[0].display_name = "Someone Else".into();
+    // Same process: the reserved request fingerprint covers the whole body.
+    let error = seal_completion(&state, &headers, &tenant, "case_completion", &changed, &signer)
+        .await
+        .unwrap_err();
+    assert_eq!(error.status(), StatusCode::CONFLICT);
+    // After a restart the replay cache is empty; the retained event refuses instead.
+    let restarted = TrellisServerState::new(
+        state.repository.clone(),
+        test_signing_key(),
+        crate::test_adapters::adapters(),
+    )
+    .with_scope_authorizer(Arc::new(MappedAuthorizer))
+    .with_completion(Arc::new(Signer { calls: AtomicUsize::new(0), corrupt: false }), PUBLISHER)
+    .with_artifact_store(state.artifact_store.clone())
+    .with_bundle_index(state.bundles.clone());
+    for edit in 0..4 {
+        let mut other = request.clone();
+        match edit {
+            0 => other.selection.signer_labels[0].display_name = "Someone Else".into(),
+            1 => other.selection.case_ref = "another-case".into(),
+            2 => other.selection.completed_at.0 += 1,
+            _ => other.selection.required_attestors[0].authority_class = "prior".into(),
+        }
+        let error =
+            seal_completion(&restarted, &headers, &tenant, "case_completion", &other, &signer)
+                .await
+                .unwrap_err();
+        assert_eq!(error.status(), StatusCode::CONFLICT, "edit {edit}");
+    }
+    assert_eq!(signer.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        state
+            .repository
+            .list_scope(b"case_completion")
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
 }
 
 struct MappedAuthorizer;
@@ -642,150 +721,72 @@ impl trellis_server_ports::ScopeAuthorizer for MappedAuthorizer {
     }
 }
 
-struct RevokingSelection(Arc<AtomicBool>);
-
-struct LockingSelection {
-    state: TrellisServerState,
-    calls: AtomicUsize,
-    change_on_call: Option<usize>,
-    revoke_authority: Option<Arc<AtomicBool>>,
+/// Appends a foreign event the first time the certificate object is written, as a
+/// concurrent writer would between the lock windows.
+struct ForeignEventOnCertificateWrite {
+    repository: Arc<dyn crate::EventRepository>,
+    inner: Arc<dyn trellis_server_ports::ArtifactStore<Error = StackError>>,
+    fired: AtomicBool,
 }
-
 #[async_trait]
-impl CompletionSelector for LockingSelection {
-    async fn select(
+impl trellis_server_ports::ArtifactStore for ForeignEventOnCertificateWrite {
+    type Error = StackError;
+    async fn put(
         &self,
-        tenant: &stack_common_http::tenant::TenantScope,
-        principal: &str,
-        caller: &CompletionCallerContext<'_>,
-        scope: &str,
-        request: &CompletionRequest,
-        prefix: &[StoredEvent],
-    ) -> Result<SelectedCompletion, StackError> {
-        // An owning archive reader may contend for the same native scope.
-        let _guard = tokio::time::timeout(
-            std::time::Duration::from_millis(250),
-            self.state.scope_locks.lock(scope.as_bytes()),
-        )
-        .await
-        .map_err(|_| StackError::conflict("selection ran under scope lock"))?;
-        let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
-        if let Some(revoked) = &self.revoke_authority {
-            revoked.store(true, Ordering::SeqCst);
-        }
-        if self.change_on_call == Some(call) {
-            let events = self.state.repository.list_scope(scope.as_bytes()).await?;
-            self.state
-                .repository
+        key: &str,
+        bytes: &[u8],
+    ) -> Result<trellis_server_ports::ArtifactRef, StackError> {
+        self.inner.put(key, bytes).await
+    }
+    async fn put_immutable(
+        &self,
+        key: &str,
+        bytes: &[u8],
+    ) -> Result<trellis_server_ports::ArtifactRef, StackError> {
+        if key.starts_with("certificates/") && !self.fired.swap(true, Ordering::SeqCst) {
+            let events = self.repository.list_scope(b"case_completion").await?;
+            self.repository
                 .append_event(StoredEvent::new(
-                    scope.as_bytes().to_vec(),
+                    b"case_completion".to_vec(),
                     events.len() as u64,
                     b"concurrent census change".to_vec(),
                     b"concurrent signed bytes".to_vec(),
                 ))
                 .await?;
         }
-        Selection { refuse: false }
-            .select(tenant, principal, caller, scope, request, prefix)
-            .await
+        self.inner.put_immutable(key, bytes).await
+    }
+    async fn get(
+        &self,
+        reference: &trellis_server_ports::ArtifactRef,
+    ) -> Result<Option<Vec<u8>>, StackError> {
+        self.inner.get(reference).await
     }
 }
 
 #[tokio::test]
-async fn completion_selection_releases_scope_lock_on_new_and_retained_paths() {
+async fn completion_refuses_a_native_census_change_between_lock_windows() {
     let (state, headers, tenant, request) = fixture().await;
-    let selector = LockingSelection {
-        state: state.clone(),
-        calls: AtomicUsize::new(0),
-        change_on_call: None,
-        revoke_authority: None,
-    };
+    let state = state.clone().with_artifact_store(Arc::new(ForeignEventOnCertificateWrite {
+        repository: state.repository.clone(),
+        inner: state.artifact_store.clone(),
+        fired: AtomicBool::new(false),
+    }));
     let signer = Signer {
         calls: AtomicUsize::new(0),
         corrupt: false,
     };
-    let first = seal_completion(
-        &state,
-        &headers,
-        &tenant,
-        "case_completion",
-        &request,
-        Some(&selector),
-        &signer,
-    )
-    .await
-    .unwrap();
-    assert_eq!(selector.calls.load(Ordering::SeqCst), 4);
-    let retained = state
+    let error = seal_completion(&state, &headers, &tenant, "case_completion", &request, &signer)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("native snapshot changed"), "{error}");
+    let events = state
         .repository
         .list_scope(b"case_completion")
         .await
         .unwrap();
-    let retry = seal_completion(
-        &state,
-        &headers,
-        &tenant,
-        "case_completion",
-        &request,
-        Some(&selector),
-        &signer,
-    )
-    .await
-    .unwrap();
-    assert_eq!(first, retry);
-    assert_eq!(selector.calls.load(Ordering::SeqCst), 7);
-    assert_eq!(signer.calls.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        state
-            .repository
-            .list_scope(b"case_completion")
-            .await
-            .unwrap(),
-        retained
-    );
-}
-
-#[tokio::test]
-async fn completion_refuses_native_census_changes_during_each_unlocked_selection() {
-    for change_on_call in 1..=4 {
-        let (state, headers, tenant, request) = fixture().await;
-        let selector = LockingSelection {
-            state: state.clone(),
-            calls: AtomicUsize::new(0),
-            change_on_call: Some(change_on_call),
-            revoke_authority: None,
-        };
-        let signer = Signer {
-            calls: AtomicUsize::new(0),
-            corrupt: false,
-        };
-        let error = seal_completion(
-            &state,
-            &headers,
-            &tenant,
-            "case_completion",
-            &request,
-            Some(&selector),
-            &signer,
-        )
-        .await
-        .unwrap_err();
-        assert!(
-            error.to_string().contains("native snapshot changed"),
-            "{error}"
-        );
-        let events = state
-            .repository
-            .list_scope(b"case_completion")
-            .await
-            .unwrap();
-        assert_eq!(events.len(), if change_on_call <= 2 { 2 } else { 3 });
-        assert_eq!(events[0].sequence(), 0);
-        if change_on_call >= 3 {
-            // A confirmed append remains retained when a later disclosure check fails.
-            assert!(crate::completion::certificate_html(&events[1]).is_ok());
-        }
-    }
+    assert_eq!(events.len(), 2, "only the foreign event; the certificate is not committed");
+    assert_eq!(events[1].canonical_event(), b"concurrent census change");
 }
 
 struct CompletionRevokingAuthorizer(Arc<AtomicBool>);
@@ -806,35 +807,26 @@ impl trellis_server_ports::ScopeAuthorizer for CompletionRevokingAuthorizer {
 }
 
 #[tokio::test]
-async fn completion_rechecks_current_scope_authority_after_reacquiring_lock() {
+async fn completion_rechecks_current_scope_authority_before_committing() {
     let (state, headers, tenant, request) = fixture().await;
     let revoked = Arc::new(AtomicBool::new(false));
     let state =
         state.with_scope_authorizer(Arc::new(CompletionRevokingAuthorizer(revoked.clone())));
-    let selector = LockingSelection {
-        state: state.clone(),
-        calls: AtomicUsize::new(0),
-        change_on_call: None,
-        revoke_authority: Some(revoked.clone()),
-    };
+    // Revoke as soon as the certificate object is written, before the commit recheck.
+    let state = state.clone().with_artifact_store(Arc::new(RevokingStore {
+        inner: state.artifact_store.clone(),
+        revoked: revoked.clone(),
+        trigger: |key| key.starts_with("certificates/"),
+    }));
     let signer = Signer {
         calls: AtomicUsize::new(0),
         corrupt: false,
     };
-    let error = seal_completion(
-        &state,
-        &headers,
-        &tenant,
-        "case_completion",
-        &request,
-        Some(&selector),
-        &signer,
-    )
-    .await
-    .unwrap_err();
+    let error = seal_completion(&state, &headers, &tenant, "case_completion", &request, &signer)
+        .await
+        .unwrap_err();
     assert!(error.to_string().contains("scope permission revoked"));
     assert!(revoked.load(Ordering::SeqCst));
-    assert_eq!(signer.calls.load(Ordering::SeqCst), 0);
     assert_eq!(
         state
             .repository
@@ -846,49 +838,11 @@ async fn completion_rechecks_current_scope_authority_after_reacquiring_lock() {
     );
 }
 
-#[async_trait]
-impl CompletionSelector for RevokingSelection {
-    async fn select(
-        &self,
-        tenant: &stack_common_http::tenant::TenantScope,
-        principal: &str,
-        caller: &CompletionCallerContext<'_>,
-        scope: &str,
-        request: &CompletionRequest,
-        prefix: &[StoredEvent],
-    ) -> Result<SelectedCompletion, StackError> {
-        if self.0.load(Ordering::SeqCst) {
-            return Err(StackError::conflict("case disclosure revoked"));
-        }
-        Selection { refuse: false }
-            .select(tenant, principal, caller, scope, request, prefix)
-            .await
-    }
-}
-struct RevisingSelection(Arc<AtomicBool>);
-#[async_trait]
-impl CompletionSelector for RevisingSelection {
-    async fn select(
-        &self,
-        tenant: &stack_common_http::tenant::TenantScope,
-        principal: &str,
-        caller: &CompletionCallerContext<'_>,
-        scope: &str,
-        request: &CompletionRequest,
-        prefix: &[StoredEvent],
-    ) -> Result<SelectedCompletion, StackError> {
-        let mut selected = Selection { refuse: false }
-            .select(tenant, principal, caller, scope, request, prefix)
-            .await?;
-        if self.0.load(Ordering::SeqCst) {
-            selected.selection_revision = [2; 32];
-        }
-        Ok(selected)
-    }
-}
 struct RevokingStore {
     inner: Arc<dyn trellis_server_ports::ArtifactStore<Error = StackError>>,
     revoked: Arc<AtomicBool>,
+    /// Which immutable write flips the revocation.
+    trigger: fn(&str) -> bool,
 }
 #[async_trait]
 impl trellis_server_ports::ArtifactStore for RevokingStore {
@@ -906,7 +860,7 @@ impl trellis_server_ports::ArtifactStore for RevokingStore {
         bytes: &[u8],
     ) -> Result<trellis_server_ports::ArtifactRef, StackError> {
         let result = self.inner.put_immutable(key, bytes).await?;
-        if key.ends_with(".zip") {
+        if (self.trigger)(key) {
             self.revoked.store(true, Ordering::SeqCst);
         }
         Ok(result)
@@ -919,65 +873,26 @@ impl trellis_server_ports::ArtifactStore for RevokingStore {
     }
 }
 #[tokio::test]
-async fn completion_refuses_locator_when_only_owning_snapshot_changes_during_publication() {
-    let (state, headers, tenant, request) = fixture().await;
-    let changed = Arc::new(AtomicBool::new(false));
-    let state = state.clone().with_artifact_store(Arc::new(RevokingStore {
-        inner: state.artifact_store.clone(),
-        revoked: changed.clone(),
-    }));
-    let signer = Signer {
-        calls: AtomicUsize::new(0),
-        corrupt: false,
-    };
-    let error = seal_completion(
-        &state,
-        &headers,
-        &tenant,
-        "case_completion",
-        &request,
-        Some(&RevisingSelection(changed.clone())),
-        &signer,
-    )
-    .await
-    .unwrap_err();
-    assert!(changed.load(Ordering::SeqCst));
-    assert!(error.to_string().contains("snapshot changed"));
-    assert_eq!(
-        state
-            .repository
-            .list_scope(b"case_completion")
-            .await
-            .unwrap()
-            .len(),
-        2
-    );
-}
-#[tokio::test]
-async fn completion_refuses_locator_when_case_disclosure_revoked_during_publication() {
+async fn completion_refuses_locator_when_scope_authority_is_revoked_during_publication() {
     let (state, headers, tenant, request) = fixture().await;
     let revoked = Arc::new(AtomicBool::new(false));
+    let state =
+        state.with_scope_authorizer(Arc::new(CompletionRevokingAuthorizer(revoked.clone())));
+    // The bundle write is the last awaited step; revoke after it.
     let state = state.clone().with_artifact_store(Arc::new(RevokingStore {
         inner: state.artifact_store.clone(),
         revoked: revoked.clone(),
+        trigger: |key| key.ends_with(".zip"),
     }));
     let signer = Signer {
         calls: AtomicUsize::new(0),
         corrupt: false,
     };
-    let error = seal_completion(
-        &state,
-        &headers,
-        &tenant,
-        "case_completion",
-        &request,
-        Some(&RevokingSelection(revoked.clone())),
-        &signer,
-    )
-    .await
-    .unwrap_err();
+    let error = seal_completion(&state, &headers, &tenant, "case_completion", &request, &signer)
+        .await
+        .unwrap_err();
     assert!(revoked.load(Ordering::SeqCst));
-    assert!(error.to_string().contains("disclosure revoked"));
+    assert!(error.to_string().contains("scope permission revoked"));
     assert_eq!(
         state
             .repository
@@ -1003,7 +918,6 @@ async fn completion_refuses_stale_prefix_changed_retry_and_duplicate_certificate
         &tenant,
         "case_completion",
         &stale,
-        Some(&Selection { refuse: false }),
         &signer
     )
     .await
@@ -1019,7 +933,6 @@ async fn completion_refuses_stale_prefix_changed_retry_and_duplicate_certificate
         &tenant,
         "case_completion",
         &request,
-        Some(&Selection { refuse: false }),
         &signer,
     )
     .await
@@ -1032,7 +945,6 @@ async fn completion_refuses_stale_prefix_changed_retry_and_duplicate_certificate
         &tenant,
         "case_completion",
         &changed,
-        Some(&Selection { refuse: false }),
         &signer
     )
     .await
@@ -1055,7 +967,6 @@ async fn completion_refuses_stale_prefix_changed_retry_and_duplicate_certificate
         &tenant,
         "case_completion",
         &collision,
-        Some(&Selection { refuse: false }),
         &signer
     )
     .await
@@ -1100,4 +1011,369 @@ async fn completion_native_record_binder_requires_exact_one_to_one_census() {
         payload: payload.clone(),
     };
     assert!(trellis_cddl::completion_record_bindings(&events, b"case_completion", &[duplicate(), duplicate()], &vocabulary).is_err());
+}
+
+fn completion_post(request: &CompletionRequest) -> axum::http::Request<axum::body::Body> {
+    post_request(
+        "/v1/scopes/case_completion/completion",
+        serde_json::to_vec(request).unwrap(),
+    )
+}
+
+#[tokio::test]
+async fn completion_route_commits_one_event_and_ignores_the_retired_person_header() {
+    use tower::ServiceExt;
+    let (state, _, _, request) = fixture().await;
+    let state = state.with_completion(
+        Arc::new(Signer {
+            calls: AtomicUsize::new(0),
+            corrupt: false,
+        }),
+        PUBLISHER,
+    );
+    let app = router(state.clone()).unwrap();
+    let mut with_header = completion_post(&request);
+    with_header.headers_mut().insert(
+        "x-stack-completion-caller-authorization",
+        "Bearer retired-person-credential".parse().unwrap(),
+    );
+    // The header is never read: the request succeeds exactly as without it.
+    let response = app.clone().oneshot(with_header).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(
+        state
+            .repository
+            .list_scope(b"case_completion")
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+    let mut bad = request;
+    bad.idempotency_key = "completion-bad".into();
+    bad.selection.signer_labels.clear();
+    let response = app.oneshot(completion_post(&bad)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn completion_route_without_a_signer_is_unavailable() {
+    use tower::ServiceExt;
+    let (_, _, _, request) = fixture().await;
+    let state = test_state().with_scope_authorizer(Arc::new(MappedAuthorizer));
+    let response = router(state)
+        .unwrap()
+        .oneshot(completion_post(&request))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn completion_route_body_limit_admits_the_worst_case_selection_and_no_more() {
+    use tower::ServiceExt;
+    let (state, _, _, mut request) = fixture().await;
+    // 64 labels with two maximal text fields of control characters, which JSON escapes
+    // to six bytes each: the largest body the validator admits.
+    let hashes: Vec<[u8; 32]> = (0..64u8).map(|i| [i; 32]).collect();
+    request.signing_events = hashes.clone();
+    request.selection.signer_labels = hashes
+        .iter()
+        .map(|hash| CompletionSignerLabel {
+            signing_event: *hash,
+            display_name: "\u{1}".repeat(1024),
+            display_role: Some("\u{1}".repeat(1024)),
+        })
+        .collect();
+    request.selection.required_attestors = (0..8)
+        .map(|i| CompletionAttestor {
+            authority: format!("{i}{}", "\u{1}".repeat(1023)),
+            authority_class: "new".into(),
+            public_key: [i as u8; 32],
+        })
+        .collect();
+    request.selection.case_ref = "\u{1}".repeat(1024);
+    request.selection.workflow_ref = "\u{1}".repeat(1024);
+    request.selection.impact_level = Some("\u{1}".repeat(1024));
+    request.certificate_id = "\u{1}".repeat(1024);
+    request.validate().unwrap();
+    let size = serde_json::to_vec(&request).unwrap().len();
+    assert!(size < 1024 * 1024 && size > 800 * 1024, "{size}");
+    let app = router(state.with_completion(
+        Arc::new(Signer {
+            calls: AtomicUsize::new(0),
+            corrupt: false,
+        }),
+        PUBLISHER,
+    ))
+    .unwrap();
+    // Admitted by the limit; refused later because the head is not this ledger's.
+    let response = app.clone().oneshot(completion_post(&request)).await.unwrap();
+    assert_ne!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let oversized = post_request(
+        "/v1/scopes/case_completion/completion",
+        format!(r#"{{"idempotencyKey":"oversized","pad":"{}"}}"#, "x".repeat(1024 * 1024)).into_bytes(),
+    );
+    let response = app.oneshot(oversized).await.unwrap();
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+use trellis_service_client::{AppendReconciliation, AppendReconciliationRequest};
+
+fn seal_lookup(request: &CompletionRequest) -> AppendReconciliationRequest {
+    AppendReconciliationRequest::for_completion(&request.idempotency_key, &request.certificate_id)
+        .unwrap()
+}
+
+#[tokio::test]
+async fn completion_reconcile_by_certificate_id_is_absent_then_committed_without_effects() {
+    let (mut state, headers, tenant, request) = fixture().await;
+    let signer = Signer {
+        calls: AtomicUsize::new(0),
+        corrupt: false,
+    };
+    let lookup = seal_lookup(&request);
+    let before = state.repository.list_scope(b"case_completion").await.unwrap();
+    let head = format!(
+        "sha256:{}",
+        hex::encode(before.last().unwrap().canonical_event_hash().unwrap())
+    );
+    assert_eq!(
+        crate::reconciliation::reconcile(&state, "case_completion", &lookup).await,
+        AppendReconciliation::Absent {
+            event_count: 1,
+            last_event_hash: Some(head)
+        }
+    );
+    let sealed = seal_completion(&state, &headers, &tenant, "case_completion", &request, &signer)
+        .await
+        .unwrap();
+    let committed = state.repository.list_scope(b"case_completion").await.unwrap();
+    // From here the artifact store refuses every write: reconcile must never publish.
+    state.artifact_store = Arc::new(super::reconciliation_tests::ReadOnlyArtifacts(
+        state.artifact_store.clone(),
+    ));
+    assert_eq!(
+        crate::reconciliation::reconcile(&state, "case_completion", &lookup).await,
+        AppendReconciliation::Committed { receipt: sealed }
+    );
+    assert_eq!(signer.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        state.repository.list_scope(b"case_completion").await.unwrap(),
+        committed
+    );
+}
+
+#[tokio::test]
+async fn completion_reconcile_same_key_other_certificate_or_event_type_is_a_conflict() {
+    let (state, headers, tenant, request) = fixture().await;
+    let signer = Signer {
+        calls: AtomicUsize::new(0),
+        corrupt: false,
+    };
+    seal_completion(&state, &headers, &tenant, "case_completion", &request, &signer)
+        .await
+        .unwrap();
+    let other_certificate = AppendReconciliationRequest::for_completion(
+        &request.idempotency_key,
+        "urn:test:another-certificate",
+    )
+    .unwrap();
+    assert_eq!(
+        crate::reconciliation::reconcile(&state, "case_completion", &other_certificate).await,
+        AppendReconciliation::Conflict
+    );
+    // The key of the signature-affirmation evidence event holds another event type.
+    let other_type =
+        AppendReconciliationRequest::for_completion("completion-signing-evidence", "urn:test:certificate")
+            .unwrap();
+    assert_eq!(
+        crate::reconciliation::reconcile(&state, "case_completion", &other_type).await,
+        AppendReconciliation::Conflict
+    );
+}
+
+#[tokio::test]
+async fn completion_reconcile_route_takes_the_certificate_id_identity() {
+    use tower::ServiceExt;
+    let (state, headers, tenant, request) = fixture().await;
+    seal_completion(
+        &state,
+        &headers,
+        &tenant,
+        "case_completion",
+        &request,
+        &Signer {
+            calls: AtomicUsize::new(0),
+            corrupt: false,
+        },
+    )
+    .await
+    .unwrap();
+    let lookup = serde_json::to_vec(&seal_lookup(&request)).unwrap();
+    let response = router(state.clone())
+        .unwrap()
+        .oneshot(post_request(
+            "/v1/scopes/case_completion/events/reconcile",
+            lookup,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["status"], "committed");
+    assert_eq!(body["receipt"]["verificationReceipt"]["eventType"], COMPLETION_EVENT);
+    // A completion lookup that names a content hash is not a valid identity.
+    let both = serde_json::json!({"eventType": COMPLETION_EVENT, "idempotencyKey": "k",
+        "contentHash": vec![0u8; 32], "certificateId": "c"});
+    let response = router(state)
+        .unwrap()
+        .oneshot(post_request(
+            "/v1/scopes/case_completion/events/reconcile",
+            serde_json::to_vec(&both).unwrap(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn only_the_configured_publisher_may_seal() {
+    let (state, headers, tenant, request) = fixture().await;
+    let signer = Signer {
+        calls: AtomicUsize::new(0),
+        corrupt: false,
+    };
+    let other = state.clone().with_completion(
+        Arc::new(Signer {
+            calls: AtomicUsize::new(0),
+            corrupt: false,
+        }),
+        "another-principal",
+    );
+    let error = seal_completion(&other, &headers, &tenant, "case_completion", &request, &signer)
+        .await
+        .unwrap_err();
+    assert_eq!(error.status(), axum::http::StatusCode::FORBIDDEN);
+    assert_eq!(signer.calls.load(Ordering::SeqCst), 0, "nothing was signed");
+    // Refused before anything was reserved, so the real publisher still seals the same request.
+    seal_completion(&state, &headers, &tenant, "case_completion", &request, &signer)
+        .await
+        .unwrap();
+}
+
+/// The route answer as `(status, title)`: refusals are pinned by code, not just "an error".
+async fn seal_answer(app: &axum::Router, request: &CompletionRequest) -> (StatusCode, String) {
+    use tower::ServiceExt;
+    let response = app.clone().oneshot(completion_post(request)).await.unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap();
+    let title = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .and_then(|body| body["title"].as_str().map(str::to_owned))
+        .unwrap_or_default();
+    (status, title)
+}
+
+#[tokio::test]
+async fn seal_refuses_signing_events_that_are_not_this_ledgers_signatures() {
+    let (state, _, _, request) = fixture().await;
+    // A later event that is not a signature affirmation becomes the head the caller names.
+    let body: SubstrateAppendBody = serde_json::from_slice(&append_body("not-a-signature")).unwrap();
+    let outcome = state
+        .append_coordinator()
+        .append(crate::append::AppendCommand {
+            scope: "case_completion".into(),
+            event_type: body.event_type,
+            idempotency_key: body.idempotency_key,
+            payload: body.payload,
+            compute_context: body.compute_context,
+            client_attestation: None,
+        })
+        .await
+        .unwrap();
+    let plain = *outcome.stored.canonical_event_hash().unwrap();
+    let mut forged = request.clone();
+    forged.expected_head = plain;
+    forged.signing_events = vec![plain];
+    forged.selection = selection_for(&[plain], &outcome.stored);
+    let signer = Arc::new(Signer { calls: AtomicUsize::new(0), corrupt: false });
+    let app = router(state.clone().with_completion(signer.clone(), PUBLISHER)).unwrap();
+    let (status, title) = seal_answer(&app, &forged).await;
+    assert_eq!(
+        (status, title.as_str()),
+        (StatusCode::CONFLICT, "completion signing evidence unreadable or unqualified")
+    );
+    assert_eq!(signer.calls.load(Ordering::SeqCst), 0, "the operator key attested nothing");
+    assert_eq!(state.repository.list_scope(b"case_completion").await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn seal_refuses_a_completion_that_predates_its_signatures() {
+    let (state, _, _, mut request) = fixture().await;
+    request.selection.completed_at.0 -= 1_000;
+    let signer = Arc::new(Signer { calls: AtomicUsize::new(0), corrupt: false });
+    let app = router(state.clone().with_completion(signer.clone(), PUBLISHER)).unwrap();
+    let (status, title) = seal_answer(&app, &request).await;
+    assert_eq!(
+        (status, title.as_str()),
+        (StatusCode::CONFLICT, "completion certificate evidence invalid")
+    );
+    assert_eq!(signer.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(state.repository.list_scope(b"case_completion").await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn seal_refuses_an_unknown_status_or_impact_vocabulary_as_a_bad_request() {
+    let (state, _, _, request) = fixture().await;
+    let signer = Arc::new(Signer { calls: AtomicUsize::new(0), corrupt: false });
+    let app = router(state.clone().with_completion(signer.clone(), PUBLISHER)).unwrap();
+    let mut unsettled = request.clone();
+    unsettled.selection.workflow_status = "in-progress".into();
+    let mut unknown_impact = request;
+    unknown_impact.selection.impact_level = Some("catastrophic".into());
+    for refused in [unsettled, unknown_impact] {
+        let (status, title) = seal_answer(&app, &refused).await;
+        assert_eq!(
+            (status, title.as_str()),
+            (StatusCode::BAD_REQUEST, "completion selection vocabulary refused")
+        );
+    }
+    assert_eq!(signer.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(state.repository.list_scope(b"case_completion").await.unwrap().len(), 1);
+}
+
+/// Append and Read admit different principals for one caller: the seal cannot tell whose it is.
+struct SplitAuthorizer;
+#[async_trait]
+impl trellis_server_ports::ScopeAuthorizer for SplitAuthorizer {
+    type Error = StackError;
+    async fn authorize(
+        &self,
+        request: &trellis_server_ports::ScopeAuthorization<'_>,
+    ) -> Result<trellis_server_ports::AuthorizedScope, StackError> {
+        Ok(trellis_server_ports::AuthorizedScope {
+            principal: match request.action {
+                trellis_server_ports::ScopeAction::Append => PUBLISHER.into(),
+                _ => "another-principal".into(),
+            },
+            tenant_scope: request.tenant_scope.clone(),
+            scope: request.scope.to_vec(),
+            action: request.action,
+        })
+    }
+}
+
+#[tokio::test]
+async fn seal_is_a_conflict_when_append_and_read_admit_different_principals() {
+    let (state, _, _, request) = fixture().await;
+    let signer = Arc::new(Signer { calls: AtomicUsize::new(0), corrupt: false });
+    let split = state.with_scope_authorizer(Arc::new(SplitAuthorizer)).with_completion(signer.clone(), PUBLISHER);
+    let (status, title) = seal_answer(&router(split).unwrap(), &request).await;
+    assert_eq!(
+        (status, title.as_str()),
+        (StatusCode::CONFLICT, "completion permissions admit different principals")
+    );
+    assert_eq!(signer.calls.load(Ordering::SeqCst), 0);
 }

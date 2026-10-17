@@ -27,7 +27,7 @@ async fn committed_state(
 }
 
 #[derive(Clone)]
-struct ReadOnlyArtifacts(Arc<dyn ArtifactStore<Error = StackError>>);
+pub(super) struct ReadOnlyArtifacts(pub(super) Arc<dyn ArtifactStore<Error = StackError>>);
 
 #[async_trait]
 impl ArtifactStore for ReadOnlyArtifacts {
@@ -53,7 +53,7 @@ async fn reconciliation_returns_exact_verified_receipt_and_conflict_without_effe
         AppendReconciliation::Committed { receipt }
     );
     let mut changed = lookup.clone();
-    changed.content_hash[0] ^= 1;
+    changed.content_hash.as_mut().unwrap()[0] ^= 1;
     assert_eq!(
         crate::reconciliation::reconcile(&state, "scope-a", &changed).await,
         AppendReconciliation::Conflict
@@ -159,7 +159,8 @@ async fn reconciliation_rechecks_current_read_authority_before_disclosure() {
     let request = AppendReconciliationRequest {
         event_type: "neutral.event".into(),
         idempotency_key: "neutral-key".into(),
-        content_hash: [0; 32],
+        content_hash: Some([0; 32]),
+        certificate_id: None,
     };
     let response = router(state)
         .unwrap()
@@ -241,7 +242,8 @@ async fn reconciliation_unsupported_store_is_unknown_without_unserialized_fallba
     let lookup = AppendReconciliationRequest {
         event_type: "neutral.event".into(),
         idempotency_key: "neutral-key".into(),
-        content_hash: [0; 32],
+        content_hash: Some([0; 32]),
+        certificate_id: None,
     };
     assert_eq!(
         crate::reconciliation::reconcile(&state, "scope-a", &lookup).await,
@@ -257,7 +259,8 @@ async fn reconciliation_route_requires_current_authentication_and_exact_scope_gr
     let request = AppendReconciliationRequest {
         event_type: "neutral.event".into(),
         idempotency_key: "neutral-key".into(),
-        content_hash: [0; 32],
+        content_hash: Some([0; 32]),
+        certificate_id: None,
     };
     let body = serde_json::to_vec(&request).unwrap();
     let path = "/v1/scopes/case_123/events/reconcile";

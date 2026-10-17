@@ -18,10 +18,8 @@ use trellis_export_profile_wos::WosExportProfile;
 use trellis_server_ports::{EventAdmissionPolicy, NativeCloseout};
 
 use crate::{
-    AdmissionRouter, PreparedSourceContentBatchV1, ServerAdapters, SourceContentContributor,
-    SourceContentParts, SourceContentRequest, SourceContentSelection,
-    SourceContentSelectionRequest, SourceContentSelectionResolver,
-    StructuralSourcePublicationVerifier, TenantHeaders,
+    AdmissionRouter, PreparedSourceContentBatchV1, ServerAdapters, SourceContentBatchChecker,
+    SourceContentParts, SourceContentSelection, StructuralSourcePublicationVerifier, TenantHeaders,
 };
 
 /// Source-content owner ports for tests that never reach the owner.
@@ -32,25 +30,7 @@ fn unreachable_owner() -> StackError {
     StackError::unavailable("no Source-content owner in this unit test")
 }
 
-#[async_trait::async_trait]
-impl SourceContentSelectionResolver for Inert {
-    async fn select(
-        &self,
-        _: &SourceContentSelectionRequest<'_>,
-    ) -> Result<SourceContentSelection, StackError> {
-        Err(unreachable_owner())
-    }
-}
-
-#[async_trait::async_trait]
-impl SourceContentContributor for Inert {
-    async fn read(
-        &self,
-        _: &SourceContentRequest<'_>,
-    ) -> Result<PreparedSourceContentBatchV1, StackError> {
-        Err(unreachable_owner())
-    }
-
+impl SourceContentBatchChecker for Inert {
     fn check_batch(
         &self,
         _: &SourceContentSelection,
@@ -101,8 +81,7 @@ pub(crate) fn adapters() -> ServerAdapters {
         export_profile: Arc::new(WosExportProfile),
         native_closeout: closeout(),
         source_content: Arc::new(|_| SourceContentParts {
-            selection_resolver: Arc::new(Inert),
-            contributor: Arc::new(Inert),
+            batch_checker: Arc::new(Inert),
             structural: Arc::new(Inert),
         }),
         tenant_headers: TenantHeaders::new(HeaderConfig::wos()).or_else(HeaderConfig::formspec()),

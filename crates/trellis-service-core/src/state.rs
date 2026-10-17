@@ -87,10 +87,9 @@ impl AuthenticatedRequest {
 /// Cloneable Axum state for the Trellis service.
 #[derive(Clone)]
 pub struct TrellisServerState {
-    pub(crate) completion: Option<(
-        Arc<dyn crate::CompletionSelector>,
-        Arc<dyn crate::CompletionSigner>,
-    )>,
+    /// The operator signer and the one principal that may ask for a seal (the WOS machine):
+    /// the signer attests whatever selection that caller sent, so neither exists without the other.
+    pub(crate) completion: Option<(Arc<dyn crate::CompletionSigner>, String)>,
     pub(crate) external_attachment_recipients:
         Option<Arc<dyn crate::ExternalAttachmentRecipientSelector>>,
     pub(crate) external_attachment_admission:
@@ -161,14 +160,15 @@ impl TrellisServerState {
         }
     }
 
-    /// Selects product completion/disclosure checks and a separate operator signer.
+    /// Selects the separate operator signer that enables the completion seal, and the only
+    /// principal allowed to ask for it: the signer attests whatever selection that caller sent.
     #[must_use]
     pub fn with_completion(
         mut self,
-        selector: Arc<dyn crate::CompletionSelector>,
         signer: Arc<dyn crate::CompletionSigner>,
+        publisher: impl Into<String>,
     ) -> Self {
-        self.completion = Some((selector, signer));
+        self.completion = Some((signer, publisher.into()));
         self
     }
 
@@ -502,7 +502,8 @@ fn tenant_replay_scope(tenant_headers: &TenantHeaders, call: &IdempotencyCall) -
 ///
 /// Optional:
 /// - `TRELLIS_STORAGE=memory` (in-memory repository; skips `TRELLIS_DATABASE_URL`)
-/// - `TRELLIS_COMPLETION_CONFIG_FILE` and `TRELLIS_COMPLETION_OPERATOR_CONFIG_FILE` (paired)
+/// - `TRELLIS_COMPLETION_OPERATOR_CONFIG_FILE` (completion operator signing keys)
+/// - `TRELLIS_SOURCE_CONTENT_CONFIG_FILE` (Source-content publisher, pins, object store, native policy)
 /// - `TRELLIS_SIGNING_KEY_VALID_TO_UNIX_SECS`
 /// - `TRELLIS_ARTIFACT_BUCKET`
 /// - `TRELLIS_ARTIFACT_PREFIX`
@@ -515,10 +516,7 @@ fn tenant_replay_scope(tenant_headers: &TenantHeaders, call: &IdempotencyCall) -
 pub async fn state_from_env(adapters: ServerAdapters) -> Result<TrellisServerState, StackError> {
     // Qualify required authentication before reading signing keys or opening storage.
     let authentication = StartupAuth::from_env()?;
-    let completion = crate::completion_startup::StartupCompletion::from_env(
-        authentication.tenant_scope(),
-        &adapters,
-    )?;
+    let completion = crate::completion_startup::StartupCompletion::from_env(&adapters)?;
     let trellis_storage_is_memory = matches!(env::var("TRELLIS_STORAGE").as_deref(), Ok("memory"));
 
     let signing_key_path = env::var("TRELLIS_SIGNING_KEY_COSE_PATH")

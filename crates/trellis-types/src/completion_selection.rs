@@ -1,5 +1,5 @@
 // Rust guideline compliant 2026-02-21
-//! Bounded byte binding for completion selection between owning services.
+//! Bounded byte binding for a completion or Source-content prefix.
 //!
 //! The digest binds ordered transport bytes. It establishes neither signature
 //! authority nor checkpoint inclusion; callers must verify those independently.
@@ -13,7 +13,7 @@ pub const MAX_COMPLETION_CANONICAL_BYTES: usize = 1024 * 1024;
 /// Maximum combined canonical and signed bytes before decoding or hashing.
 pub const MAX_COMPLETION_PREFIX_BYTES: usize = 3 * 1024 * 1024;
 
-/// Checks the bounded ledger scope used by completion selection transport.
+/// Checks the bounded ledger scope used by prefix checks.
 ///
 /// # Errors
 /// Refuses blank, non-ASCII, slash-containing, or oversized scope bytes.

@@ -4,11 +4,8 @@
 use std::io::Write;
 #[derive(Clone, Copy)]
 pub(crate) enum Stage {
-    AuthMiddleware,
-    Authentication,
     BodyAdmission,
     CurrentGrant,
-    Selection,
     SelectedNative,
     RefreshedGrant,
     ReplayAdmission,
@@ -20,9 +17,6 @@ pub(crate) enum Stage {
     Core,
     FinalGuard,
     ContentRead,
-    CurrentAuthority,
-    Reacquire,
-    ExactPrefix,
     Evidence,
     RepositoryWrite,
     ZipPublish,
@@ -32,11 +26,8 @@ impl Stage {
     #[cfg(any(feature = "source-diagnostics", test))]
     fn label(self) -> &'static str {
         match self {
-            Self::AuthMiddleware => "auth_middleware",
-            Self::Authentication => "authentication",
             Self::BodyAdmission => "body_admission",
             Self::CurrentGrant => "current_grant",
-            Self::Selection => "selection",
             Self::SelectedNative => "selected_native",
             Self::RefreshedGrant => "refreshed_grant",
             Self::ReplayAdmission => "replay_admission",
@@ -48,9 +39,6 @@ impl Stage {
             Self::Core => "core",
             Self::FinalGuard => "final_guard",
             Self::ContentRead => "content_read",
-            Self::CurrentAuthority => "current_authority",
-            Self::Reacquire => "reacquire",
-            Self::ExactPrefix => "exact_prefix",
             Self::Evidence => "evidence",
             Self::RepositoryWrite => "repository_write",
             Self::ZipPublish => "zip_publish",

@@ -3851,13 +3851,8 @@ name = "trellis-cli"
 version = "0.1.0"
 dependencies = [
  "integrity-verify",
- "serde",
- "serde_json",
- "stack-common-http",
- "tokio",
  "trellis-cddl",
  "trellis-core",
- "trellis-service-client",
  "trellis-store-memory",
  "trellis-verify-wos",
 ]
@@ -4046,6 +4041,7 @@ dependencies = [
  "integrity-seam",
  "integrity-verify",
  "jsonwebtoken",
+ "object_store",
  "serde",
  "serde_json",
  "sha2",

@@ -1,19 +1,18 @@
-//! Binds Source-only reads to existing selected completion client and owning policy.
+//! Binds Source-content admission to its configured publisher, pins, object store and owning policy.
 // Rust guideline compliant 2026-02-21
 
 use serde::Deserialize;
 use stack_common_error::StackError;
-use stack_common_http::tenant::TenantScope;
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-use trellis_server_ports::NativeCloseout;
+use trellis_server_ports::{NativeCloseout, S3CompatibleArtifactStore, S3ObjectConfig};
 
 use crate::ServerAdapters;
 use crate::source_content::{
     ConfiguredNativeCloseoutGuard, ConfiguredSourceContentPins, SourceContentComposition,
-    SourceContentFactory, SourceContentInputs,
+    SourceContentFactory, SourceContentInputs, StoreSourceContentReader,
 };
 
 /// Optional additive composition in the existing private completion service profile.
@@ -21,8 +20,22 @@ use crate::source_content::{
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct SourceContentStartupConfiguration {
     pins: ConfiguredSourceContentPins,
+    /// The one principal allowed to append a Source closeout (the WOS machine).
+    publisher: String,
+    /// Where WOS writes prepared batches. The read credential is the launcher's
+    /// process credential, as for WOS's archive read store; Trellis only ever reads.
+    object_store: SourceContentObjectStore,
     native_host_selection_file: PathBuf,
     native_host_selection_sha256: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SourceContentObjectStore {
+    bucket: String,
+    endpoint: Option<String>,
+    region: Option<String>,
+    prefix: String,
 }
 
 impl SourceContentStartupConfiguration {
@@ -31,6 +44,11 @@ impl SourceContentStartupConfiguration {
         service_profile: &Path,
         closeout: Arc<dyn NativeCloseout>,
     ) -> Result<ConfiguredNativeCloseoutGuard, StackError> {
+        if self.publisher.trim().is_empty() || self.object_store.bucket.trim().is_empty() {
+            return Err(StackError::bad_request(
+                "Source content startup configuration invalid",
+            ));
+        }
         let parent = service_profile.parent().unwrap_or_else(|| Path::new("."));
         let bytes =
             crate::oidc_startup::read_private(&parent.join(&self.native_host_selection_file))?;
@@ -50,30 +68,32 @@ impl SourceContentStartupConfiguration {
         &self,
         guard: ConfiguredNativeCloseoutGuard,
         factory: &SourceContentFactory,
-        client: trellis_service_client::TrellisServiceClient,
-        tenant: TenantScope,
         authorities: Option<integrity_verify::trellis::CertificateAuthorityRegistry>,
     ) -> SourceContentComposition {
-        let parts = factory(SourceContentInputs {
-            client,
-            tenant,
-            pins: self.pins.clone(),
-            authorities,
-            closeout: guard.closeout.clone(),
-        });
+        let parts = factory(SourceContentInputs { authorities });
+        let store = S3CompatibleArtifactStore::new(
+            S3ObjectConfig {
+                bucket: self.object_store.bucket.clone(),
+                endpoint: self.object_store.endpoint.clone(),
+                region: self.object_store.region.clone(),
+            },
+            self.object_store.prefix.clone(),
+        );
         SourceContentComposition {
-            selection_resolver: parts.selection_resolver,
-            contributor: parts.contributor,
+            object_reader: Arc::new(StoreSourceContentReader::new(store)),
+            batch_checker: parts.batch_checker,
             final_prefix_guard: Arc::new(guard),
             structural: parts.structural,
+            pins: self.pins.clone(),
+            publisher: self.publisher.clone(),
         }
     }
 }
 
 /// Composes configured Source-only ports through the maintained startup loader.
 ///
-/// Pass the independently selected client, tenant, Source/native/recipient pins,
-/// and private native-policy file through the existing closed configuration.
+/// Pass the Source publisher, Source/native/recipient pins, object store and
+/// private native-policy file through the closed configuration.
 /// SourceContentOnly callers may pass `None` for formal certificate authorities.
 /// This supplies the adapters' real reader, native guard and publication verifier;
 /// it grants no Source authority or final reader readiness and sends no requests.
@@ -84,15 +104,13 @@ impl SourceContentStartupConfiguration {
 pub fn source_content_composition_from_configuration(
     configuration: &[u8],
     service_profile: &Path,
-    client: trellis_service_client::TrellisServiceClient,
-    tenant: TenantScope,
     authorities: Option<integrity_verify::trellis::CertificateAuthorityRegistry>,
     adapters: &ServerAdapters,
 ) -> Result<SourceContentComposition, StackError> {
     let selected: SourceContentStartupConfiguration = serde_json::from_slice(configuration)
         .map_err(|_| StackError::bad_request("Source content startup configuration invalid"))?;
     let guard = selected.load(service_profile, adapters.native_closeout.clone())?;
-    Ok(selected.compose(guard, &adapters.source_content, client, tenant, authorities))
+    Ok(selected.compose(guard, &adapters.source_content, authorities))
 }
 
 #[cfg(all(test, unix))]
@@ -110,6 +128,7 @@ mod tests {
         std::fs::write(&owning, &bytes).unwrap();
         std::fs::set_permissions(&owning, std::fs::Permissions::from_mode(0o600)).unwrap();
         let value = serde_json::json!({"pins":{"providerSelectionHash":vec![1u8;32],"nativePolicyHash":vec![2u8;32],"recipientPolicyHash":vec![3u8;32]},
+            "publisher":"wos-machine","objectStore":{"bucket":"b","endpoint":null,"region":null,"prefix":"p"},
             "nativeHostSelectionFile":"owning.json","nativeHostSelectionSha256":stack_common_hash::sha256_prefixed(&bytes)});
         let configuration: SourceContentStartupConfiguration =
             serde_json::from_value(value.clone()).unwrap();
@@ -152,6 +171,7 @@ mod source_content_configuration_tests {
         fs::set_permissions(&native, fs::Permissions::from_mode(0o600)).unwrap();
         let configuration = serde_json::to_vec(&serde_json::json!({
             "pins":{"providerSelectionHash":vec![1u8;32],"nativePolicyHash":vec![2u8;32],"recipientPolicyHash":vec![3u8;32]},
+            "publisher":"wos-machine","objectStore":{"bucket":"b","endpoint":null,"region":null,"prefix":"p"},
             "nativeHostSelectionFile":"native.json",
             "nativeHostSelectionSha256":stack_common_hash::sha256_prefixed(&bytes)
         })).unwrap();
@@ -168,26 +188,9 @@ mod source_content_configuration_tests {
         configuration: &[u8],
         profile: &std::path::Path,
     ) -> Result<SourceContentComposition, stack_common_error::StackError> {
-        // No server or credential authority is mocked. These tests exercise only
-        // inactive configuration admission; the real client performs no request.
-        let client = trellis_service_client::TrellisServiceClient::new(
-            trellis_service_client::TrellisServiceClientConfig::new(
-                "http://127.0.0.1:1",
-                stack_common_http::tenant::HeaderConfig::wos(),
-            ),
-        )
-        .unwrap();
-        let tenant = stack_common_http::tenant::TenantScope {
-            tenant: "tenant".into(),
-            workspace: "workspace".into(),
-            environment: "test".into(),
-            cell: "cell".into(),
-        };
         source_content_composition_from_configuration(
             configuration,
             profile,
-            client,
-            tenant,
             None,
             &crate::test_adapters::adapters(),
         )

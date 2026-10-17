@@ -57,6 +57,7 @@ trellis-verify-wos = { path = "../trellis-verify-wos" }
 stack-common-typeid = { path = "../../../stack-common/crates/stack-common-typeid", features = ["testing"] }
 jsonwebtoken = "9"
 tempfile = "3"
+object_store = { version = "0.11", default-features = false, features = ["aws"] }
 stack-common-postgres = { path = "../../../stack-common/crates/stack-common-postgres", default-features = false, features = ["testing"] }
 integrity-seam = { path = "../../../integrity-stack/crates/integrity-seam" }
 tower = { version = "0.5", features = ["util"] }

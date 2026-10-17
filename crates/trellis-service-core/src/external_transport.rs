@@ -192,6 +192,7 @@ async fn admit(
         payload: payload.clone(),
         compute_context: ComputeContext::no_delegated_compute(&wire.actor.subject),
         client_attestation: None,
+        source_content: None,
     };
     authorization.validate()?;
     let permit = crate::auth::authorize_action(

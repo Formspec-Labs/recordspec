@@ -1,6 +1,10 @@
 // Synthetic transport failure controls; no Source proof or existing attempt is replayed.
 // Rust guideline compliant 2026-02-21
 use super::*;
+
+fn sourced() -> SubstrateAppendRequest {
+    append().with_source_content(crate::source_content::tests::claim())
+}
 #[tokio::test]
 async fn source_diagnostics_connect_and_request_failures_preserve_errors_and_counts() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -8,7 +12,7 @@ async fn source_diagnostics_connect_and_request_failures_preserve_errors_and_cou
     drop(listener);
     let provider = tokens(usize::MAX);
     let error = client(format!("http://{address}"), provider.clone())
-        .append_source_content_event(append(), "synthetic-locator", "Bearer synthetic-person")
+        .append_event(sourced())
         .await
         .unwrap_err();
     assert_eq!(
@@ -23,7 +27,7 @@ async fn source_diagnostics_connect_and_request_failures_preserve_errors_and_cou
         format!("http://{}", listener.local_addr().unwrap()),
         provider.clone(),
     )
-    .append_source_content_event(append(), "synthetic-locator", "Bearer synthetic-person")
+    .append_event(sourced())
     .await
     .unwrap_err();
     assert_eq!(error.title(), "Trellis service token acquisition failed");
@@ -46,7 +50,7 @@ async fn source_diagnostics_non2xx_and_invalid2xx_consume_one_response_and_prese
         )
     });
     let error = client(endpoint, tokens(usize::MAX))
-        .append_source_content_event(append(), "synthetic-locator", "Bearer synthetic-person")
+        .append_event(sourced())
         .await
         .unwrap_err();
     // Existing returned previews are deliberately preserved. Closed diagnostic
@@ -61,7 +65,7 @@ async fn source_diagnostics_non2xx_and_invalid2xx_consume_one_response_and_prese
         response("application/json", "not JSON")
     });
     let error = client(endpoint, tokens(usize::MAX))
-        .append_source_content_event(append(), "synthetic-locator", "Bearer synthetic-person")
+        .append_event(sourced())
         .await
         .unwrap_err();
     assert!(
@@ -80,7 +84,7 @@ async fn source_diagnostics_receipt_validation_returns_the_existing_refusal() {
         .unwrap_err();
     let endpoint = test_server(move |_| response("application/json", body));
     let error = client(endpoint, tokens(usize::MAX))
-        .append_source_content_event(append(), "synthetic-locator", "Bearer synthetic-person")
+        .append_event(sourced())
         .await
         .unwrap_err();
     assert_eq!(error.title(), expected.title());

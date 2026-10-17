@@ -469,6 +469,9 @@
         },
         "clientAttestation": {
           "$ref": "#/$defs/ClientAttestation"
+        },
+        "sourceContent": {
+          "$ref": "#/$defs/SourceContentClaim"
         }
       },
       "additionalProperties": false,
@@ -581,12 +584,52 @@
           },
           "minItems": 32,
           "maxItems": 32
+        },
+        "certificateId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "description": "Certificate id of the seal; only with the completion event type."
         }
       },
       "required": [
         "eventType",
-        "idempotencyKey",
-        "contentHash"
+        "idempotencyKey"
+      ],
+      "description": "Retained identity to reconcile. The completion event names certificateId (the seal's payload hash is not knowable to its caller); every other event type names contentHash. Exactly one is present.",
+      "oneOf": [
+        {
+          "properties": {
+            "eventType": {
+              "const": "trellis.certificate-of-completion.v2"
+            }
+          },
+          "required": [
+            "certificateId"
+          ],
+          "not": {
+            "required": [
+              "contentHash"
+            ]
+          }
+        },
+        {
+          "properties": {
+            "eventType": {
+              "not": {
+                "const": "trellis.certificate-of-completion.v2"
+              }
+            }
+          },
+          "required": [
+            "contentHash"
+          ],
+          "not": {
+            "required": [
+              "certificateId"
+            ]
+          }
+        }
       ]
     },
     "AppendReconciliation": {
@@ -663,6 +706,282 @@
             "reason"
           ]
         }
+      ]
+    },
+    "SourceContentClaim": {
+      "type": "object",
+      "description": "What WOS asserts about the batch object it wrote, built once at record build.",
+      "required": [
+        "hash",
+        "size",
+        "selection"
+      ],
+      "properties": {
+        "hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "Lowercase hex SHA-256 of the exact stored object bytes."
+        },
+        "selection": {
+          "$ref": "#/$defs/SourceContentSelection"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16777216,
+          "description": "Byte length of the stored object; bounds the read."
+        }
+      },
+      "additionalProperties": false
+    },
+    "SourceContentSelection": {
+      "type": "object",
+      "description": "Independently admitted selection, never decoded from the returned batch.",
+      "required": [
+        "preparationKey",
+        "identity",
+        "nativePrefixEventHashes",
+        "orderedPhotoEventHashes",
+        "intakeCatalogSha256",
+        "taskCatalogSha256",
+        "recordPins"
+      ],
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/SourceContentIdentityV1"
+        },
+        "intakeCatalogSha256": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "nativePrefixEventHashes": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "description": "Complete ordered authenticated prefix before selected photos and closeout. Includes independently bound WOS and Source events in their original order. `identity.native_prefix_digest` binds this entire prefix; the selected photo events and reserved closeout follow it."
+        },
+        "orderedPhotoEventHashes": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "preparationKey": {
+          "type": "string"
+        },
+        "recordPins": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SourceContentRecordPins"
+          },
+          "description": "Exact public inventory admitted by the existing owning selection."
+        },
+        "taskCatalogSha256": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "SourceContentIdentityV1": {
+      "type": "object",
+      "description": "Exact native and independently selected provider identity for a committed batch.",
+      "required": [
+        "caseLedgerId",
+        "processId",
+        "nativePrefixDigest",
+        "reservedCloseoutRecordId",
+        "reservedNativeCloseoutRecordSha256",
+        "providerSelectionHash",
+        "nativePolicyHash",
+        "recipientPolicyHash",
+        "recipientSetSha256",
+        "workflowUrl",
+        "workflowVersion",
+        "tenantId",
+        "workspaceId",
+        "environmentId",
+        "cellId",
+        "sourceId",
+        "serviceBindingId"
+      ],
+      "properties": {
+        "caseLedgerId": {
+          "type": "string"
+        },
+        "cellId": {
+          "type": "string"
+        },
+        "environmentId": {
+          "type": "string"
+        },
+        "nativePolicyHash": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "nativePrefixDigest": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "processId": {
+          "type": "string"
+        },
+        "providerSelectionHash": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "recipientPolicyHash": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "recipientSetSha256": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "description": "WOS-derived digest of the canonical sorted actual recipient IDs and public keys."
+        },
+        "reservedCloseoutRecordId": {
+          "type": "string"
+        },
+        "reservedNativeCloseoutRecordSha256": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "serviceBindingId": {
+          "type": "string"
+        },
+        "sourceId": {
+          "type": "string"
+        },
+        "tenantId": {
+          "type": "string"
+        },
+        "workflowUrl": {
+          "type": "string"
+        },
+        "workflowVersion": {
+          "type": "string"
+        },
+        "workspaceId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SourceContentRecordPins": {
+      "type": "object",
+      "description": "Independently admitted public identity for one protected record.",
+      "required": [
+        "role",
+        "occurrenceEventHash",
+        "sourcePublicationHash",
+        "publicSigningPolicyHash",
+        "evaluationRegistrationHash",
+        "recordSha256",
+        "memberContentHash",
+        "locatorSha256"
+      ],
+      "properties": {
+        "evaluationRegistrationHash": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "locatorSha256": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "memberContentHash": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "occurrenceEventHash": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "publicSigningPolicyHash": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "recordSha256": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "responseId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "role": {
+          "$ref": "#/$defs/SourceContentRoleV1"
+        },
+        "sourcePublicationHash": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "SourceContentRoleV1": {
+      "type": "string",
+      "description": "Owning content family within the retained batch.",
+      "enum": [
+        "originalResponse",
+        "correctionResponse",
+        "taskProofPackage"
       ]
     }
   }

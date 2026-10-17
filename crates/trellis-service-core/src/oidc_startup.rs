@@ -27,7 +27,6 @@ use crate::TrellisServerState;
 const MAX_FILE_BYTES: u64 = 1024 * 1024;
 
 pub(crate) struct StartupAuth {
-    tenant_scope: TenantScope,
     verifier: Arc<dyn AccessTokenVerifier>,
     authorizer: Arc<dyn ScopeAuthorizer<Error = StackError>>,
     attachment_recipients: Option<Arc<dyn crate::ExternalAttachmentRecipientSelector>>,
@@ -106,22 +105,16 @@ impl StartupAuth {
             Arc::new(credentials),
         )
         .map_err(|_| invalid())?;
-        let tenant_scope = profile.tenant_scope.tuple();
         let authorizer = CurrentGrants {
             path: parent.join(&profile.grants_file),
             profile,
         };
         authorizer.load_grants()?;
         Ok(Self {
-            tenant_scope,
             verifier: Arc::new(verifier),
             authorizer: Arc::new(authorizer),
             attachment_recipients,
         })
-    }
-
-    pub(crate) fn tenant_scope(&self) -> &TenantScope {
-        &self.tenant_scope
     }
 
     pub(crate) fn apply(self, state: TrellisServerState) -> TrellisServerState {
