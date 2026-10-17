@@ -493,7 +493,6 @@ fn tenant_replay_scope(tenant_headers: &TenantHeaders, call: &IdempotencyCall) -
 /// - `TRELLIS_STORAGE=memory` (in-memory repository; skips `TRELLIS_DATABASE_URL`)
 /// - `TRELLIS_COMPLETION_OPERATOR_CONFIG_FILE` (completion operator signing keys)
 /// - `TRELLIS_SOURCE_CONTENT_CONFIG_FILE` (Source-content publisher, pins, object store, native policy)
-/// - `TRELLIS_SIGNING_KEY_VALID_TO_UNIX_SECS`
 /// - `TRELLIS_ARTIFACT_BUCKET`
 /// - `TRELLIS_ARTIFACT_PREFIX`
 /// - `TRELLIS_ARTIFACT_ENDPOINT`
@@ -512,10 +511,8 @@ pub async fn state_from_env(adapters: ServerAdapters) -> Result<TrellisServerSta
         .map_err(|_| StackError::bad_request("TRELLIS_SIGNING_KEY_COSE_PATH is required"))?;
     let profile = crate::posture::profile_from_env()?;
     let signing_key_bytes = crate::posture::read_signing_key(profile, &signing_key_path)?;
-    let signing_key_valid_to = env_optional_timestamp("TRELLIS_SIGNING_KEY_VALID_TO_UNIX_SECS")?;
     let signing_key =
-        ServerSigningKey::from_cose_key_bytes(signing_key_bytes, TrellisTimestamp::new(0, 0)?)?
-            .with_valid_to(signing_key_valid_to);
+        ServerSigningKey::from_cose_key_bytes(signing_key_bytes, TrellisTimestamp::new(0, 0)?)?;
     crate::posture::check(profile, trellis_storage_is_memory, &signing_key)?;
     let signing_key = match env_optional("TRELLIS_SIGNING_KEY_HISTORY_PATH") {
         Some(path) => {
@@ -571,16 +568,6 @@ fn env_optional(name: &str) -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-}
-
-fn env_optional_timestamp(name: &str) -> Result<Option<TrellisTimestamp>, StackError> {
-    let Some(raw) = env_optional(name) else {
-        return Ok(None);
-    };
-    let seconds: u64 = raw.parse().map_err(|error| {
-        StackError::bad_request(format!("{name} must be a u64 unix timestamp: {error}"))
-    })?;
-    Ok(Some(TrellisTimestamp::new(seconds, 0)?))
 }
 
 #[derive(Clone)]

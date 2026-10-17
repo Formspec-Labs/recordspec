@@ -486,17 +486,20 @@ async fn exports_before_and_after_a_key_rotation_both_verify() {
     let key_a = fixture_key("issuer-001.cose_key");
     let key_b = fixture_key("issuer-002.cose_key");
     let repository: Arc<dyn EventRepository> = Arc::new(InMemoryEventRepository::new());
-    let history = history_json(&[(&key_a, 0, 1_800_000_000)], &key_b);
-    let key_b = key_b.with_history_json(&history).expect("history");
 
     let app_a = router(TrellisServerState::new(
         repository.clone(),
-        key_a,
+        key_a.clone(),
         crate::test_adapters::adapters(),
     ))
     .expect("router");
     let before = post_append(&app_a, "/v1/scopes/case_rotate/events", append_body("idem-rot-1")).await;
 
+    // The rotation instant, a whole second after A's last signature and no later than B's first.
+    let rotated_at = now_timestamp().unwrap().unix_secs + 1;
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let history = history_json(&[(&key_a, 0, rotated_at)], &key_b);
+    let key_b = key_b.with_history_json(&history).expect("history");
     let app_b = router(TrellisServerState::new(
         repository,
         key_b,
@@ -580,4 +583,54 @@ async fn exports_assembled_at_five_and_eight_events_verify() {
         crate::export_vector::write_export_vector(&directory.join("016-assembled-five-events"), &zips[0]);
         crate::export_vector::write_export_vector(&directory.join("017-assembled-eight-events"), &zips[1]);
     }
+}
+
+/// Given a history whose windows run backwards or overlap, then startup refuses it.
+#[test]
+fn a_history_with_backwards_or_overlapping_windows_is_refused() {
+    let key_a = fixture_key("issuer-001.cose_key");
+    let key_b = fixture_key("issuer-002.cose_key");
+    let rows = |a_from: u64, a_to: u64, b_from: u64| {
+        serde_json::to_vec(&serde_json::json!([
+            {"public_key": public_hex(&key_a), "valid_from_unix_secs": a_from, "valid_to_unix_secs": a_to},
+            {"public_key": public_hex(&key_b), "valid_from_unix_secs": b_from},
+        ]))
+        .unwrap()
+    };
+    assert!(key_b.clone().with_history_json(&rows(0, 10, 10)).is_ok());
+    assert!(
+        key_b.clone().with_history_json(&rows(10, 5, 10)).is_err(),
+        "valid_from after valid_to"
+    );
+    assert!(
+        key_b.clone().with_history_json(&rows(0, 10, 9)).is_err(),
+        "the next window opens before the last one closed"
+    );
+}
+
+/// Given a history whose window for the signing key excludes the time of its signatures, then
+/// the export is refused rather than shipped for a verifier that would not notice.
+#[tokio::test]
+async fn an_export_signed_outside_its_keys_window_is_refused() {
+    let key_a = fixture_key("issuer-001.cose_key");
+    let key_b = fixture_key("issuer-002.cose_key");
+    // B is declared to start in the far future, so what it signs now is out of window.
+    let history = history_json(&[(&key_a, 0, 4_000_000_000)], &key_b);
+    let key_b = key_b.with_history_json(&history).expect("history");
+    let app = router(test_state_with_signing_key(key_b)).expect("router");
+    let receipt = post_append(&app, "/v1/scopes/case_window/events", append_body("idem-window-1")).await;
+    let response = app
+        .clone()
+        .oneshot(get_request(&format!(
+            "/v1/scopes/case_window/bundles/sha256:{}",
+            hex::encode(checkpoint_digest_of(&receipt))
+        )))
+        .await
+        .expect("export response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+    assert!(
+        String::from_utf8_lossy(&body).contains("outside the validity window"),
+        "{body:?}"
+    );
 }

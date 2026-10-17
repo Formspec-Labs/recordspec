@@ -190,8 +190,9 @@ impl ServerSigningKey {
         hex::encode(self.export_key.kid())
     }
 
+    #[cfg(test)]
     #[must_use]
-    pub fn with_valid_to(mut self, valid_to: Option<TrellisTimestamp>) -> Self {
+    pub(crate) fn with_valid_to(mut self, valid_to: Option<TrellisTimestamp>) -> Self {
         self.valid_to = valid_to;
         self.export_key.valid_to = valid_to;
         self

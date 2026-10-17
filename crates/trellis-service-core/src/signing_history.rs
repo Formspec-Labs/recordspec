@@ -39,6 +39,7 @@ impl ServerSigningKey {
                 "signing-key history must end at the configured signing key",
             ));
         }
+        check_windows(&rows)?;
         let mut history: Vec<SigningKeyRegistryEntry> = Vec::with_capacity(retired.len());
         for row in retired {
             let public_key = decode_public_key(&row.public_key)?;
@@ -66,10 +67,13 @@ impl ServerSigningKey {
                 supersedes: history.last().map(|previous| previous.kid),
             });
         }
+        let valid_to = last
+            .valid_to_unix_secs
+            .map(|secs| TrellisTimestamp::new(secs, 0))
+            .transpose()?;
         self.export_key.valid_from = TrellisTimestamp::new(last.valid_from_unix_secs, 0)?;
-        if let Some(valid_to) = last.valid_to_unix_secs {
-            self = self.with_valid_to(Some(TrellisTimestamp::new(valid_to, 0)?));
-        }
+        self.export_key.valid_to = valid_to;
+        self.valid_to = valid_to;
         self.history = history;
         Ok(self)
     }
@@ -82,4 +86,27 @@ fn decode_public_key(hex_key: &str) -> Result<[u8; 32], StackError> {
         .ok_or_else(|| {
             StackError::bad_request("signing-key history public_key must be 64 hex characters")
         })
+}
+
+/// Each window runs forward (`valid_from <= valid_to`) and a key's window opens no earlier than
+/// its predecessor's closes. The verifier enforces `valid_to` only for revoked keys, so a window
+/// typo would otherwise go unnoticed until an export is refused.
+fn check_windows(rows: &[HistoryRow]) -> Result<(), StackError> {
+    let mut previous_end = 0;
+    for row in rows {
+        if row.valid_from_unix_secs < previous_end {
+            return Err(StackError::bad_request(
+                "signing-key history windows must be in order",
+            ));
+        }
+        if let Some(valid_to) = row.valid_to_unix_secs {
+            if row.valid_from_unix_secs > valid_to {
+                return Err(StackError::bad_request(
+                    "signing-key history valid_from is after valid_to",
+                ));
+            }
+            previous_end = valid_to;
+        }
+    }
+    Ok(())
 }
