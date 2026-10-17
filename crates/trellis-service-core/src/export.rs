@@ -82,6 +82,7 @@ pub(crate) async fn assemble(
             bound_at_sequence: 0,
         }],
         signing_key: state.signing_key.export_key(),
+        signing_key_registry: state.signing_key.registry_entries(),
         generator: "trellis-server".to_string(),
         generated_at,
         checkpoints: rows.checkpoints,

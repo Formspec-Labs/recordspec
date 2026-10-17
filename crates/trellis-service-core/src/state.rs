@@ -517,6 +517,17 @@ pub async fn state_from_env(adapters: ServerAdapters) -> Result<TrellisServerSta
         ServerSigningKey::from_cose_key_bytes(signing_key_bytes, TrellisTimestamp::new(0, 0)?)?
             .with_valid_to(signing_key_valid_to);
     crate::posture::check(profile, trellis_storage_is_memory, &signing_key)?;
+    let signing_key = match env_optional("TRELLIS_SIGNING_KEY_HISTORY_PATH") {
+        Some(path) => {
+            let history = fs::read(&path).map_err(|error| {
+                StackError::bad_request(format!(
+                    "failed to read TRELLIS_SIGNING_KEY_HISTORY_PATH: {error}"
+                ))
+            })?;
+            signing_key.with_history_json(&history)?
+        }
+        None => signing_key,
+    };
 
     let repository: Arc<dyn EventRepository> = if trellis_storage_is_memory {
         Arc::new(InMemoryEventRepository::new())

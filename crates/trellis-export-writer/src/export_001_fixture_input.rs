@@ -126,6 +126,12 @@ pub fn export_001_writer_input(vectors_root: &Path) -> ExportWriterInput {
         ],
     );
 
+    let signing_key = SigningKeyMaterial {
+        private_seed,
+        public_key,
+        valid_from: TrellisTimestamp::new(1_745_000_000, 0).expect("valid timestamp"),
+        valid_to: None,
+    };
     ExportWriterInput {
         scope,
         events,
@@ -136,12 +142,8 @@ pub fn export_001_writer_input(vectors_root: &Path) -> ExportWriterInput {
             registry_version: "x-trellis-test/registry-009-v1".to_string(),
             bound_at_sequence: 0,
         }],
-        signing_key: SigningKeyMaterial {
-            private_seed,
-            public_key,
-            valid_from: TrellisTimestamp::new(1_745_000_000, 0).expect("valid timestamp"),
-            valid_to: None,
-        },
+        signing_key: signing_key.clone(),
+        signing_key_registry: vec![signing_key.registry_entry()],
         generator: "x-trellis-test/export-generator-001".to_string(),
         generated_at: TrellisTimestamp::new(1_745_000_060, 0).expect("valid timestamp"),
         posture_declaration: PostureDeclaration {

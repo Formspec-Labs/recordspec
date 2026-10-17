@@ -46,6 +46,7 @@ mod ledger;
 mod reconciliation;
 #[cfg(test)]
 mod repository_probes;
+mod signing_history;
 mod source_content;
 mod source_content_startup;
 mod source_diagnostics;
@@ -106,7 +107,10 @@ use serde::{Deserialize, Serialize};
 use stack_common_auth::{BaseClaims, Claims};
 use stack_common_error::StackError;
 use trellis_core::SigningKeyMaterial as CoreSigningKey;
-use trellis_export_writer::{SigningKeyMaterial as ExportSigningKey, TrellisTimestamp};
+use trellis_export_writer::{
+    SigningKeyMaterial as ExportSigningKey, SigningKeyRegistryEntry, TrellisTimestamp,
+    encode_signing_key_registry,
+};
 use trellis_types::StoredEvent;
 
 use trellis_server_ports::event_codec::{
@@ -149,6 +153,8 @@ pub struct ServerSigningKey {
     cose_key: Vec<u8>,
     export_key: ExportSigningKey,
     valid_to: Option<TrellisTimestamp>,
+    /// Retired predecessors of `export_key`, oldest first. Public material only.
+    history: Vec<SigningKeyRegistryEntry>,
 }
 
 impl ServerSigningKey {
@@ -172,6 +178,7 @@ impl ServerSigningKey {
                 valid_to: None,
             },
             valid_to: None,
+            history: Vec::new(),
         })
     }
 
@@ -206,26 +213,25 @@ impl ServerSigningKey {
         self.export_key.clone()
     }
 
-    /// Public-key registry entry for this key, as published for export verification.
+    /// Every registry row this server's exports must carry: retired predecessors in
+    /// order, then the current key (Core §8.5 completeness, §8.4 retired rows stay).
+    #[must_use]
+    pub fn registry_entries(&self) -> Vec<SigningKeyRegistryEntry> {
+        let mut rows = self.history.clone();
+        let mut current = self.export_key.registry_entry();
+        if let Some(previous) = rows.last() {
+            current.supersedes = Some(previous.kid);
+        }
+        rows.push(current);
+        rows
+    }
+
+    /// Public-key registry as published for export verification.
     ///
     /// # Errors
     /// Returns an internal error when the registry cannot be canonically encoded.
     pub fn public_key_registry_cbor(&self) -> Result<Vec<u8>, StackError> {
-        let signing_key = &self.export_key;
-        let entry = text_map(vec![
-            ("kid", Value::Bytes(signing_key.kid().to_vec())),
-            ("pubkey", Value::Bytes(signing_key.public_key.to_vec())),
-            ("suite_id", uint(1)),
-            ("status", uint(0)),
-            ("valid_from", timestamp_value(signing_key.valid_from)),
-            (
-                "valid_to",
-                signing_key.valid_to.map_or(Value::Null, timestamp_value),
-            ),
-            ("supersedes", Value::Null),
-            ("attestation", Value::Null),
-        ])?;
-        encode_value(&Value::Array(vec![entry]))
+        encode_signing_key_registry(&self.registry_entries())
     }
 }
 

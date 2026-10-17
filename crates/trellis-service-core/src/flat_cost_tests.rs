@@ -443,3 +443,112 @@ async fn a_corrupt_stored_profile_state_refuses_the_next_append() {
         .expect_err("a corrupt state must not be replaced by an empty one");
     assert_eq!(error.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
+
+fn fixture_key(name: &str) -> ServerSigningKey {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/vectors/_keys")
+        .join(name);
+    ServerSigningKey::from_cose_key_bytes(
+        fs::read(path).expect("fixture key"),
+        TrellisTimestamp::new(0, 0).unwrap(),
+    )
+    .expect("signing key")
+}
+
+fn public_hex(key: &ServerSigningKey) -> String {
+    hex::encode(key.export_key().public_key)
+}
+
+/// Public-key history naming `retired` then `current`, in the startup file's JSON shape.
+fn history_json(retired: &[(&ServerSigningKey, u64, u64)], current: &ServerSigningKey) -> Vec<u8> {
+    let mut rows: Vec<serde_json::Value> = retired
+        .iter()
+        .map(|(key, from, to)| {
+            serde_json::json!({
+                "public_key": public_hex(key),
+                "valid_from_unix_secs": from,
+                "valid_to_unix_secs": to,
+            })
+        })
+        .collect();
+    let from = retired.last().map_or(0, |(_, _, to)| *to);
+    rows.push(serde_json::json!({
+        "public_key": public_hex(current),
+        "valid_from_unix_secs": from,
+    }));
+    serde_json::to_vec(&rows).unwrap()
+}
+
+/// Given a ledger written under key A and then continued under key B, then the export at a
+/// checkpoint signed by A and the export at a checkpoint signed by B both verify.
+#[tokio::test]
+async fn exports_before_and_after_a_key_rotation_both_verify() {
+    let key_a = fixture_key("issuer-001.cose_key");
+    let key_b = fixture_key("issuer-002.cose_key");
+    let repository: Arc<dyn EventRepository> = Arc::new(InMemoryEventRepository::new());
+    let history = history_json(&[(&key_a, 0, 1_800_000_000)], &key_b);
+    let key_b = key_b.with_history_json(&history).expect("history");
+
+    let app_a = router(TrellisServerState::new(
+        repository.clone(),
+        key_a,
+        crate::test_adapters::adapters(),
+    ))
+    .expect("router");
+    let before = post_append(&app_a, "/v1/scopes/case_rotate/events", append_body("idem-rot-1")).await;
+
+    let app_b = router(TrellisServerState::new(
+        repository,
+        key_b,
+        crate::test_adapters::adapters(),
+    ))
+    .expect("router");
+    let after = post_append(&app_b, "/v1/scopes/case_rotate/events", append_body("idem-rot-2")).await;
+
+    assert!(export_bundle_cryptographically_verified(
+        &pinned_zip(&app_b, "case_rotate", &before).await
+    ));
+    assert!(export_bundle_cryptographically_verified(
+        &pinned_zip(&app_b, "case_rotate", &after).await
+    ));
+}
+
+/// Given a history file, then startup keeps retired keys retired, each key supersedes the one
+/// before, and the registry route publishes every row.
+#[test]
+fn a_history_publishes_retired_keys_in_a_supersession_chain() {
+    let key_a = fixture_key("issuer-001.cose_key");
+    let key_b = fixture_key("issuer-002.cose_key");
+    let history = history_json(&[(&key_a, 5, 10)], &key_b);
+    let rows = key_b
+        .clone()
+        .with_history_json(&history)
+        .expect("history")
+        .registry_entries();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].status, trellis_export_writer::SigningKeyStatus::Retired);
+    assert_eq!(rows[0].valid_to, Some(TrellisTimestamp::new(10, 0).unwrap()));
+    assert_eq!(rows[1].status, trellis_export_writer::SigningKeyStatus::Active);
+    assert_eq!(rows[1].supersedes, Some(rows[0].kid));
+    assert_eq!(rows[1].kid, key_b.export_key().kid());
+}
+
+/// Given a history whose last key is not the configured key, or that is malformed, then startup
+/// refuses it.
+#[test]
+fn a_history_that_does_not_end_at_the_current_key_is_refused() {
+    let key_a = fixture_key("issuer-001.cose_key");
+    let key_b = fixture_key("issuer-002.cose_key");
+    let ends_at_a = history_json(&[(&key_b, 0, 10)], &key_a);
+    assert!(key_b.clone().with_history_json(&ends_at_a).is_err());
+    assert!(key_b.clone().with_history_json(b"[]").is_err());
+    assert!(key_b.clone().with_history_json(b"{}").is_err());
+    let repeated = history_json(&[(&key_b, 0, 10)], &key_b);
+    assert!(key_b.clone().with_history_json(&repeated).is_err());
+    let unretired = serde_json::to_vec(&serde_json::json!([
+        {"public_key": public_hex(&key_a), "valid_from_unix_secs": 0},
+        {"public_key": public_hex(&key_b), "valid_from_unix_secs": 10},
+    ]))
+    .unwrap();
+    assert!(key_b.with_history_json(&unretired).is_err());
+}

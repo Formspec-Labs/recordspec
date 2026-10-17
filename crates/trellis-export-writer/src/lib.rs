@@ -128,6 +128,74 @@ impl SigningKeyMaterial {
     pub fn kid(&self) -> [u8; 16] {
         derive_kid(SUITE_ID_PHASE_1, self.public_key)
     }
+
+    /// The registry row of a key that has never been rotated: active, superseding nothing.
+    #[must_use]
+    pub fn registry_entry(&self) -> SigningKeyRegistryEntry {
+        SigningKeyRegistryEntry {
+            kid: self.kid(),
+            public_key: self.public_key,
+            status: SigningKeyStatus::Active,
+            valid_from: self.valid_from,
+            valid_to: self.valid_to,
+            supersedes: None,
+        }
+    }
+}
+
+/// Core §8.4 lifecycle status of a registry row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SigningKeyStatus {
+    Active = 0,
+    Retired = 2,
+    Revoked = 3,
+}
+
+/// One Core §8.2 `SigningKeyEntry`: public material only.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SigningKeyRegistryEntry {
+    pub kid: [u8; 16],
+    pub public_key: [u8; 32],
+    pub status: SigningKeyStatus,
+    pub valid_from: TrellisTimestamp,
+    pub valid_to: Option<TrellisTimestamp>,
+    /// The `kid` this entry replaces.
+    pub supersedes: Option<[u8; 16]>,
+}
+
+/// Encodes registry rows as the dCBOR array `030-signing-key-registry.cbor` carries.
+///
+/// # Errors
+/// Returns an error if CBOR encoding fails.
+pub fn encode_signing_key_registry(
+    entries: &[SigningKeyRegistryEntry],
+) -> Result<Vec<u8>, StackError> {
+    let rows = entries
+        .iter()
+        .map(|entry| {
+            text_map(vec![
+                ("kid", Value::Bytes(entry.kid.to_vec())),
+                ("pubkey", Value::Bytes(entry.public_key.to_vec())),
+                ("suite_id", uint(SUITE_ID_PHASE_1)),
+                ("status", uint(entry.status as u64)),
+                ("valid_from", entry.valid_from.to_value()),
+                (
+                    "valid_to",
+                    entry
+                        .valid_to
+                        .map_or(Value::Null, TrellisTimestamp::to_value),
+                ),
+                (
+                    "supersedes",
+                    entry
+                        .supersedes
+                        .map_or(Value::Null, |kid| Value::Bytes(kid.to_vec())),
+                ),
+                ("attestation", Value::Null),
+            ])
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    encode_value(&Value::Array(rows))
 }
 
 /// Immutable domain-registry bytes to embed under `050-registries/`.
@@ -275,6 +343,10 @@ pub struct ExportWriterInput {
     pub events: Vec<StoredEvent>,
     pub registries: Vec<RegistrySnapshot>,
     pub signing_key: SigningKeyMaterial,
+    /// The public key history the export embeds (Core §8.5): a row for every `kid` any event,
+    /// checkpoint or the manifest cites, and for every key those supersede. Data, not derived
+    /// from `signing_key`: after a rotation the ledger still holds entries signed by retired keys.
+    pub signing_key_registry: Vec<SigningKeyRegistryEntry>,
     pub generator: String,
     pub generated_at: TrellisTimestamp,
     /// The signed checkpoints for tree sizes `1..=events.len()`, as issued at append time
@@ -399,7 +471,7 @@ pub fn write_export(input: ExportWriterInput) -> Result<ExportPackage, StackErro
     let events_cbor =
         array_of_raw_cbor_values(events.iter().map(|event| event.signed_event.as_slice()))?;
     let registry_material = registry_binding_material(&input.registries)?;
-    let signing_key_registry_cbor = signing_key_registry_cbor(&input.signing_key)?;
+    let signing_key_registry_cbor = checked_signing_key_registry(&input, &events)?;
     let checkpoints = supplied_checkpoints(&input, tree_head_hash)?;
     let checkpoints_cbor = array_of_raw_cbor_values(
         checkpoints
@@ -1308,23 +1380,56 @@ fn registry_binding_material(
     Ok(material)
 }
 
-fn signing_key_registry_cbor(signing_key: &SigningKeyMaterial) -> Result<Vec<u8>, StackError> {
-    let entry = text_map(vec![
-        ("kid", Value::Bytes(signing_key.kid().to_vec())),
-        ("pubkey", Value::Bytes(signing_key.public_key.to_vec())),
-        ("suite_id", uint(SUITE_ID_PHASE_1)),
-        ("status", uint(0)),
-        ("valid_from", signing_key.valid_from.to_value()),
-        (
-            "valid_to",
-            signing_key
-                .valid_to
-                .map_or(Value::Null, TrellisTimestamp::to_value),
-        ),
-        ("supersedes", Value::Null),
-        ("attestation", Value::Null),
-    ])?;
-    encode_value(&Value::Array(vec![entry]))
+/// Encodes the supplied key history after checking it is complete for this export (Core §8.5).
+///
+/// Every `kid` an event, a checkpoint or the manifest cites must resolve to a row, every
+/// `supersedes` must resolve to a row, and `kid`s are unique and equal to the key they name.
+fn checked_signing_key_registry(
+    input: &ExportWriterInput,
+    events: &[PreparedEvent],
+) -> Result<Vec<u8>, StackError> {
+    let mut rows = BTreeMap::new();
+    for entry in &input.signing_key_registry {
+        if entry.kid != derive_kid(SUITE_ID_PHASE_1, entry.public_key) {
+            return Err(StackError::bad_request(
+                "signing-key registry kid is not derived from its public key",
+            ));
+        }
+        if rows.insert(entry.kid, entry).is_some() {
+            return Err(StackError::bad_request(
+                "signing-key registry repeats a kid",
+            ));
+        }
+    }
+    let cited = |kid: Option<&[u8]>, what: &str| -> Result<(), StackError> {
+        let known = kid
+            .and_then(|kid| <[u8; 16]>::try_from(kid).ok())
+            .is_some_and(|kid| rows.contains_key(&kid));
+        if known {
+            Ok(())
+        } else {
+            Err(StackError::bad_request(format!(
+                "signing-key registry has no row for the kid {what} cites"
+            )))
+        }
+    };
+    cited(Some(&input.signing_key.kid()), "the manifest")?;
+    for entry in rows.values() {
+        if let Some(prior) = entry.supersedes {
+            cited(Some(&prior), "a supersedes link")?;
+        }
+    }
+    for event in events {
+        let signed = integrity_cose::decode_cose_sign1(&event.signed_event)
+            .map_err(|error| StackError::bad_request(format!("event COSE_Sign1: {error}")))?;
+        cited(signed.kid(), "an event")?;
+    }
+    for checkpoint in &input.checkpoints {
+        let signed = integrity_cose::decode_cose_sign1(&checkpoint.checkpoint)
+            .map_err(|error| StackError::bad_request(format!("checkpoint COSE_Sign1: {error}")))?;
+        cited(signed.kid(), "a checkpoint")?;
+    }
+    encode_signing_key_registry(&input.signing_key_registry)
 }
 
 /// The checkpoints an export carries, checked against the events it carries.
@@ -2147,6 +2252,7 @@ mod tests {
                 valid_from: TrellisTimestamp::new(1, 0).expect("valid timestamp"),
                 valid_to: None,
             },
+            signing_key_registry: Vec::new(),
             generator: "test".to_string(),
             generated_at: TrellisTimestamp::new(1, 0).expect("valid timestamp"),
             checkpoints: Vec::new(),
