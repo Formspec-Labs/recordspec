@@ -17,3 +17,9 @@ trellis-service-client = { path = "../trellis-service-client" }
 trellis-types = { path = "../trellis-types" }
 trellis-verify-wos = { path = "../trellis-verify-wos" }
 wos-events = { path = "../../../work-spec/crates/wos-events" }
+
+[dev-dependencies]
+integrity-cbor = { path = "../../../integrity-stack/crates/integrity-cbor", features = ["json"] }
+proptest = "1.6"
+serde_json = "1"
+trellis-cddl = { path = "../trellis-cddl" }

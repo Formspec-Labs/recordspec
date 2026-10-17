@@ -12,7 +12,7 @@ use integrity_cose::{
 };
 use trellis_cddl::parse_ed25519_cose_key;
 use trellis_types::merkle::{Frontier, MerkleHasher, TrellisHasher};
-use trellis_types::{ArtifactType, CheckpointPayload, checkpoint_digest};
+use trellis_types::{ArtifactType, CheckpointPayload, StoredCheckpoint, checkpoint_digest};
 
 use crate::{AppendError, SigningKeyMaterial};
 
@@ -39,6 +39,21 @@ pub struct IssuedCheckpoint {
     pub sign1: Vec<u8>,
     /// The tree including the appended leaf.
     pub frontier: Frontier,
+}
+
+impl IssuedCheckpoint {
+    /// The row to store: this checkpoint, its frontier, and the export profile's fold state.
+    #[must_use]
+    pub fn stored(&self, scope: &[u8], profile_state: Vec<u8>) -> StoredCheckpoint {
+        StoredCheckpoint {
+            scope: scope.to_vec(),
+            tree_size: self.tree_size,
+            digest: self.digest,
+            checkpoint: self.sign1.clone(),
+            frontier: self.frontier.to_bytes(),
+            profile_state,
+        }
+    }
 }
 
 /// Issues the checkpoint that commits to the tree after appending `canonical_event_hash`.

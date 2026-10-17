@@ -108,6 +108,10 @@ BEGIN
 END
 $$;
 
+ALTER TABLE trellis_events ALTER COLUMN canonical_event_hash SET NOT NULL;
+
+DROP TABLE trellis_bundle_publications;
+
 CREATE TABLE trellis_checkpoints (
     scope BYTEA NOT NULL,
     tree_size BIGINT NOT NULL CHECK (tree_size >= 1),
@@ -125,6 +129,7 @@ CREATE TABLE trellis_source_contents (
     sequence BIGINT NOT NULL,
     batch_hash BYTEA NOT NULL CHECK (octet_length(batch_hash) = 32),
     size BIGINT NOT NULL CHECK (size > 0),
+    artifact_ref TEXT NOT NULL CHECK (length(artifact_ref) BETWEEN 1 AND 2048),
     PRIMARY KEY (scope, sequence),
     FOREIGN KEY (scope, sequence) REFERENCES trellis_events (scope, sequence)
 );

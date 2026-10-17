@@ -1,5 +1,5 @@
 // Rust guideline compliant 2026-02-21
-//! Read-only append reconciliation from a serialized prefix and retained publication.
+//! Read-only append reconciliation from one scope-locked read point.
 
 use integrity_cbor::{Value, domain_separated_sha256};
 use stack_common_error::StackError;
@@ -7,101 +7,82 @@ use trellis_cddl::canonical_event_hash_preimage;
 use trellis_service_client::{
     AppendReconciliation, AppendReconciliationRequest, ReconciliationUnknown,
 };
-use trellis_types::{ArtifactType, EVENT_DOMAIN, StoredEvent};
+use trellis_types::{EVENT_DOMAIN, StoredEvent};
 
-use crate::{
-    TrellisServerState, append_result_for_event, event_hash, export_attempt_id,
-    verify_retained_publication,
-};
+use crate::TrellisServerState;
+use crate::ledger::{append_result, prior_event_hash};
 
 fn unknown(reason: ReconciliationUnknown) -> AppendReconciliation {
     AppendReconciliation::Unknown { reason }
 }
 
-/// Validates stored identity and recomputes hashes instead of trusting materialized values.
+/// Validates stored identity and recomputes the hash instead of trusting the materialised value.
 ///
 /// # Errors
-/// Refuses duplicate keys, malformed signed rows or inconsistent stored identities and hashes.
+/// Refuses a malformed signed row or inconsistent stored identity and hash.
+pub(crate) fn checked_event(
+    scope: &[u8],
+    index: u64,
+    event: StoredEvent,
+) -> Result<StoredEvent, StackError> {
+    let parsed = trellis_cddl::parse_canonical_event(event.canonical_event())
+        .map_err(|_| StackError::unavailable("reconciliation canonical event invalid"))?;
+    if event.scope() != scope
+        || event.sequence() != index
+        || parsed.ledger_scope != scope
+        || parsed.sequence != event.sequence()
+        || Some(parsed.idempotency_key.as_slice()) != event.idempotency_key()
+    {
+        return Err(StackError::unavailable(
+            "reconciliation stored identity differs",
+        ));
+    }
+    let signed = integrity_cbor::decode_cbor_value(event.signed_event())
+        .map_err(|_| StackError::unavailable("reconciliation signed event invalid"))?;
+    let Value::Tag(18, inner) = signed else {
+        return Err(StackError::unavailable(
+            "reconciliation signed event tag invalid",
+        ));
+    };
+    if inner
+        .as_array()
+        .filter(|fields| fields.len() == 4)
+        .and_then(|fields| fields[2].as_bytes())
+        .map(Vec::as_slice)
+        != Some(event.canonical_event())
+    {
+        return Err(StackError::unavailable(
+            "reconciliation signed payload differs",
+        ));
+    }
+    let hash = domain_separated_sha256(
+        EVENT_DOMAIN,
+        &canonical_event_hash_preimage(scope, event.canonical_event()),
+    );
+    if event
+        .canonical_event_hash()
+        .is_some_and(|cached| *cached != hash)
+    {
+        return Err(StackError::unavailable(
+            "reconciliation materialized hash differs",
+        ));
+    }
+    Ok(event.with_canonical_event_hash(Some(hash)))
+}
+
+/// [`checked_event`] over a whole prefix.
+///
+/// # Errors
+/// Refuses the first event that fails its check.
 pub(crate) fn checked_prefix(
     scope: &[u8],
     events: Vec<StoredEvent>,
 ) -> Result<Vec<StoredEvent>, StackError> {
-    let mut keys = std::collections::BTreeSet::new();
-    if events
-        .iter()
-        .filter_map(StoredEvent::idempotency_key)
-        .any(|key| !keys.insert(key))
-    {
-        return Err(StackError::unavailable("reconciliation duplicate key"));
-    }
     events
         .into_iter()
         .enumerate()
-        .map(|(index, event)| {
-            let parsed = trellis_cddl::parse_canonical_event(event.canonical_event())
-                .map_err(|_| StackError::unavailable("reconciliation canonical event invalid"))?;
-            if event.scope() != scope
-                || event.sequence() != index as u64
-                || parsed.ledger_scope != scope
-                || parsed.sequence != event.sequence()
-                || Some(parsed.idempotency_key.as_slice()) != event.idempotency_key()
-            {
-                return Err(StackError::unavailable(
-                    "reconciliation stored identity differs",
-                ));
-            }
-            let signed = integrity_cbor::decode_cbor_value(event.signed_event())
-                .map_err(|_| StackError::unavailable("reconciliation signed event invalid"))?;
-            let Value::Tag(18, inner) = signed else {
-                return Err(StackError::unavailable(
-                    "reconciliation signed event tag invalid",
-                ));
-            };
-            if inner
-                .as_array()
-                .filter(|fields| fields.len() == 4)
-                .and_then(|fields| fields[2].as_bytes())
-                .map(Vec::as_slice)
-                != Some(event.canonical_event())
-            {
-                return Err(StackError::unavailable(
-                    "reconciliation signed payload differs",
-                ));
-            }
-            let hash = domain_separated_sha256(
-                EVENT_DOMAIN,
-                &canonical_event_hash_preimage(scope, event.canonical_event()),
-            );
-            if event
-                .canonical_event_hash()
-                .is_some_and(|cached| *cached != hash)
-            {
-                return Err(StackError::unavailable(
-                    "reconciliation materialized hash differs",
-                ));
-            }
-            Ok(event.with_canonical_event_hash(Some(hash)))
-        })
+        .map(|(index, event)| checked_event(scope, index as u64, event))
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reconciliation_duplicate_key_gate_precedes_decode_or_first_match() {
-        // Deliberately ambiguous raw rows must be rejected before interpreting either record.
-        let event = StoredEvent::with_idempotency_key(
-            b"neutral-scope".to_vec(),
-            0,
-            vec![],
-            vec![],
-            b"neutral-key".to_vec(),
-        );
-        let error = checked_prefix(b"neutral-scope", vec![event.clone(), event]).unwrap_err();
-        assert_eq!(error.title(), "reconciliation duplicate key");
-    }
 }
 
 /// Checks the stored event against the lookup's identity: the content hash, or for the
@@ -126,96 +107,70 @@ fn matches_identity(
     Ok(())
 }
 
-/// Reconciles without append, Source prefetch, publication reservation or artifact writes.
+/// Reconciles without append, Source prefetch or artifact writes.
+///
+/// One scope-locked read point yields the head, the event under the key and that event's stored
+/// checkpoint; the receipt is built from those rows alone.
 pub(crate) async fn reconcile(
     state: &TrellisServerState,
     scope: &str,
     request: &AppendReconciliationRequest,
 ) -> AppendReconciliation {
-    // Release both repository and process-local serialization before immutable artifact reads.
-    let snapshot = {
-        let _guard = state.scope_locks.lock(scope.as_bytes()).await;
-        state
-            .repository
-            .reconciliation_snapshot(scope.as_bytes())
-            .await
-    };
-    let events = match snapshot {
+    let point = async {
+        let mut tx = state.repository.begin(scope.as_bytes()).await?;
+        let head = tx.head().await?;
+        let found = tx.event_by_key(request.idempotency_key.as_bytes()).await?;
+        match found {
+            Some(event) => {
+                let checkpoint = tx.checkpoint_at(event.sequence() + 1).await?;
+                Ok::<_, StackError>((head, Some((event, checkpoint)), None))
+            }
+            None => Ok((head, None, tx.last_event().await?)),
+        }
+    }
+    .await;
+    let (head, found, last) = match point {
+        Ok(point) => point,
         Err(_) => return unknown(ReconciliationUnknown::StoreUnavailable),
-        Ok(events) => match checked_prefix(scope.as_bytes(), events) {
-            Ok(events) => events,
-            Err(_) => return unknown(ReconciliationUnknown::VerificationFailed),
-        },
     };
-    let Some(event) = events
-        .iter()
-        .find(|event| event.idempotency_key() == Some(request.idempotency_key.as_bytes()))
-    else {
-        return AppendReconciliation::Absent {
-            event_count: events.len() as u64,
-            last_event_hash: events.last().map(|event| {
+    let Some((event, checkpoint)) = found else {
+        let last_event_hash = match last
+            .map(|event| checked_event(scope.as_bytes(), event.sequence(), event))
+            .transpose()
+        {
+            Ok(last) => last.map(|event| {
                 format!(
                     "sha256:{}",
                     hex::encode(
                         event
                             .canonical_event_hash()
-                            .expect("checked prefix sets hashes")
+                            .expect("checked event sets its hash")
                     )
                 )
             }),
+            Err(_) => return unknown(ReconciliationUnknown::VerificationFailed),
+        };
+        return AppendReconciliation::Absent {
+            event_count: head.map_or(0, |head| head.tree_size),
+            last_event_hash,
         };
     };
-    let prefix = &events[..=event.sequence() as usize];
-    let seal = event.sequence() + 1;
-    let record = match state.bundles.get_by_seal(scope.as_bytes(), seal).await {
-        Ok(Some(record)) => record,
-        Ok(None) => return unknown(ReconciliationUnknown::ReceiptUnavailable),
-        Err(_) => return unknown(ReconciliationUnknown::StoreUnavailable),
+    let Some(checkpoint) = checkpoint else {
+        return unknown(ReconciliationUnknown::ReceiptUnavailable);
     };
-    let Ok(attempt) = export_attempt_id(
-        scope.as_bytes(),
-        seal,
-        event.sequence(),
-        *event
-            .canonical_event_hash()
-            .expect("checked prefix sets hashes"),
-    ) else {
+    let Ok(event) = checked_event(scope.as_bytes(), event.sequence(), event) else {
         return unknown(ReconciliationUnknown::VerificationFailed);
     };
-    if record.seal_version != seal || record.export_attempt_id != attempt {
-        return unknown(ReconciliationUnknown::VerificationFailed);
-    }
-    if verify_retained_publication(state, scope.as_bytes(), prefix, &record)
-        .await
-        .is_err()
-    {
-        return unknown(ReconciliationUnknown::VerificationFailed);
-    }
-    // Only valid retained cryptographic evidence can establish a semantic key conflict.
-    if let Err(error) = matches_identity(event, request) {
+    if let Err(error) = matches_identity(&event, request) {
         return if error.status() == http::StatusCode::CONFLICT {
             AppendReconciliation::Conflict
         } else {
             unknown(ReconciliationUnknown::VerificationFailed)
         };
     }
-    let prior = event
-        .sequence()
-        .checked_sub(1)
-        .map(|sequence| event_hash(scope.as_bytes(), &events[sequence as usize]));
-    let prior = match prior.transpose() {
-        Ok(prior) => prior,
-        Err(_) => return unknown(ReconciliationUnknown::VerificationFailed),
-    };
-    match append_result_for_event(
-        scope,
-        event,
-        prior,
-        ArtifactType::Event,
-        &request.event_type,
-        &record,
-        true,
-    ) {
+    match prior_event_hash(&event)
+        .and_then(|prior| append_result(scope, &event, prior, &checkpoint))
+    {
         Ok(receipt) => AppendReconciliation::Committed { receipt },
         Err(_) => unknown(ReconciliationUnknown::VerificationFailed),
     }

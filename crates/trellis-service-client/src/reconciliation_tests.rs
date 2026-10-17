@@ -62,11 +62,11 @@ async fn reconciliation_client_uses_dedicated_encoded_route_and_current_tenant()
 }
 
 #[tokio::test]
-async fn reconciliation_client_refuses_malformed_or_unverified_receipts() {
+async fn reconciliation_client_refuses_malformed_receipts_and_receipts_for_another_scope() {
     for body in [
         "{\"status\":\"unknown\",\"reason\":\"invented\"}",
         "{\"status\":\"absent\",\"eventCount\":0,\"lastEventHash\":null,\"unexpected\":1}",
-        "{\"status\":\"committed\",\"receipt\":{\"eventId\":\"event\",\"sequence\":0,\"canonicalEventHash\":\"hash\",\"checkpointRef\":\"trellis://case_123/checkpoints/hash\",\"bundleRef\":\"memory://bundle\",\"verificationReceipt\":{\"verified\":false,\"artifactType\":\"event\",\"eventType\":\"neutral.event\"}}}",
+        "{\"status\":\"committed\",\"receipt\":{\"eventId\":\"event\",\"sequence\":0,\"canonicalEventHash\":\"hash\",\"checkpointRef\":\"trellis://other_scope/checkpoints/hash\"}}",
     ] {
         let endpoint = test_server(move |_| response("application/json", body));
         let client = TrellisServiceClient::new(TrellisServiceClientConfig::new(

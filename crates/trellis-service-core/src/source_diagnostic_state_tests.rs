@@ -8,7 +8,6 @@ fn synthetic_command(key: &str) -> append::AppendCommand {
         event_type: body.event_type,
         idempotency_key: body.idempotency_key,
         payload: body.payload,
-        compute_context: append::default_public_compute_context(),
         client_attestation: None,
     }
 }
@@ -33,30 +32,33 @@ async fn source_diagnostics_prewrite_policy_refusal_leaves_repository_empty() {
     );
 }
 #[tokio::test]
-async fn source_diagnostics_write_ok_zip_failure_preserves_event_and_is_retryable() {
-    let state = test_state().with_artifact_store(Arc::new(ConflictOnImmutableArtifactStore));
+async fn source_diagnostics_commit_failure_leaves_nothing_and_is_retryable() {
+    let state = TrellisServerState::new(
+        Arc::new(crate::repository_probes::FaultyRepository {
+            inner: Arc::new(InMemoryEventRepository::new()),
+            fault: Arc::new(crate::repository_probes::Fault::FirstCommits(AtomicUsize::new(1))),
+        }),
+        test_signing_key(),
+        crate::test_adapters::adapters(),
+    );
     let error = state
         .append_coordinator()
-        .append(synthetic_command("synthetic-publish-refusal"))
+        .append(synthetic_command("synthetic-commit-refusal"))
         .await
         .unwrap_err();
-    // The event is durable, so the client-class publication refusal surfaces as retryable.
     assert!(error.status().is_server_error());
-    assert_eq!(
-        state
-            .repository
-            .list_scope(b"synthetic-diagnostic-scope")
-            .await
-            .unwrap()
-            .len(),
-        1
-    );
     assert!(
         state
-            .bundles
-            .get_by_seal(b"synthetic-diagnostic-scope", 1)
+            .repository
+            .head_checkpoint(b"synthetic-diagnostic-scope")
             .await
             .unwrap()
-            .is_none()
+            .is_none(),
+        "the failed commit wrote neither event nor checkpoint"
     );
+    state
+        .append_coordinator()
+        .append(synthetic_command("synthetic-commit-refusal"))
+        .await
+        .unwrap();
 }

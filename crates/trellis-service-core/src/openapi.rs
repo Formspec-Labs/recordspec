@@ -6,7 +6,7 @@ use serde::Serialize;
 use stack_common_error::{ProblemJson, StackError};
 use trellis_service_client::{
     AppendActor, ClientAttestation, ComputeContext, ComputeSensitivity, SubstrateAppendBody,
-    SubstrateAppendResult, VerificationReceipt,
+    SubstrateAppendResult,
 };
 use utoipa::{OpenApi, ToSchema};
 
@@ -16,7 +16,7 @@ use utoipa::{OpenApi, ToSchema};
     info(
         title = "Trellis Substrate API",
         version = "1.0.0",
-        description = "HTTP boundary for appending events, reading proof bundles, and retrieving registry projections from the Trellis substrate service.",
+        description = "HTTP boundary for appending events, reading Core exports assembled on request, and retrieving registry projections from the Trellis substrate service.",
         license(name = "Apache-2.0"),
     ),
     servers(
@@ -50,7 +50,6 @@ use utoipa::{OpenApi, ToSchema};
         ProblemJson,
         SubstrateAppendBody,
         SubstrateAppendResult,
-        VerificationReceipt,
     )),
     tags(
         (name = "events", description = "Append proof-bearing events into a Trellis scope."),
@@ -104,7 +103,6 @@ pub async fn openapi_json() -> Result<Json<serde_json::Value>, StackError> {
 mod tests {
     use std::fs;
 
-    use serde_json::json;
     use utoipa::OpenApi as _;
     use wos_events::{WOS_CANONICAL_EVENT_LITERALS, WOS_NATIVE_PROVENANCE_EVENT_LITERAL};
 
@@ -176,23 +174,6 @@ mod tests {
                 "schema EventType enum must only list admitted server literals"
             );
         }
-        let schema_artifact = &schema["$defs"]["VerificationReceipt"]["properties"]["artifactType"];
-        let openapi_artifact =
-            &openapi["components"]["schemas"]["VerificationReceipt"]["properties"]["artifactType"];
-        assert_eq!(
-            openapi_artifact["type"], "string",
-            "OpenAPI VerificationReceipt.artifactType must be string"
-        );
-        assert_eq!(
-            schema_artifact["enum"],
-            json!(["event", "checkpoint", "manifest"]),
-            "JSON schema must enumerate closed artifactType values"
-        );
-        let schema_verified = &schema["$defs"]["VerificationReceipt"]["properties"]["verified"];
-        assert_eq!(
-            schema_verified["type"], "boolean",
-            "VerificationReceipt.verified must be boolean in JSON schema"
-        );
     }
 
     #[test]
@@ -208,24 +189,18 @@ mod tests {
             "priorEventHash",
             "canonicalEventHash",
             "checkpointRef",
-            "bundleRef",
-            "verificationReceipt",
         ] {
             assert!(
                 append_properties.contains_key(property),
                 "SubstrateAppendResult must expose {property}"
             );
         }
-        assert!(
-            schemas
-                .get("VerificationReceipt")
-                .and_then(|schema| schema["properties"].as_object())
-                .is_some_and(|properties| {
-                    ["verified", "artifactType", "eventType"]
-                        .iter()
-                        .all(|property| properties.contains_key(*property))
-                }),
-            "VerificationReceipt schema must expose verified/artifactType/eventType"
-        );
+        for removed in ["bundleRef", "verificationReceipt"] {
+            assert!(
+                !append_properties.contains_key(removed),
+                "SubstrateAppendResult no longer carries {removed}: nothing is published at append"
+            );
+        }
+        assert!(schemas.get("VerificationReceipt").is_none());
     }
 }

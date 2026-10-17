@@ -14,7 +14,8 @@ use integrity_cbor::{Value, decode_cbor_value, encode_cbor_value, map_lookup_u64
 use integrity_cose::decode_cose_sign1;
 use trellis_export_writer::{
     ExportEvidenceMember, PolicyClosureMember, RegistrySnapshot, SignedActsCatalogMember,
-    SignedActsManifestMember, TrellisTimestamp, export_001_writer_input, write_export,
+    SignedActsManifestMember, TrellisTimestamp, export_001_writer_input, issue_checkpoints,
+    write_export,
 };
 use trellis_types::StoredEvent;
 
@@ -89,7 +90,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut input = export_001_writer_input(&vectors);
     input.scope = scope.clone();
     input.events.clear();
-    input.checkpoint_timestamps.clear();
+    let mut checkpoint_timestamps = Vec::new();
     let events = fixture_value(&fixture.join("010-events.cbor"))?;
     if encode_cbor_value(&events)? != std::fs::read(fixture.join("010-events.cbor"))? {
         return Err("fixture event re-encoding changed source bytes".into());
@@ -100,9 +101,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let payload = envelope.payload().ok_or("event payload absent")?.to_vec();
         let value = decode_cbor_value(&payload)?;
         let sequence = map_lookup_u64(value.as_map().ok_or("event not map")?, "sequence")?;
-        input
-            .checkpoint_timestamps
-            .push(timestamp(field(field(&value, "header")?, "authored_at")?)?);
+        checkpoint_timestamps.push(timestamp(field(field(&value, "header")?, "authored_at")?)?);
         input
             .events
             .push(StoredEvent::new(scope.clone(), sequence, payload, signed));
@@ -118,10 +117,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         .ok_or("fixture checkpoint absent")?;
     let head = decode_cose_sign1(&encode_cbor_value(head)?)?;
     let head_value = decode_cbor_value(head.payload().ok_or("checkpoint payload absent")?)?;
-    *input
-        .checkpoint_timestamps
+    *checkpoint_timestamps
         .last_mut()
         .ok_or("fixture events absent")? = timestamp(field(&head_value, "timestamp")?)?;
+    input.checkpoints = issue_checkpoints(
+        &scope,
+        &input.events,
+        &std::fs::read(vectors.join("_keys/issuer-001.cose_key"))?,
+        &checkpoint_timestamps,
+    );
     input.generated_at = timestamp(field(&manifest_value, "generated_at")?)?;
     input.extensions = Some(field(&manifest_value, "extensions")?.clone());
     let binding = field(&manifest_value, "registry_bindings")?

@@ -32,7 +32,7 @@ pub use attachment::{
 };
 pub mod event_codec;
 mod export_profile;
-pub use export_profile::{ExportProfile, ExportProfileMembers, ExportVerdict, SigningFact};
+pub use export_profile::{ExportProfile, ExportProfileMembers, SigningFact};
 mod native_closeout;
 pub use native_closeout::{CloseoutRule, CloseoutSource, NativeCloseout};
 mod source_content_object;
@@ -216,26 +216,18 @@ impl ArtifactRef {
     }
 }
 
-/// Durable artifact store for export bundles and verifier material.
+/// Durable artifact store for certificate presentations, Source batch copies and the like.
 #[async_trait]
 pub trait ArtifactStore: Send + Sync {
     type Error: std::error::Error + Send + Sync + 'static;
 
     /// Writes mutable artifact bytes.
-    ///
-    /// Implementations must reject keys for which [`artifact_key_requires_immutable_put`] returns
-    /// `true`; checkpoint bundle publication must use [`Self::put_immutable`].
     async fn put(&self, key: &str, bytes: &[u8]) -> Result<ArtifactRef, Self::Error>;
 
     /// Writes immutable artifact bytes, accepting same-key retries only when bytes are identical.
     async fn put_immutable(&self, key: &str, bytes: &[u8]) -> Result<ArtifactRef, Self::Error>;
 
     async fn get(&self, artifact_ref: &ArtifactRef) -> Result<Option<Vec<u8>>, Self::Error>;
-}
-
-#[must_use]
-pub fn artifact_key_requires_immutable_put(key: &str) -> bool {
-    key.contains("/bundles/") && key.ends_with(".zip")
 }
 
 /// S3-compatible artifact-store adapter backed by shared stack object helpers.
@@ -386,11 +378,6 @@ impl ArtifactStore for S3CompatibleArtifactStore {
     type Error = StackError;
 
     async fn put(&self, key: &str, bytes: &[u8]) -> Result<ArtifactRef, Self::Error> {
-        if artifact_key_requires_immutable_put(key) {
-            return Err(StackError::conflict(
-                "bundle artifact keys require immutable writes",
-            ));
-        }
         let location = self.location_for_key(key)?;
         let uri = self.uri_for_location(&location);
         stack_common_object_store::parse_s3_object_uri(&self.config, &uri)?;
@@ -552,8 +539,9 @@ pub struct AdmittedEvent {
     pub direct_submit: DirectSubmitPolicy,
     /// Most events a scope may hold when it carries this event type.
     ///
-    /// Append rereads and republishes the scope's whole ledger, so a family whose
-    /// ledgers anonymous callers can grow bounds that work here. `None` is unbounded.
+    /// Appends are flat in ledger length, but an export is assembled from the whole prefix and
+    /// exports are served to anonymous readers, so a family whose ledgers anonymous callers can
+    /// grow bounds that growth here. `None` is unbounded.
     pub max_scope_events: Option<u64>,
 }
 
@@ -681,33 +669,6 @@ impl ComputeDisclosure for NoopComputeDisclosure {
             actor: actor.to_string(),
             sensitivity,
         })
-    }
-}
-
-/// Atomic append work accepted by the Trellis service layer.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AppendUnitOfWork {
-    event: StoredEvent,
-    compute_context: ComputeContext,
-}
-
-impl AppendUnitOfWork {
-    #[must_use]
-    pub fn new(event: StoredEvent, compute_context: ComputeContext) -> Self {
-        Self {
-            event,
-            compute_context,
-        }
-    }
-
-    #[must_use]
-    pub fn event(&self) -> &StoredEvent {
-        &self.event
-    }
-
-    #[must_use]
-    pub fn compute_context(&self) -> &ComputeContext {
-        &self.compute_context
     }
 }
 
@@ -1284,38 +1245,6 @@ mod tests {
             .expect("read immutable object")
             .expect("object bytes");
         assert_eq!(bytes, b"sealed bytes");
-    }
-
-    #[tokio::test]
-    async fn s3_artifact_store_plain_put_rejects_bundle_keys() {
-        use object_store::memory::InMemory;
-
-        let config = S3ObjectConfig {
-            bucket: "proof-bundles".to_string(),
-            endpoint: None,
-            region: None,
-        };
-        let backend = Arc::new(InMemory::new()) as Arc<dyn object_store::ObjectStore + Send + Sync>;
-        let store = S3CompatibleArtifactStore::from_object_store_for_test(config, "pfx/", backend);
-
-        let error = store
-            .put("case/bundles/deadbeef.zip", b"sealed bytes")
-            .await
-            .expect_err("bundle keys require immutable writes");
-
-        assert_eq!(error.code().as_str(), "INFRA-4090");
-    }
-
-    #[tokio::test]
-    async fn append_unit_requires_compute_context() {
-        let context = NoopComputeDisclosure
-            .declare_compute("agent-a", ComputeSensitivity::ReaderHeld)
-            .await
-            .expect("compute context");
-        let unit = AppendUnitOfWork::new(event(b"case-1", 0), context.clone());
-
-        assert_eq!(unit.compute_context(), &context);
-        assert_eq!(unit.event().scope(), b"case-1");
     }
 
     #[tokio::test]

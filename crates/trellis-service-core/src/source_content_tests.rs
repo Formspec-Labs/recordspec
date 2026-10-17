@@ -88,9 +88,9 @@ impl SourceContentFinalPrefixGuard for NeutralPorts {
         &self,
         scope: &[u8],
         _body: &SubstrateAppendBody,
-        prefix: &[StoredEvent],
+        last: Option<&StoredEvent>,
     ) -> Result<SourceContentPrefixClass, StackError> {
-        self.classify(scope, prefix)
+        self.classify(scope, last.map(std::slice::from_ref).unwrap_or_default())
     }
 }
 impl StructuralSourcePublicationVerifier for NeutralPorts {
@@ -136,7 +136,6 @@ fn command(body: &[u8]) -> append::AppendCommand {
         event_type: body.event_type,
         idempotency_key: body.idempotency_key,
         payload: body.payload,
-        compute_context: append::default_public_compute_context(),
         client_attestation: None,
     }
 }
@@ -166,25 +165,24 @@ async fn source_content_final_guard_refuses_plain_append_before_repository_write
 }
 
 #[tokio::test]
-async fn source_content_final_guard_precedes_retained_seal_shortcut() {
+async fn source_content_final_guard_refuses_a_bare_final_closeout_export() {
     let state = test_state();
     state
         .append_coordinator()
         .append(command(&append_body("source-old-prefix")))
         .await
         .unwrap();
-    let events = state.repository.list_scope(b"case_123").await.unwrap();
+    let head = state
+        .repository
+        .head_checkpoint(b"case_123")
+        .await
+        .unwrap()
+        .unwrap();
     let (composition, reader) = selected(true);
     let state = state.with_source_content(composition);
-    let error = publish_bundle(
-        &state,
-        b"case_123",
-        &events,
-        false,
-        &append::default_public_compute_context(),
-    )
-    .await
-    .unwrap_err();
+    let error = export::assemble(&state, b"case_123", &head)
+        .await
+        .unwrap_err();
     assert_eq!(
         error.title(),
         "final closeout requires committed Source content"
@@ -200,23 +198,16 @@ async fn source_content_final_guard_precedes_retained_seal_shortcut() {
 }
 
 #[tokio::test]
-async fn source_content_ordinary_publication_keeps_prior_profile_gate_and_never_reads_contributor()
-{
+async fn source_content_ordinary_append_never_reads_the_contributor() {
     let (composition, reader) = selected(false);
-    let state = test_state()
-        .with_source_content(composition)
-        .with_profile_export_verifier(Arc::new(|_| false));
-    let error = state
+    let state = test_state().with_source_content(composition);
+    state
         .append_coordinator()
         .append(command(&signature_affirmation_append_body(
             "source-ordinary-gate",
         )))
         .await
-        .unwrap_err();
-    assert_eq!(
-        error.title(),
-        "published export bundle failed profile verification"
-    );
+        .unwrap();
     assert_eq!(reader.reads.load(Ordering::SeqCst), 0);
 }
 
@@ -684,8 +675,9 @@ async fn source_content_committed_original_read_writer_and_immutable_replay() {
         .append_selected_source_content(cmd.clone(), &context)
         .await
         .unwrap();
-    let retained = f.state.bundles.get_by_seal(b"case_123", 2).await.unwrap().unwrap();
-    let bytes = f.state.artifact_store.get(&retained.artifact_ref).await.unwrap().unwrap();
+    let head = f.state.repository.head_checkpoint(b"case_123").await.unwrap().unwrap();
+    assert_eq!(head.tree_size, 2);
+    let bytes = export::assemble(&f.state, b"case_123", &head).await.unwrap();
     let entries = integrity_bundle::read_stored_zip(&bytes).unwrap();
     assert!(
         entries
@@ -699,14 +691,51 @@ async fn source_content_committed_original_read_writer_and_immutable_replay() {
         .await
         .unwrap();
     assert_eq!(first.stored, replay.stored);
+    assert_eq!(first.result, replay.result);
     assert_eq!(f.ledger_len().await, 2);
     assert_eq!(
-        f.state.bundles.get_by_seal(b"case_123", 2).await.unwrap().unwrap(),
-        retained
+        export::assemble(&f.state, b"case_123", &head).await.unwrap(),
+        bytes,
+        "the export is a function of the stored rows and the retained batch"
     );
+}
+
+/// ADR 0163 lets WOS purge its copy of the batch once the closeout commits. Trellis keeps its own,
+/// so the closeout's export is still assembled from Trellis alone.
+#[tokio::test]
+async fn a_purged_case_still_exports() {
+    use object_store::ObjectStore;
+    let f = sourced(true, |_| {}).await;
+    let response = router(f.state.clone())
+        .unwrap()
+        .oneshot(post_request(EVENTS, f.payload()))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let head = f.state.repository.head_checkpoint(b"case_123").await.unwrap().unwrap();
+    let before = export::assemble(&f.state, b"case_123", &head).await.unwrap();
+
+    // WOS purges its object: nothing remains under the contributor's key.
+    let location = object_store::path::Path::from(format!(
+        "pfx/{}",
+        object_key(&tenant_a(), &f.claim)
+    ));
+    f.backend.delete(&location).await.unwrap();
+    assert!(f.backend.get(&location).await.is_err(), "the WOS copy is gone");
+    let reads_before = f.reader.reads.load(Ordering::SeqCst);
+
+    let after = export::assemble(&f.state, b"case_123", &head).await.unwrap();
+    assert_eq!(after, before);
     assert_eq!(
-        f.state.artifact_store.get(&retained.artifact_ref).await.unwrap().unwrap(),
-        bytes
+        f.reader.reads.load(Ordering::SeqCst),
+        reads_before,
+        "the export never reaches back to the contributor"
+    );
+    assert!(
+        integrity_bundle::read_stored_zip(&after)
+            .unwrap()
+            .iter()
+            .any(|entry| entry.bytes() == f.batch.records[0].protected_record_bytes)
     );
 }
 
@@ -754,7 +783,7 @@ async fn source_content_hash_mismatch_is_422_with_no_ledger_record() {
         (StatusCode::UNPROCESSABLE_ENTITY, "source-content.hash-mismatch".into())
     );
     assert_eq!(f.ledger_len().await, 1);
-    assert!(f.state.bundles.get_by_seal(b"case_123", 2).await.unwrap().is_none());
+    assert!(f.state.repository.checkpoint_at(b"case_123", 2).await.unwrap().is_none());
 }
 
 #[tokio::test]
@@ -838,23 +867,25 @@ async fn source_content_claim_without_a_composition_is_refused() {
 }
 
 #[tokio::test]
-async fn source_content_publication_fault_after_the_repository_write_resends_to_the_committed_record() {
-    // fs-y075 at the Source route: the 5xx is not cached, so the byte-identical resend
-    // reaches the ledger branch and returns the committed record with the Source members.
+async fn source_content_batch_copy_failure_commits_nothing_and_the_resend_succeeds() {
+    // The copy is written before the commit, so a failed copy leaves no closeout behind, and the
+    // answer is a retryable 5xx that the HTTP layer does not cache.
     let f = sourced(true, |_| {}).await;
-    let state = f.state.clone().with_artifact_store(Arc::new(FailsFirstImmutablePut {
-        remaining: AtomicUsize::new(1),
-        inner: Default::default(),
-    }));
+    let state = f.state.clone().with_artifact_store(Arc::new(
+        crate::repository_probes::FailsFirstImmutablePut {
+            remaining: AtomicUsize::new(1),
+            inner: Default::default(),
+        },
+    ));
     let app = router(state.clone()).unwrap();
     let first = app.clone().oneshot(post_request(EVENTS, f.payload())).await.unwrap();
     assert_eq!(first.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(state.repository.list_scope(b"case_123").await.unwrap().len(), 2);
+    assert_eq!(state.repository.list_scope(b"case_123").await.unwrap().len(), 1);
     let resend = app.oneshot(post_request(EVENTS, f.payload())).await.unwrap();
     assert_eq!(resend.status(), StatusCode::CREATED);
     assert_eq!(state.repository.list_scope(b"case_123").await.unwrap().len(), 2);
-    let retained = state.bundles.get_by_seal(b"case_123", 2).await.unwrap().unwrap();
-    let zip = state.artifact_store.get(&retained.artifact_ref).await.unwrap().unwrap();
+    let head = state.repository.head_checkpoint(b"case_123").await.unwrap().unwrap();
+    let zip = export::assemble(&state, b"case_123", &head).await.unwrap();
     assert!(
         integrity_bundle::read_stored_zip(&zip)
             .unwrap()
@@ -908,7 +939,7 @@ async fn source_content_response_claims_cannot_change_with_consistent_batch_key_
             .unwrap_err();
         assert_eq!(error.title(), "source-content.claim-differs");
         assert_eq!(f.ledger_len().await, 1);
-        assert!(f.state.bundles.get_by_seal(b"case_123", 2).await.unwrap().is_none());
+        assert!(f.state.repository.checkpoint_at(b"case_123", 2).await.unwrap().is_none());
     }
 }
 

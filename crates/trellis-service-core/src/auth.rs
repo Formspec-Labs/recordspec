@@ -124,15 +124,16 @@ async fn admit_append(
     let admitted = match (&body.source_content, &state.source_content) {
         (None, None) => None,
         (None, Some(composition)) => {
-            let prefix = state
+            // A closeout can only be the last event, so the last event decides.
+            let last = state
                 .repository
-                .list_scope(scope.as_bytes())
+                .last_event(scope.as_bytes())
                 .await
                 .map_err(IntoResponse::into_response)?;
             if matches!(
                 composition
                     .final_prefix_guard
-                    .classify_append(scope.as_bytes(), &body, &prefix)
+                    .classify_append(scope.as_bytes(), &body, last.as_ref())
                     .map_err(IntoResponse::into_response)?,
                 crate::SourceContentPrefixClass::FinalCloseout { .. }
             ) {
@@ -248,31 +249,4 @@ pub(crate) async fn authorize_action(
         ));
     }
     Ok(permit)
-}
-
-/// Requires publication authority for the same admitted reader and resource.
-pub(crate) async fn authorize_publication(
-    state: &TrellisServerState,
-    identity: &AuthenticatedRequest,
-    read_permit: &AuthorizedScope,
-) -> Result<(), StackError> {
-    let scope = std::str::from_utf8(&read_permit.scope)
-        .map_err(|_| StackError::internal("admitted read scope is not UTF-8"))?;
-    let administer = authorize_action(
-        state,
-        identity,
-        &read_permit.tenant_scope,
-        scope,
-        ScopeAction::Administer,
-        None,
-    )
-    .await?;
-    if administer.principal != read_permit.principal {
-        return Err(StackError::new(
-            ErrorCode::new("INFRA-4030").expect("static error code is valid"),
-            axum::http::StatusCode::FORBIDDEN,
-            "publication requires the same authorized internal principal",
-        ));
-    }
-    Ok(())
 }

@@ -77,10 +77,10 @@ async fn source_diagnostics_non2xx_and_invalid2xx_consume_one_response_and_prese
 }
 #[tokio::test]
 async fn source_diagnostics_receipt_validation_returns_the_existing_refusal() {
-    let body = r#"{"eventId":"synthetic-event","sequence":0,"canonicalEventHash":"sha256:abc","checkpointRef":"trellis://case_123/checkpoints/synthetic","bundleRef":"memory://synthetic","verificationReceipt":{"verified":false,"artifactType":"event","eventType":"example.event"}}"#;
+    let body = r#"{"eventId":"synthetic-event","sequence":0,"canonicalEventHash":"sha256:abc","checkpointRef":"trellis://other_scope/checkpoints/synthetic"}"#;
     let expected = serde_json::from_str::<SubstrateAppendResult>(body)
         .unwrap()
-        .validate_for_event_append("case_123", "example.event")
+        .validate_for_event_append("case_123")
         .unwrap_err();
     let endpoint = test_server(move |_| response("application/json", body));
     let error = client(endpoint, tokens(usize::MAX))

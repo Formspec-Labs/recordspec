@@ -36,10 +36,8 @@ use crate::TrellisClaims;
 use crate::adapters::{EventTypeCatalog, ServerAdapters, TenantHeaders};
 use crate::admission::AllowAllScopeAuthorizer;
 use crate::append::{AppendRunner, DefaultAppendRunner};
-use crate::artifacts::{BundleIndex, BundleIndexPort, InMemoryArtifactStore, ScopeLocks};
-use crate::event_repository::{
-    EventRepository, InMemoryEventRepository, PostgresBundleIndex, PostgresEventRepository,
-};
+use crate::artifacts::InMemoryArtifactStore;
+use crate::event_repository::{EventRepository, InMemoryEventRepository, PostgresEventRepository};
 use crate::oidc_startup::StartupAuth;
 
 /// Explicit verifier selection; verification never falls back between modes.
@@ -102,8 +100,6 @@ pub struct TrellisServerState {
     pub(crate) signing_key: ServerSigningKey,
     tenant_headers: TenantHeaders,
     replay_store: Arc<InMemoryHttpReplayStore>,
-    pub(crate) bundles: Arc<dyn BundleIndexPort>,
-    pub(crate) scope_locks: Arc<ScopeLocks>,
     authentication: Authentication,
     /// True when startup selected current provider verification and exact resource grants.
     production_like_scope_posture: bool,
@@ -147,8 +143,6 @@ impl TrellisServerState {
             signing_key,
             tenant_headers: adapters.tenant_headers,
             replay_store: Arc::new(InMemoryHttpReplayStore::new()),
-            bundles: Arc::new(BundleIndex::default()),
-            scope_locks: Arc::new(ScopeLocks::default()),
             authentication: Authentication::Unconfigured,
             production_like_scope_posture: false,
             scope_authorizer_allow_all: true,
@@ -220,16 +214,6 @@ impl TrellisServerState {
         self
     }
 
-    /// Test-only: replace profile export verification to prove publication is fail-closed.
-    #[cfg(test)]
-    pub(crate) fn with_profile_export_verifier(mut self, verifier: ProfileVerifier) -> Self {
-        self.export_profile = Arc::new(VerifierOverride {
-            inner: self.export_profile,
-            verifier,
-        });
-        self
-    }
-
     #[must_use]
     pub fn production_like_scope_posture(&self) -> bool {
         self.production_like_scope_posture
@@ -247,11 +231,6 @@ impl TrellisServerState {
         artifact_store: Arc<dyn ArtifactStore<Error = StackError>>,
     ) -> Self {
         self.artifact_store = artifact_store;
-        self
-    }
-
-    pub(crate) fn with_bundle_index(mut self, bundles: Arc<dyn BundleIndexPort>) -> Self {
-        self.bundles = bundles;
         self
     }
 
@@ -320,6 +299,14 @@ impl TrellisServerState {
             ));
         }
         Ok(())
+    }
+
+    /// Issues the checkpoint that follows a head with this server's signing key and export profile.
+    pub(crate) fn checkpointer(&self) -> crate::ledger::Checkpointer<'_> {
+        crate::ledger::Checkpointer {
+            signing_key: self.signing_key.core_key(),
+            export_profile: self.export_profile.as_ref(),
+        }
     }
 
     #[must_use]
@@ -531,30 +518,21 @@ pub async fn state_from_env(adapters: ServerAdapters) -> Result<TrellisServerSta
             .with_valid_to(signing_key_valid_to);
     crate::posture::check(profile, trellis_storage_is_memory, &signing_key)?;
 
-    let (repository, bundle_index): (Arc<dyn EventRepository>, Option<Arc<dyn BundleIndexPort>>) =
-        if trellis_storage_is_memory {
-            (Arc::new(InMemoryEventRepository::new()), None)
-        } else {
-            let database_url = env::var("TRELLIS_DATABASE_URL")
-                .map_err(|_| StackError::bad_request("TRELLIS_DATABASE_URL is required"))?;
-            let pool = trellis_store_postgres_async::build_pool(&database_url, 10)
-                .await
-                .map_err(|error| StackError::unavailable(format!("postgres pool: {error}")))?;
-            trellis_store_postgres_async::run_migrations(&pool)
-                .await
-                .map_err(|error| {
-                    StackError::unavailable(format!("postgres migrations: {error}"))
-                })?;
-            (
-                Arc::new(PostgresEventRepository::new(pool.clone())),
-                Some(Arc::new(PostgresBundleIndex::new(pool))),
-            )
-        };
+    let repository: Arc<dyn EventRepository> = if trellis_storage_is_memory {
+        Arc::new(InMemoryEventRepository::new())
+    } else {
+        let database_url = env::var("TRELLIS_DATABASE_URL")
+            .map_err(|_| StackError::bad_request("TRELLIS_DATABASE_URL is required"))?;
+        let pool = trellis_store_postgres_async::build_pool(&database_url, 10)
+            .await
+            .map_err(|error| StackError::unavailable(format!("postgres pool: {error}")))?;
+        trellis_store_postgres_async::run_migrations(&pool)
+            .await
+            .map_err(|error| StackError::unavailable(format!("postgres migrations: {error}")))?;
+        Arc::new(PostgresEventRepository::new(pool))
+    };
 
     let mut state = TrellisServerState::new(repository, signing_key, adapters);
-    if let Some(bundle_index) = bundle_index {
-        state = state.with_bundle_index(bundle_index);
-    }
     if let Some(artifact_store) = artifact_store_from_env() {
         state = state.with_artifact_store(artifact_store);
     }
@@ -609,7 +587,7 @@ impl TrellisHealthProbe {
 impl HealthProbe for TrellisHealthProbe {
     async fn check(&self) -> ComponentHealth {
         let mut issues = Vec::new();
-        if let Err(error) = self.state.repository.list_scope(b"__healthz__").await {
+        if let Err(error) = self.state.repository.head_checkpoint(b"__healthz__").await {
             issues.push(format!("repository: {error}"));
         }
         let probe_key = "__healthz__/artifact-roundtrip";
@@ -649,50 +627,5 @@ struct NativeReplayScope(String);
 impl HttpReplayScope for NativeReplayScope {
     fn replay_scope_id(&self) -> String {
         self.0.clone()
-    }
-}
-
-/// Test-only: judges profile bundles with `verifier` and delegates everything else.
-#[cfg(test)]
-pub(crate) type ProfileVerifier = Arc<dyn Fn(&[u8]) -> bool + Send + Sync>;
-
-#[cfg(test)]
-struct VerifierOverride {
-    inner: Arc<dyn ExportProfile>,
-    verifier: ProfileVerifier,
-}
-
-#[cfg(test)]
-impl ExportProfile for VerifierOverride {
-    fn evidence_members(
-        &self,
-        scope: &[u8],
-        events: &[&trellis_types::StoredEvent],
-    ) -> Result<Vec<trellis_export_writer::ExportEvidenceMember>, StackError> {
-        self.inner.evidence_members(scope, events)
-    }
-
-    fn profile_members(
-        &self,
-        scope: &[u8],
-        events: &[trellis_types::StoredEvent],
-        generated_at: TrellisTimestamp,
-    ) -> Result<trellis_server_ports::ExportProfileMembers, StackError> {
-        self.inner.profile_members(scope, events, generated_at)
-    }
-
-    fn verify(&self, zip: &[u8]) -> trellis_server_ports::ExportVerdict {
-        trellis_server_ports::ExportVerdict {
-            profile_verified: (self.verifier)(zip),
-            ..self.inner.verify(zip)
-        }
-    }
-
-    fn signing_facts(
-        &self,
-        events: &[trellis_types::StoredEvent],
-        selected: &[[u8; 32]],
-    ) -> Result<Vec<trellis_server_ports::SigningFact>, StackError> {
-        self.inner.signing_facts(events, selected)
     }
 }

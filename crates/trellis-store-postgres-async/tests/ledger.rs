@@ -7,8 +7,9 @@ use std::time::Duration;
 
 use sqlx::PgPool;
 use stack_common_postgres::testing::EphemeralCluster;
-use trellis_store_postgres_async::ledger::{self, AppendError, SourceContentBinding};
-use trellis_store_postgres_async::run_migrations;
+use trellis_store_postgres_async::{
+    self as ledger, AppendError, SourceContentBinding, run_migrations,
+};
 use trellis_types::merkle::{Frontier, TrellisHasher};
 use trellis_types::{StoredCheckpoint, StoredEvent};
 
@@ -303,6 +304,7 @@ async fn a_source_content_binding_belongs_to_exactly_one_event() {
     let binding = SourceContentBinding {
         batch_hash: [8; 32],
         size: 77,
+        artifact_ref: "memory://batch".to_owned(),
     };
     let mut tx = ledger::begin_scope(&pool, b"scope-i").await.unwrap();
     ledger::append_checkpointed_in_tx(&mut tx, &event, &checkpoint)
@@ -337,4 +339,58 @@ async fn a_source_content_binding_belongs_to_exactly_one_event() {
         ledger::source_content(&pool, b"scope-i", 1).await.unwrap(),
         None
     );
+}
+
+#[tokio::test]
+async fn cleartext_is_rejected_by_a_tls_required_server() {
+    let cluster = EphemeralCluster::start_required();
+    let _pool = support::tls_pool(&cluster, 1).await;
+}
+
+/// A pool whose connections default to `REPEATABLE READ` would let a waiter's first read see the
+/// snapshot from before the lock was granted, and an append would miss the head the lock holder
+/// just committed. `begin_scope` overrides the default before its first statement.
+#[tokio::test]
+async fn a_scope_unit_of_work_reads_the_latest_commit_even_when_the_pool_defaults_to_repeatable_read()
+ {
+    let (_cluster, pool) = started_pool(2).await;
+    // Hold both connections while setting their session default, so the unit of work cannot be
+    // handed a fresh, unconfigured one.
+    let mut held = vec![pool.acquire().await.unwrap(), pool.acquire().await.unwrap()];
+    for connection in &mut held {
+        sqlx::query("SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            .execute(&mut **connection)
+            .await
+            .unwrap();
+    }
+    drop(held);
+
+    let writer = tokio::spawn({
+        let pool = pool.clone();
+        async move {
+            let mut tx = ledger::begin_scope(&pool, b"scope-rr").await.unwrap();
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let (event, checkpoint) = pair(b"scope-rr", 0, b"key-0");
+            ledger::append_checkpointed_in_tx(&mut tx, &event, &checkpoint)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let mut tx = ledger::begin_scope(&pool, b"scope-rr").await.unwrap();
+    let isolation: String = sqlx::query_scalar("SHOW transaction_isolation")
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(isolation, "read committed");
+    assert_eq!(
+        ledger::head_checkpoint(&mut *tx, b"scope-rr")
+            .await
+            .unwrap()
+            .map(|head| head.tree_size),
+        Some(1)
+    );
+    tx.rollback().await.unwrap();
+    writer.await.unwrap();
 }

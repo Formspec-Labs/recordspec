@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Trellis Substrate API",
-    "description": "HTTP boundary for appending events, reading proof bundles, and retrieving registry projections from the Trellis substrate service.",
+    "description": "HTTP boundary for appending events, reading Core exports assembled on request, and retrieving registry projections from the Trellis substrate service.",
     "license": {
       "name": "Apache-2.0"
     },
@@ -74,7 +74,7 @@
         },
         "responses": {
           "201": {
-            "description": "Protected event and verified export retained",
+            "description": "Protected event and its checkpoint committed",
             "content": {
               "application/json": {
                 "schema": {
@@ -120,13 +120,13 @@
         ],
         "responses": {
           "200": {
-            "description": "Verified retained current bundle under Read, or an Administer-authorized publication.",
+            "description": "The Core section 18 export at the head checkpoint, assembled on request under Read.",
             "content": {
               "application/zip": {}
             }
           },
           "403": {
-            "description": "Current Read refused, or publication requires Administer.",
+            "description": "Current Read refused.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -136,7 +136,7 @@
             }
           },
           "404": {
-            "description": "Scope has no bundle.",
+            "description": "Scope has no events.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -146,7 +146,7 @@
             }
           },
           "409": {
-            "description": "Bundle artifact or seal identity conflict.",
+            "description": "Stored rows or a retained Source batch contradict themselves.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -156,7 +156,7 @@
             }
           },
           "503": {
-            "description": "Bundle store unavailable.",
+            "description": "Ledger or artifact store unavailable.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -196,7 +196,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Pinned Trellis export bundle.",
+            "description": "The Core section 18 export at the pinned checkpoint, assembled on request under Read.",
             "content": {
               "application/zip": {}
             }
@@ -212,7 +212,7 @@
             }
           },
           "404": {
-            "description": "Pinned checkpoint bundle not found.",
+            "description": "No checkpoint with that digest in the scope.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -222,7 +222,7 @@
             }
           },
           "409": {
-            "description": "Bundle artifact or seal identity conflict.",
+            "description": "Stored rows or a retained Source batch contradict themselves.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -232,7 +232,7 @@
             }
           },
           "503": {
-            "description": "Bundle store unavailable.",
+            "description": "Ledger or artifact store unavailable.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -347,7 +347,7 @@
         },
         "responses": {
           "201": {
-            "description": "Event appended and proof bundle published.",
+            "description": "Event and its checkpoint committed.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1335,19 +1335,14 @@
       },
       "SubstrateAppendResult": {
         "type": "object",
-        "description": "Append response returned by the Trellis service.",
+        "description": "Append response returned by the Trellis service.\n\n`checkpoint_ref` names the signed checkpoint at `sequence + 1`, durable when the response is\nsent. The Core §18 export at that checkpoint (`GET .../bundles/{checkpointDigest}`) is the\nreceipt's proof; nothing is published at append time.",
         "required": [
           "eventId",
           "sequence",
           "canonicalEventHash",
-          "checkpointRef",
-          "bundleRef",
-          "verificationReceipt"
+          "checkpointRef"
         ],
         "properties": {
-          "bundleRef": {
-            "type": "string"
-          },
           "canonicalEventHash": {
             "type": "string"
           },
@@ -1367,35 +1362,6 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
-          },
-          "verificationReceipt": {
-            "$ref": "#/components/schemas/VerificationReceipt"
-          }
-        }
-      },
-      "VerificationReceipt": {
-        "type": "object",
-        "description": "Substrate append HTTP/OpenAPI DTO: export verification summary for this append.\n\nThis is a **server projection** field on the JSON append response (`SubstrateAppendResult`),\nnot a Formspec/WOS spec-suite schema artifact. Formspec cryptographic receipts in authored\nartifacts remain spec-defined; operators integrate Trellis using this DTO and the bundle ref.",
-        "required": [
-          "verified",
-          "artifactType",
-          "eventType"
-        ],
-        "properties": {
-          "artifactType": {
-            "type": "string",
-            "description": "Trellis substrate artifact type: event, checkpoint, or manifest.",
-            "enum": [
-              "event",
-              "checkpoint",
-              "manifest"
-            ]
-          },
-          "eventType": {
-            "type": "string"
-          },
-          "verified": {
-            "type": "boolean"
           }
         }
       },

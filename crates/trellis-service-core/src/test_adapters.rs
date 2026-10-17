@@ -92,7 +92,8 @@ pub(crate) fn closeout() -> Arc<dyn NativeCloseout> {
     Arc::new(WosNativeCloseout)
 }
 
-/// Independent substrate verification of an export ZIP, through the shipped profile.
+/// Independent substrate verification of an export ZIP, by the verifier the relying party runs.
 pub(crate) fn export_bundle_cryptographically_verified(zip: &[u8]) -> bool {
-    adapters().export_profile.verify(zip).substrate_verified
+    let report = trellis_verify_wos::verify_export_zip(zip);
+    report.trellis.structure_verified && report.trellis.integrity_verified
 }

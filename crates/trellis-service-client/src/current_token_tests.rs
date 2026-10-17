@@ -100,14 +100,14 @@ async fn all_seven_operations_acquire_changed_current_tokens_once_each() {
             )));
             let body = match index {
                 0 => {
-                    r#"{"eventId":"evt_1","sequence":1,"canonicalEventHash":"sha256:abc","checkpointRef":"trellis://case_123/checkpoints/cp_1","bundleRef":"s3://bucket/bundle.zip","verificationReceipt":{"verified":true,"artifactType":"event","eventType":"example.event"}}"#
+                    r#"{"eventId":"evt_1","sequence":1,"canonicalEventHash":"sha256:abc","checkpointRef":"trellis://case_123/checkpoints/cp_1"}"#
                 }
                 4 => r#"{"eventTypes":[]}"#,
                 5 => {
-                    r#"{"eventId":"evt_2","sequence":2,"canonicalEventHash":"sha256:def","checkpointRef":"trellis://case_123/checkpoints/cp_2","bundleRef":"s3://bucket/attachment.zip","verificationReceipt":{"verified":true,"artifactType":"event","eventType":"substrate.append.accepted_attachment_binding"}}"#
+                    r#"{"eventId":"evt_2","sequence":2,"canonicalEventHash":"sha256:def","checkpointRef":"trellis://case_123/checkpoints/cp_2"}"#
                 }
                 6 => {
-                    r#"{"eventId":"evt_3","sequence":3,"canonicalEventHash":"sha256:cdef","checkpointRef":"trellis://case_123/checkpoints/cp_3","bundleRef":"s3://bucket/completion.zip","verificationReceipt":{"verified":true,"artifactType":"event","eventType":"trellis.certificate-of-completion.v2"}}"#
+                    r#"{"eventId":"evt_3","sequence":3,"canonicalEventHash":"sha256:cdef","checkpointRef":"trellis://case_123/checkpoints/cp_3"}"#
                 }
                 _ => "test-bytes",
             };
@@ -265,7 +265,7 @@ async fn completion_seal_sends_the_selection_in_the_body_under_the_machine_token
         assert_eq!(serde_json::from_str::<serde_json::Value>(body).unwrap(), expected);
         response(
             "application/json",
-            r#"{"eventId":"evt_3","sequence":3,"canonicalEventHash":"sha256:cdef","checkpointRef":"trellis://case_123/checkpoints/cp_3","bundleRef":"s3://bucket/completion.zip","verificationReceipt":{"verified":true,"artifactType":"event","eventType":"trellis.certificate-of-completion.v2"}}"#,
+            r#"{"eventId":"evt_3","sequence":3,"canonicalEventHash":"sha256:cdef","checkpointRef":"trellis://case_123/checkpoints/cp_3"}"#,
         )
     });
     let provider = tokens(usize::MAX);

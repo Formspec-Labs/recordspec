@@ -23,7 +23,7 @@ def load_checker_module():
 class TestCheckHttpApiSchema(unittest.TestCase):
     def setUp(self) -> None:
         self.module = load_checker_module()
-        self.server_source = self.module.SERVER_PATH.read_text(encoding="utf-8")
+        self.server_source = self.module.read_server_source()
         self.client_source = self.module.CLIENT_PATH.read_text(encoding="utf-8")
         self.schema = self.module.read_json(self.module.SCHEMA_PATH)
 
@@ -41,14 +41,14 @@ class TestCheckHttpApiSchema(unittest.TestCase):
         from_kind = self.module.parse_substrate_event_literals_from_kind_rs(kind_text)
         self.assertEqual(literals, from_kind)
 
-    def test_given_artifact_type_const_lock_when_check_defs_then_error_emitted(self) -> None:
+    def test_given_schema_requiring_a_bundle_ref_when_check_defs_then_error_emitted(self) -> None:
         schema = self.module.read_json(self.module.SCHEMA_PATH)
-        schema["$defs"]["VerificationReceipt"]["properties"]["artifactType"]["const"] = "event"
+        schema["$defs"]["SubstrateAppendResult"]["required"].append("bundleRef")
         errors: list[str] = []
         self.module.check_defs(schema, self.server_source, self.client_source, errors)
-        self.assertIn(
-            "VerificationReceipt.artifactType must not const-lock a single value",
-            errors,
+        self.assertTrue(
+            any("SubstrateAppendResult required fields mismatch" in error for error in errors),
+            msg=errors,
         )
 
     def test_given_missing_client_route_fragment_when_check_operations_then_error_emitted(self) -> None:
@@ -92,7 +92,7 @@ class TestCheckHttpApiSchema(unittest.TestCase):
         # ADR 0109: assert the new AdmittedEvent.artifact_type contract is
         # present.
         server_source = self.server_source.replace("AdmittedEvent", "RetiredEnvelope")
-        server_source = server_source.replace("artifact_type: ArtifactType", "artifact_type: String")
+        server_source = server_source.replace("admitted.artifact_type", "admitted.kind")
         errors: list[str] = []
         self.module.check_defs(self.schema, server_source, self.client_source, errors)
         self.assertTrue(
@@ -103,10 +103,7 @@ class TestCheckHttpApiSchema(unittest.TestCase):
     def test_given_server_only_missing_artifact_type_field_when_check_defs_then_error_emitted(
         self,
     ) -> None:
-        server_source = self.server_source.replace(
-            "artifact_type: ArtifactType",
-            "artifact_type: String",
-        )
+        server_source = self.server_source.replace("admitted.artifact_type", "admitted.kind")
         errors: list[str] = []
         self.module.check_defs(self.schema, server_source, self.client_source, errors)
         self.assertTrue(

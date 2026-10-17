@@ -153,11 +153,6 @@ impl FileArtifacts {
 impl ArtifactStore for FileArtifacts {
     type Error = StackError;
     async fn put(&self, key: &str, bytes: &[u8]) -> Result<ArtifactRef, StackError> {
-        if trellis_server_ports::artifact_key_requires_immutable_put(key) {
-            return Err(StackError::conflict(
-                "immutable bundle requires immutable put",
-            ));
-        }
         let path = self.path(key)?;
         std::fs::create_dir_all(path.parent().unwrap())
             .map_err(|e| StackError::unavailable(e.to_string()))?;
@@ -165,11 +160,6 @@ impl ArtifactStore for FileArtifacts {
         Ok(ArtifactRef::new(format!("test-file:{key}")))
     }
     async fn put_immutable(&self, key: &str, bytes: &[u8]) -> Result<ArtifactRef, StackError> {
-        if self.0.parent().unwrap().join("fail-publication").exists() {
-            return Err(StackError::unavailable(
-                "controlled immutable publication failure",
-            ));
-        }
         use std::io::Write;
         let path = self.path(key)?;
         std::fs::create_dir_all(path.parent().unwrap())
@@ -231,9 +221,6 @@ async fn native_transport_child_server() {
         test_signing_key(),
         crate::test_adapters::adapters(),
     )
-    .with_bundle_index(Arc::new(crate::event_repository::PostgresBundleIndex::new(
-        pool,
-    )))
     .with_artifact_store(Arc::new(FileArtifacts(root.join("artifacts"))))
     .with_access_token_verifier(Arc::new(Verifier))
     .with_scope_authorizer(Arc::new(Grants(configured_tenant)))
@@ -452,21 +439,18 @@ async fn cross_process_native_transport_qualification() {
             &original,
         ),
     };
-    // Publication fails after the durable native event/body commit, before a receipt exists.
-    std::fs::write(root.join("fail-publication"), "controlled fault").unwrap();
-    let failure = transport
+    let first = transport
         .append_accepted_attachment("case_123", &tenant(), &body)
         .await
-        .unwrap_err();
-    assert_eq!(failure.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let after_failure: i64 = sqlx::query_scalar("SELECT count(*) FROM trellis_events")
+        .unwrap();
+    let initial_row:(Vec<u8>,Vec<u8>,Vec<u8>,Vec<u8>)=sqlx::query_as("SELECT e.canonical_event,e.signed_event,a.ciphertext,a.nonce FROM trellis_events e JOIN trellis_external_attachments a ON a.scope=e.scope AND a.sequence=e.sequence WHERE e.scope=$1").bind(b"case_123".as_slice()).fetch_one(&pool).await.unwrap();
+    let first_entropy = std::fs::read_to_string(root.join("random-count")).unwrap();
+    assert!(first_entropy.parse::<usize>().unwrap() > 0);
+    let checkpoints: i64 = sqlx::query_scalar("SELECT count(*) FROM trellis_checkpoints")
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(after_failure, 1);
-    let initial_row:(Vec<u8>,Vec<u8>,Vec<u8>,Vec<u8>)=sqlx::query_as("SELECT e.canonical_event,e.signed_event,a.ciphertext,a.nonce FROM trellis_events e JOIN trellis_external_attachments a ON a.scope=e.scope AND a.sequence=e.sequence WHERE e.scope=$1").bind(b"case_123".as_slice()).fetch_one(&pool).await.unwrap();
-    let failure_entropy = std::fs::read_to_string(root.join("random-count")).unwrap();
-    assert!(failure_entropy.parse::<usize>().unwrap() > 0);
+    assert_eq!(checkpoints, 1, "the event and its checkpoint commit together");
     let mut changed = body.clone();
     changed.descriptor["acceptedActorRef"] =
         serde_json::json!("actor:human:changed-neutral-fixture");
@@ -484,13 +468,8 @@ async fn cross_process_native_transport_qualification() {
     );
     assert_eq!(
         std::fs::read_to_string(root.join("random-count")).unwrap(),
-        failure_entropy
+        first_entropy
     );
-    std::fs::remove_file(root.join("fail-publication")).unwrap();
-    let first = transport
-        .append_accepted_attachment("case_123", &tenant(), &body)
-        .await
-        .unwrap();
     let checkpoint = first.checkpoint_ref.rsplit('/').next().unwrap();
     let pinned = transport
         .bundle("case_123", checkpoint, &tenant())
@@ -504,10 +483,6 @@ async fn cross_process_native_transport_qualification() {
     verify_and_open(&pinned, &original, public);
     let count = std::fs::read_to_string(root.join("random-count")).unwrap();
     assert!(count.parse::<usize>().unwrap() > 0);
-    assert_eq!(
-        count, failure_entropy,
-        "exact retry after publication failure must retain protection"
-    );
     assert_eq!(
         transport
             .append_accepted_attachment("case_123", &tenant(), &body)
@@ -659,7 +634,7 @@ async fn cross_process_native_transport_qualification() {
     let final_row:(Vec<u8>,Vec<u8>,Vec<u8>,Vec<u8>)=sqlx::query_as("SELECT e.canonical_event,e.signed_event,a.ciphertext,a.nonce FROM trellis_events e JOIN trellis_external_attachments a ON a.scope=e.scope AND a.sequence=e.sequence WHERE e.scope=$1").bind(b"case_123".as_slice()).fetch_one(&pool).await.unwrap();
     assert_eq!(
         initial_row, final_row,
-        "failed publication and restart must preserve exact committed bytes"
+        "restart must preserve exact committed bytes"
     );
     let (evidence_root, _evidence_guard) = evidence_root();
     let run = std::time::SystemTime::now()
@@ -679,13 +654,13 @@ async fn cross_process_native_transport_qualification() {
         "originalBytes":original.len(), "zipSha256":hex::encode(integrity_cbor::sha256_bytes(&pinned)),
         "canonicalSha256":hex::encode(integrity_cbor::sha256_bytes(&final_row.0)),
         "signedEventSha256":hex::encode(integrity_cbor::sha256_bytes(&final_row.1)),
-        "committedEvents":event_count,"randomCallsAfterPublicationFailure":failure_entropy.parse::<usize>().unwrap(),
+        "committedEvents":event_count,"randomCallsAfterFirstAppend":first_entropy.parse::<usize>().unwrap(),
         "randomCallsAfterRestartReplay":std::fs::read_to_string(root.join("random-count")).unwrap().parse::<usize>().unwrap(),
         "currentProviderCalls":calls.load(Ordering::SeqCst),
         "genericIntegrityVerified":true,"actualRecipientOriginalEquality":true,
         "wrongRecipientRefused":true,"tamperedBodyRefused":true,"restartByteExactReplay":true,
-        "http503PublicationFailureAfterCommit":true,"exactRetryAfter503NoNewRandomness":true,
-        "changedBodyAfterFailedFingerprint409":true,
+        "exactRetryNoNewRandomness":true,
+        "changedBodySameKey409":true,
         "changedRecipientIdRefusedCachedAndRestarted":true,"sameRecipientIdChangedKeyRefusedCached":true,
         "closedUnknownAndDuplicateRefused":true,"wrongOriginalRefused":true,
         "noAppendOrReadRefused":true,"retainedHeadReadWithoutAdminister":true,

@@ -46,7 +46,9 @@ pub use findings::{
     WosVerificationReport,
 };
 #[doc(inline)]
-pub use signature_encoder::{SignatureCatalogError, encode_signature_affirmations_v1};
+pub use signature_encoder::{
+    SignatureCatalogError, encode_signature_affirmations_v1, signature_catalog_row,
+};
 pub use signed_acts::{derive_signed_acts_manifest_v1, encode_signed_acts_manifest_v1};
 #[doc(inline)]
 pub use source_proof_package::{

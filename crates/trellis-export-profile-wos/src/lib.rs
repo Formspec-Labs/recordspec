@@ -12,6 +12,7 @@
 #![forbid(unsafe_code)]
 
 mod export_profile;
+mod fold;
 mod source_content;
 
 pub use source_content::{check_source_content_batch, verify_source_content_export};
@@ -20,7 +21,7 @@ use integrity_cbor::sha256_bytes;
 use stack_common_error::StackError;
 use trellis_export_writer::{ExportEvidenceMember, TrellisTimestamp};
 use trellis_server_ports::event_codec::{cbor_bad_request, event_summary, event_timestamp};
-use trellis_server_ports::{ExportProfile, ExportProfileMembers, ExportVerdict, SigningFact};
+use trellis_server_ports::{ExportProfile, ExportProfileMembers, SigningFact};
 use trellis_types::StoredEvent;
 use wos_events::ProvenanceKind;
 
@@ -31,6 +32,16 @@ use crate::export_profile::PolicyClosureArtifact;
 pub struct WosExportProfile;
 
 impl ExportProfile for WosExportProfile {
+    fn fold_append(
+        &self,
+        scope: &[u8],
+        prior: Option<&[u8]>,
+        event: &StoredEvent,
+        tree_size: u64,
+    ) -> Result<Vec<u8>, StackError> {
+        fold::fold_append(scope, prior, event, tree_size)
+    }
+
     fn evidence_members(
         &self,
         scope: &[u8],
@@ -53,30 +64,6 @@ impl ExportProfile for WosExportProfile {
         )
     }
 
-    /// Verifies with the product-owned signing-proof resolver in a single pass.
-    ///
-    /// V2 certificates require every indexed response proof; generic no-op resolution
-    /// cannot establish that binding.
-    fn verify(&self, zip: &[u8]) -> ExportVerdict {
-        let report = trellis_verify_wos::verify_export_zip(zip);
-        let substrate_verified =
-            report.trellis.structure_verified && report.trellis.integrity_verified;
-        #[cfg(test)]
-        if !substrate_verified {
-            eprintln!(
-                "export verification failures: events={:?}; checkpoints={:?}; proofs={:?}; warnings={:?}",
-                report.trellis.event_failures,
-                report.trellis.checkpoint_failures,
-                report.trellis.proof_failures,
-                report.trellis.warnings
-            );
-        }
-        ExportVerdict {
-            substrate_verified,
-            profile_verified: report.relying_party_valid(),
-        }
-    }
-
     fn signing_facts(
         &self,
         events: &[StoredEvent],
@@ -85,6 +72,11 @@ impl ExportProfile for WosExportProfile {
         completion_signing_facts(events, selected)
     }
 }
+
+/// Aggregate byte bound on one signature export: events, catalog and original payloads together.
+pub(crate) const MAX_BYTES: usize = 1024 * 1024;
+/// Member and event-count bound on one signature export.
+pub(crate) const MAX_MEMBERS: usize = 256;
 
 /// Derives bounded062 and exact060 originals from actual admitted affirmations.
 ///
@@ -103,8 +95,6 @@ fn signature_evidence_members(
     };
     use std::collections::BTreeMap;
     use trellis_export_writer::ExportEvidenceMember;
-    const MAX_BYTES: usize = 1024 * 1024;
-    const MAX_MEMBERS: usize = 256;
     let mut affirmed = Vec::new();
     for event in events {
         if event_summary(event)?.event_type == wos_signature_affirmation_event_type() {

@@ -94,7 +94,6 @@ use serde::{Deserialize, Serialize};
 use stack_common_error::StackError;
 use stack_common_http::idempotency::IDEMPOTENCY_KEY_HEADER;
 use stack_common_http::tenant::{HeaderConfig, TenantScope};
-use trellis_types::ArtifactType;
 use utoipa::ToSchema;
 use utoipa::openapi::schema::{ObjectBuilder, SchemaType, Type};
 use utoipa::openapi::{RefOr, Schema};
@@ -130,17 +129,6 @@ fn trellis_admitted_event_type_openapi_schema() -> RefOr<Schema> {
         .enum_values(Some(values))
         .description(Some(
             "Admitted Trellis append literals: `wos-events` substrate registry plus Formspec appends.",
-        ))
-        .into()
-}
-
-#[must_use]
-fn artifact_type_openapi_schema() -> RefOr<Schema> {
-    ObjectBuilder::new()
-        .schema_type(SchemaType::new(Type::String))
-        .enum_values(Some(["event", "checkpoint", "manifest"]))
-        .description(Some(
-            "Trellis substrate artifact type: event, checkpoint, or manifest.",
         ))
         .into()
 }
@@ -519,74 +507,39 @@ impl SubstrateAppendBody {
     }
 }
 
-/// Substrate append HTTP/OpenAPI DTO: export verification summary for this append.
-///
-/// This is a **server projection** field on the JSON append response (`SubstrateAppendResult`),
-/// not a Formspec/WOS spec-suite schema artifact. Formspec cryptographic receipts in authored
-/// artifacts remain spec-defined; operators integrate Trellis using this DTO and the bundle ref.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct VerificationReceipt {
-    pub verified: bool,
-    #[schema(schema_with = artifact_type_openapi_schema)]
-    pub artifact_type: ArtifactType,
-    pub event_type: String,
-}
-
 /// Append response returned by the Trellis service.
+///
+/// `checkpoint_ref` names the signed checkpoint at `sequence + 1`, durable when the response is
+/// sent. The Core §18 export at that checkpoint (`GET .../bundles/{checkpointDigest}`) is the
+/// receipt's proof; nothing is published at append time.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SubstrateAppendResult {
-    #[serde(alias = "substrateEventId")]
     pub event_id: String,
     pub sequence: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prior_event_hash: Option<String>,
     pub canonical_event_hash: String,
-    #[serde(alias = "checkpointReference")]
     pub checkpoint_ref: String,
-    #[serde(alias = "proofArtifactRef")]
-    pub bundle_ref: String,
-    pub verification_receipt: VerificationReceipt,
 }
 
 impl SubstrateAppendResult {
     /// Validates a response from the Trellis event-append endpoint.
     ///
     /// # Errors
-    /// Returns an error when the append response is outside the requested
-    /// scope, unverified, or not an event receipt for the requested event type.
-    pub fn validate_for_event_append(
-        &self,
-        scope: &str,
-        event_type: &str,
-    ) -> Result<(), StackError> {
+    /// Returns an error when the append response is missing an identity or names a checkpoint
+    /// outside the requested scope.
+    pub fn validate_for_event_append(&self, scope: &str) -> Result<(), StackError> {
         validate_required("event_id", &self.event_id)?;
         if let Some(prior_event_hash) = &self.prior_event_hash {
             validate_required("prior_event_hash", prior_event_hash)?;
         }
         validate_required("canonical_event_hash", &self.canonical_event_hash)?;
         validate_required("checkpoint_ref", &self.checkpoint_ref)?;
-        validate_required("bundle_ref", &self.bundle_ref)?;
         let checkpoint_prefix = format!("trellis://{scope}/checkpoints/");
         if !self.checkpoint_ref.starts_with(&checkpoint_prefix) {
             return Err(StackError::unavailable(
                 "trellis append response checkpointRef is outside the requested scope",
-            ));
-        }
-        if !self.verification_receipt.verified {
-            return Err(StackError::unavailable(
-                "trellis append response verification receipt is not verified",
-            ));
-        }
-        if self.verification_receipt.artifact_type != ArtifactType::Event {
-            return Err(StackError::unavailable(
-                "trellis append response verification artifactType is not event",
-            ));
-        }
-        if self.verification_receipt.event_type != event_type {
-            return Err(StackError::unavailable(
-                "trellis append response verification eventType does not match request",
             ));
         }
         Ok(())
@@ -783,7 +736,7 @@ impl TrellisServiceClient {
             .map_err(|error| {
                 StackError::unavailable(format!("trellis attachment append failed: {error}"))
             })?;
-        Self::append_response(response, scope, ACCEPTED_ATTACHMENT_EVENT_TYPE_LITERAL).await
+        Self::append_response(response, scope).await
     }
 
     /// Seals a completion certificate from the facts the caller embeds in `body.selection`.
@@ -810,21 +763,19 @@ impl TrellisServiceClient {
             .send()
             .await
             .map_err(|_| StackError::unavailable("trellis completion request failed"))?;
-        Self::append_response(response, scope, COMPLETION_EVENT).await
+        Self::append_response(response, scope).await
     }
 
     async fn append_response(
         response: reqwest::Response,
         scope: &str,
-        event_type: &str,
     ) -> Result<SubstrateAppendResult, StackError> {
-        Self::append_response_diagnostic(response, scope, event_type, false).await
+        Self::append_response_diagnostic(response, scope, false).await
     }
 
     async fn append_response_diagnostic(
         response: reqwest::Response,
         scope: &str,
-        event_type: &str,
         selected: bool,
     ) -> Result<SubstrateAppendResult, StackError> {
         use source_diagnostics::{Outcome, Stage};
@@ -854,7 +805,7 @@ impl TrellisServiceClient {
         source_diagnostics::observed(
             selected,
             Stage::Receipt,
-            result.validate_for_event_append(scope, event_type),
+            result.validate_for_event_append(scope),
         )?;
         Ok(result)
     }
@@ -957,13 +908,7 @@ impl TrellisServiceClient {
             }
         })?;
         source_diagnostics::mark(source_selected, Stage::Send, Outcome::ReturnedOk);
-        Self::append_response_diagnostic(
-            response,
-            &request.scope,
-            &request.event_type,
-            source_selected,
-        )
-        .await
+        Self::append_response_diagnostic(response, &request.scope, source_selected).await
     }
 }
 
@@ -999,7 +944,7 @@ impl SubstrateClient for TrellisServiceClient {
                 .await
                 .map_err(|_| StackError::unavailable("append reconciliation response invalid"))?;
             if let AppendReconciliation::Committed { receipt } = &result {
-                receipt.validate_for_event_append(scope, &request.event_type)?;
+                receipt.validate_for_event_append(scope)?;
             }
             Ok(result)
         })
@@ -1320,7 +1265,7 @@ mod tests {
             );
             response(
                 "application/json",
-                r#"{"eventId":"evt_1","sequence":0,"canonicalEventHash":"sha256:abc","checkpointRef":"trellis://case_123/checkpoints/cp_1","bundleRef":"s3://bucket/bundle.zip","verificationReceipt":{"verified":true,"artifactType":"event","eventType":"substrate.append.accepted_attachment_binding"}}"#,
+                r#"{"eventId":"evt_1","sequence":0,"canonicalEventHash":"sha256:abc","checkpointRef":"trellis://case_123/checkpoints/cp_1"}"#,
             )
         });
         let client = TrellisServiceClient::new(
@@ -1389,27 +1334,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn attachment_append_refuses_a_receipt_for_another_event_type() {
-        let endpoint = test_server(|_| {
-            response(
-                "application/json",
-                r#"{"eventId":"evt_1","sequence":0,"canonicalEventHash":"sha256:abc","checkpointRef":"trellis://case_123/checkpoints/cp_1","bundleRef":"s3://bucket/bundle.zip","verificationReceipt":{"verified":true,"artifactType":"event","eventType":"wos.kernel.case_created"}}"#,
-            )
-        });
-        let client = TrellisServiceClient::new(TrellisServiceClientConfig::new(
-            endpoint,
-            HeaderConfig::wos(),
-        ))
-        .unwrap();
-        assert!(
-            client
-                .append_accepted_attachment("case_123", &tenant_scope(), &attachment_body())
-                .await
-                .is_err()
-        );
-    }
-
-    #[tokio::test]
     async fn append_wos_provenance_posts_shared_wire_shape() {
         let endpoint = test_server(|request| {
             assert!(
@@ -1427,7 +1351,7 @@ mod tests {
             assert_eq!(value["computeContext"]["sensitivity"], "publicMetadata");
             response(
                 "application/json",
-                r#"{"eventId":"evt_1","sequence":7,"canonicalEventHash":"sha256:abc","checkpointRef":"trellis://case_123/checkpoints/cp_1","bundleRef":"s3://bucket/bundle.zip","verificationReceipt":{"verified":true,"artifactType":"event","eventType":"wos.kernel.case_created"}}"#,
+                r#"{"eventId":"evt_1","sequence":7,"canonicalEventHash":"sha256:abc","checkpointRef":"trellis://case_123/checkpoints/cp_1"}"#,
             )
         });
         let client = TrellisServiceClient::new(TrellisServiceClientConfig::new(
@@ -1478,50 +1402,29 @@ mod tests {
     }
 
     #[test]
-    fn append_result_rejects_unverified_receipts() {
+    fn append_result_rejects_a_checkpoint_outside_the_requested_scope() {
         let result = SubstrateAppendResult {
             event_id: "evt_1".to_string(),
             sequence: 1,
             prior_event_hash: None,
             canonical_event_hash: "sha256:abc".to_string(),
-            checkpoint_ref: "trellis://case_123/checkpoints/cp_1".to_string(),
-            bundle_ref: "s3://bucket/bundle.zip".to_string(),
-            verification_receipt: VerificationReceipt {
-                verified: false,
-                artifact_type: ArtifactType::Event,
-                event_type: "wos.kernel.case_created".to_string(),
-            },
-        };
-
-        assert!(
-            result
-                .validate_for_event_append("case_123", "wos.kernel.case_created")
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn append_result_rejects_non_event_artifact_types() {
-        let result = SubstrateAppendResult {
-            event_id: "evt_1".to_string(),
-            sequence: 1,
-            prior_event_hash: None,
-            canonical_event_hash: "sha256:abc".to_string(),
-            checkpoint_ref: "trellis://case_123/checkpoints/cp_1".to_string(),
-            bundle_ref: "s3://bucket/bundle.zip".to_string(),
-            verification_receipt: VerificationReceipt {
-                verified: true,
-                artifact_type: ArtifactType::Checkpoint,
-                event_type: "wos.kernel.case_created".to_string(),
-            },
+            checkpoint_ref: "trellis://other_scope/checkpoints/cp_1".to_string(),
         };
 
         let error = result
-            .validate_for_event_append("case_123", "wos.kernel.case_created")
-            .expect_err("append responses must carry event artifactType");
+            .validate_for_event_append("case_123")
+            .expect_err("a checkpoint of another scope is no receipt for this one");
         assert!(
-            error.to_string().contains("artifactType is not event"),
+            error.to_string().contains("outside the requested scope"),
             "unexpected error: {error}"
+        );
+        assert!(
+            SubstrateAppendResult {
+                checkpoint_ref: "trellis://case_123/checkpoints/cp_1".to_string(),
+                ..result
+            }
+            .validate_for_event_append("case_123")
+            .is_ok()
         );
     }
 

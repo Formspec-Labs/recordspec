@@ -78,8 +78,18 @@ type EventRow = (Vec<u8>, i64, Vec<u8>, Vec<u8>, Option<Vec<u8>>, Vec<u8>);
 const EVENT_COLUMNS: &str =
     "scope, sequence, canonical_event, signed_event, idempotency_key, canonical_event_hash";
 
-fn event_from_row(
-    (scope, sequence, canonical, signed, key, hash): EventRow,
+fn event_from_row(row: EventRow) -> Result<StoredEvent, ReadError> {
+    let (scope, sequence, canonical, signed, key, hash) = row;
+    event_from_row_parts(scope, sequence, canonical, signed, key, hash)
+}
+
+pub(crate) fn event_from_row_parts(
+    scope: Vec<u8>,
+    sequence: i64,
+    canonical: Vec<u8>,
+    signed: Vec<u8>,
+    key: Option<Vec<u8>>,
+    hash: Vec<u8>,
 ) -> Result<StoredEvent, ReadError> {
     let sequence =
         u64::try_from(sequence).map_err(|_| ReadError::Malformed("negative sequence"))?;
@@ -328,7 +338,7 @@ pub async fn append_checkpointed_in_tx(
     Ok(())
 }
 
-fn unique_violation_or_sqlx(error: sqlx::Error) -> AppendError {
+pub(crate) fn unique_violation_or_sqlx(error: sqlx::Error) -> AppendError {
     match &error {
         sqlx::Error::Database(db) if db.code().as_deref() == Some("23505") => {
             AppendError::Conflict(db.constraint().unwrap_or("unique").to_owned())
@@ -338,12 +348,14 @@ fn unique_violation_or_sqlx(error: sqlx::Error) -> AppendError {
 }
 
 /// Trellis's own copy of a Source closeout's admitted batch: where it lives, not the bytes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SourceContentBinding {
     /// SHA-256 of the stored batch; the object key is derived from it.
     pub batch_hash: [u8; 32],
     /// Byte length of the stored batch.
     pub size: u64,
+    /// The artifact store's own locator for the batch object.
+    pub artifact_ref: String,
 }
 
 /// Binds the closeout event at `sequence` to its batch copy. Same transaction as the event.
@@ -357,13 +369,14 @@ pub async fn insert_source_content(
     binding: &SourceContentBinding,
 ) -> Result<(), AppendError> {
     sqlx::query(
-        "INSERT INTO trellis_source_contents (scope, sequence, batch_hash, size) \
-         VALUES ($1, $2, $3, $4)",
+        "INSERT INTO trellis_source_contents (scope, sequence, batch_hash, size, artifact_ref) \
+         VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(scope)
     .bind(i64::try_from(sequence).map_err(|_| AppendError::DomainViolation(sequence))?)
     .bind(binding.batch_hash.as_slice())
     .bind(i64::try_from(binding.size).map_err(|_| AppendError::DomainViolation(binding.size))?)
+    .bind(&binding.artifact_ref)
     .execute(&mut **tx)
     .await
     .map_err(unique_violation_or_sqlx)?;
@@ -380,15 +393,17 @@ pub async fn source_content<'e>(
     sequence: u64,
 ) -> Result<Option<SourceContentBinding>, ReadError> {
     let sequence = i64::try_from(sequence).map_err(|_| ReadError::Malformed("sequence"))?;
-    let row: Option<(Vec<u8>, i64)> = sqlx::query_as(
-        "SELECT batch_hash, size FROM trellis_source_contents WHERE scope = $1 AND sequence = $2",
+    let row: Option<(Vec<u8>, i64, String)> = sqlx::query_as(
+        "SELECT batch_hash, size, artifact_ref FROM trellis_source_contents \
+         WHERE scope = $1 AND sequence = $2",
     )
     .bind(scope)
     .bind(sequence)
     .fetch_optional(executor)
     .await?;
-    row.map(|(hash, size)| {
+    row.map(|(hash, size, artifact_ref)| {
         Ok(SourceContentBinding {
+            artifact_ref,
             batch_hash: hash
                 .try_into()
                 .map_err(|_| ReadError::Malformed("batch_hash is not 32 bytes"))?,

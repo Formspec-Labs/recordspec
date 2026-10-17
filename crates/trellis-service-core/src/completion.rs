@@ -19,6 +19,8 @@ const TEMPLATE_ID: &str = "trellis.reference.certificate-of-completion.v2";
 const TEMPLATE: &str =
     include_str!("../../../reference/certificate-of-completion/template-v2/template.html");
 const MAX_BYTES: usize = 1024 * 1024;
+/// One more than the most events a completion prefix may hold, so an overfull ledger is seen.
+const BOUND: u64 = trellis_types::completion_selection::MAX_COMPLETION_EVENTS as u64 + 1;
 
 pub use trellis_service_client::{
     COMPLETION_EVENT, CompletionAttestor, CompletionRequest, CompletionSignerLabel,
@@ -200,7 +202,12 @@ pub async fn seal_completion(
     validate_selection(&selected)?;
     let principal = authorize(state, headers, tenant, scope, request).await?;
     // Before anything is reserved or signed: only the configured publisher may seal.
-    if state.completion.as_ref().map(|(_, publisher)| publisher.as_str()) != Some(principal.as_str()) {
+    if state
+        .completion
+        .as_ref()
+        .map(|(_, publisher)| publisher.as_str())
+        != Some(principal.as_str())
+    {
         return Err(StackError::new(
             ErrorCode::new("INFRA-4030").expect("static error code is valid"),
             axum::http::StatusCode::FORBIDDEN,
@@ -210,9 +217,8 @@ pub async fn seal_completion(
     state
         .reserve_completion_request(tenant, &principal, scope, request)
         .await?;
-    let mut guard = state.scope_locks.lock(scope.as_bytes()).await;
-    let events = state.repository.list_scope(scope.as_bytes()).await?;
-    let mut expected_events = events.clone();
+    // The seal validates a whole small ledger by design (Core completion prefix bounds).
+    let events = state.repository.prefix(scope.as_bytes(), BOUND).await?;
     validate_prefix(&events, scope)?;
     let retained = events
         .iter()
@@ -235,7 +241,7 @@ pub async fn seal_completion(
     }
     let signers = signing_summary(state, &prefix, request, &selected)?;
     let key = artifact_key(scope, &request.certificate_id);
-    let (stored, html) = if let Some(event) = retained {
+    let (stored, checkpoint) = if let Some(event) = retained {
         let html = certificate_html(event)?;
         let value = decode_cbor_value(event.canonical_event()).map_err(crate::cbor_bad_request)?;
         let extensions = map_lookup_map(value.as_map().ok_or_else(invalid)?, "extensions")
@@ -269,7 +275,12 @@ pub async fn seal_completion(
         if bytes != html {
             return Err(StackError::conflict("retained certificate object differs"));
         }
-        (event.clone(), html)
+        let checkpoint = state
+            .repository
+            .checkpoint_at(scope.as_bytes(), event.sequence() + 1)
+            .await?
+            .ok_or_else(|| StackError::internal("committed seal has no checkpoint"))?;
+        (event.clone(), checkpoint)
     } else {
         refuse_certificate_collision(&events, &request.certificate_id)?;
         let html = render(request, &selected, &signers)?;
@@ -310,8 +321,8 @@ pub async fn seal_completion(
             ),
             (BINDING, binding(&key, &html)?),
         ])?;
-        let now = crate::now_timestamp()?;
-        if !state.signing_key.is_active_at(now) {
+        let now = crate::ledger::authored_at_after(prefix.last(), crate::now_timestamp()?)?;
+        if !state.signing_key.is_active_at(crate::now_timestamp()?) {
             return Err(StackError::conflict(
                 "completion ledger signing key inactive",
             ));
@@ -353,68 +364,50 @@ pub async fn seal_completion(
             .ok_or_else(invalid)?
             .with_canonical_event_hash(Some(artifacts.canonical_event_hash));
         certificate_html(&stored)?;
-        guard = recheck(
-            state,
-            headers,
-            tenant,
-            scope,
-            request,
-            &principal,
-            guard,
-            &expected_events,
-        )
-        .await?;
-        state
-            .repository
-            .append_completion_event(stored.clone())
-            .await?;
-        expected_events.push(stored.clone());
-        (stored, html)
+        // Authority may have changed while the operator signed and the object was written; the
+        // commit below re-checks the head under the scope lock.
+        if authorize(state, headers, tenant, scope, request).await? != principal {
+            return Err(StackError::conflict(
+                "completion authority or native snapshot changed",
+            ));
+        }
+        commit(state, &stored).await?
     };
-    // No awaited composition result confers lasting permission to disclose bytes.
-    guard = recheck(
-        state,
-        headers,
-        tenant,
-        scope,
-        request,
-        &principal,
-        guard,
-        &expected_events,
-    )
-    .await?;
-    let mut export_prefix = prefix.clone();
-    export_prefix.push(stored.clone());
-    let bundle = crate::publish_bundle(
-        state,
-        scope.as_bytes(),
-        &export_prefix,
-        false,
-        &crate::append::default_public_compute_context(),
-    )
-    .await?;
-    // Recheck after publication awaits, before returning the archive locator.
-    let _guard = recheck(
-        state,
-        headers,
-        tenant,
-        scope,
-        request,
-        &principal,
-        guard,
-        &expected_events,
-    )
-    .await?;
-    let _ = html; // The committed inline body is the durable source of exported060 bytes.
-    crate::append_result_for_event(
-        scope,
-        &stored,
-        Some(request.expected_head),
-        trellis_types::ArtifactType::Event,
-        COMPLETION_EVENT,
-        &bundle,
-        true,
-    )
+    crate::ledger::append_result(scope, &stored, Some(request.expected_head), &checkpoint)
+}
+
+/// Commits the seal event with its checkpoint under the scope lock.
+///
+/// The lock is taken first, so the head, the certificate-id collision check and the sequence are
+/// judged against the latest commit. A retry that raced its own first attempt returns the
+/// committed checkpoint.
+async fn commit(
+    state: &crate::TrellisServerState,
+    event: &StoredEvent,
+) -> Result<(StoredEvent, trellis_types::StoredCheckpoint), StackError> {
+    let mut tx = state.repository.begin(event.scope()).await?;
+    let events = tx.prefix(BOUND).await?;
+    if let Some(prior) = events
+        .iter()
+        .find(|e| e.idempotency_key() == event.idempotency_key())
+    {
+        if prior.canonical_event() != event.canonical_event()
+            || prior.signed_event() != event.signed_event()
+        {
+            return Err(StackError::conflict("completion retry bytes changed"));
+        }
+        let checkpoint = tx
+            .checkpoint_at(prior.sequence() + 1)
+            .await?
+            .ok_or_else(|| StackError::internal("committed seal has no checkpoint"))?;
+        return Ok((prior.clone(), checkpoint));
+    }
+    validate_commit(&events, event)?;
+    let head = tx.head().await?;
+    let (event, checkpoint) = state.checkpointer().after(head.as_ref(), event)?;
+    tx.insert(&event, &checkpoint).await?;
+    tx.commit().await?;
+    Ok((event, checkpoint))
 }
 
 fn invalid() -> StackError {
@@ -509,50 +502,6 @@ async fn authorize(
         ));
     }
     Ok(append_permit.principal)
-}
-/// Re-authorizes after any awaited work: drops the lock, then re-takes it only if the
-/// principal and the native snapshot are unchanged.
-async fn recheck(
-    state: &crate::TrellisServerState,
-    headers: &HeaderMap,
-    tenant: &TenantScope,
-    scope: &str,
-    request: &CompletionRequest,
-    principal: &str,
-    guard: tokio::sync::OwnedMutexGuard<()>,
-    expected_events: &[StoredEvent],
-) -> Result<tokio::sync::OwnedMutexGuard<()>, StackError> {
-    drop(guard);
-    lock_unchanged_scope(
-        state,
-        headers,
-        tenant,
-        scope,
-        request,
-        principal,
-        expected_events,
-    )
-    .await
-}
-
-async fn lock_unchanged_scope(
-    state: &crate::TrellisServerState,
-    headers: &HeaderMap,
-    tenant: &TenantScope,
-    scope: &str,
-    request: &CompletionRequest,
-    principal: &str,
-    expected_events: &[StoredEvent],
-) -> Result<tokio::sync::OwnedMutexGuard<()>, StackError> {
-    let guard = state.scope_locks.lock(scope.as_bytes()).await;
-    if authorize(state, headers, tenant, scope, request).await? != principal
-        || state.repository.list_scope(scope.as_bytes()).await? != expected_events
-    {
-        return Err(StackError::conflict(
-            "completion authority or native snapshot changed",
-        ));
-    }
-    Ok(guard)
 }
 fn artifact_key(scope: &str, id: &str) -> String {
     format!(

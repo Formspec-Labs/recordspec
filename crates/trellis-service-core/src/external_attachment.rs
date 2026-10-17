@@ -36,13 +36,13 @@ pub(crate) async fn evidence_members(
                 StackError::conflict(format!("retained native profile invalid: {error}"))
             })?;
         let (content_hash, bytes) = if let Some(profile) = &profile {
-            let bytes = state
-                .repository
-                .external_attachment_body(scope, &profile.content_hash)
-                .await?
-                .ok_or_else(|| {
-                    StackError::conflict("retained protected attachment body missing")
-                })?;
+            let bytes = crate::external_repository::body_by_hash(
+                state.repository.as_ref(),
+                scope,
+                &profile.content_hash,
+            )
+            .await?
+            .ok_or_else(|| StackError::conflict("retained protected attachment body missing"))?;
             if bytes.len() as u64
                 != profile
                     .original_byte_length
@@ -219,13 +219,15 @@ pub(crate) async fn export_compute(
                 StackError::conflict(format!("retained native profile invalid: {error}"))
             })?;
         if let Some(profile) = profile {
-            let compute = state
-                .repository
-                .external_attachment_compute(scope, &profile.content_hash)
-                .await?
-                .ok_or_else(|| {
-                    StackError::conflict("retained attachment custody declaration absent")
-                })?;
+            let compute = crate::external_repository::compute_by_hash(
+                state.repository.as_ref(),
+                scope,
+                &profile.content_hash,
+            )
+            .await?
+            .ok_or_else(|| {
+                StackError::conflict("retained attachment custody declaration absent")
+            })?;
             if !matches!(
                 compute.sensitivity,
                 ComputeSensitivity::ReaderHeld | ComputeSensitivity::ProviderReadable
@@ -243,7 +245,7 @@ pub(crate) async fn export_compute(
     let Some(sensitivity) = selected else {
         return Ok(requested.clone());
     };
-    crate::event_repository::qualify_native_prefix(events)?;
+    crate::external_repository::validate_prefix(events)?;
     Ok(trellis_server_ports::ComputeContext {
         declaration_id: "compute:native-attachment:retained-custody".into(),
         actor: "trellis-server".into(),

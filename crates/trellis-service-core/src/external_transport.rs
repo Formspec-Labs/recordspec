@@ -258,12 +258,11 @@ async fn admit(
 #[utoipa::path(post,path="/v1/scopes/{scope}/accepted-attachments",
     params(("scope"=String,Path,description="Authorized Trellis scope"),("idempotency-key"=String,Header,description="Must match idempotencyKey")),
     request_body=WireRequest,
-    responses((status=201,description="Protected event and verified export retained",body=SubstrateAppendResult),(status=400,description="Invalid closed request"),(status=401,description="Authentication refused"),(status=403,description="Exact permission refused"),(status=409,description="Replay or prefix conflict"),(status=503,description="Storage or selected recipient policy unavailable")),tag="events")]
+    responses((status=201,description="Protected event and its checkpoint committed",body=SubstrateAppendResult),(status=400,description="Invalid closed request"),(status=401,description="Authentication refused"),(status=403,description="Exact permission refused"),(status=409,description="Replay or prefix conflict"),(status=503,description="Storage or selected recipient policy unavailable")),tag="events")]
 pub(crate) async fn append(
     State(state): State<TrellisServerState>,
     Extension(authorized): Extension<Arc<AuthorizedExternal>>,
 ) -> Result<(StatusCode, Json<SubstrateAppendResult>), StackError> {
-    let _guard = state.scope_locks.lock(authorized.scope.as_bytes()).await;
     let now = crate::now_timestamp()?;
     if !state.signing_key.is_active_at(now) {
         return Err(StackError::bad_request(
@@ -276,72 +275,22 @@ pub(crate) async fn append(
         random: state.external_attachment_random.as_ref(),
         now,
     };
-    let retained = state
-        .repository
-        .append_external_attachment_with(
-            authorized.scope.as_bytes(),
-            authorized.request.idempotency_key.as_bytes(),
-            &state.signing_key.core_key(),
-            &authorized.compute,
-            &factory,
-        )
-        .await?;
-    let result = publish_retained(
+    let appended = crate::external_repository::append_with(
         &state,
-        &authorized.scope,
-        &retained,
+        authorized.scope.as_bytes(),
+        authorized.request.idempotency_key.as_bytes(),
         &authorized.compute,
-        state.external_attachment_admission.event_type(),
+        &factory,
     )
     .await?;
+    let event = appended.retained.event();
+    let result = crate::ledger::append_result(
+        &authorized.scope,
+        event,
+        crate::ledger::prior_event_hash(event)?,
+        &appended.checkpoint,
+    )?;
     Ok((StatusCode::CREATED, Json(result)))
-}
-
-/// Publishes the bundle for a committed attachment event and builds its receipt.
-///
-/// The event is durable, so every failure here is retryable (see `committed_unpublished`).
-pub(crate) async fn publish_retained(
-    state: &TrellisServerState,
-    scope: &str,
-    retained: &trellis_core::external_attachment::RetainedExternalAttachment,
-    compute: &ComputeContext,
-    event_type: &str,
-) -> Result<SubstrateAppendResult, StackError> {
-    async {
-        let events = state.repository.list_scope(scope.as_bytes()).await?;
-        let update_head = events
-            .last()
-            .is_some_and(|event| event.sequence() == retained.event().sequence());
-        let prefix = events
-            .into_iter()
-            .filter(|event| event.sequence() <= retained.event().sequence())
-            .collect::<Vec<_>>();
-        let prior = retained
-            .event()
-            .sequence()
-            .checked_sub(1)
-            .map(|seq| {
-                prefix
-                    .iter()
-                    .find(|event| event.sequence() == seq)
-                    .ok_or_else(|| StackError::internal("attachment predecessor absent"))
-                    .and_then(|event| crate::event_hash(scope.as_bytes(), event))
-            })
-            .transpose()?;
-        let bundle =
-            crate::publish_bundle(state, scope.as_bytes(), &prefix, update_head, compute).await?;
-        crate::append_result_for_event(
-            scope,
-            retained.event(),
-            prior,
-            trellis_types::ArtifactType::Event,
-            event_type,
-            &bundle,
-            true,
-        )
-    }
-    .await
-    .map_err(crate::append::committed_unpublished)
 }
 
 struct Factory<'a> {
@@ -359,6 +308,7 @@ impl ExternalAttachmentFactory for Factory<'_> {
         let scope = self.authorized.scope.as_bytes();
         let key = self.authorized.request.idempotency_key.as_bytes();
         let original = &self.authorized.original;
+        let authored_at = crate::ledger::authored_at_after(events.last(), self.now)?;
         let digest: [u8; 32] = Sha256::digest(original).into();
         let (ciphertext, nonce, key_bag) = if let Some(retained) = retained {
             let value = decode_cbor_value(retained.event().canonical_event())
@@ -461,8 +411,8 @@ impl ExternalAttachmentFactory for Factory<'_> {
             idempotency_key: key.to_vec(),
             header: ExternalAttachmentHeader {
                 event_type,
-                authored_at_seconds: self.now.unix_secs,
-                authored_at_nanos: self.now.subsec_nanos,
+                authored_at_seconds: authored_at.unix_secs,
+                authored_at_nanos: authored_at.subsec_nanos,
                 classification: "x-trellis-service/private-attachment".into(),
                 retention_tier: 0,
             },

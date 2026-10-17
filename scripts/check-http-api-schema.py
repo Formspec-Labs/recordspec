@@ -18,6 +18,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = ROOT / "specs" / "trellis-http-api.schema.json"
 SERVER_PATH = ROOT / "crates" / "trellis-service-core" / "src" / "lib.rs"
+APPEND_PATH = ROOT / "crates" / "trellis-service-core" / "src" / "append.rs"
+
+
+def read_server_source() -> str:
+    """The generic server's source the checks inspect: its entry point and its append coordinator."""
+    return "\n".join(
+        path.read_text(encoding="utf-8") for path in (SERVER_PATH, APPEND_PATH)
+    )
 # TWREF-086: Axum `.route(` calls live in `http.rs`; `lib.rs` keeps admission/constants.
 HTTP_ROUTER_PATH = ROOT / "crates" / "trellis-service-core" / "src" / "http.rs"
 CLIENT_PATH = ROOT / "crates" / "trellis-service-client" / "src" / "lib.rs"
@@ -253,7 +261,6 @@ def check_defs(schema: dict, server_source: str, client_source: str, errors: lis
             "SubstrateAppendResult",
             "AppendReconciliationRequest",
             "AppendReconciliation",
-            "VerificationReceipt",
             "ProblemJson",
         ],
     )
@@ -296,32 +303,11 @@ def check_defs(schema: dict, server_source: str, client_source: str, errors: lis
 
     # ADR 0109: admission returns substrate artifact type, not an integer
     # dispatch field. Assert the new contract instead.
-    if "artifact_type: ArtifactType" not in server_source or "AdmittedEvent" not in server_source:
+    if "admitted.artifact_type" not in server_source or "AdmittedEvent" not in server_source:
         errors.append(
             "trellis-server must consume AdmittedEvent.artifact_type (ADR 0109); "
             "previous integer dispatch was retired"
         )
-    schema_artifact_type = (
-        defs["VerificationReceipt"]
-        .get("properties", {})
-        .get("artifactType", {})
-    )
-    if schema_artifact_type.get("const") is not None:
-        errors.append(
-            "VerificationReceipt.artifactType must not const-lock a single value"
-        )
-    if schema_artifact_type.get("enum") != ["event", "checkpoint", "manifest"]:
-        errors.append(
-            "VerificationReceipt.artifactType must enumerate event/checkpoint/manifest"
-        )
-    schema_verified = (
-        defs["VerificationReceipt"]
-        .get("properties", {})
-        .get("verified", {})
-    )
-    if schema_verified.get("type") != "boolean":
-        errors.append("VerificationReceipt.verified must be type boolean (not const-locked)")
-
     append_required = set(defs["SubstrateAppendBody"].get("required", []))
     expected_append_required = {
         "eventType",
@@ -342,8 +328,6 @@ def check_defs(schema: dict, server_source: str, client_source: str, errors: lis
         "sequence",
         "canonicalEventHash",
         "checkpointRef",
-        "bundleRef",
-        "verificationReceipt",
     }
     if result_required != expected_result_required:
         errors.append(
@@ -473,7 +457,7 @@ def main() -> int:
     errors: list[str] = []
     try:
         schema = read_json(SCHEMA_PATH)
-        server_source = SERVER_PATH.read_text(encoding="utf-8")
+        server_source = read_server_source()
         client_source = CLIENT_PATH.read_text(encoding="utf-8")
         check_defs(schema, server_source, client_source, errors)
         check_operations(schema, server_source, client_source, errors)
