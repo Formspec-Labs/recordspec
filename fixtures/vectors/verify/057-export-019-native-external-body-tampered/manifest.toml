@@ -1,0 +1,20 @@
+id          = "verify/057-export-019-native-external-body-tampered"
+op          = "verify"
+status      = "active"
+description = """Core §9.4.1 / §19 step 4.g: one bit of the retained `060-payloads` ciphertext body is flipped; nothing signed changes. The body no longer hashes to the event's `content_hash`: localizable failure `content_hash_mismatch` at the attachment event."""
+
+[coverage]
+tr_core = ["TR-CORE-182"]
+
+[inputs]
+export_zip = "input-export.zip"
+
+[expected.report]
+structure_verified   = true
+integrity_verified   = false
+readability_verified = false
+first_failure_kind   = "content_hash_mismatch"
+failing_event_id     = "0c2de1e6d7eab42f37308016fa73a708bd2c33727771abedc17e240e0aaa97ac"
+
+[derivation]
+document = "derivation.md"

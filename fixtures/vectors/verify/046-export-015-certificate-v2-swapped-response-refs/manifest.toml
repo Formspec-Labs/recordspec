@@ -1,0 +1,19 @@
+id          = "verify/046-export-015-certificate-v2-swapped-response-refs"
+op          = "verify"
+status      = "active"
+description = """ADR 0016 swapped bindings: the v2 certificate's two `signer_display` rows exchange `response_ref` digests, so each row names the other signing event's Response. Localizable failure `response_ref_mismatch` (Core §19 step 6c)."""
+
+[coverage]
+tr_core = ["TR-CORE-183"]
+
+[inputs]
+export_zip = "input-export.zip"
+
+[expected.report]
+structure_verified   = true
+integrity_verified   = false
+readability_verified = true
+first_failure_kind   = "response_ref_mismatch"
+
+[derivation]
+document = "derivation.md"

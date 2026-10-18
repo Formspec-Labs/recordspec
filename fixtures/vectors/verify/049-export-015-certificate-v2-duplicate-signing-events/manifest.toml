@@ -1,0 +1,18 @@
+id          = "verify/049-export-015-certificate-v2-duplicate-signing-events"
+op          = "verify"
+status      = "active"
+description = """ADR 0016 duplicates: the v2 certificate lists the same signing event hash twice. V2 decode MUST reject duplicate signing-event hashes, so the export is rejected: fatal."""
+
+[coverage]
+tr_core = ["TR-CORE-183"]
+
+[inputs]
+export_zip = "input-export.zip"
+
+[expected.report]
+structure_verified   = false
+integrity_verified   = false
+readability_verified = false
+
+[derivation]
+document = "derivation.md"

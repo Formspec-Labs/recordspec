@@ -10,6 +10,7 @@ focused decode + finalize + catalog helpers.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
@@ -18,7 +19,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
-from trellis_py import verify
+from trellis_py import verify, verify_wos
 from trellis_py.verify import (
     CertificateResponseProof,
     MalformedResponseDigestError,
@@ -549,6 +550,7 @@ def test_v1_unreadable_signing_event_payload_is_unresolved(monkeypatch):
         authored_at=cert.chain_summary.signer_display[0].signed_at,
         payload_ref_inline=None,
         payload_ref_external=False,
+        payload_ref_protected=False,
         content_hash=h,
     )
     monkeypatch.setattr(verify, "_decode_event_details", lambda event: stub)
@@ -789,3 +791,78 @@ def test_certificate_ids_rust_refuses_cannot_be_trusted(certificate_id):
     )
     outcome, _ = _authority_outcome(cert, _trust(key))
     assert outcome.attestation_authority == "failed"
+
+
+# ---------------------------------------------------------------------------
+# External registry file: `verify_wos.certificate_authorities_from_json`
+# mirrors Rust `trellis_verify_wos::certificate_authorities_from_json`.
+# ---------------------------------------------------------------------------
+
+REGISTRY_043 = (
+    VECTORS / "verify/043-export-015-operator-authority-verified/input-certificate-authorities.json"
+)
+
+
+def _registry_row(**changes) -> dict:
+    row = {
+        "authority": "urn:test:operator",
+        "publicKey": [7] * 32,
+        "authorityClass": "new",
+        "allowedPurpose": "trellis.certificate-of-completion.v2",
+        "validFrom": [0, 0],
+        "validUntil": [10, 0],
+    }
+    row.update(changes)
+    return row
+
+
+def _registry_bytes(rows) -> bytes:
+    return json.dumps(rows).encode()
+
+
+def test_the_committed_registry_loads_as_an_exact_binding():
+    registry = verify_wos.certificate_authorities_from_json(REGISTRY_043.read_bytes())
+    authority = registry["urn:test:operator"]
+    assert len(registry) == 1
+    assert len(authority.public_key) == 32
+    assert authority.authority_class == "new"
+    assert authority.allowed_purpose == "trellis.certificate-of-completion.v2"
+    assert authority.valid_from == TrellisTimestamp(0, 0)
+    assert authority.valid_until == TrellisTimestamp(4_102_444_800, 0)
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        pytest.param({}, id="root-not-array"),
+        pytest.param([_registry_row(extra=1)], id="unknown-field"),
+        pytest.param([{k: v for k, v in _registry_row().items() if k != "validUntil"}], id="missing-field"),
+        pytest.param([_registry_row(publicKey=[7] * 31)], id="short-key"),
+        pytest.param([_registry_row(publicKey=[256] + [7] * 31)], id="key-byte-out-of-range"),
+        pytest.param([_registry_row(publicKey=[7.0] * 32)], id="key-byte-float"),
+        pytest.param([_registry_row(publicKey=[True] * 32)], id="key-byte-bool"),
+        pytest.param([_registry_row(authority=" ")], id="blank-authority"),
+        pytest.param([_registry_row(authority="é" * 513)], id="authority-over-1024-bytes"),
+        pytest.param([_registry_row(authorityClass="other")], id="unknown-class"),
+        pytest.param([_registry_row(allowedPurpose="trellis.other")], id="unknown-purpose"),
+        pytest.param([_registry_row(validFrom=[0, 1_000_000_000])], id="nanos-out-of-range"),
+        pytest.param([_registry_row(validFrom=[0, 0, 0])], id="instant-shape"),
+        pytest.param([_registry_row(validFrom=[10, 0])], id="empty-window"),
+        pytest.param([_registry_row(), _registry_row()], id="duplicate-authority"),
+        pytest.param([_registry_row(authority=f"urn:{i}") for i in range(9)], id="too-many-rows"),
+    ],
+)
+def test_a_malformed_registry_is_refused(rows):
+    with pytest.raises(ValueError):
+        verify_wos.certificate_authorities_from_json(_registry_bytes(rows))
+
+
+def test_a_duplicated_field_or_an_oversized_registry_is_refused():
+    duplicated = _registry_bytes([_registry_row()]).replace(
+        b'"authorityClass": "new"', b'"authorityClass": "new", "authorityClass": "prior"'
+    )
+    assert duplicated.count(b"authorityClass") == 2
+    with pytest.raises(ValueError):
+        verify_wos.certificate_authorities_from_json(duplicated)
+    with pytest.raises(ValueError):
+        verify_wos.certificate_authorities_from_json(b" " * (32 * 1024 + 1))

@@ -1,0 +1,22 @@
+id          = "verify/044-export-015-operator-authority-wrong-key"
+op          = "verify"
+status      = "active"
+description = """The bytes of `export/015` verified with an external operator trust registry that binds `urn:test:operator` to a different real key (`issuer-002`) with the right class, purpose and window. The attestation signature does not verify under the selected key, so operator authority is `failed` and the certificate fails `attestation_insufficient` (Core §19 step 6c, step 3)."""
+
+[coverage]
+tr_core = ["TR-CORE-183"]
+
+[inputs]
+export_zip              = "input-export.zip"
+certificate_authorities = "input-certificate-authorities.json"
+
+[expected.report]
+structure_verified    = true
+integrity_verified    = false
+readability_verified  = true
+first_failure_kind    = "attestation_insufficient"
+failing_event_id      = "0ba4d2b7fa8571a2f955a10726cdb6dfebe8ad3e7781fdfde1a4ccc7ce36f6d2"
+attestation_authority = "failed"
+
+[derivation]
+document = "derivation.md"

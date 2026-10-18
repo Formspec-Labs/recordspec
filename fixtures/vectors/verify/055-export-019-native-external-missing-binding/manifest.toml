@@ -1,0 +1,18 @@
+id          = "verify/055-export-019-native-external-missing-binding"
+op          = "verify"
+status      = "active"
+description = """Core §9.4.1: the attachment event keeps the external profile marker but drops `trellis.evidence-attachment-binding.v1`. A missing attachment binding MUST be rejected, so the export is rejected: fatal."""
+
+[coverage]
+tr_core = ["TR-CORE-182"]
+
+[inputs]
+export_zip = "input-export.zip"
+
+[expected.report]
+structure_verified   = false
+integrity_verified   = false
+readability_verified = false
+
+[derivation]
+document = "derivation.md"

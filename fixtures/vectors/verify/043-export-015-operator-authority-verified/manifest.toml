@@ -1,0 +1,20 @@
+id          = "verify/043-export-015-operator-authority-verified"
+op          = "verify"
+status      = "active"
+description = """The bytes of `export/015` verified with an external operator trust registry that binds `urn:test:operator` to the key that signed the certificate's attestation, for class `new`, purpose `trellis.certificate-of-completion.v2` and a window holding `completed_at`. Every attestation row verifies, so operator authority is `verified` (Core §19 step 6c)."""
+
+[coverage]
+tr_core = ["TR-CORE-183"]
+
+[inputs]
+export_zip              = "input-export.zip"
+certificate_authorities = "input-certificate-authorities.json"
+
+[expected.report]
+structure_verified    = true
+integrity_verified    = true
+readability_verified  = true
+attestation_authority = "verified"
+
+[derivation]
+document = "derivation.md"

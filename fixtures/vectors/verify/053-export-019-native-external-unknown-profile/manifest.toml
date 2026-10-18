@@ -1,0 +1,18 @@
+id          = "verify/053-export-019-native-external-unknown-profile"
+op          = "verify"
+status      = "active"
+description = """Core §9.4.1: the attachment event's `trellis.payload-protection-profile.v1` marker names an unknown profile. An unknown value MUST be rejected, so the export is rejected: fatal."""
+
+[coverage]
+tr_core = ["TR-CORE-182"]
+
+[inputs]
+export_zip = "input-export.zip"
+
+[expected.report]
+structure_verified   = false
+integrity_verified   = false
+readability_verified = false
+
+[derivation]
+document = "derivation.md"

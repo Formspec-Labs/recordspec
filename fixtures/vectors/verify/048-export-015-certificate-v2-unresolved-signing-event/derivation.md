@@ -1,0 +1,7 @@
+# Derivation — `verify/048-export-015-certificate-v2-unresolved-signing-event`
+
+Starts from `export/015-certificate-v2-distinct-responses/expected-export.zip` and mutates the payload of its last event as described below. The event's `author_event_hash` (Core §9.5) is recomputed and the event re-signed with the public fixture key `issuer-001`. Every member that binds the event is rebuilt: the events array, the Merkle root and the re-signed head checkpoint (Core §11.2–§11.3), the inclusion and consistency proofs (Core §11.4), any `061` row's `binding_event_hash`, the seal-fence fields including `export_attempt_id` (Core §18.3e), the README head lines, the archive root name, and the re-signed manifest with its digests. The verifier therefore reaches the obligation under test rather than a stale digest.
+
+Core §19 step 6c step 5: every `signing_events[i]` MUST resolve to a chain-present signing event with readable evidence; "any unresolvable row (missing event, unreadable payload, or for v2 a missing or empty principal or absent proof) fails `signing_event_unresolved`". `signing_events[1]` is SHA-256 of a fixed text no event hashes to. The two hashes stay distinct, so v2 decode still admits the certificate.
+
+The expected outcome is fixed by the spec text above and confirmed against the maintained Rust verifier (`trellis-conformance`). Bytes were produced by `_generator/gen_verify_resigned_export_negatives.py`, an authoring aid; this document, not the generator, is the reproduction authority.

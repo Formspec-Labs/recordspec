@@ -1,0 +1,18 @@
+id          = "verify/051-export-015-certificate-v2-null-row-response-ref"
+op          = "verify"
+status      = "active"
+description = """ADR 0016 null row digest: row 1 of the v2 certificate carries `response_ref = null`. V2 decode MUST reject missing or null row digests, so the export is rejected: fatal."""
+
+[coverage]
+tr_core = ["TR-CORE-183"]
+
+[inputs]
+export_zip = "input-export.zip"
+
+[expected.report]
+structure_verified   = false
+integrity_verified   = false
+readability_verified = false
+
+[derivation]
+document = "derivation.md"

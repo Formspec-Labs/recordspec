@@ -8,7 +8,7 @@ import json
 import sys
 import tomllib
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import cbor2
 from cbor2 import CBORTag
@@ -186,32 +186,53 @@ def _assert_export(root: Path, manifest: dict[str, Any]) -> None:
     # Byte-identity alone says nothing about whether the bytes are a valid
     # export: the labelled outcome is checked by running the verifier on them.
     assert "report" in expected, "export vector must declare [expected.report]"
-    _assert_report_matches_zip(root, expected["report"], expected_zip, inputs.get("verifier"))
+    _assert_report_matches_zip(root, expected["report"], expected_zip, inputs)
 
 
 def _assert_verify(root: Path, manifest: dict[str, Any]) -> None:
     inputs = manifest["inputs"]
     expected_report = manifest["expected"]["report"]
     _assert_report_matches_zip(
-        root, expected_report, (root / inputs["export_zip"]).read_bytes(), inputs.get("verifier")
+        root, expected_report, (root / inputs["export_zip"]).read_bytes(), inputs
     )
 
 
-def _verify_export(export_zip: bytes, verifier: Optional[str]) -> verify_wos.WosVerificationReport:
-    """`verifier` selects a non-default phase; absent means strict verification."""
+def _verify_export(root: Path, export_zip: bytes, inputs: dict[str, Any]) -> verify_wos.WosVerificationReport:
+    """`inputs.verifier` selects a non-default phase; absent means strict verification.
+
+    `inputs.certificate_authorities` names an external operator trust registry
+    (the JSON `certificate_authorities_from_json` reads); absent means none is
+    selected, so operator authority stays unchecked.
+    """
+    registry_path = inputs.get("certificate_authorities")
+    authorities = (
+        None
+        if registry_path is None
+        else verify_wos.certificate_authorities_from_json((root / registry_path).read_bytes())
+    )
+    verifier = inputs.get("verifier")
     if verifier is None:
-        return verify_wos.verify_export_zip(export_zip)
+        return verify_wos.verify_export_zip(export_zip, authorities)
     assert verifier == SOURCE_CONTENT_PUBLICATION, f"unknown verifier {verifier!r}"
-    return verify_wos.verify_source_content_publication(export_zip).report
+    return verify_wos.verify_source_content_publication(export_zip, authorities).report
 
 
 def _assert_report_matches_zip(
     root: Path,
     expected_report: dict[str, Any],
     export_zip: bytes,
-    verifier: Optional[str] = None,
+    inputs: dict[str, Any],
 ) -> None:
-    wos_report = _verify_export(export_zip, verifier)
+    wos_report = _verify_export(root, export_zip, inputs)
+    if "attestation_authority" in expected_report:
+        # Core §19 step 6c: every certificate outcome reports operator authority.
+        outcomes = wos_report.trellis.certificates_of_completion
+        assert outcomes, "expected certificate outcomes, report has none"
+        _eq(
+            [outcome.attestation_authority for outcome in outcomes],
+            [expected_report["attestation_authority"]] * len(outcomes),
+            "attestation_authority",
+        )
     expected_kind = expected_report.get("first_failure_kind")
     if expected_kind in WOS_TAMPER_KINDS:
         _assert_wos_report(root, expected_report, wos_report, expected_kind)

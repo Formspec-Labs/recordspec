@@ -5,13 +5,17 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
-from trellis_py.verify_wos import verify_export_zip
+from trellis_py.verify import CertificateAuthorityRegistry
+from trellis_py.verify_wos import certificate_authorities_from_json, verify_export_zip
 
 
-def report_projection(export_zip: bytes) -> dict[str, Any]:
-    report = verify_export_zip(export_zip)
+def report_projection(
+    export_zip: bytes, authorities: Optional[CertificateAuthorityRegistry] = None
+) -> dict[str, Any]:
+    """`authorities` is the external operator trust registry; None selects none."""
+    report = verify_export_zip(export_zip, authorities)
     trellis = report.trellis
     correction_preservations = getattr(trellis, "correction_preservations", [])
     return {
@@ -145,12 +149,21 @@ def _timestamp_projection(item: Any) -> str:
     return f"[{item.seconds}, {item.nanos}]"
 
 
+USAGE = (
+    "usage: python -m trellis_py.parity_oracle <export.zip> "
+    "[--certificate-authorities <registry.json>]"
+)
+
+
 def main(argv: list[str]) -> int:
-    if len(argv) != 2:
-        print("usage: python -m trellis_py.parity_oracle <export.zip>", file=sys.stderr)
+    if len(argv) == 4 and argv[2] == "--certificate-authorities":
+        authorities = certificate_authorities_from_json(Path(argv[3]).read_bytes())
+    elif len(argv) == 2:
+        authorities = None
+    else:
+        print(USAGE, file=sys.stderr)
         return 2
-    path = Path(argv[1])
-    projection = report_projection(path.read_bytes())
+    projection = report_projection(Path(argv[1]).read_bytes(), authorities)
     json.dump(projection, sys.stdout, separators=(",", ":"), sort_keys=True)
     sys.stdout.write("\n")
     return 0
