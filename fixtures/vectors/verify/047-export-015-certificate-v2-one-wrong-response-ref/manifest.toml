@@ -1,0 +1,19 @@
+id          = "verify/047-export-015-certificate-v2-one-wrong-response-ref"
+op          = "verify"
+status      = "active"
+description = """ADR 0016 partly wrong bindings: row 0 of the v2 certificate is unchanged and correct; row 1's `response_ref` is replaced by a well-formed digest no Response has. Localizable failure `response_ref_mismatch` (Core §19 step 6c)."""
+
+[coverage]
+tr_core = ["TR-CORE-183"]
+
+[inputs]
+export_zip = "input-export.zip"
+
+[expected.report]
+structure_verified   = true
+integrity_verified   = false
+readability_verified = true
+first_failure_kind   = "response_ref_mismatch"
+
+[derivation]
+document = "derivation.md"

@@ -420,11 +420,7 @@ async fn committed_original_fixture() -> (
         br#"{"id":"neutral-response","data":{"original":"complete"},"authoredSignatures":[]}"#;
     let original_sha = sha256_bytes(original);
     let context_key = b"neutral-source-response-context";
-    let public_key: [u8; 32] =
-        hex::decode("7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13")
-            .unwrap()
-            .try_into()
-            .unwrap();
+    let public_key = fixture_reader_public_key();
     let protected = protect_external_attachment(
         &integrity_seam::OsSecureRandom,
         AttachmentContext {
@@ -444,21 +440,7 @@ async fn committed_original_fixture() -> (
         },
     )
     .unwrap();
-    let entries = protected
-        .key_bag
-        .into_iter()
-        .map(|wrap| {
-            neutral_map(vec![
-                ("recipient", Value::Bytes(wrap.recipient)),
-                ("suite", Value::Integer(wrap.suite.into())),
-                (
-                    "ephemeral_pubkey",
-                    Value::Bytes(wrap.ephemeral_pubkey.to_vec()),
-                ),
-                ("wrapped_dek", Value::Bytes(wrap.wrapped_dek)),
-            ])
-        })
-        .collect();
+    let key_bag = key_bag_value(protected.key_bag);
     let response_hash = format!("sha256:{}", hex::encode(original_sha));
     let mut locator_rows = vec![
         ("version", Value::Integer(1.into())),
@@ -486,10 +468,7 @@ async fn committed_original_fixture() -> (
         ("public_policy_hash", Value::Bytes(vec![6; 32])),
         ("recipient_policy_hash", Value::Bytes(vec![7; 32])),
         ("nonce", Value::Bytes(protected.nonce.to_vec())),
-        (
-            "key_bag",
-            neutral_map(vec![("entries", Value::Array(entries))]),
-        ),
+        ("key_bag", key_bag),
     ];
     let protected_record = neutral_encoded(&neutral_map(vec![
         ("locator", neutral_map(locator_rows.clone())),
@@ -737,6 +716,58 @@ async fn a_purged_case_still_exports() {
             .iter()
             .any(|entry| entry.bytes() == f.batch.records[0].protected_record_bytes)
     );
+}
+
+/// Given a closeout carrying a Source-content claim, appended over HTTP, then the export pinned
+/// at its checkpoint passes the publication phase and the strict verifier refuses its protected
+/// Response. With `TRELLIS_ASSEMBLED_EXPORT_VECTOR_DIR` set, the export is retained as the
+/// `export/` vector `018`; `verify/042` is its strict twin.
+#[tokio::test]
+async fn a_source_content_closeout_export_passes_publication_and_fails_strict_verification() {
+    let f = sourced(true, |_| {}).await;
+    let app = router(f.state.clone()).unwrap();
+    let receipt = post_append(&app, EVENTS, f.payload()).await;
+    let zip = pinned_zip(&app, "case_123", &receipt).await;
+
+    // Both events carry inline payloads, so the substrate is structurally sound and readable in
+    // either phase; only the protected Response separates them.
+    let substrate = integrity_verify::trellis::verify_export_zip(&zip);
+    assert!(
+        substrate.structure_verified
+            && substrate.integrity_verified
+            && substrate.readability_verified
+            && substrate.event_failures.is_empty(),
+        "{substrate:?}"
+    );
+    let publication = trellis_verify_wos::verify_source_content_publication(&zip, None);
+    assert!(
+        publication.publication_admitted(),
+        "{:?}",
+        publication.blocking_reasons()
+    );
+    assert!(publication.substrate().readability_verified);
+    let strict = trellis_verify_wos::verify_export_zip(&zip);
+    assert!(
+        strict.trellis.structure_verified
+            && strict.trellis.integrity_verified
+            && strict.trellis.readability_verified,
+        "{strict:?}"
+    );
+    let refusal = strict
+        .wos_findings
+        .iter()
+        .find(|finding| finding.severity == integrity_verify::trellis::Severity::Failure)
+        .expect("the strict verifier cannot open the protected Response");
+    assert_eq!(refusal.kind, "protected_response_unavailable");
+    let intake = f.batch.records[0].occurrence.occurrence_event_hash;
+    assert_eq!(refusal.event_hash, Some(intake));
+
+    if let Some(directory) = std::env::var_os("TRELLIS_ASSEMBLED_EXPORT_VECTOR_DIR") {
+        crate::export_vector::write_export_vector(
+            &std::path::PathBuf::from(directory).join("018-assembled-source-content-closeout"),
+            &zip,
+        );
+    }
 }
 
 #[tokio::test]

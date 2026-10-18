@@ -1,0 +1,18 @@
+id          = "verify/050-export-015-certificate-v2-ambiguous-v1-and-v2"
+op          = "verify"
+status      = "active"
+description = """ADR 0016 ambiguous dispatch: the v2 certificate event also carries a `trellis.certificate-of-completion.v1` extension. V2 decode MUST reject ambiguous v1/v2 dispatch, so the export is rejected: fatal."""
+
+[coverage]
+tr_core = ["TR-CORE-183"]
+
+[inputs]
+export_zip = "input-export.zip"
+
+[expected.report]
+structure_verified   = false
+integrity_verified   = false
+readability_verified = false
+
+[derivation]
+document = "derivation.md"

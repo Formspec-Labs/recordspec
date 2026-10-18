@@ -1,0 +1,29 @@
+id          = "export/018-assembled-source-content-closeout"
+op          = "export"
+status      = "active"
+description = """Service-assembled Source-content export (ADR 0163): an intake event, then a closeout appended over HTTP with a Source-content claim, exported at the closeout's checkpoint through the pinned bundle route. The `063` catalog carries a protected Response locator and `060-payloads` the HPKE-protected record. The publication phase admits it without opening protected content; `verify/042` runs the same bytes under the strict verifier."""
+
+[coverage]
+tr_core = [
+    "TR-CORE-062",  # export generator produces an independently verifiable export
+    "TR-CORE-063",  # export includes protected-payload references or payloads for offline verification
+    "TR-CORE-067",  # verifier checks included disclosure/export artifacts
+    "TR-CORE-134",  # Export Generator packages canonical records + verification material
+]
+tr_op = ["TR-OP-122"]
+
+[inputs]
+ledger_state = "input-ledger-state.cbor"
+verifier     = "source-content-publication"
+
+[expected]
+zip        = "expected-export.zip"
+zip_sha256 = "a3f9834ccb7f3799556b2c3eba87466861d59d8aefe1f4ba1bac2464c88e8f97"
+
+[expected.report]
+structure_verified   = true
+integrity_verified   = true
+readability_verified = true
+
+[derivation]
+document = "derivation.md"

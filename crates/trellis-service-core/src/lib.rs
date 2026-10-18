@@ -1941,6 +1941,36 @@ mod tests {
         );
     }
 
+    /// X25519 public key of the fixture reader, whose private key is `[17; 32]`.
+    ///
+    /// A public test artifact: it lets a test protect content that the fixture reader opens.
+    fn fixture_reader_public_key() -> [u8; 32] {
+        hex::decode("7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13")
+            .unwrap()
+            .try_into()
+            .unwrap()
+    }
+
+    /// The Core §9.4 `KeyBag` map carrying `wraps` as its entries.
+    fn key_bag_value(wraps: Vec<integrity_hpke::external_attachment::WrappedPayloadKey>) -> Value {
+        let text = |key: &str| Value::Text(key.into());
+        let entries = wraps
+            .into_iter()
+            .map(|wrap| {
+                Value::Map(vec![
+                    (text("recipient"), Value::Bytes(wrap.recipient)),
+                    (text("suite"), Value::Integer(wrap.suite.into())),
+                    (
+                        text("ephemeral_pubkey"),
+                        Value::Bytes(wrap.ephemeral_pubkey.to_vec()),
+                    ),
+                    (text("wrapped_dek"), Value::Bytes(wrap.wrapped_dek)),
+                ])
+            })
+            .collect();
+        Value::Map(vec![(text("entries"), Value::Array(entries))])
+    }
+
     fn test_signing_key() -> ServerSigningKey {
         let key_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../fixtures/vectors/_keys/issuer-001.cose_key");

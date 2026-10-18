@@ -256,7 +256,7 @@ mod tests {
             root,
             table_in_table(root, expected, "report"),
             &expected_zip,
-            pathless_string(inputs, "verifier").as_deref(),
+            inputs,
         );
     }
 
@@ -268,29 +268,43 @@ mod tests {
             &root.join(path_field(root, inputs, "export_zip")),
             "read export_zip",
         );
-        assert_report_matches_zip(
-            root,
-            expected_report,
-            &export_zip,
-            pathless_string(inputs, "verifier").as_deref(),
-        );
+        assert_report_matches_zip(root, expected_report, &export_zip, inputs);
     }
 
     /// `inputs.verifier` selects a non-default phase; absent means strict verification.
+    /// `inputs.certificate_authorities` names an external operator trust registry; absent
+    /// means none is selected, so operator authority stays unchecked.
     fn verify_export(
+        root: &Path,
         export_zip: &[u8],
-        verifier: Option<&str>,
+        inputs: &toml::value::Table,
     ) -> trellis_verify_wos::WosVerificationReport {
-        match verifier {
-            None => trellis_verify_wos::verify_export_zip(export_zip),
-            Some("source-content-publication") => {
-                let report = trellis_verify_wos::verify_source_content_publication(export_zip, None);
+        let authorities = optional_path_field(inputs, "certificate_authorities").map(|path| {
+            trellis_verify_wos::certificate_authorities_from_json(&read_fixture_bytes(
+                root,
+                &root.join(path),
+                "read certificate_authorities",
+            ))
+            .unwrap_or_else(|error| panic!("{}: {error}", fixture_label(root)))
+        });
+        match (optional_path_field(inputs, "verifier"), &authorities) {
+            (None, None) => trellis_verify_wos::verify_export_zip(export_zip),
+            (None, Some(registry)) => {
+                trellis_verify_wos::verify_export_zip_with_certificate_authorities(
+                    export_zip, registry,
+                )
+            }
+            (Some("source-content-publication"), _) => {
+                let report = trellis_verify_wos::verify_source_content_publication(
+                    export_zip,
+                    authorities.as_ref(),
+                );
                 trellis_verify_wos::WosVerificationReport {
                     trellis: report.substrate().clone(),
                     wos_findings: report.findings().to_vec(),
                 }
             }
-            Some(other) => panic!("unknown verifier {other:?}"),
+            (Some(other), _) => panic!("unknown verifier {other:?}"),
         }
     }
 
@@ -301,7 +315,7 @@ mod tests {
         root: &Path,
         expected_report: &toml::value::Table,
         export_zip: &[u8],
-        verifier: Option<&str>,
+        inputs: &toml::value::Table,
     ) {
         let expected_kind = pathless_string(expected_report, "first_failure_kind");
         let expected_event_id = pathless_string(expected_report, "failing_event_id");
@@ -309,7 +323,24 @@ mod tests {
         // `verify_wos.verify_export_zip`): its substrate resolves WOS-owned
         // references (e.g. completion signing events) that the bare Trellis
         // verifier reports as unresolved.
-        let wos_report = verify_export(export_zip, verifier);
+        let wos_report = verify_export(root, export_zip, inputs);
+        if let Some(expected) = pathless_string(expected_report, "attestation_authority") {
+            // Core §19 step 6c: every certificate outcome reports operator authority.
+            let outcomes = &wos_report.trellis.certificates_of_completion;
+            assert!(
+                !outcomes.is_empty(),
+                "{}: expected certificate outcomes, report has none",
+                fixture_label(root)
+            );
+            for outcome in outcomes {
+                assert_eq!(
+                    outcome.attestation_authority.as_str(),
+                    expected,
+                    "{}: attestation_authority mismatch",
+                    fixture_label(root)
+                );
+            }
+        }
         if expected_kind.as_deref().is_some_and(is_wos_kind) {
             assert_wos_report_matches(
                 root,

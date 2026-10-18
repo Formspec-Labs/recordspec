@@ -411,6 +411,56 @@ pub(super) fn external_fixture_input() -> (
     (descriptor, input, original)
 }
 
+/// [`external_fixture_input`] re-protected under a fresh data-encryption key and wrap.
+///
+/// `append/047` pins the plain fixture's ephemeral key, and Core §9.4 forbids its reuse, so a
+/// test whose export becomes a committed vector protects the same original afresh.
+fn freshly_protected_fixture_input() -> (
+    AcceptedAttachmentDescriptor,
+    ExternalAttachmentAppend,
+    Vec<u8>,
+) {
+    use integrity_hpke::external_attachment::{
+        AttachmentContext, ProtectionLimits, Recipient, protect_external_attachment,
+    };
+    let (descriptor, mut input, original) = external_fixture_input();
+    let protected = protect_external_attachment(
+        &integrity_seam::OsSecureRandom,
+        AttachmentContext {
+            idempotency_key: &input.idempotency_key,
+            original_sha256: input.original_sha256,
+            original_byte_length: input.original_byte_length,
+        },
+        &original,
+        &[Recipient {
+            id: b"fixture-reader",
+            public_key: fixture_reader_public_key(),
+        }],
+        ProtectionLimits {
+            original_bytes: 8192,
+            recipients: 1,
+            recipient_id_bytes: 64,
+        },
+    )
+    .unwrap();
+    let prepared = descriptor
+        .clone()
+        .prepare(
+            &input.scope,
+            &original,
+            &protected.ciphertext,
+            &[],
+            preparation_limits(),
+        )
+        .unwrap();
+    input.extensions = decode_cbor_value(&prepared.extensions_cbor().unwrap()).unwrap();
+    input.preparation_identity = prepared.replay_digest();
+    input.key_bag = key_bag_value(protected.key_bag);
+    input.ciphertext = protected.ciphertext;
+    input.nonce = protected.nonce;
+    (descriptor, input, original)
+}
+
 fn native_authorization(
     descriptor: &AcceptedAttachmentDescriptor,
     input: &ExternalAttachmentAppend,
@@ -449,10 +499,14 @@ async fn native_bundle(
         .unwrap()
 }
 
+/// Given an accepted attachment appended under the native external profile, then its export
+/// verifies the ciphertext without claiming the original readable, and the fixture reader opens
+/// it. With `TRELLIS_ASSEMBLED_EXPORT_VECTOR_DIR` set, the export is retained as the `export/`
+/// vector `019`.
 #[tokio::test]
 async fn native_service_append_exports_verified_ciphertext_and_recipient_opens_original() {
     let (state, _, _) = native_state();
-    let (descriptor, input, original) = external_fixture_input();
+    let (descriptor, input, original) = freshly_protected_fixture_input();
     let prepared = descriptor
         .clone()
         .prepare(
@@ -491,6 +545,17 @@ async fn native_service_append_exports_verified_ciphertext_and_recipient_opens_o
         !report.readability_verified,
         "generic verifier has no recipient private key"
     );
+    // The WOS reading admits the protected record without a domain finding: Core §9.4.1 grants
+    // no recipient permission, so it neither opens nor refuses the original.
+    let wos = trellis_verify_wos::verify_export_zip(&zip);
+    assert_eq!(wos.trellis, report, "the WOS resolver changes nothing here");
+    assert!(wos.wos_findings.is_empty(), "{:?}", wos.wos_findings);
+    if let Some(directory) = std::env::var_os("TRELLIS_ASSEMBLED_EXPORT_VECTOR_DIR") {
+        crate::export_vector::write_export_vector(
+            &std::path::PathBuf::from(directory).join("019-assembled-native-external-attachment"),
+            &zip,
+        );
+    }
     let entries = integrity_bundle::read_stored_zip(&zip).unwrap();
     let content =
         integrity_cbor::domain_separated_sha256(trellis_types::CONTENT_DOMAIN, &input.ciphertext);
