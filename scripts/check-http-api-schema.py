@@ -26,8 +26,6 @@ def read_server_source() -> str:
     return "\n".join(
         path.read_text(encoding="utf-8") for path in (SERVER_PATH, APPEND_PATH)
     )
-# TWREF-086: Axum `.route(` calls live in `http.rs`; `lib.rs` keeps admission/constants.
-HTTP_ROUTER_PATH = ROOT / "crates" / "trellis-service-core" / "src" / "http.rs"
 CLIENT_PATH = ROOT / "crates" / "trellis-service-client" / "src" / "lib.rs"
 # Resolve the owning source through the SAME maintained path dependency as admission.
 _ADMISSION_MANIFEST = ROOT / "crates" / "trellis-admission-wos" / "Cargo.toml"
@@ -60,16 +58,6 @@ EXPECTED_TENANT_HEADERS = {
         "x-formspec-cell-id",
     ],
 }
-
-CLIENT_ROUTE_FRAGMENTS = {
-    "/v1/scopes/{scope}/events/reconcile": "/v1/scopes/{}/events/reconcile",
-    "/v1/scopes/{scope}/events": "/v1/scopes/{}/events",
-    "/v1/scopes/{scope}/bundles/head": "/v1/scopes/{}/bundles/head",
-    "/v1/scopes/{scope}/bundles/{checkpointDigest}": "/v1/scopes/{}/bundles/{}",
-    "/v1/scopes/{scope}/registries/signing-keys": "/v1/scopes/{}/registries/signing-keys",
-    "/v1/scopes/{scope}/registries/event-types": "/v1/scopes/{}/registries/event-types",
-}
-
 
 def read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
@@ -171,21 +159,6 @@ def parse_wos_event_types(_server_source: str) -> list[str]:
     return canonical + [generic]
 
 
-def normalize_axum_path(path: str) -> str:
-    return path.replace("{checkpoint_digest}", "{checkpointDigest}")
-
-
-def parse_router_paths(source: str) -> set[str]:
-    return {normalize_axum_path(path) for path in re.findall(r'\.route\(\s*"([^"]+)"', source)}
-
-
-def trellis_server_router_paths(lib_rs: str) -> set[str]:
-    paths = parse_router_paths(lib_rs)
-    if HTTP_ROUTER_PATH.is_file():
-        paths |= parse_router_paths(HTTP_ROUTER_PATH.read_text(encoding="utf-8"))
-    return paths
-
-
 def normalize_openapi_path(path: str) -> str:
     return path.replace("{checkpoint_digest}", "{checkpointDigest}")
 
@@ -201,7 +174,7 @@ def require_defs(schema: dict, errors: list[str], names: list[str]) -> dict:
     return defs
 
 
-def check_operations(schema: dict, server_source: str, client_source: str, errors: list[str]) -> None:
+def check_operations(schema: dict, errors: list[str]) -> None:
     meta = schema.get("x-trellis-http-api")
     if not isinstance(meta, dict):
         errors.append("schema is missing x-trellis-http-api metadata")
@@ -237,16 +210,6 @@ def check_operations(schema: dict, server_source: str, client_source: str, error
         errors.append("appendEvent must bind idempotency-key header to body idempotencyKey")
     if "idempotency-key" not in append.get("requiredHeaders", []):
         errors.append("appendEvent must require idempotency-key header")
-
-    router_paths = trellis_server_router_paths(server_source)
-    expected_paths = {path for _, path in EXPECTED_OPERATIONS.values()}
-    if not expected_paths.issubset(router_paths):
-        missing = sorted(expected_paths - router_paths)
-        errors.append(f"server router is missing schema paths: {missing}")
-
-    for path, fragment in CLIENT_ROUTE_FRAGMENTS.items():
-        if fragment not in client_source:
-            errors.append(f"trellis-service-client is missing route fragment for {path}: {fragment}")
 
 
 def check_defs(schema: dict, server_source: str, client_source: str, errors: list[str]) -> None:
@@ -400,7 +363,7 @@ def check_openapi_append_contract(errors: list[str]) -> None:
 
 def emit_openapi_document(errors: list[str]) -> dict | None:
     result = subprocess.run(
-        ["cargo", "run", "-p", "trellis-server", "--bin", "emit_openapi", "--quiet"],
+        ["cargo", "run", "-p", "trellis-server", "--features", "test-harness", "--bin", "emit_openapi", "--quiet"],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -408,7 +371,7 @@ def emit_openapi_document(errors: list[str]) -> dict | None:
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
-        errors.append(f"OpenAPI emit failed (run cargo run -p trellis-server --bin emit_openapi): {detail}")
+        errors.append(f"OpenAPI emit failed (run cargo run -p trellis-server --features test-harness --bin emit_openapi): {detail}")
         return None
     try:
         return json.loads(result.stdout)
@@ -460,7 +423,7 @@ def main() -> int:
         server_source = read_server_source()
         client_source = CLIENT_PATH.read_text(encoding="utf-8")
         check_defs(schema, server_source, client_source, errors)
-        check_operations(schema, server_source, client_source, errors)
+        check_operations(schema, errors)
         openapi = emit_openapi_document(errors)
         if openapi is not None:
             check_openapi_operations(schema, openapi, errors)

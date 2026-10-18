@@ -64,6 +64,7 @@
 #![forbid(unsafe_code)]
 
 mod completion;
+pub mod endpoints;
 mod reconciliation;
 pub mod source_content;
 mod source_diagnostics;
@@ -92,7 +93,7 @@ use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use stack_common_error::StackError;
-use stack_common_http::idempotency::IDEMPOTENCY_KEY_HEADER;
+use stack_common_http::routes::{Absent, CallError, Target};
 use stack_common_http::tenant::{HeaderConfig, TenantScope};
 use utoipa::ToSchema;
 use utoipa::openapi::schema::{ObjectBuilder, SchemaType, Type};
@@ -315,6 +316,7 @@ pub struct AcceptedAttachmentAppendBody {
     #[schema(schema_with = attachment_descriptor_openapi_schema)]
     pub descriptor: serde_json::Value,
     /// Standard padded Base64 for one nonempty original, bounded to 1 MiB decoded.
+    #[schema(min_length = 4, max_length = 1398104, format = Byte)]
     pub original_bytes: String,
 }
 
@@ -722,15 +724,18 @@ impl TrellisServiceClient {
     ) -> Result<SubstrateAppendResult, StackError> {
         validate_scope(scope)?;
         body.validate()?;
-        let path = format!(
-            "/v1/scopes/{}/accepted-attachments",
-            encode_path_segment(scope)
+        let request = self.target().call(
+            endpoints::ACCEPTED_ATTACHMENT,
+            &endpoints::ScopePath {
+                scope: scope.to_owned(),
+            },
+            &Absent,
+            body,
+            Some(&body.idempotency_key),
         );
         let response = self
-            .request(reqwest::Method::POST, &path, tenant)
+            .authorized(request, tenant)
             .await?
-            .header(IDEMPOTENCY_KEY_HEADER, body.idempotency_key.as_str())
-            .json(body)
             .send()
             .await
             .map_err(|error| {
@@ -754,12 +759,18 @@ impl TrellisServiceClient {
     ) -> Result<SubstrateAppendResult, StackError> {
         validate_scope(scope)?;
         body.validate()?;
-        let path = format!("/v1/scopes/{}/completion", encode_path_segment(scope));
+        let request = self.target().call(
+            endpoints::SEAL_COMPLETION,
+            &endpoints::ScopePath {
+                scope: scope.to_owned(),
+            },
+            &Absent,
+            body,
+            Some(&body.idempotency_key),
+        );
         let response = self
-            .request(reqwest::Method::POST, &path, tenant)
+            .authorized(request, tenant)
             .await?
-            .header(IDEMPOTENCY_KEY_HEADER, body.idempotency_key.as_str())
-            .json(body)
             .send()
             .await
             .map_err(|_| StackError::unavailable("trellis completion request failed"))?;
@@ -830,23 +841,18 @@ impl TrellisServiceClient {
         Ok(self)
     }
 
-    fn url(&self, path: &str) -> String {
-        format!(
-            "{}/{}",
-            self.config.endpoint.trim_end_matches('/'),
-            path.trim_start_matches('/')
-        )
+    fn target(&self) -> Target<'_> {
+        Target::new(&self.http, &self.config.endpoint)
     }
 
-    async fn request(
+    /// Adds tenant headers and the service credential to a request an endpoint described.
+    async fn authorized(
         &self,
-        method: reqwest::Method,
-        path: &str,
+        request: Result<reqwest::RequestBuilder, CallError>,
         tenant_scope: &TenantScope,
     ) -> Result<reqwest::RequestBuilder, StackError> {
-        let mut request = self
-            .http
-            .request(method, self.url(path))
+        let mut request = request
+            .map_err(|error| StackError::bad_request(format!("trellis request refused: {error}")))?
             .header(
                 self.config.tenant_headers.tenant,
                 tenant_scope.tenant.as_str(),
@@ -883,16 +889,22 @@ impl TrellisServiceClient {
         source_diagnostics::mark(source_selected, Stage::Input, Outcome::Enter);
         source_diagnostics::observed(source_selected, Stage::Input, request.validate())?;
         source_diagnostics::mark(source_selected, Stage::Request, Outcome::Enter);
-        let path = format!("/v1/scopes/{}/events", encode_path_segment(&request.scope));
+        let called = self.target().call(
+            endpoints::APPEND_EVENT,
+            &endpoints::ScopePath {
+                scope: request.scope.clone(),
+            },
+            &Absent,
+            &request.body(),
+            Some(&request.idempotency_key),
+        );
         let outgoing = self
-            .request(reqwest::Method::POST, &path, &request.tenant_scope)
+            .authorized(called, &request.tenant_scope)
             .await
             .map_err(|error| {
                 source_diagnostics::mark(source_selected, Stage::Request, Outcome::Refused);
                 error
-            })?
-            .header(IDEMPOTENCY_KEY_HEADER, request.idempotency_key.as_str())
-            .json(&request.body());
+            })?;
         source_diagnostics::mark(source_selected, Stage::Request, Outcome::ReturnedOk);
         source_diagnostics::mark(source_selected, Stage::Send, Outcome::Enter);
         let response = outgoing.send().await.map_err(|error| {
@@ -924,11 +936,18 @@ impl SubstrateClient for TrellisServiceClient {
         request.validate()?;
         // Bound token acquisition, HTTP and decoding together; never retry or fall back to append.
         tokio::time::timeout(self.config.timeout, async {
-            let path = format!("/v1/scopes/{}/events/reconcile", encode_path_segment(scope));
+            let called = self.target().call(
+                endpoints::RECONCILE_EVENT,
+                &endpoints::ScopePath {
+                    scope: scope.to_owned(),
+                },
+                &Absent,
+                request,
+                None,
+            );
             let response = self
-                .request(reqwest::Method::POST, &path, tenant_scope)
+                .authorized(called, tenant_scope)
                 .await?
-                .json(request)
                 .send()
                 .await
                 .map_err(|_| {
@@ -965,12 +984,16 @@ impl SubstrateClient for TrellisServiceClient {
         tenant_scope: &TenantScope,
     ) -> Result<Vec<u8>, StackError> {
         validate_scope(scope)?;
-        self.bytes_get(
-            &format!("/v1/scopes/{}/bundles/head", encode_path_segment(scope)),
-            tenant_scope,
-            "head bundle",
-        )
-        .await
+        let called = self.target().call(
+            endpoints::HEAD_BUNDLE,
+            &endpoints::ScopePath {
+                scope: scope.to_owned(),
+            },
+            &Absent,
+            &Absent,
+            None,
+        );
+        self.bytes_get(called, tenant_scope, "head bundle").await
     }
 
     async fn bundle(
@@ -981,16 +1004,17 @@ impl SubstrateClient for TrellisServiceClient {
     ) -> Result<Vec<u8>, StackError> {
         validate_scope(scope)?;
         validate_required("checkpoint_digest", checkpoint_digest)?;
-        self.bytes_get(
-            &format!(
-                "/v1/scopes/{}/bundles/{}",
-                encode_path_segment(scope),
-                encode_path_segment(checkpoint_digest)
-            ),
-            tenant_scope,
-            "pinned bundle",
-        )
-        .await
+        let called = self.target().call(
+            endpoints::PINNED_BUNDLE,
+            &endpoints::BundlePath {
+                scope: scope.to_owned(),
+                checkpoint_digest: checkpoint_digest.to_owned(),
+            },
+            &Absent,
+            &Absent,
+            None,
+        );
+        self.bytes_get(called, tenant_scope, "pinned bundle").await
     }
 
     async fn signing_key_registry(
@@ -999,15 +1023,17 @@ impl SubstrateClient for TrellisServiceClient {
         tenant_scope: &TenantScope,
     ) -> Result<Vec<u8>, StackError> {
         validate_scope(scope)?;
-        self.bytes_get(
-            &format!(
-                "/v1/scopes/{}/registries/signing-keys",
-                encode_path_segment(scope)
-            ),
-            tenant_scope,
-            "signing-key registry",
-        )
-        .await
+        let called = self.target().call(
+            endpoints::SIGNING_KEY_REGISTRY,
+            &endpoints::ScopePath {
+                scope: scope.to_owned(),
+            },
+            &Absent,
+            &Absent,
+            None,
+        );
+        self.bytes_get(called, tenant_scope, "signing-key registry")
+            .await
     }
 
     async fn event_type_registry(
@@ -1016,15 +1042,17 @@ impl SubstrateClient for TrellisServiceClient {
         tenant_scope: &TenantScope,
     ) -> Result<serde_json::Value, StackError> {
         validate_scope(scope)?;
+        let called = self.target().call(
+            endpoints::EVENT_TYPE_REGISTRY,
+            &endpoints::ScopePath {
+                scope: scope.to_owned(),
+            },
+            &Absent,
+            &Absent,
+            None,
+        );
         let response = self
-            .request(
-                reqwest::Method::GET,
-                &format!(
-                    "/v1/scopes/{}/registries/event-types",
-                    encode_path_segment(scope)
-                ),
-                tenant_scope,
-            )
+            .authorized(called, tenant_scope)
             .await?
             .send()
             .await
@@ -1039,7 +1067,15 @@ impl SubstrateClient for TrellisServiceClient {
                 response.status()
             )));
         }
-        response.json::<serde_json::Value>().await.map_err(|error| {
+        let view = response
+            .json::<endpoints::EventTypeRegistryView>()
+            .await
+            .map_err(|error| {
+                StackError::unavailable(format!(
+                    "trellis event-type registry response is invalid: {error}"
+                ))
+            })?;
+        serde_json::to_value(view).map_err(|error| {
             StackError::unavailable(format!(
                 "trellis event-type registry response is invalid: {error}"
             ))
@@ -1071,37 +1107,39 @@ impl TrellisServiceClient {
                 "bundle byte limit must be positive",
             ));
         }
-        self.bytes_get_inner(
-            &format!(
-                "/v1/scopes/{}/bundles/{}",
-                encode_path_segment(scope),
-                encode_path_segment(checkpoint_digest)
-            ),
-            tenant_scope,
-            "pinned bundle",
-            Some(max_bytes),
-        )
-        .await
+        let called = self.target().call(
+            endpoints::PINNED_BUNDLE,
+            &endpoints::BundlePath {
+                scope: scope.to_owned(),
+                checkpoint_digest: checkpoint_digest.to_owned(),
+            },
+            &Absent,
+            &Absent,
+            None,
+        );
+        self.bytes_get_inner(called, tenant_scope, "pinned bundle", Some(max_bytes))
+            .await
     }
 
     async fn bytes_get(
         &self,
-        path: &str,
+        called: Result<reqwest::RequestBuilder, CallError>,
         tenant_scope: &TenantScope,
         label: &str,
     ) -> Result<Vec<u8>, StackError> {
-        self.bytes_get_inner(path, tenant_scope, label, None).await
+        self.bytes_get_inner(called, tenant_scope, label, None)
+            .await
     }
 
     async fn bytes_get_inner(
         &self,
-        path: &str,
+        called: Result<reqwest::RequestBuilder, CallError>,
         tenant_scope: &TenantScope,
         label: &str,
         max_bytes: Option<usize>,
     ) -> Result<Vec<u8>, StackError> {
         let mut response = self
-            .request(reqwest::Method::GET, path, tenant_scope)
+            .authorized(called, tenant_scope)
             .await?
             .send()
             .await
@@ -1190,31 +1228,6 @@ fn validate_required(field: &str, value: &str) -> Result<(), StackError> {
         return Err(StackError::bad_request(format!("{field} is required")));
     }
     Ok(())
-}
-
-fn encode_path_segment(value: &str) -> String {
-    let mut out = String::new();
-    for byte in value.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                out.push(byte as char);
-            }
-            other => {
-                out.push('%');
-                out.push(hex_digit(other >> 4));
-                out.push(hex_digit(other & 0x0f));
-            }
-        }
-    }
-    out
-}
-
-fn hex_digit(value: u8) -> char {
-    match value {
-        0..=9 => (b'0' + value) as char,
-        10..=15 => (b'A' + (value - 10)) as char,
-        _ => unreachable!("nibble is in range"),
-    }
 }
 
 #[cfg(test)]
@@ -1426,12 +1439,6 @@ mod tests {
             .validate_for_event_append("case_123")
             .is_ok()
         );
-    }
-
-    #[test]
-    fn path_segments_are_percent_encoded() {
-        assert_eq!(encode_path_segment("case:123"), "case%3A123");
-        assert_eq!(encode_path_segment("case_123"), "case_123");
     }
 
     #[test]

@@ -1,34 +1,93 @@
 // Rust guideline compliant 2026-02-21
 //! Axum router and HTTP handlers (TWREF-086 `http` split).
 
+use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
-use axum::middleware;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{Router, get, post};
+use axum::routing::{Router, get};
 use axum::{Extension, Json};
 use stack_common_error::{ProblemJson, StackError};
-use stack_common_http::idempotency::{IDEMPOTENCY_KEY_HEADER, idempotency_middleware};
+use stack_common_http::idempotency::IDEMPOTENCY_KEY_HEADER;
+use stack_common_http::routes::{Access, Documents, Routes};
 use stack_common_http::tenant::TenantScope;
 use stack_common_ops::HealthRouter;
+use trellis_server_ports::ComputeSensitivity;
 use trellis_server_ports::ScopeAction;
-use trellis_service_client::{ComputeSensitivity, SubstrateAppendBody, SubstrateAppendResult};
+use trellis_service_client::endpoints::{
+    ACCEPTED_ATTACHMENT, APPEND_EVENT, BundlePath, EVENT_TYPE_REGISTRY, EventTypeRegistryView,
+    HEAD_BUNDLE, PINNED_BUNDLE, RECONCILE_EVENT, SEAL_COMPLETION, SIGNING_KEY_REGISTRY, ScopePath,
+};
+use trellis_service_client::{SubstrateAppendBody, SubstrateAppendResult};
 
 use crate::append;
+use crate::auth::Admission;
 use crate::event_type_registry_view;
-use crate::openapi::EventTypeRegistryView;
+use crate::openapi::base_document;
 use crate::state::{TrellisHealthProbe, TrellisServerState};
 
-/// Seal body limit. The worst case the request validator admits is about 0.84 MiB (measured
-/// by `completion_route_body_limit_admits_the_worst_case_selection_and_no_more`): 141 text
-/// fields of 1024 bytes that JSON escapes to at most six bytes each, plus about 20 KiB of
-/// hashes and keys as JSON number arrays.
-const SEAL_BODY_LIMIT: usize = 1024 * 1024;
+/// Every Trellis route, declared once; the router and the document derive from this set.
+fn routes(state: TrellisServerState) -> Routes<TrellisServerState, Admission, TrellisServerState> {
+    Routes::new(base_document(), state.clone())
+        .endpoint(
+            APPEND_EVENT,
+            utoipa_axum::routes!(append_event),
+            Access::scope(Admission::AppendEvent),
+        )
+        .endpoint(
+            RECONCILE_EVENT,
+            utoipa_axum::routes!(reconcile_event),
+            Access::scope(Admission::Read),
+        )
+        .endpoint(
+            SEAL_COMPLETION,
+            utoipa_axum::routes!(seal_completion),
+            Access::scope(Admission::SealCompletion),
+        )
+        .endpoint(
+            ACCEPTED_ATTACHMENT,
+            utoipa_axum::routes!(crate::external_transport::append),
+            Access::scope(Admission::AcceptedAttachment),
+        )
+        .endpoint(
+            HEAD_BUNDLE,
+            utoipa_axum::routes!(head_bundle),
+            Access::scope(Admission::Read),
+        )
+        .endpoint(
+            PINNED_BUNDLE,
+            utoipa_axum::routes!(pinned_bundle),
+            Access::scope(Admission::Read),
+        )
+        .endpoint(
+            SIGNING_KEY_REGISTRY,
+            utoipa_axum::routes!(signing_key_registry),
+            Access::scope(Admission::Read),
+        )
+        .endpoint(
+            EVENT_TYPE_REGISTRY,
+            utoipa_axum::routes!(event_type_registry),
+            Access::scope(Admission::Read),
+        )
+        .merge_health(HealthRouter::new().with_probe(TrellisHealthProbe::new(state)))
+}
+
+/// The OpenAPI documents of the declared routes.
+///
+/// # Errors
+/// Returns an error when a handler's annotation disagrees with its endpoint.
+pub fn documents(state: TrellisServerState) -> Result<Documents, StackError> {
+    routes(state)
+        .build()
+        .map(|built| built.documents)
+        .map_err(|error| StackError::internal(error.to_string()))
+}
 
 /// Builds the Trellis Axum router.
 ///
 /// # Errors
-/// Returns an error when shared HTTP middleware cannot be constructed.
+/// Returns an error when shared HTTP middleware cannot be constructed or a route declaration
+/// disagrees with its handler.
 pub fn router(state: TrellisServerState) -> Result<Router, StackError> {
     state.ensure_serving_posture_twref022()?;
     let http_layer = stack_common_http::MiddlewareBuilder::new()
@@ -37,71 +96,32 @@ pub fn router(state: TrellisServerState) -> Result<Router, StackError> {
         .with_catch_panic()
         .build()
         .map_err(|error| StackError::internal(format!("http middleware: {error}")))?;
-
-    let append = post(append_event)
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            idempotency_middleware::<TrellisServerState>,
-        ))
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            crate::auth::authorize_append,
-        ));
-
-    let accepted_attachments = post(crate::external_transport::append)
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            idempotency_middleware::<TrellisServerState>,
-        ))
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            crate::external_transport::authorize,
-        ));
-    Ok(Router::new()
-        .route("/openapi.json", get(crate::openapi::openapi_json))
-        .route("/v1/scopes/{scope}/events", append)
+    let built = routes(state.clone())
+        .build()
+        .map_err(|error| StackError::internal(error.to_string()))?;
+    let document = Bytes::from(
+        serde_json::to_vec(&built.documents.public)
+            .map_err(|error| StackError::internal(format!("OpenAPI serialization: {error}")))?,
+    );
+    Ok(built
+        .router
         .route(
-            "/v1/scopes/{scope}/events/reconcile",
-            post(reconcile_event).layer(axum::extract::DefaultBodyLimit::max(4096)),
-        )
-        .route(
-            "/v1/scopes/{scope}/completion",
-            post(seal_completion).layer(axum::extract::DefaultBodyLimit::max(SEAL_BODY_LIMIT)),
-        )
-        .route(
-            "/v1/scopes/{scope}/accepted-attachments",
-            accepted_attachments,
-        )
-        .route("/v1/scopes/{scope}/bundles/head", get(head_bundle))
-        .route(
-            "/v1/scopes/{scope}/bundles/{checkpoint_digest}",
-            get(pinned_bundle),
-        )
-        .route(
-            "/v1/scopes/{scope}/registries/signing-keys",
-            get(signing_key_registry),
-        )
-        .route(
-            "/v1/scopes/{scope}/registries/event-types",
-            get(event_type_registry),
-        )
-        .merge(
-            HealthRouter::new()
-                .with_probe(TrellisHealthProbe::new(state.clone()))
-                .into_router_for_state(),
+            "/openapi.json",
+            get(move || {
+                let document = document.clone();
+                async move { ([(header::CONTENT_TYPE, "application/json")], document) }
+            }),
         )
         .with_state(state)
         .layer(http_layer))
 }
 
 /// Looks up append identity with current read authority and no publication effects.
-#[utoipa::path(post, path="/v1/scopes/{scope}/events/reconcile",
-    params(("scope"=String,Path,description="Authorized ledger scope")),
-    request_body=trellis_service_client::AppendReconciliationRequest,
+#[utoipa::path(post, path = RECONCILE_EVENT.path(),
     responses((status=200,description="Read-point disposition; lookup never appends or publishes",body=trellis_service_client::AppendReconciliation),(status=400,description="Invalid lookup identity"),(status=401,description="Current authentication refused"),(status=403,description="Current scope read permission refused")),tag="events",operation_id="reconcileEvent")]
 pub(crate) async fn reconcile_event(
     State(state): State<TrellisServerState>,
-    Path(scope): Path<String>,
+    Path(ScopePath { scope }): Path<ScopePath>,
     tenant: TenantScope,
     headers: HeaderMap,
     Json(request): Json<trellis_service_client::AppendReconciliationRequest>,
@@ -118,19 +138,17 @@ pub(crate) async fn reconcile_event(
     Ok(Json(result))
 }
 
-#[utoipa::path(post, path="/v1/scopes/{scope}/completion",
-    params(("scope"=String,Path,description="Authorized ledger scope"), ("idempotency-key"=String,Header,description="Must match closed request")),
-    request_body=trellis_service_client::CompletionRequest,
+#[utoipa::path(post, path = SEAL_COMPLETION.path(),
     responses((status=201,description="Certificate and archive retained",body=SubstrateAppendResult),(status=400,description="Closed trigger or selection refused, including a status or impact outside the vocabulary"),(status=401,description="Current authentication refused"),(status=403,description="Current permission refused, or the caller is not the configured publisher"),(status=409,description="Snapshot, signing-evidence, different-principal or replay conflict"),(status=503,description="Composition not selected or dependency unavailable")),tag="events")]
 pub(crate) async fn seal_completion(
     State(state): State<TrellisServerState>,
-    Path(scope): Path<String>,
+    Path(ScopePath { scope }): Path<ScopePath>,
     tenant: TenantScope,
     headers: HeaderMap,
     Json(request): Json<trellis_service_client::CompletionRequest>,
 ) -> Result<(StatusCode, Json<SubstrateAppendResult>), StackError> {
     // Authenticate before revealing configuration availability.
-    state.authenticate(&headers).await?;
+    state.bearer_identity(&headers).await?;
     let (signer, _) = state
         .completion
         .as_ref()
@@ -143,12 +161,8 @@ pub(crate) async fn seal_completion(
 
 #[utoipa::path(
     post,
-    path = "/v1/scopes/{scope}/events",
-    params(
-        ("scope" = String, Path, description = "Trellis ledger scope."),
-        ("idempotency-key" = String, Header, description = "HTTP replay key; must match body idempotencyKey.")
-    ),
-    request_body = SubstrateAppendBody,
+    path = APPEND_EVENT.path(),
+    request_body = trellis_service_client::SubstrateAppendBody,
     responses(
         (status = 201, description = "Event and its checkpoint committed.", body = SubstrateAppendResult),
         (status = 400, description = "Invalid append request.", body = ProblemJson, content_type = "application/problem+json"),
@@ -162,7 +176,7 @@ pub(crate) async fn seal_completion(
 )]
 pub(crate) async fn append_event(
     State(state): State<TrellisServerState>,
-    Path(scope): Path<String>,
+    Path(ScopePath { scope }): Path<ScopePath>,
     Extension(crate::auth::AuthorizedAppend(body, admitted)): Extension<
         crate::auth::AuthorizedAppend,
     >,
@@ -198,8 +212,7 @@ pub(crate) async fn append_event(
 
 #[utoipa::path(
     get,
-    path = "/v1/scopes/{scope}/bundles/head",
-    params(("scope" = String, Path, description = "Trellis ledger scope.")),
+    path = HEAD_BUNDLE.path(),
     responses(
         (status = 200, description = "The Core section 18 export at the head checkpoint, assembled on request under Read.", content_type = "application/zip"),
         (status = 403, description = "Current Read refused.", body = ProblemJson, content_type = "application/problem+json"),
@@ -212,7 +225,7 @@ pub(crate) async fn append_event(
 )]
 pub(crate) async fn head_bundle(
     State(state): State<TrellisServerState>,
-    Path(scope): Path<String>,
+    Path(ScopePath { scope }): Path<ScopePath>,
     tenant_scope: TenantScope,
     headers: HeaderMap,
 ) -> Result<Response, StackError> {
@@ -232,11 +245,7 @@ pub(crate) async fn head_bundle(
 
 #[utoipa::path(
     get,
-    path = "/v1/scopes/{scope}/bundles/{checkpointDigest}",
-    params(
-        ("scope" = String, Path, description = "Trellis ledger scope."),
-        ("checkpointDigest" = String, Path, description = "Checkpoint digest in `sha256:<64 hex>` form.")
-    ),
+    path = PINNED_BUNDLE.path(),
     responses(
         (status = 200, description = "The Core section 18 export at the pinned checkpoint, assembled on request under Read.", content_type = "application/zip"),
         (status = 400, description = "Invalid checkpoint digest.", body = ProblemJson, content_type = "application/problem+json"),
@@ -249,7 +258,10 @@ pub(crate) async fn head_bundle(
 )]
 pub(crate) async fn pinned_bundle(
     State(state): State<TrellisServerState>,
-    Path((scope, checkpoint_digest)): Path<(String, String)>,
+    Path(BundlePath {
+        scope,
+        checkpoint_digest,
+    }): Path<BundlePath>,
     tenant_scope: TenantScope,
     headers: HeaderMap,
 ) -> Result<Response, StackError> {
@@ -270,8 +282,7 @@ pub(crate) async fn pinned_bundle(
 
 #[utoipa::path(
     get,
-    path = "/v1/scopes/{scope}/registries/signing-keys",
-    params(("scope" = String, Path, description = "Trellis ledger scope.")),
+    path = SIGNING_KEY_REGISTRY.path(),
     responses(
         (status = 200, description = "CBOR signing-key registry snapshot.", content_type = "application/cbor"),
         (status = 503, description = "Registry unavailable.", body = ProblemJson, content_type = "application/problem+json")
@@ -281,7 +292,7 @@ pub(crate) async fn pinned_bundle(
 )]
 pub(crate) async fn signing_key_registry(
     State(state): State<TrellisServerState>,
-    Path(scope): Path<String>,
+    Path(ScopePath { scope }): Path<ScopePath>,
     tenant_scope: TenantScope,
     headers: HeaderMap,
 ) -> Result<Response, StackError> {
@@ -292,8 +303,7 @@ pub(crate) async fn signing_key_registry(
 
 #[utoipa::path(
     get,
-    path = "/v1/scopes/{scope}/registries/event-types",
-    params(("scope" = String, Path, description = "Trellis ledger scope.")),
+    path = EVENT_TYPE_REGISTRY.path(),
     responses(
         (status = 200, description = "Event-type registry projection.", body = EventTypeRegistryView),
         (status = 503, description = "Registry unavailable.", body = ProblemJson, content_type = "application/problem+json")
@@ -303,7 +313,7 @@ pub(crate) async fn signing_key_registry(
 )]
 pub(crate) async fn event_type_registry(
     State(state): State<TrellisServerState>,
-    Path(scope): Path<String>,
+    Path(ScopePath { scope }): Path<ScopePath>,
     tenant_scope: TenantScope,
     headers: HeaderMap,
 ) -> Result<Json<EventTypeRegistryView>, StackError> {
@@ -326,7 +336,7 @@ async fn read_authorized(
     StackError,
 > {
     validate_scope(scope)?;
-    let identity = state.authenticate(headers).await?;
+    let identity = state.bearer_identity(headers).await?;
     let permit = crate::auth::authorize_action(
         state,
         &identity,

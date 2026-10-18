@@ -102,7 +102,7 @@ async fn all_seven_operations_acquire_changed_current_tokens_once_each() {
                 0 => {
                     r#"{"eventId":"evt_1","sequence":1,"canonicalEventHash":"sha256:abc","checkpointRef":"trellis://case_123/checkpoints/cp_1"}"#
                 }
-                4 => r#"{"eventTypes":[]}"#,
+                4 => r#"{"registryVersion":"v1","eventTypes":[]}"#,
                 5 => {
                     r#"{"eventId":"evt_2","sequence":2,"canonicalEventHash":"sha256:def","checkpointRef":"trellis://case_123/checkpoints/cp_2"}"#
                 }
@@ -140,7 +140,7 @@ async fn all_seven_operations_acquire_changed_current_tokens_once_each() {
             .event_type_registry("case_123", &tenant_scope())
             .await
             .unwrap(),
-        serde_json::json!({"eventTypes":[]})
+        serde_json::json!({"registryVersion":"v1","eventTypes":[]})
     );
     client
         .append_accepted_attachment("case_123", &tenant_scope(), &attachment_body())

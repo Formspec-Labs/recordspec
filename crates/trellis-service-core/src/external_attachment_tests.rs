@@ -236,7 +236,7 @@ async fn append_prepared_external_attachment(
     let scope = std::str::from_utf8(&input.scope)
         .map_err(|_| StackError::bad_request("attachment scope must be UTF-8"))?;
     crate::http::validate_scope(scope)?;
-    let identity = state.authenticate(headers).await?;
+    let identity = state.bearer_identity(headers).await?;
     authorization.validate()?;
     crate::http::validate_idempotency_header(headers, &authorization.idempotency_key)?;
     if authorization.event_type != event_type

@@ -17,10 +17,15 @@ mod bytes32 {
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use serde::{Deserialize, Deserializer, Serializer, de::Error as _};
 
-    pub(super) fn serialize<S: Serializer>(value: &[u8; 32], serializer: S) -> Result<S::Ok, S::Error> {
+    pub(super) fn serialize<S: Serializer>(
+        value: &[u8; 32],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(&STANDARD.encode(value))
     }
-    pub(super) fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<[u8; 32], D::Error> {
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<[u8; 32], D::Error> {
         let text = String::deserialize(deserializer)?;
         STANDARD
             .decode(text)
@@ -35,11 +40,19 @@ mod bytes32_list {
     #[derive(Serialize, Deserialize)]
     struct One(#[serde(with = "super::bytes32")] [u8; 32]);
 
-    pub(super) fn serialize<S: Serializer>(values: &[[u8; 32]], serializer: S) -> Result<S::Ok, S::Error> {
+    pub(super) fn serialize<S: Serializer>(
+        values: &[[u8; 32]],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
         serializer.collect_seq(values.iter().copied().map(One))
     }
-    pub(super) fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<[u8; 32]>, D::Error> {
-        Ok(Vec::<One>::deserialize(deserializer)?.into_iter().map(|One(bytes)| bytes).collect())
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<[u8; 32]>, D::Error> {
+        Ok(Vec::<One>::deserialize(deserializer)?
+            .into_iter()
+            .map(|One(bytes)| bytes)
+            .collect())
     }
 }
 
@@ -114,11 +127,7 @@ impl CompletionRequest {
             || self.certificate_id.len() > MAX_TEXT
             || self.signing_events.is_empty()
             || self.signing_events.len() > 64
-            || self
-                .signing_events
-                .iter()
-                .collect::<BTreeSet<_>>()
-                .len()
+            || self.signing_events.iter().collect::<BTreeSet<_>>().len()
                 != self.signing_events.len()
         {
             return Err(StackError::bad_request("completion trigger fields invalid"));
@@ -203,14 +212,23 @@ pub(crate) mod tests {
     fn wire_shape_is_camel_case_and_closed() {
         let value = serde_json::to_value(request()).unwrap();
         let selection = &value["selection"];
-        assert_eq!(selection["completedAt"], serde_json::json!([1_700_000_000u64, 5]));
+        assert_eq!(
+            selection["completedAt"],
+            serde_json::json!([1_700_000_000u64, 5])
+        );
         assert_eq!(selection["signerLabels"][1]["displayRole"], "Witness");
         assert_eq!(selection["requiredAttestors"][0]["authorityClass"], "new");
         // Hashes and keys travel as base64 text, not 32-number arrays.
-        assert_eq!(value["expectedHead"], serde_json::json!("AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="));
+        assert_eq!(
+            value["expectedHead"],
+            serde_json::json!("AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=")
+        );
         assert!(selection["requiredAttestors"][0]["publicKey"].is_string());
         assert!(selection["signerLabels"][0]["signingEvent"].is_string());
-        assert_eq!(serde_json::from_value::<CompletionRequest>(value.clone()).unwrap(), request());
+        assert_eq!(
+            serde_json::from_value::<CompletionRequest>(value.clone()).unwrap(),
+            request()
+        );
         let mut unknown = value.clone();
         unknown["selection"]["callerBearer"] = serde_json::json!("x");
         assert!(serde_json::from_value::<CompletionRequest>(unknown).is_err());

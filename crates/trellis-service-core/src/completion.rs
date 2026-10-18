@@ -471,7 +471,7 @@ async fn authorize(
     scope: &str,
     request: &CompletionRequest,
 ) -> Result<String, StackError> {
-    let identity = state.authenticate(headers).await?;
+    let identity = state.bearer_identity(headers).await?;
     let principal = identity.actor("trellis-server").to_owned();
     crate::http::validate_idempotency_header(headers, &request.idempotency_key)?;
     let body = trellis_service_client::SubstrateAppendBody {

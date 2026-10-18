@@ -93,10 +93,7 @@ pub use event_repository::{
 pub use external_repository::ExternalAttachmentFactory;
 
 #[doc(inline)]
-pub use openapi::TrellisServerOpenApi;
-
-#[doc(inline)]
-pub use http::router;
+pub use http::{documents, router};
 #[doc(inline)]
 pub use state::{TrellisServerState, state_from_env};
 
@@ -119,7 +116,7 @@ use trellis_server_ports::event_codec::{
     cbor_bad_request, encode_value, event_hash, event_summary, event_timestamp, text_map, uint,
 };
 
-use crate::openapi::EventTypeRegistryView;
+use trellis_service_client::endpoints::{EventTypeRegistryEntry, EventTypeRegistryView};
 
 // Catalog version label is producer-neutral: the catalog projects whatever
 // admitted literals the injected adapters declare.
@@ -282,7 +279,7 @@ pub(crate) fn event_type_registry_view(catalog: &EventTypeCatalog) -> EventTypeR
             catalog.get(&entry.event_type).is_some(),
             "catalog entry must resolve by its own event type"
         );
-        event_types.push(crate::openapi::EventTypeRegistryEntry {
+        event_types.push(EventTypeRegistryEntry {
             event_type: entry.event_type.clone(),
             schema_ref: entry.schema_ref.as_str().to_string(),
         });
@@ -1742,13 +1739,7 @@ mod tests {
         let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
         let doc: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         // The mounted route serves the document the committed copy is checked against.
-        assert_eq!(
-            doc,
-            serde_json::to_value(
-                <crate::openapi::TrellisServerOpenApi as utoipa::OpenApi>::openapi()
-            )
-            .unwrap()
-        );
+        assert_eq!(doc, documents_of_test_state().public);
     }
 
     /// Given a successful substrate append, when the same JSON body and idempotency key are
@@ -1990,6 +1981,11 @@ mod tests {
 
     fn test_state() -> TrellisServerState {
         test_state_with_signing_key(test_signing_key())
+    }
+
+    /// The documents the declared routes produce.
+    pub(crate) fn documents_of_test_state() -> stack_common_http::routes::Documents {
+        documents(test_state()).expect("route declarations agree")
     }
 
     /// Builds a `TrellisServerState` with a caller-supplied signing key.
