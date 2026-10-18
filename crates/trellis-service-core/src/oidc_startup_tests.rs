@@ -105,6 +105,18 @@ fn sign(claims: &Value) -> String {
 
 static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
 
+/// Scope A, as a deployment file and a grant name it.
+fn scope_a() -> Value {
+    json!({"tenant":"acme","workspace":"benefits","environment":"prod"})
+}
+
+/// The deployment the grants are checked against: scopes A and B in `cell-a`.
+fn deployment() -> stack_common_scope::DeploymentConfig {
+    serde_json::from_value(json!({"cell":"cell-a","scopes":[scope_a(),
+        {"tenant":"globex","workspace":"benefits","environment":"prod"}]}))
+    .unwrap()
+}
+
 struct Files {
     root: PathBuf,
     profile: Value,
@@ -122,17 +134,16 @@ impl Files {
             std::process::id()
         ));
         fs::create_dir(&root).unwrap();
-        let tenant = json!({"tenant":"tenant-a","workspace":"workspace-a","environment":"prod","cell":"cell-a"});
         let profile = json!({"issuer":ISSUER,"audience":"trellis-api","requiredScopes":["trellis.access"],
             "allowedClients":["trellis-producer"],"profile":"keycloak","introspectionEndpoint":format!("{ISSUER}/introspect"),
             "introspectionClientId":"trellis-introspection","introspectionClientSecretFile":"client.secret","grantsFile":"grants.json",
-            "tenantScope":tenant,"identities":[{"issuer":ISSUER,"subject":"external-producer","clientId":"trellis-producer","principal":"internal-producer"}],
+            "identities":[{"issuer":ISSUER,"subject":"external-producer","clientId":"trellis-producer","principal":"internal-producer"}],
             "actionScopes":{"read":"trellis.read","append":"trellis.append","administer":"trellis.administer"}});
-        let grants = json!({"tenantScope":tenant,"grants":[
-            {"principal":"internal-producer","scope":"case_123","action":"append","actors":[{"kind":"service","subject":"wos-server"}],
+        let grants = json!({"grants":[
+            {"principal":"internal-producer","scope":scope_a(),"ledger":"case_123","action":"append","actors":[{"kind":"service","subject":"wos-server"}],
                 "payloadActors":[{"pointer":"/actorId","required":false,"subjects":["selected-human"]}]},
-            {"principal":"internal-producer","scope":"case_123","action":"read"},
-            {"principal":"internal-producer","scope":"case_123","action":"administer"}]});
+            {"principal":"internal-producer","scope":scope_a(),"ledger":"case_123","action":"read"},
+            {"principal":"internal-producer","scope":scope_a(),"ledger":"case_123","action":"administer"}]});
         let file = Self {
             root,
             profile,
@@ -162,10 +173,18 @@ impl Files {
                 http,
                 clock: Arc::new(Clock),
             },
+            &deployment(),
         )
     }
-    fn app(&self, http: Arc<ProtocolHttp>) -> axum::Router {
-        router(self.load(http).unwrap().apply(test_state())).unwrap()
+    /// The state the startup files compose, over a deployment serving scopes A and B.
+    fn state(&self, http: Arc<ProtocolHttp>) -> Fixture {
+        let auth = self.load(http).unwrap();
+        test_state().serving_b().map(|state| auth.apply(state))
+    }
+    /// A server started from the files as they are now. Grants are read once at startup, so a
+    /// changed grant file takes effect in the next server, not the running one.
+    fn app(&self, http: Arc<ProtocolHttp>) -> crate::test_support::App {
+        router(self.state(http)).unwrap()
     }
 }
 impl Drop for Files {
@@ -175,7 +194,7 @@ impl Drop for Files {
 }
 
 #[tokio::test]
-async fn oidc_startup_changed_actor_kind_grant_blocks_the_same_cached_body() {
+async fn a_restart_with_a_changed_actor_kind_grant_refuses_the_same_body() {
     let mut files = Files::new();
     let app = files.app(Arc::new(ProtocolHttp::new()));
     let token = sign(&claims());
@@ -190,8 +209,9 @@ async fn oidc_startup_changed_actor_kind_grant_blocks_the_same_cached_body() {
     );
     files.grants["grants"][0]["actors"][0]["kind"] = json!("human");
     files.save();
+    let restarted = files.app(Arc::new(ProtocolHttp::new()));
     assert_eq!(
-        app.oneshot(request(body, &token)).await.unwrap().status(),
+        restarted.oneshot(request(body, &token)).await.unwrap().status(),
         StatusCode::FORBIDDEN
     );
 }
@@ -222,7 +242,9 @@ async fn oidc_startup_required_payload_selector_refuses_missing_nontext_and_fore
 #[tokio::test]
 async fn oidc_startup_retained_head_requires_current_read_without_administer() {
     let mut files = Files::new();
-    let app = files.app(Arc::new(ProtocolHttp::new()));
+    let first = files.state(Arc::new(ProtocolHttp::new()));
+    let app_ledgers = first.ledgers.clone();
+    let app = router(first).unwrap();
     let token = sign(&claims());
     assert_eq!(
         app.clone()
@@ -248,6 +270,14 @@ async fn oidc_startup_retained_head_requires_current_read_without_administer() {
         .unwrap()
         .retain(|grant| grant["action"] != "administer");
     files.save();
+    // The restarted server keeps the ledger (the fixture's stores are per test) only within one
+    // fixture, so the read is checked on a server sharing this one's state but the new grants.
+    let app = router(
+        files
+            .state(Arc::new(ProtocolHttp::new()))
+            .with_ledgers(app_ledgers.clone()),
+    )
+    .unwrap();
     assert_eq!(
         app.clone().oneshot(head()).await.unwrap().status(),
         StatusCode::OK
@@ -257,6 +287,12 @@ async fn oidc_startup_retained_head_requires_current_read_without_administer() {
         .unwrap()
         .retain(|grant| grant["action"] != "read");
     files.save();
+    let app = router(
+        files
+            .state(Arc::new(ProtocolHttp::new()))
+            .with_ledgers(app_ledgers),
+    )
+    .unwrap();
     assert_eq!(
         app.oneshot(head()).await.unwrap().status(),
         StatusCode::FORBIDDEN
@@ -282,15 +318,17 @@ async fn oidc_startup_real_protocol_rechecks_token_and_current_case_grant_before
             .status(),
         StatusCode::CREATED
     );
+    // Restarted without grants, the principal is bound to no scope: nothing is found.
     files.grants["grants"] = json!([]);
     files.save();
+    let app = files.app(http.clone());
     assert_eq!(
         app.clone()
             .oneshot(request(body.clone(), &token))
             .await
             .unwrap()
             .status(),
-        StatusCode::FORBIDDEN
+        StatusCode::NOT_FOUND
     );
     http.active.store(false, Ordering::SeqCst);
     assert_eq!(
@@ -340,27 +378,27 @@ async fn oidc_startup_action_scope_is_required_beyond_base_oauth_access() {
 }
 
 #[tokio::test]
-async fn oidc_startup_refuses_foreign_tenant_component_scope_and_actor_kind() {
+async fn oidc_startup_refuses_foreign_scope_ledger_and_actor_kind() {
     let files = Files::new();
     let app = files.app(Arc::new(ProtocolHttp::new()));
     let token = sign(&claims());
-    for name in [
-        "x-wos-tenant-id",
-        "x-wos-workspace-id",
-        "x-wos-environment-id",
-        "x-wos-cell-id",
-    ] {
-        let mut foreign = request(append_body("oidc-foreign-tuple"), &token);
-        foreign
-            .headers_mut()
-            .insert(name, axum::http::HeaderValue::from_static("foreign"));
+    // Scope B is served, but the principal holds no grant there: selecting it or naming its
+    // ledger finds nothing.
+    let b = crate::test_support::b();
+    let mut selects_b = request(append_body("oidc-foreign-scope"), &token);
+    selects_b
+        .headers_mut()
+        .insert("x-stack-scope-key", b.key().to_string().parse().unwrap());
+    let mut names_b = request(append_body("oidc-foreign-scope"), &token);
+    *names_b.uri_mut() = format!("/v1/scopes/{}.case_123/events", b.key()).parse().unwrap();
+    for foreign in [selects_b, names_b] {
         assert_eq!(
             app.clone().oneshot(foreign).await.unwrap().status(),
-            StatusCode::FORBIDDEN
+            StatusCode::NOT_FOUND
         );
     }
     let mut foreign = request(append_body("oidc-foreign-case"), &token);
-    *foreign.uri_mut() = "/v1/scopes/foreign_case/events".parse().unwrap();
+    *foreign.uri_mut() = scoped_uri("/v1/scopes/foreign_case/events").parse().unwrap();
     assert_eq!(
         app.clone().oneshot(foreign).await.unwrap().status(),
         StatusCode::FORBIDDEN
@@ -377,7 +415,7 @@ async fn oidc_startup_refuses_foreign_tenant_component_scope_and_actor_kind() {
 }
 
 #[tokio::test]
-async fn oidc_startup_revoked_payload_delegation_blocks_unchanged_cached_retry() {
+async fn a_restart_with_a_revoked_payload_delegation_refuses_the_same_body() {
     let mut files = Files::new();
     let app = files.app(Arc::new(ProtocolHttp::new()));
     let token = sign(&claims());
@@ -394,17 +432,18 @@ async fn oidc_startup_revoked_payload_delegation_blocks_unchanged_cached_retry()
     );
     files.grants["grants"][0]["payloadActors"][0]["subjects"] = json!(["different-human"]);
     files.save();
+    let restarted = files.app(Arc::new(ProtocolHttp::new()));
     assert_eq!(
-        app.oneshot(request(body, &token)).await.unwrap().status(),
+        restarted.oneshot(request(body, &token)).await.unwrap().status(),
         StatusCode::FORBIDDEN
     );
 }
 
 #[tokio::test]
-async fn a_prefix_grant_admits_its_scopes_and_refuses_others() {
+async fn a_prefix_grant_admits_its_ledgers_and_refuses_others() {
     let mut files = Files::new();
-    files.grants["grants"] = json!([{"principal":"internal-producer","scopePrefix":"keya.",
-        "action":"append","actors":[{"kind":"service","subject":"wos-server"}]}]);
+    files.grants["grants"] = json!([{"principal":"internal-producer","scope":scope_a(),
+        "ledgerPrefix":"keya.","action":"append","actors":[{"kind":"service","subject":"wos-server"}]}]);
     files.save();
     let app = files.app(Arc::new(ProtocolHttp::new()));
     let token = sign(&claims());
@@ -415,15 +454,18 @@ async fn a_prefix_grant_admits_its_scopes_and_refuses_others() {
             &token,
         )
     };
+    let b = crate::test_support::b();
     for (scope, expected) in [
-        ("keya.case_1", StatusCode::CREATED),
-        ("keya.case_2", StatusCode::CREATED),
-        ("keyb.case_1", StatusCode::FORBIDDEN),
-        ("keya", StatusCode::FORBIDDEN),
-        ("keyab.case_1", StatusCode::FORBIDDEN),
+        ("keya.case_1".to_owned(), StatusCode::CREATED),
+        ("keya.case_2".to_owned(), StatusCode::CREATED),
+        ("keyb.case_1".to_owned(), StatusCode::FORBIDDEN),
+        ("keya".to_owned(), StatusCode::FORBIDDEN),
+        ("keyab.case_1".to_owned(), StatusCode::FORBIDDEN),
+        // The prefix holds inside scope A: B's ledger of the same id is not reachable.
+        (format!("{}.keya.case_1", b.key()), StatusCode::NOT_FOUND),
     ] {
         assert_eq!(
-            app.clone().oneshot(append(scope)).await.unwrap().status(),
+            app.clone().oneshot(append(&scope)).await.unwrap().status(),
             expected,
             "{scope}"
         );
@@ -437,7 +479,7 @@ fn oidc_startup_closed_profile_and_current_grant_validation_refuse_ambiguous_aut
     for mutation in 0..9 {
         files.grants = original.clone();
         match mutation {
-            0 => files.grants["tenantScope"]["workspace"] = json!("foreign"),
+            0 => files.grants["grants"][0]["scope"]["tenant"] = json!("unserved"),
             1 => files.grants["grants"][0]["principal"] = json!("unmapped"),
             2 => {
                 let row = files.grants["grants"][0].clone();
@@ -452,10 +494,10 @@ fn oidc_startup_closed_profile_and_current_grant_validation_refuse_ambiguous_aut
                 files.grants["grants"][0]["payloadActors"][0]["subjects"] =
                     json!(["duplicate", "duplicate"])
             }
-            6 => files.grants["grants"][0]["scopePrefix"] = json!("key."),
+            6 => files.grants["grants"][0]["ledgerPrefix"] = json!("key."),
             7 => {
-                files.grants["grants"][1]["scopePrefix"] = json!("key");
-                files.grants["grants"][1].as_object_mut().unwrap().remove("scope");
+                files.grants["grants"][1]["ledgerPrefix"] = json!("key");
+                files.grants["grants"][1].as_object_mut().unwrap().remove("ledger");
             }
             _ => files.grants["unknown"] = json!(true),
         }
@@ -472,27 +514,31 @@ fn oidc_startup_closed_profile_and_current_grant_validation_refuse_ambiguous_aut
     assert!(files.load(Arc::new(ProtocolHttp::new())).is_err());
 }
 
+/// Grants are read and validated once, at startup (audit #25): a broken or missing file
+/// refuses the next start and leaves the running server's grants as they were.
 #[tokio::test]
-async fn oidc_startup_unavailable_or_invalid_current_grants_fail_closed_after_admission() {
+async fn grants_are_read_once_at_startup() {
     let files = Files::new();
     let app = files.app(Arc::new(ProtocolHttp::new()));
     let token = sign(&claims());
     files.write("grants.json", b"{invalid");
+    assert!(files.load(Arc::new(ProtocolHttp::new())).is_err());
     assert_eq!(
         app.clone()
             .oneshot(request(append_body("oidc-invalid-grants"), &token))
             .await
             .unwrap()
             .status(),
-        StatusCode::SERVICE_UNAVAILABLE
+        StatusCode::CREATED
     );
     fs::remove_file(files.root.join("grants.json")).unwrap();
+    assert!(files.load(Arc::new(ProtocolHttp::new())).is_err());
     assert_eq!(
         app.oneshot(request(append_body("oidc-missing-grants"), &token))
             .await
             .unwrap()
             .status(),
-        StatusCode::SERVICE_UNAVAILABLE
+        StatusCode::CREATED
     );
 }
 
@@ -500,11 +546,7 @@ async fn oidc_startup_unavailable_or_invalid_current_grants_fail_closed_after_ad
 fn oidc_startup_rejects_duplicate_fields_in_profile_and_grants() {
     let files = Files::new();
     let grants = serde_json::to_string(&files.grants).unwrap();
-    let duplicate = grants.replacen(
-        "{",
-        &format!("{{\"tenantScope\":{},", files.grants["tenantScope"]),
-        1,
-    );
+    let duplicate = grants.replacen("{", "{\"grants\":[],", 1);
     files.write("grants.json", duplicate.as_bytes());
     assert!(files.load(Arc::new(ProtocolHttp::new())).is_err());
     files.save();
@@ -541,7 +583,7 @@ fn oidc_startup_private_files_reject_shared_permissions_and_symlinks() {
 
 fn attachment_selection() -> Value {
     // Public maintained vector key, without deployment custody assertions.
-    json!([{"principal":"internal-producer","scope":"case_123","recipients":[{
+    json!([{"principal":"internal-producer","scope":scope_a(),"ledger":"case_123","recipients":[{
         "id":"fixture-reader-v1",
         "publicKey":hex::decode("7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13").unwrap(),
         "operatorHeld":false
@@ -565,18 +607,14 @@ async fn oidc_startup_composes_selected_attachment_recipients() {
     let mut files = Files::new();
     files.profile["acceptedAttachmentRecipients"] = attachment_selection();
     files.save();
-    let state = files
-        .load(Arc::new(ProtocolHttp::new()))
-        .unwrap()
-        .apply(test_state());
+    let state = files.state(Arc::new(ProtocolHttp::new()));
     let selector = state
         .external_attachment_recipients
         .as_ref()
         .expect("normal startup installs selection");
     let permit = trellis_server_ports::AuthorizedScope {
         principal: "internal-producer".into(),
-        tenant_scope: serde_json::from_value(files.profile["tenantScope"].clone()).unwrap(),
-        scope: b"case_123".to_vec(),
+        scope: crate::test_support::ledger("case_123"),
         action: trellis_server_ports::ScopeAction::Append,
     };
     let recipients = selector
@@ -595,7 +633,7 @@ fn oidc_startup_attachment_selection_is_optional_and_fails_closed_when_selected(
         files
             .load(Arc::new(ProtocolHttp::new()))
             .unwrap()
-            .apply(test_state())
+            .apply(test_state().state)
             .external_attachment_recipients
             .is_none()
     );
@@ -607,7 +645,8 @@ fn oidc_startup_attachment_selection_is_optional_and_fails_closed_when_selected(
     ];
     for (path, value) in [
         ("/0/principal", json!("unknown-principal")),
-        ("/0/scope", json!("bad/scope")),
+        ("/0/ledger", json!("bad/scope")),
+        ("/0/scope/tenant", json!("unserved")),
         ("/0/recipients", json!([])),
         ("/0/recipients/0/id", json!("")),
         ("/0/recipients/0/id", json!(" ")),
@@ -643,7 +682,7 @@ fn oidc_startup_attachment_selection_is_optional_and_fails_closed_when_selected(
     let oversized_rows = (0..1025)
         .map(|index| {
             let mut row = selected[0].clone();
-            row["scope"] = json!(format!("case_{index}"));
+            row["ledger"] = json!(format!("case_{index}"));
             row
         })
         .collect::<Vec<_>>();
@@ -682,23 +721,25 @@ async fn oidc_startup_attachment_selection_requires_exact_admitted_append_permis
     let mut files = Files::new();
     files.profile["acceptedAttachmentRecipients"] = attachment_selection();
     files.save();
-    let state = files
-        .load(Arc::new(ProtocolHttp::new()))
-        .unwrap()
-        .apply(test_state());
+    let state = files.state(Arc::new(ProtocolHttp::new()));
     let selector = state.external_attachment_recipients.as_ref().unwrap();
     let allowed = trellis_server_ports::AuthorizedScope {
         principal: "internal-producer".into(),
-        tenant_scope: serde_json::from_value(files.profile["tenantScope"].clone()).unwrap(),
-        scope: b"case_123".to_vec(),
+        scope: crate::test_support::ledger("case_123"),
         action: trellis_server_ports::ScopeAction::Append,
     };
     for changed in 0..4 {
         let mut permit = allowed.clone();
         match changed {
             0 => permit.principal = "unknown-principal".into(),
-            1 => permit.scope = b"case_124".to_vec(),
-            2 => permit.tenant_scope.tenant = "other-tenant".into(),
+            1 => permit.scope = crate::test_support::ledger("case_124"),
+            2 => {
+                permit.scope = trellis_server_ports::LedgerScope::of(
+                    &crate::test_support::b(),
+                    "case_123",
+                )
+                .unwrap()
+            }
             _ => permit.action = trellis_server_ports::ScopeAction::Read,
         }
         let error = selector
@@ -720,7 +761,7 @@ async fn oidc_startup_attachment_selection_requires_exact_admitted_append_permis
 /// A seal server whose callers are told apart by their real tokens and current grants:
 /// the configured publisher, a case writer who may append and read but is not the publisher,
 /// and callers holding only one of the two actions.
-async fn seal_server() -> (axum::Router, Arc<super::completion_tests::Signer>, Files, trellis_service_client::CompletionRequest) {
+async fn seal_server() -> (crate::test_support::App, Arc<super::completion_tests::Signer>, Files, trellis_service_client::CompletionRequest) {
     let mut files = Files::new();
     let callers = [
         // (subject, principal, actions)
@@ -728,13 +769,13 @@ async fn seal_server() -> (axum::Router, Arc<super::completion_tests::Signer>, F
         ("append-only", "append-only", vec!["append"]),
         ("read-only", "read-only", vec!["read"]),
     ];
-    let mut grants = vec![json!({"principal":"internal-producer","scope":"case_completion","action":"append","actors":[{"kind":"service","subject":"external-producer"}]}),
-        json!({"principal":"internal-producer","scope":"case_completion","action":"read"})];
+    let mut grants = vec![json!({"principal":"internal-producer","scope":scope_a(),"ledger":"case_completion","action":"append","actors":[{"kind":"service","subject":"external-producer"}]}),
+        json!({"principal":"internal-producer","scope":scope_a(),"ledger":"case_completion","action":"read"})];
     for (subject, principal, actions) in callers {
         files.profile["identities"].as_array_mut().unwrap().push(
             json!({"issuer":ISSUER,"subject":subject,"clientId":"trellis-producer","principal":principal}));
         for action in actions {
-            let mut grant = json!({"principal":principal,"scope":"case_completion","action":action});
+            let mut grant = json!({"principal":principal,"scope":scope_a(),"ledger":"case_completion","action":action});
             if action == "append" {
                 grant["actors"] = json!([{"kind":"service","subject":subject}]);
             }
@@ -746,9 +787,7 @@ async fn seal_server() -> (axum::Router, Arc<super::completion_tests::Signer>, F
     let signer = Arc::new(super::completion_tests::Signer { calls: AtomicUsize::new(0), corrupt: false });
     // The publisher is the principal the profile maps the WOS machine client to.
     let state = files
-        .load(Arc::new(ProtocolHttp::new()))
-        .unwrap()
-        .apply(test_state())
+        .state(Arc::new(ProtocolHttp::new()))
         .with_completion(signer.clone(), "internal-producer");
     let (state, _, _, request) = super::completion_tests::fixture_on(state).await;
     (router(state).unwrap(), signer, files, request)
@@ -759,15 +798,9 @@ fn seal_request(request: &trellis_service_client::CompletionRequest, token: Opti
     let body = serde_json::to_vec(request).unwrap();
     match token {
         Some(token) => post_request_bearer(path, body, token),
-        None => Request::builder()
-            .method("POST")
-            .uri(path)
+        None => crate::test_support::scoped_request("POST", path)
             .header("content-type", "application/json")
             .header(IDEMPOTENCY_KEY_HEADER, &request.idempotency_key)
-            .header("x-wos-tenant-id", "tenant-a")
-            .header("x-wos-workspace-id", "workspace-a")
-            .header("x-wos-environment-id", "prod")
-            .header("x-wos-cell-id", "cell-a")
             .body(Body::from(body))
             .unwrap(),
     }
@@ -777,7 +810,7 @@ fn token_for(subject: &str) -> String {
     claims["sub"] = json!(subject);
     sign(&claims)
 }
-async fn answer(app: &axum::Router, request: Request<Body>) -> (StatusCode, String) {
+async fn answer(app: &crate::test_support::App, request: Request<Body>) -> (StatusCode, String) {
     let response = app.clone().oneshot(request).await.unwrap();
     let status = response.status();
     let bytes = axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap();

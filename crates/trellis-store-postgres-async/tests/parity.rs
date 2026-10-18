@@ -4,19 +4,9 @@
 mod support;
 
 use sqlx::PgPool;
-use stack_common_postgres::testing::EphemeralCluster;
-use trellis_store_postgres_async::{
-    append_checkpointed_in_tx, begin_scope, head_checkpoint, last_event, run_migrations,
-};
+use trellis_store_postgres_async::{append_checkpointed, head_checkpoint, last_event, lock_ledger};
 use trellis_types::merkle::{Frontier, TrellisHasher};
 use trellis_types::{StoredCheckpoint, StoredEvent};
-
-async fn started_pool() -> (EphemeralCluster, PgPool) {
-    let cluster = EphemeralCluster::start_required();
-    let pool = support::tls_pool(&cluster, 8).await;
-    run_migrations(&pool).await.unwrap();
-    (cluster, pool)
-}
 
 async fn columns(pool: &PgPool, table: &str) -> Vec<(String, String, String)> {
     sqlx::query_as(
@@ -50,11 +40,13 @@ fn col(name: &str, kind: &str, nullable: &str) -> (String, String, String) {
 
 #[tokio::test]
 async fn the_tables_have_the_documented_columns_keys_and_constraints() {
-    let (_cluster, pool) = started_pool().await;
+    let db = support::database(1).await;
+    let pool = &db.owner;
 
     assert_eq!(
-        columns(&pool, "trellis_events").await,
+        columns(pool, "trellis_events").await,
         vec![
+            col("scope_key", "bytea", "NO"),
             col("scope", "bytea", "NO"),
             col("sequence", "bigint", "NO"),
             col("canonical_event", "bytea", "NO"),
@@ -64,13 +56,9 @@ async fn the_tables_have_the_documented_columns_keys_and_constraints() {
         ]
     );
     assert_eq!(
-        primary_key(&pool, "trellis_events").await,
-        ["scope", "sequence"]
-    );
-
-    assert_eq!(
-        columns(&pool, "trellis_checkpoints").await,
+        columns(pool, "trellis_checkpoints").await,
         vec![
+            col("scope_key", "bytea", "NO"),
             col("scope", "bytea", "NO"),
             col("tree_size", "bigint", "NO"),
             col("digest", "bytea", "NO"),
@@ -80,13 +68,9 @@ async fn the_tables_have_the_documented_columns_keys_and_constraints() {
         ]
     );
     assert_eq!(
-        primary_key(&pool, "trellis_checkpoints").await,
-        ["scope", "tree_size"]
-    );
-
-    assert_eq!(
-        columns(&pool, "trellis_source_contents").await,
+        columns(pool, "trellis_source_contents").await,
         vec![
+            col("scope_key", "bytea", "NO"),
             col("scope", "bytea", "NO"),
             col("sequence", "bigint", "NO"),
             col("batch_hash", "bytea", "NO"),
@@ -94,37 +78,35 @@ async fn the_tables_have_the_documented_columns_keys_and_constraints() {
             col("artifact_ref", "text", "NO"),
         ]
     );
+    // ADR 0168 §1.3: scope_key leads every key of every table.
+    for (table, rest) in [
+        ("trellis_events", "sequence"),
+        ("trellis_checkpoints", "tree_size"),
+        ("trellis_external_attachments", "sequence"),
+        ("trellis_source_contents", "sequence"),
+    ] {
+        assert_eq!(primary_key(pool, table).await, ["scope_key", "scope", rest]);
+    }
 
     let idempotency_index: String = sqlx::query_scalar(
         "SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' \
-         AND tablename = 'trellis_events' AND indexname = 'trellis_events_scope_idempotency_uidx'",
+         AND tablename = 'trellis_events' AND indexname = 'trellis_events_idempotency_uidx'",
     )
-    .fetch_one(&pool)
+    .fetch_one(pool)
     .await
     .unwrap();
     assert!(idempotency_index.contains("CREATE UNIQUE INDEX"));
-    assert!(idempotency_index.contains("(scope, idempotency_key)"));
+    assert!(idempotency_index.contains("(scope_key, scope, idempotency_key)"));
     assert!(idempotency_index.contains("WHERE (idempotency_key IS NOT NULL)"));
 
     let digest_index: String = sqlx::query_scalar(
         "SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' \
-         AND tablename = 'trellis_checkpoints' AND indexname = 'trellis_checkpoints_scope_digest_key'",
+         AND tablename = 'trellis_checkpoints' AND indexdef LIKE '%(scope_key, scope, digest)%'",
     )
-    .fetch_one(&pool)
+    .fetch_one(pool)
     .await
     .unwrap();
     assert!(digest_index.contains("CREATE UNIQUE INDEX"));
-    assert!(digest_index.contains("(scope, digest)"));
-
-    let bundle_table: Option<String> =
-        sqlx::query_scalar("SELECT to_regclass('trellis_bundle_publications')::text")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(
-        bundle_table, None,
-        "nothing is published, so nothing is reserved"
-    );
 }
 
 /// Each scope's first event, so every checkpoint is a one-leaf tree.
@@ -179,22 +161,24 @@ fn corpus() -> Vec<(StoredEvent, StoredCheckpoint)> {
 
 #[tokio::test]
 async fn byte_authority_corpus_round_trips_without_reconstructing_events() {
-    let (_cluster, pool) = started_pool().await;
+    let db = support::database(2).await;
     let corpus = corpus();
     for (event, checkpoint) in &corpus {
-        let mut tx = begin_scope(&pool, event.scope()).await.unwrap();
-        append_checkpointed_in_tx(&mut tx, event, checkpoint)
+        let mut tx = db.scoped.begin(&support::a()).await.unwrap();
+        lock_ledger(&mut tx, event.scope()).await.unwrap();
+        append_checkpointed(&mut tx, event, checkpoint)
             .await
             .unwrap();
         tx.commit().await.unwrap();
     }
+    let mut tx = db.scoped.begin(&support::a()).await.unwrap();
     for (event, checkpoint) in &corpus {
         assert_eq!(
-            last_event(&pool, event.scope()).await.unwrap().as_ref(),
+            last_event(&mut tx, event.scope()).await.unwrap().as_ref(),
             Some(event)
         );
         assert_eq!(
-            head_checkpoint(&pool, event.scope())
+            head_checkpoint(&mut tx, event.scope())
                 .await
                 .unwrap()
                 .as_ref(),

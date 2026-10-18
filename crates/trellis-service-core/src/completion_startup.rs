@@ -24,7 +24,10 @@ const SOURCE_CONTENT_CONFIG: &str = "TRELLIS_SOURCE_CONTENT_CONFIG_FILE";
 
 pub(crate) struct StartupCompletion {
     signer: Option<OperatorSigners>,
-    source_content: Option<crate::SourceContentComposition>,
+    source_content: Option<(
+        crate::SourceContentComposition,
+        crate::state::ObjectStoreConfig,
+    )>,
 }
 
 impl StartupCompletion {
@@ -111,10 +114,13 @@ impl StartupCompletion {
                 let configuration: SourceContentStartupConfiguration =
                     serde_json::from_slice(&read_private(path)?).map_err(|_| invalid())?;
                 let guard = configuration.load(path, adapters.native_closeout.clone())?;
-                Ok::<_, StackError>(configuration.compose(
-                    guard,
-                    &adapters.source_content,
-                    operator.map(|_| trusted),
+                Ok::<_, StackError>((
+                    configuration.compose(
+                        guard,
+                        &adapters.source_content,
+                        operator.map(|_| trusted),
+                    ),
+                    configuration.object_store(),
                 ))
             })
             .transpose()?;
@@ -124,18 +130,24 @@ impl StartupCompletion {
         })
     }
 
-    pub(crate) fn apply(self, state: TrellisServerState) -> TrellisServerState {
+    /// Applies the signer and Source composition, returning the Source bucket to open.
+    pub(crate) fn apply(
+        self,
+        state: TrellisServerState,
+    ) -> (TrellisServerState, Option<crate::state::ObjectStoreConfig>) {
         let state = match self.signer {
             Some(signer) => match self.source_content.as_ref() {
                 // `load` refused an operator file without the Source-content file naming it.
-                Some(source) => state.with_completion(Arc::new(signer), source.publisher.clone()),
+                Some((source, _)) => {
+                    state.with_completion(Arc::new(signer), source.publisher.clone())
+                }
                 None => state,
             },
             None => state,
         };
         match self.source_content {
-            Some(composition) => state.with_source_content(composition),
-            None => state,
+            Some((composition, bucket)) => (state.with_source_content(composition), Some(bucket)),
+            None => (state, None),
         }
     }
 }
@@ -270,7 +282,7 @@ mod tests {
         );
         let loaded = StartupCompletion::load(Some(&source), None, &adapters()).unwrap();
         assert!(loaded.signer.is_none());
-        let composition = loaded.source_content.unwrap();
+        let (composition, _) = loaded.source_content.unwrap();
         assert_eq!(composition.publisher, "wos-machine");
         assert_eq!(composition.pins.native_policy_hash, [2; 32]);
         // An outgoing-client profile is no longer a configuration shape.

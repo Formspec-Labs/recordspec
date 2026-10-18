@@ -23,15 +23,18 @@ use trellis_server_ports::{
 use trellis_service_client::{ClientAttestation, SubstrateAppendResult};
 use trellis_types::StoredEvent;
 
-use crate::event_repository::ScopeTx;
+use trellis_server_ports::{LedgerScope, LedgerTx, SourceContentBinding};
+
 use crate::ledger::{append_result, authored_at_after, prior_event_hash};
 use crate::source_diagnostics::{self as diag, Outcome, Stage};
+use crate::store::TrellisScoped;
 use crate::{TrellisServerState, event_hash, now_timestamp, validate_existing_replay};
 
 /// Command accepted by the append coordinator after HTTP validation and authorization.
 #[derive(Clone, Debug)]
 pub struct AppendCommand {
-    pub scope: String,
+    /// The ledger, under the scope the request was admitted to.
+    pub scope: LedgerScope,
     pub event_type: String,
     pub idempotency_key: String,
     pub payload: serde_json::Value,
@@ -60,6 +63,7 @@ pub(crate) trait AppendRunner: Send + Sync {
     async fn run_append(
         &self,
         state: &TrellisServerState,
+        scoped: &TrellisScoped,
         command: AppendCommand,
     ) -> Result<AppendOutcome, StackError>;
 }
@@ -73,9 +77,10 @@ impl AppendRunner for DefaultAppendRunner {
     async fn run_append(
         &self,
         state: &TrellisServerState,
+        scoped: &TrellisScoped,
         command: AppendCommand,
     ) -> Result<AppendOutcome, StackError> {
-        state.append_coordinator().append(command).await
+        state.append_coordinator(scoped).append(command).await
     }
 }
 
@@ -84,6 +89,7 @@ impl AppendRunner for DefaultAppendRunner {
 #[derive(Clone, Copy)]
 pub struct AppendCoordinator<'a> {
     state: &'a TrellisServerState,
+    scoped: &'a TrellisScoped,
 }
 
 /// Which events a Source closeout admission judges: a new append, or the replay of a committed one.
@@ -94,8 +100,8 @@ enum Planned<'a> {
 
 impl<'a> AppendCoordinator<'a> {
     #[must_use]
-    pub const fn new(state: &'a TrellisServerState) -> Self {
-        Self { state }
+    pub const fn new(state: &'a TrellisServerState, scoped: &'a TrellisScoped) -> Self {
+        Self { state, scoped }
     }
 
     /// Runs admission once, then either replays an idempotent commit or commits a new event with
@@ -197,7 +203,7 @@ impl<'a> AppendCoordinator<'a> {
         let source_binding = match source {
             Some(source) => Some(
                 crate::source_content::retain_batch(
-                    self.state,
+                    self.scoped,
                     &command.scope,
                     &source.admitted.batch,
                 )
@@ -221,7 +227,7 @@ impl<'a> AppendCoordinator<'a> {
         let mut tx = diag::observed(
             selected,
             Stage::Prefix,
-            self.state.repository.begin(command.scope.as_bytes()).await,
+            self.scoped.ledgers().begin(&command.scope).await,
         )?;
         let head = diag::observed(selected, Stage::Prefix, tx.head().await)?;
         let last = match head {
@@ -250,7 +256,7 @@ impl<'a> AppendCoordinator<'a> {
             let tail = [existing.clone()];
             self.admit_source_content(
                 tx.as_mut(),
-                &command.scope,
+                command.scope.as_str(),
                 &tail,
                 Planned::Replay(&existing),
                 source,
@@ -261,8 +267,9 @@ impl<'a> AppendCoordinator<'a> {
             let result = diag::observed(
                 selected,
                 Stage::Receipt,
-                prior_event_hash(&existing)
-                    .and_then(|prior| append_result(&command.scope, &existing, prior, &checkpoint)),
+                prior_event_hash(&existing).and_then(|prior| {
+                    append_result(command.scope.as_str(), &existing, prior, &checkpoint)
+                }),
             )?;
             return Ok(AppendOutcome {
                 result,
@@ -322,7 +329,7 @@ impl<'a> AppendCoordinator<'a> {
         let protected = self
             .admit_source_content(
                 tx.as_mut(),
-                &command.scope,
+                command.scope.as_str(),
                 &tail,
                 Planned::New(&stored),
                 source,
@@ -345,7 +352,7 @@ impl<'a> AppendCoordinator<'a> {
         let result = diag::observed(
             selected,
             Stage::Receipt,
-            append_result(&command.scope, &stored, prev_hash, &checkpoint),
+            append_result(command.scope.as_str(), &stored, prev_hash, &checkpoint),
         )?;
         Ok(AppendOutcome { result, stored })
     }
@@ -354,11 +361,11 @@ impl<'a> AppendCoordinator<'a> {
     /// admitted batch's binding. Nothing runs after the commit.
     async fn write(
         &self,
-        mut tx: Box<dyn ScopeTx>,
+        mut tx: Box<dyn LedgerTx>,
         stored: &StoredEvent,
         checkpoint: &trellis_types::StoredCheckpoint,
         protected: Option<&crate::source_content::ProtectedSourceMembersReady>,
-        binding: Option<&crate::event_repository::SourceContentBinding>,
+        binding: Option<&SourceContentBinding>,
     ) -> Result<(), StackError> {
         tx.insert(stored, checkpoint).await?;
         if let (Some(_), Some(binding)) = (protected, binding) {
@@ -376,7 +383,7 @@ impl<'a> AppendCoordinator<'a> {
     /// names event by event.
     async fn admit_source_content(
         &self,
-        tx: &mut dyn ScopeTx,
+        tx: &mut dyn LedgerTx,
         scope: &str,
         tail: &[StoredEvent],
         planned: Planned<'_>,

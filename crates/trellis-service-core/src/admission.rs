@@ -9,9 +9,11 @@
 use async_trait::async_trait;
 #[cfg(test)]
 use axum::http::StatusCode;
+use stack_common_auth::VerifiedAccessIdentity;
 #[cfg(test)]
 use stack_common_error::ErrorCode;
 use stack_common_error::StackError;
+use stack_common_scope::ScopeKey;
 use trellis_server_ports::{AuthorizedScope, ScopeAuthorization, ScopeAuthorizer};
 
 #[derive(Debug, Clone, Copy)]
@@ -20,6 +22,14 @@ pub(crate) struct AllowAllScopeAuthorizer;
 #[async_trait]
 impl ScopeAuthorizer for AllowAllScopeAuthorizer {
     type Error = StackError;
+
+    /// Every scope the deployment serves: development composition admits any selected scope.
+    fn bound_scopes(
+        &self,
+        _identity: Option<&VerifiedAccessIdentity>,
+    ) -> Result<Option<Vec<ScopeKey>>, Self::Error> {
+        Ok(None)
+    }
 
     async fn authorize(
         &self,
@@ -39,6 +49,13 @@ pub(crate) struct ScopedAllowlistScopeAuthorizer;
 impl ScopeAuthorizer for ScopedAllowlistScopeAuthorizer {
     type Error = StackError;
 
+    fn bound_scopes(
+        &self,
+        _identity: Option<&VerifiedAccessIdentity>,
+    ) -> Result<Option<Vec<ScopeKey>>, Self::Error> {
+        Ok(None)
+    }
+
     async fn authorize(
         &self,
         request: &ScopeAuthorization<'_>,
@@ -53,8 +70,8 @@ impl ScopeAuthorizer for ScopedAllowlistScopeAuthorizer {
                 "Set Authorization: Bearer with a JWT whose `scopes` claim lists the target scope (TWREF-022).",
             ));
         };
-        let scope_str = std::str::from_utf8(request.scope)
-            .map_err(|_| StackError::bad_request("scope is not valid UTF-8"))?;
+        // Fixture tokens list ledger ids; the ledger scope puts them under the admitted scope.
+        let scope_str = request.scope.ledger_id();
         if scopes.iter().any(|allowed| allowed.as_str() == scope_str) {
             Ok(legacy_permit(request))
         } else {
@@ -74,8 +91,7 @@ impl ScopeAuthorizer for ScopedAllowlistScopeAuthorizer {
 fn legacy_permit(request: &ScopeAuthorization<'_>) -> AuthorizedScope {
     AuthorizedScope {
         principal: request.actor.to_string(),
-        tenant_scope: request.tenant_scope.clone(),
-        scope: request.scope.to_vec(),
+        scope: request.scope.clone(),
         action: request.action,
     }
 }
@@ -83,16 +99,11 @@ fn legacy_permit(request: &ScopeAuthorization<'_>) -> AuthorizedScope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use stack_common_http::tenant::TenantScope;
-    use trellis_server_ports::ScopeAction;
+    use stack_common_scope::Scope;
+    use trellis_server_ports::{LedgerScope, ScopeAction};
 
-    fn tenant() -> TenantScope {
-        TenantScope {
-            tenant: "test".into(),
-            workspace: "test".into(),
-            environment: "test".into(),
-            cell: "test".into(),
-        }
+    fn ledger() -> LedgerScope {
+        LedgerScope::of(&Scope::fixture("test", "test", Some("test")), "case_123").unwrap()
     }
 
     /// Given a scope listed in JWT scopes, when scoped authorizer runs, then authorization succeeds.
@@ -102,10 +113,9 @@ mod tests {
         let scopes = vec!["case_123".to_string()];
         auth.authorize(&ScopeAuthorization {
             actor: "sub",
-            tenant_scope: &tenant(),
             identity: None,
             append_body: None,
-            scope: b"case_123",
+            scope: &ledger(),
             action: ScopeAction::Append,
             jwt_scopes: Some(scopes.as_slice()),
         })
@@ -121,10 +131,9 @@ mod tests {
         let err = auth
             .authorize(&ScopeAuthorization {
                 actor: "sub",
-                tenant_scope: &tenant(),
                 identity: None,
                 append_body: None,
-                scope: b"case_123",
+                scope: &ledger(),
                 action: ScopeAction::Append,
                 jwt_scopes: Some(scopes.as_slice()),
             })
@@ -140,10 +149,9 @@ mod tests {
         let err = auth
             .authorize(&ScopeAuthorization {
                 actor: "sub",
-                tenant_scope: &tenant(),
                 identity: None,
                 append_body: None,
-                scope: b"case_123",
+                scope: &ledger(),
                 action: ScopeAction::Append,
                 jwt_scopes: None,
             })

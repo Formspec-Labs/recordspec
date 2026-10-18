@@ -10,12 +10,19 @@
 //! assembly, and registry reads.
 //!
 //! The crate is producer-neutral: each producer arrives as [`ServerAdapters`]
-//! (admission, event-type vocabulary, attachment admission, export profile, tenant
-//! headers) and the `NativeCloseout` port, assembled by `trellis-server`.
-//! `deny.toml` keeps the adapter crates out of this crate's build graph.
+//! (admission, event-type vocabulary, attachment admission, export profile) and the
+//! `NativeCloseout` port, assembled by `trellis-server`. `deny.toml` keeps the adapter crates
+//! out of this crate's build graph.
 //!
-//! Axum routing is exposed via [`router`]; durable bootstrap and HTTP replay state via
-//! [`TrellisServerState`] / [`state_from_env`] (implemented in `src/http.rs` and `src/state.rs`).
+//! **Tenant isolation by construction (ADR 0168).** Every request runs under one scope its
+//! verified principal is bound to: [`router`] takes the `Deployment` the composition root built
+//! over a [`TrellisStore`], and each route's gate admits the request to a [`TrellisScoped`]
+//! handle, the handler's only way to ledgers and objects. This crate opens no pool or bucket and
+//! depends on no SQL library; `trellis-store-postgres-async` holds the SQL behind the
+//! [`trellis_server_ports::Ledgers`] port and `trellis-main` opens the stores.
+//!
+//! Axum routing is exposed via [`router`]; configuration via [`TrellisServerState`] and
+//! [`startup_from_env`] (implemented in `src/http.rs` and `src/state.rs`).
 //!
 //! **HTTP replay idempotency** is enforced only through
 //! [`stack_common_idempotency::InMemoryHttpReplayStore`] wired into
@@ -29,7 +36,7 @@
 //! resource grants.
 //!
 //! **Case scope versus Trellis URL scope (TWREF-005):** Admission here keys off `event_type` and payload shape for the
-//! HTTP `{scope}` segment plus tenant headers. It does not fetch a producer's case relationship rows; product servers must map
+//! HTTP `{scope}` segment, a ledger scope `<scope key hex>.<ledger id>` under the admitted scope. It does not fetch a producer's case relationship rows; product servers must map
 //! their governed case identity into scope and credentials deliberately. Dispatch to a producer's rules is the
 //! installed `AdmissionRouter`'s literal lookup, never an event-type prefix match here.
 
@@ -38,7 +45,6 @@
 mod adapters;
 mod admission;
 mod append;
-mod artifacts;
 mod auth;
 mod completion;
 mod export;
@@ -67,7 +73,6 @@ pub use source_content::{
 };
 #[doc(inline)]
 pub use source_content_startup::source_content_composition_from_configuration;
-mod event_repository;
 mod external_attachment;
 mod external_repository;
 mod external_transport;
@@ -75,27 +80,36 @@ pub(crate) use external_attachment::ExternalAttachmentRecipientPolicy;
 pub use external_transport::{ExternalAttachmentRecipient, ExternalAttachmentRecipientSelector};
 mod completion_startup;
 mod http;
+mod memory_ledgers;
 mod oidc_startup;
 pub mod openapi;
 mod posture;
+#[doc(inline)]
+pub use posture::TRELLIS_PURPOSES;
 mod state;
+mod store;
 #[cfg(test)]
 mod test_adapters;
+#[cfg(test)]
+mod test_support;
 
 #[doc(inline)]
-pub use adapters::{AdmissionRouter, EventTypeCatalog, ServerAdapters, TenantHeaders};
+pub use adapters::{AdmissionRouter, EventTypeCatalog, ServerAdapters};
 
-#[doc(inline)]
-pub use event_repository::{
-    EventRepository, ExportRows, InMemoryEventRepository, PostgresEventRepository, ScopeTx,
-};
 #[doc(inline)]
 pub use external_repository::ExternalAttachmentFactory;
+#[doc(inline)]
+pub use memory_ledgers::MemoryLedgers;
 
 #[doc(inline)]
 pub use http::{documents, router};
 #[doc(inline)]
-pub use state::{TrellisServerState, state_from_env};
+pub use state::{
+    DatabaseConfig, ObjectStoreConfig, Startup, StorageConfig, TrellisServerState,
+    deployment_from_env, startup_from_env,
+};
+#[doc(inline)]
+pub use store::{TrellisScoped, TrellisStore};
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -361,6 +375,12 @@ mod tests {
     mod external_transport_tests {
         include!("external_transport_tests.rs");
     }
+    mod cross_scope_tests {
+        include!("cross_scope_tests.rs");
+    }
+    mod latency_bench {
+        include!("latency_bench.rs");
+    }
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
     use integrity_seam::OsSecureRandom;
@@ -369,7 +389,7 @@ mod tests {
     use stack_common_http::idempotency::{IDEMPOTENCY_KEY_HEADER, IDEMPOTENCY_REPLAY_HEADER};
     use stack_common_ops::HealthProbe;
     use tower::ServiceExt;
-    use trellis_server_ports::{AdmissionEvent, ArtifactRef};
+    use trellis_server_ports::AdmissionEvent;
     use trellis_service_client::{ClientAttestation, SubstrateAppendBody, SubstrateAppendResult};
     use wos_events::{
         ProvenanceKind, ProvenanceRecord, SignatureAdmissionFailedInput, SignatureAffirmationInput,
@@ -378,11 +398,11 @@ mod tests {
 
     use crate::admission::ScopedAllowlistScopeAuthorizer;
     use crate::append::{AppendRunner, DefaultAppendRunner};
-    use crate::state::TrellisHealthProbe;
     use crate::test_adapters::{
         self, FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH, FORMSPEC_RESPONSE_SUBMITTED,
         export_bundle_cryptographically_verified,
     };
+    use crate::test_support::{App, Fixture, router, scoped_uri};
     use integrity_cbor::{map_lookup_bytes, map_lookup_map, map_lookup_u64};
 
     use std::fs;
@@ -391,7 +411,7 @@ mod tests {
 
     use async_trait::async_trait;
     use axum::http::StatusCode;
-    use trellis_server_ports::{ArtifactStore, EventAdmissionPolicy};
+    use trellis_server_ports::EventAdmissionPolicy;
 
     use super::*;
 
@@ -434,10 +454,11 @@ mod tests {
         async fn run_append(
             &self,
             state: &TrellisServerState,
+            scoped: &TrellisScoped,
             command: append::AppendCommand,
         ) -> Result<append::AppendOutcome, StackError> {
             self.invocations.fetch_add(1, Ordering::SeqCst);
-            DefaultAppendRunner.run_append(state, command).await
+            DefaultAppendRunner.run_append(state, scoped, command).await
         }
     }
 
@@ -512,7 +533,7 @@ mod tests {
         let body: SubstrateAppendBody =
             serde_json::from_slice(&append_body("idem-coordinator-replay")).unwrap();
         let command = append::AppendCommand {
-            scope: "case_123".to_string(),
+            scope: crate::test_support::ledger("case_123"),
             event_type: body.event_type.clone(),
             idempotency_key: body.idempotency_key.clone(),
             payload: body.payload.clone(),
@@ -556,7 +577,7 @@ mod tests {
         let first_body: SubstrateAppendBody =
             serde_json::from_slice(&append_body("idem-prior-first")).unwrap();
         let first_command = append::AppendCommand {
-            scope: "case_prior_hash".to_string(),
+            scope: crate::test_support::ledger("case_prior_hash"),
             event_type: first_body.event_type.clone(),
             idempotency_key: first_body.idempotency_key.clone(),
             payload: first_body.payload.clone(),
@@ -571,7 +592,7 @@ mod tests {
         let second_body: SubstrateAppendBody =
             serde_json::from_slice(&append_body("idem-prior-second")).unwrap();
         let second_command = append::AppendCommand {
-            scope: "case_prior_hash".to_string(),
+            scope: crate::test_support::ledger("case_prior_hash"),
             event_type: second_body.event_type.clone(),
             idempotency_key: second_body.idempotency_key.clone(),
             payload: second_body.payload.clone(),
@@ -802,11 +823,10 @@ mod tests {
         let signing_key = ServerSigningKey::from_cose_key_bytes(key, valid_from)
             .expect("parse signing key")
             .with_valid_to(Some(valid_to));
-        let state = TrellisServerState::new(
-            Arc::new(InMemoryEventRepository::new()),
+        let state = Fixture::new(TrellisServerState::new(
             signing_key,
             crate::test_adapters::adapters(),
-        );
+        ));
         let app = router(state).expect("router");
         let response = app
             .oneshot(post_request(
@@ -821,7 +841,9 @@ mod tests {
     #[test]
     fn given_production_like_posture_when_router_builds_with_allow_all_then_err() {
         let state = test_state().with_production_like_scope_posture(true);
-        let err = router(state).expect_err("router must reject misleading posture");
+        let err = router(state)
+            .err()
+            .expect("router must reject misleading posture");
         let msg = err.to_string();
         assert!(msg.contains("explicit resource ScopeAuthorizer"), "{msg}");
     }
@@ -831,7 +853,9 @@ mod tests {
         let state = test_state()
             .with_scope_authorizer(Arc::new(ScopedAllowlistScopeAuthorizer))
             .with_production_like_scope_posture(true);
-        let err = router(state).expect_err("router must reject missing jwt verifier");
+        let err = router(state)
+            .err()
+            .expect("router must reject missing jwt verifier");
         let msg = err.to_string();
         assert!(msg.contains("injected access-token verifier"), "{msg}");
     }
@@ -871,29 +895,22 @@ mod tests {
         issuer.issue(&claims).unwrap()
     }
 
-    fn test_state_scoped_production_like() -> TrellisServerState {
+    fn test_state_scoped_production_like() -> Fixture {
         let verifier = JwtVerifier::<TrellisClaims>::from_hs256(test_jwt_config(), TEST_JWT_SECRET);
-        TrellisServerState::new(
-            Arc::new(InMemoryEventRepository::new()),
+        Fixture::new(TrellisServerState::new(
             test_signing_key(),
             crate::test_adapters::adapters(),
-        )
+        ))
         .with_jwt_verifier(verifier)
         .with_scope_authorizer(Arc::new(ScopedAllowlistScopeAuthorizer))
         .with_production_like_scope_posture(true)
     }
 
     fn post_request_bearer(path: &str, body: Vec<u8>, bearer: &str) -> Request<Body> {
-        Request::builder()
-            .method("POST")
-            .uri(path)
+        crate::test_support::scoped_request("POST", path)
             .header("content-type", "application/json")
             .header("authorization", format!("Bearer {bearer}"))
             .header(IDEMPOTENCY_KEY_HEADER, idempotency_from_body(&body))
-            .header("x-wos-tenant-id", "tenant-a")
-            .header("x-wos-workspace-id", "workspace-a")
-            .header("x-wos-environment-id", "prod")
-            .header("x-wos-cell-id", "cell-a")
             .body(Body::from(body))
             .unwrap()
     }
@@ -1111,16 +1128,12 @@ mod tests {
 
     #[tokio::test]
     async fn given_fresh_append_when_coordinator_completes_then_persisted_hash_matches_wire() {
-        let repo = Arc::new(InMemoryEventRepository::new());
-        let state = TrellisServerState::new(
-            repo.clone(),
-            test_signing_key(),
-            crate::test_adapters::adapters(),
-        );
+        let state = test_state();
+        let repo = state.repository.clone();
         let body: SubstrateAppendBody =
             serde_json::from_slice(&append_body("idem-coordinator-persisted-hash")).unwrap();
         let command = append::AppendCommand {
-            scope: "case_123".to_string(),
+            scope: crate::test_support::ledger("case_123"),
             event_type: body.event_type.clone(),
             idempotency_key: body.idempotency_key.clone(),
             payload: body.payload.clone(),
@@ -1547,10 +1560,10 @@ mod tests {
             .await
             .unwrap()
             .expect("head checkpoint");
-        let first = export::assemble(&state, b"case_deterministic", &head)
+        let first = crate::test_support::assemble(&state, b"case_deterministic", &head)
             .await
             .expect("first export");
-        let second = export::assemble(&state, b"case_deterministic", &head)
+        let second = crate::test_support::assemble(&state, b"case_deterministic", &head)
             .await
             .expect("second export");
         assert_eq!(first, second);
@@ -1561,11 +1574,12 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+        let deterministic = crate::test_support::ledger("case_deterministic");
         let expected_attempt = export::export_attempt_id(
-            b"case_deterministic",
+            deterministic.as_bytes(),
             1,
             0,
-            event_hash(b"case_deterministic", &event).unwrap(),
+            event_hash(deterministic.as_bytes(), &event).unwrap(),
         )
         .unwrap();
         let manifest = manifest_payload_from_bundle(&first);
@@ -1580,7 +1594,7 @@ mod tests {
             map_lookup_bytes(seal_fence, "bundle_scope")
                 .expect("bundle scope")
                 .as_slice(),
-            b"case_deterministic"
+            crate::test_support::ledger("case_deterministic").as_bytes()
         );
         assert_eq!(
             seal_fence
@@ -1605,12 +1619,16 @@ mod tests {
     #[tokio::test]
     async fn exports_are_byte_identical_across_independent_states() {
         let signing_key = test_signing_key();
-        let repository = Arc::new(InMemoryEventRepository::new());
-        let source_state = TrellisServerState::new(
-            repository.clone(),
-            signing_key.clone(),
-            crate::test_adapters::adapters(),
-        );
+        let ledgers: Arc<dyn trellis_server_ports::Ledgers> = Arc::new(MemoryLedgers::new());
+        let over = |key: ServerSigningKey| {
+            Fixture::over(
+                TrellisServerState::new(key, crate::test_adapters::adapters()),
+                ledgers.clone(),
+                Arc::new(object_store::memory::InMemory::new()),
+            )
+        };
+        let source_state = over(signing_key.clone());
+        let repository = source_state.repository.clone();
         let app = router(source_state.clone()).expect("router");
         for key in ["idem-cross-state-1", "idem-cross-state-2"] {
             post_append(
@@ -1625,17 +1643,12 @@ mod tests {
             .await
             .unwrap()
             .expect("head");
-        let state_a = TrellisServerState::new(
-            repository.clone(),
-            signing_key.clone(),
-            crate::test_adapters::adapters(),
-        );
-        let state_b =
-            TrellisServerState::new(repository, signing_key, crate::test_adapters::adapters());
-        let bytes_a = export::assemble(&state_a, b"case_cross_state_identity", &head)
+        let state_a = over(signing_key.clone());
+        let state_b = over(signing_key);
+        let bytes_a = crate::test_support::assemble(&state_a, b"case_cross_state_identity", &head)
             .await
             .expect("export on state A");
-        let bytes_b = export::assemble(&state_b, b"case_cross_state_identity", &head)
+        let bytes_b = crate::test_support::assemble(&state_b, b"case_cross_state_identity", &head)
             .await
             .expect("export on state B");
         assert_eq!(bytes_a, bytes_b);
@@ -1664,10 +1677,10 @@ mod tests {
             .unwrap()
             .expect("head");
         assert_eq!(head.tree_size, 2);
-        let first = export::assemble(&state, b"case_signature_deterministic", &head)
+        let first = crate::test_support::assemble(&state, b"case_signature_deterministic", &head)
             .await
             .expect("first export");
-        let second = export::assemble(&state, b"case_signature_deterministic", &head)
+        let second = crate::test_support::assemble(&state, b"case_signature_deterministic", &head)
             .await
             .expect("second export");
         assert_eq!(
@@ -1676,56 +1689,32 @@ mod tests {
         );
     }
 
+    /// Readiness reports the probes the composition root mounts (the Postgres pool's in
+    /// `trellis-main`): a failing one fails `/readyz`.
     #[tokio::test]
-    async fn given_unreachable_artifact_store_when_health_probe_runs_then_reports_degraded() {
-        struct FailingArtifactStore;
+    async fn readiness_reports_the_composition_roots_probes() {
+        struct Offline;
 
         #[async_trait]
-        impl ArtifactStore for FailingArtifactStore {
-            type Error = StackError;
-
-            async fn put(&self, _key: &str, _bytes: &[u8]) -> Result<ArtifactRef, Self::Error> {
-                Err(StackError::unavailable("artifact store offline"))
-            }
-
-            async fn put_immutable(
-                &self,
-                _key: &str,
-                _bytes: &[u8],
-            ) -> Result<ArtifactRef, Self::Error> {
-                Err(StackError::unavailable("artifact store offline"))
-            }
-
-            async fn get(
-                &self,
-                _artifact_ref: &ArtifactRef,
-            ) -> Result<Option<Vec<u8>>, Self::Error> {
-                Ok(None)
+        impl HealthProbe for Offline {
+            async fn check(&self) -> stack_common_ops::ComponentHealth {
+                stack_common_ops::ComponentHealth::failing("trellis-postgres", "offline")
             }
         }
 
-        let state = test_state().with_artifact_store(Arc::new(FailingArtifactStore));
-        let health = TrellisHealthProbe::new(state).check().await;
-        assert_eq!(
-            health.status,
-            stack_common_ops::ComponentStatus::Degraded,
-            "unreachable artifact store must degrade readiness: {health:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn given_repository_unreachable_when_health_probe_runs_then_reports_degraded() {
-        let state = TrellisServerState::new(
-            Arc::new(crate::repository_probes::UnreachableRepository),
-            test_signing_key(),
-            crate::test_adapters::adapters(),
-        );
-        let health = TrellisHealthProbe::new(state).check().await;
-        assert_eq!(
-            health.status,
-            stack_common_ops::ComponentStatus::Degraded,
-            "repository probe failure must degrade readiness: {health:?}"
-        );
+        let fixture = test_state();
+        let deployment = fixture.deployment();
+        let app = crate::router(
+            fixture.state.clone(),
+            deployment,
+            stack_common_ops::HealthRouter::new().with_probe(Offline),
+        )
+        .expect("router");
+        let response = app
+            .oneshot(get_request("/readyz"))
+            .await
+            .expect("readiness");
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]
@@ -1828,32 +1817,38 @@ mod tests {
         );
     }
 
-    /// Given distinct WOS tenant headers, when the same idempotency key and POST body are used,
-    /// then the second tenant must not replay the first tenant's HTTP middleware cache entry.
+    /// Given two scopes, when the same idempotency key and POST body reach each scope's ledger,
+    /// then the second scope does not replay the first scope's HTTP replay entry. The ledger scope
+    /// names its scope key, so the two paths (and so the replay keys) already differ; the gate's
+    /// own `{scope key}:{principal}` partition is stack-common's and tested there.
     #[tokio::test]
-    async fn given_distinct_wos_tenants_when_same_idempotency_body_then_no_cross_tenant_http_replay()
-     {
-        let app = router(test_state()).expect("router");
+    async fn the_same_idempotent_body_in_another_scope_is_not_replayed() {
+        let app = router(test_state().serving_b()).expect("router");
         let body = append_body("twref055-tenant-scope");
         let first = app
             .clone()
             .oneshot(post_request("/v1/scopes/case_123/events", body.clone()))
             .await
-            .expect("tenant-a append");
+            .expect("scope A append");
         assert_eq!(first.status(), StatusCode::CREATED);
 
-        let second = app
-            .oneshot(post_request_with_wos_tenant(
-                "/v1/scopes/case_123/events",
-                body,
-                "tenant-b",
-            ))
-            .await
-            .expect("tenant-b append");
-        assert_eq!(second.status(), StatusCode::CREATED);
+        let b = crate::test_support::b();
+        let mut in_b = post_request(&format!("/v1/scopes/{}.case_123/events", b.key()), body);
+        in_b.headers_mut()
+            .insert("x-stack-scope-key", b.key().to_string().parse().unwrap());
+        let second = app.oneshot(in_b).await.expect("scope B append");
+        let status = second.status();
+        let headers = second.headers().clone();
+        let bytes = to_bytes(second.into_body(), 1 << 20).await.unwrap();
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "{}",
+            String::from_utf8_lossy(&bytes)
+        );
         assert!(
-            second.headers().get(IDEMPOTENCY_REPLAY_HEADER).is_none(),
-            "tenant B must not replay tenant A's HttpReplayStore entry"
+            headers.get(IDEMPOTENCY_REPLAY_HEADER).is_none(),
+            "scope B must not replay scope A's HttpReplayStore entry"
         );
     }
 
@@ -1979,29 +1974,28 @@ mod tests {
             .expect("signing key")
     }
 
-    fn test_state() -> TrellisServerState {
+    fn test_state() -> Fixture {
         test_state_with_signing_key(test_signing_key())
     }
 
     /// The documents the declared routes produce.
     pub(crate) fn documents_of_test_state() -> stack_common_http::routes::Documents {
-        documents(test_state()).expect("route declarations agree")
+        crate::test_support::documents(&test_state()).expect("route declarations agree")
     }
 
-    /// Builds a `TrellisServerState` with a caller-supplied signing key.
+    /// A one-scope in-memory deployment with a caller-supplied signing key.
     ///
     /// Used by cross-state byte-identity assertions to construct two independent
     /// server instances that share signing material; otherwise mirrors `test_state`.
-    fn test_state_with_signing_key(signing_key: ServerSigningKey) -> TrellisServerState {
-        TrellisServerState::new(
-            Arc::new(InMemoryEventRepository::new()),
+    fn test_state_with_signing_key(signing_key: ServerSigningKey) -> Fixture {
+        Fixture::new(TrellisServerState::new(
             signing_key,
             crate::test_adapters::adapters(),
-        )
+        ))
     }
 
     /// POSTs an append and returns the decoded receipt; the append must have been created.
-    async fn post_append(app: &axum::Router, path: &str, body: Vec<u8>) -> SubstrateAppendResult {
+    async fn post_append(app: &App, path: &str, body: Vec<u8>) -> SubstrateAppendResult {
         let response = app
             .clone()
             .oneshot(post_request(path, body))
@@ -2026,11 +2020,7 @@ mod tests {
     }
 
     /// The export pinned at a receipt's checkpoint, fetched over HTTP.
-    async fn pinned_zip(
-        app: &axum::Router,
-        scope: &str,
-        receipt: &SubstrateAppendResult,
-    ) -> Vec<u8> {
+    async fn pinned_zip(app: &App, scope: &str, receipt: &SubstrateAppendResult) -> Vec<u8> {
         let response = app
             .clone()
             .oneshot(get_request(&format!(
@@ -2115,15 +2105,9 @@ mod tests {
     }
 
     fn formspec_post_request(path: &str, body: Vec<u8>) -> Request<Body> {
-        Request::builder()
-            .method("POST")
-            .uri(path)
+        crate::test_support::scoped_request("POST", path)
             .header("content-type", "application/json")
             .header(IDEMPOTENCY_KEY_HEADER, idempotency_from_body(&body))
-            .header("x-formspec-tenant-id", "tenant-a")
-            .header("x-formspec-workspace-id", "workspace-a")
-            .header("x-formspec-environment-id", "prod")
-            .header("x-formspec-cell-id", "cell-a")
             .body(Body::from(body))
             .unwrap()
     }
@@ -2276,41 +2260,15 @@ mod tests {
     }
 
     fn post_request(path: &str, body: Vec<u8>) -> Request<Body> {
-        Request::builder()
-            .method("POST")
-            .uri(path)
+        crate::test_support::scoped_request("POST", path)
             .header("content-type", "application/json")
             .header(IDEMPOTENCY_KEY_HEADER, idempotency_from_body(&body))
-            .header("x-wos-tenant-id", "tenant-a")
-            .header("x-wos-workspace-id", "workspace-a")
-            .header("x-wos-environment-id", "prod")
-            .header("x-wos-cell-id", "cell-a")
-            .body(Body::from(body))
-            .unwrap()
-    }
-
-    fn post_request_with_wos_tenant(path: &str, body: Vec<u8>, tenant: &str) -> Request<Body> {
-        Request::builder()
-            .method("POST")
-            .uri(path)
-            .header("content-type", "application/json")
-            .header(IDEMPOTENCY_KEY_HEADER, idempotency_from_body(&body))
-            .header("x-wos-tenant-id", tenant)
-            .header("x-wos-workspace-id", "workspace-a")
-            .header("x-wos-environment-id", "prod")
-            .header("x-wos-cell-id", "cell-a")
             .body(Body::from(body))
             .unwrap()
     }
 
     fn get_request(path: &str) -> Request<Body> {
-        Request::builder()
-            .method("GET")
-            .uri(path)
-            .header("x-wos-tenant-id", "tenant-a")
-            .header("x-wos-workspace-id", "workspace-a")
-            .header("x-wos-environment-id", "prod")
-            .header("x-wos-cell-id", "cell-a")
+        crate::test_support::scoped_request("GET", path)
             .body(Body::empty())
             .unwrap()
     }
@@ -2348,7 +2306,7 @@ mod tests {
             let body: SubstrateAppendBody =
                 serde_json::from_slice(&append_body(&format!("idem-cap-{index}"))).unwrap();
             append::AppendCommand {
-                scope: "case_cap".to_string(),
+                scope: crate::test_support::ledger("case_cap"),
                 event_type: body.event_type.clone(),
                 idempotency_key: body.idempotency_key.clone(),
                 payload: body.payload.clone(),
@@ -2418,7 +2376,7 @@ mod tests {
     }
 
     // IF034 qualification fixtures exercise the real maintained HTTP append and ZIP path.
-    async fn if034_062_head_bytes(app: &axum::Router, scope: &str) -> Vec<u8> {
+    async fn if034_062_head_bytes(app: &crate::test_support::App, scope: &str) -> Vec<u8> {
         let response = app
             .clone()
             .oneshot(get_request(&format!("/v1/scopes/{scope}/bundles/head")))

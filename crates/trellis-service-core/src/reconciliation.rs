@@ -9,7 +9,9 @@ use trellis_service_client::{
 };
 use trellis_types::{EVENT_DOMAIN, StoredEvent};
 
-use crate::TrellisServerState;
+use trellis_server_ports::LedgerScope;
+
+use crate::TrellisScoped;
 use crate::ledger::{append_result, prior_event_hash};
 
 fn unknown(reason: ReconciliationUnknown) -> AppendReconciliation {
@@ -112,12 +114,13 @@ fn matches_identity(
 /// One scope-locked read point yields the head, the event under the key and that event's stored
 /// checkpoint; the receipt is built from those rows alone.
 pub(crate) async fn reconcile(
-    state: &TrellisServerState,
-    scope: &str,
+    scoped: &TrellisScoped,
+    ledger: &LedgerScope,
     request: &AppendReconciliationRequest,
 ) -> AppendReconciliation {
+    let scope = ledger.as_str();
     let point = async {
-        let mut tx = state.repository.begin(scope.as_bytes()).await?;
+        let mut tx = scoped.ledgers().begin(ledger).await?;
         let head = tx.head().await?;
         let found = tx.event_by_key(request.idempotency_key.as_bytes()).await?;
         match found {

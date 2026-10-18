@@ -17,6 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = ROOT / "specs" / "trellis-http-api.schema.json"
+OPENAPI_PATH = ROOT / "specs" / "trellis-server.openapi.json"
 SERVER_PATH = ROOT / "crates" / "trellis-service-core" / "src" / "lib.rs"
 APPEND_PATH = ROOT / "crates" / "trellis-service-core" / "src" / "append.rs"
 
@@ -44,20 +45,14 @@ EXPECTED_OPERATIONS = {
     "getEventTypeRegistry": ("GET", "/v1/scopes/{scope}/registries/event-types"),
 }
 
-EXPECTED_TENANT_HEADERS = {
-    "wos": [
-        "x-wos-tenant-id",
-        "x-wos-workspace-id",
-        "x-wos-environment-id",
-        "x-wos-cell-id",
-    ],
-    "formspec": [
-        "x-formspec-tenant-id",
-        "x-formspec-workspace-id",
-        "x-formspec-environment-id",
-        "x-formspec-cell-id",
-    ],
-}
+# The scope selector header is stack-common-scope's constant, resolved through the client's own
+# path dependency so the check reads the source the client compiles against.
+_CLIENT_MANIFEST = ROOT / "crates" / "trellis-service-client" / "Cargo.toml"
+_SCOPE_PACKAGE = (
+    _CLIENT_MANIFEST.parent
+    / tomllib.loads(_CLIENT_MANIFEST.read_text())["dependencies"]["stack-common-scope"]["path"]
+).resolve()
+SCOPE_DEPLOYMENT_PATH = _SCOPE_PACKAGE / "src" / "deployment.rs"
 
 def read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
@@ -180,8 +175,10 @@ def check_operations(schema: dict, errors: list[str]) -> None:
         errors.append("schema is missing x-trellis-http-api metadata")
         return
 
-    if meta.get("tenantHeaderSets") != EXPECTED_TENANT_HEADERS:
-        errors.append("tenantHeaderSets drifted from stack-common HeaderConfig")
+    selector = meta.get("scopeSelector")
+    header = parse_const_str(SCOPE_DEPLOYMENT_PATH.read_text(encoding="utf-8"), "SCOPE_KEY_HEADER")
+    if not isinstance(selector, dict) or selector.get("header") != header:
+        errors.append(f"scopeSelector.header drifted from stack-common-scope SCOPE_KEY_HEADER ({header})")
 
     operations = meta.get("operations")
     if not isinstance(operations, list):
@@ -202,8 +199,8 @@ def check_operations(schema: dict, errors: list[str]) -> None:
             errors.append(f"{operation_id}: method must be {method}")
         if operation.get("path") != path:
             errors.append(f"{operation_id}: path must be {path}")
-        if operation.get("tenantScopeRequired") is not True:
-            errors.append(f"{operation_id}: tenantScopeRequired must be true")
+        if operation.get("scopeKeyed") is not True:
+            errors.append(f"{operation_id}: scopeKeyed must be true")
 
     append = by_id["appendEvent"]
     if append.get("idempotencyHeaderMustEqualBodyField") != "idempotencyKey":
@@ -363,7 +360,7 @@ def check_openapi_append_contract(errors: list[str]) -> None:
 
 def emit_openapi_document(errors: list[str]) -> dict | None:
     result = subprocess.run(
-        ["cargo", "run", "-p", "trellis-server", "--features", "test-harness", "--bin", "emit_openapi", "--quiet"],
+        ["cargo", "run", "-p", "trellis-main", "--features", "emit-openapi", "--bin", "emit_openapi", "--quiet"],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -371,7 +368,7 @@ def emit_openapi_document(errors: list[str]) -> dict | None:
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
-        errors.append(f"OpenAPI emit failed (run cargo run -p trellis-server --features test-harness --bin emit_openapi): {detail}")
+        errors.append(f"OpenAPI emit failed (run cargo run -p trellis-main --features emit-openapi --bin emit_openapi): {detail}")
         return None
     try:
         return json.loads(result.stdout)
@@ -426,6 +423,11 @@ def main() -> int:
         check_operations(schema, errors)
         openapi = emit_openapi_document(errors)
         if openapi is not None:
+            if read_json(OPENAPI_PATH) != openapi:
+                errors.append(
+                    "specs/trellis-server.openapi.json differs from the emitted document; regenerate it: "
+                    "cargo run -q -p trellis-main --features emit-openapi --bin emit_openapi > specs/trellis-server.openapi.json"
+                )
             check_openapi_operations(schema, openapi, errors)
             check_openapi_event_type_enum(openapi, server_source, client_source, errors)
         check_openapi_append_contract(errors)

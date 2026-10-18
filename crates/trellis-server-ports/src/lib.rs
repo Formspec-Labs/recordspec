@@ -16,12 +16,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::Infallible;
-use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 pub use stack_common_error::StackError;
-pub use stack_common_object_store::{ObjectByteEvidence, S3ObjectConfig};
-pub use stack_common_postgres::PoolConfig as PostgresPoolConfig;
+use stack_common_scope::ScopeKey;
 pub use trellis_core::LedgerStore;
 pub use trellis_service_client::{ComputeContext, ComputeSensitivity};
 use trellis_types::{ArtifactType, StoredEvent};
@@ -35,8 +33,14 @@ mod export_profile;
 pub use export_profile::{ExportProfile, ExportProfileMembers, SigningFact};
 mod native_closeout;
 pub use native_closeout::{CloseoutRule, CloseoutSource, NativeCloseout};
+mod ledger;
+pub use ledger::{
+    AttachmentRow, ExportAt, ExportRows, LedgerScope, LedgerTx, Ledgers,
+    MAX_ATTACHMENT_EXPORT_EVENTS, MAX_EXPORT_ATTACHMENT_BYTES, ScopedLedgers, SourceContentBinding,
+    foreign_ledger, validate_ledger_id,
+};
 mod source_content_object;
-pub use source_content_object::source_content_object_key;
+pub use source_content_object::source_content_object_name;
 
 /// Ledger scope bytes.
 pub type ScopeId = Vec<u8>;
@@ -189,233 +193,6 @@ pub enum DirectSubmitPolicy {
     ServiceOnly,
     /// A direct, client-attested submission is permitted (ADR 0103 follow-on).
     AuthorizedClientAllowed,
-}
-
-/// Opaque artifact locator returned by an artifact store.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ArtifactRef {
-    pub uri: String,
-    pub evidence: Option<ObjectByteEvidence>,
-}
-
-impl ArtifactRef {
-    #[must_use]
-    pub fn new(uri: impl Into<String>) -> Self {
-        Self {
-            uri: uri.into(),
-            evidence: None,
-        }
-    }
-
-    #[must_use]
-    pub fn with_evidence(uri: impl Into<String>, evidence: ObjectByteEvidence) -> Self {
-        Self {
-            uri: uri.into(),
-            evidence: Some(evidence),
-        }
-    }
-}
-
-/// Durable artifact store for certificate presentations, Source batch copies and the like.
-#[async_trait]
-pub trait ArtifactStore: Send + Sync {
-    type Error: std::error::Error + Send + Sync + 'static;
-
-    /// Writes mutable artifact bytes.
-    async fn put(&self, key: &str, bytes: &[u8]) -> Result<ArtifactRef, Self::Error>;
-
-    /// Writes immutable artifact bytes, accepting same-key retries only when bytes are identical.
-    async fn put_immutable(&self, key: &str, bytes: &[u8]) -> Result<ArtifactRef, Self::Error>;
-
-    async fn get(&self, artifact_ref: &ArtifactRef) -> Result<Option<Vec<u8>>, Self::Error>;
-}
-
-/// S3-compatible artifact-store adapter backed by shared stack object helpers.
-pub struct S3CompatibleArtifactStore {
-    config: S3ObjectConfig,
-    prefix: String,
-    store: Mutex<Option<Arc<dyn object_store::ObjectStore + Send + Sync>>>,
-}
-
-impl std::fmt::Debug for S3CompatibleArtifactStore {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let initialized = self.store.lock().ok().map(|g| g.is_some()).unwrap_or(false);
-        f.debug_struct("S3CompatibleArtifactStore")
-            .field("config", &self.config)
-            .field("prefix", &self.prefix)
-            .field("store_initialized", &initialized)
-            .finish()
-    }
-}
-
-impl S3CompatibleArtifactStore {
-    #[must_use]
-    pub fn new(config: S3ObjectConfig, prefix: impl Into<String>) -> Self {
-        Self {
-            config,
-            prefix: prefix.into(),
-            store: Mutex::new(None),
-        }
-    }
-
-    fn object_store(&self) -> Result<Arc<dyn object_store::ObjectStore + Send + Sync>, StackError> {
-        let mut guard = self
-            .store
-            .lock()
-            .map_err(|_| StackError::internal("object store mutex poisoned"))?;
-        if let Some(existing) = guard.as_ref() {
-            return Ok(Arc::clone(existing));
-        }
-        let built = Arc::new(stack_common_object_store::build_s3_store(&self.config)?)
-            as Arc<dyn object_store::ObjectStore + Send + Sync>;
-        *guard = Some(Arc::clone(&built));
-        Ok(built)
-    }
-
-    /// Binds bucket/prefix semantics to an injected [`ObjectStore`] backend.
-    ///
-    /// Use [`Self::new`] in production so a lazy S3-compatible client is built from [`S3ObjectConfig`].
-    ///
-    /// This constructor is not `cfg(test)` because downstream workspaces (for example `formspec-server`
-    /// integration tests) compile this crate without `cfg(test)` while still needing a shared in-memory
-    /// backend for hermetic Trellis append + Formspec integrity verification.
-    ///
-    /// Prefer [`TrellisServerState::with_artifact_store`](https://docs.rs/trellis-server/latest/trellis_server/struct.TrellisServerState.html#method.with_artifact_store)
-    /// on the Trellis side so append-side `put` bytes match verifier-side `get` paths for `s3://bucket/…` refs.
-    #[must_use]
-    pub fn from_object_store_for_test(
-        config: S3ObjectConfig,
-        prefix: impl Into<String>,
-        store: Arc<dyn object_store::ObjectStore + Send + Sync>,
-    ) -> Self {
-        Self {
-            config,
-            prefix: prefix.into(),
-            store: Mutex::new(Some(store)),
-        }
-    }
-
-    /// The locator this store assigns to `key`: the one derivation writers and readers share.
-    ///
-    /// # Errors
-    /// Refuses an empty key.
-    pub fn artifact_ref_for_key(&self, key: &str) -> Result<ArtifactRef, StackError> {
-        Ok(ArtifactRef::new(
-            self.uri_for_location(&self.location_for_key(key)?),
-        ))
-    }
-
-    /// Resolves a locator to an object location, refusing other buckets and prefixes.
-    fn selected_location(&self, artifact_ref: &ArtifactRef) -> Result<String, StackError> {
-        let location =
-            stack_common_object_store::parse_s3_object_uri(&self.config, &artifact_ref.uri)?;
-        let prefix = self.prefix.trim_matches('/');
-        if !prefix.is_empty()
-            && !location
-                .strip_prefix(prefix)
-                .is_some_and(|rest| rest.starts_with('/'))
-        {
-            return Err(StackError::bad_request(
-                "artifact lies outside selected prefix",
-            ));
-        }
-        Ok(location)
-    }
-
-    /// Reads an exact artifact within byte and total elapsed-time limits.
-    ///
-    /// Uses the existing configured store and refuses objects outside its prefix.
-    /// The bound covers retained bytes; backend chunk buffers remain backend-owned.
-    ///
-    /// # Errors
-    /// Refuses wrong bucket/prefix, missing objects, overflow, truncation or timeout.
-    ///
-    /// # Panics
-    /// Requires a Tokio runtime with time enabled.
-    pub async fn get_bounded(
-        &self,
-        artifact_ref: &ArtifactRef,
-        max_bytes: usize,
-        read_budget: std::time::Duration,
-    ) -> Result<Vec<u8>, StackError> {
-        let location = self.selected_location(artifact_ref)?;
-        let store = self.object_store()?;
-        stack_common_object_store::read_object_bytes_bounded(
-            store.as_ref(),
-            &location,
-            max_bytes,
-            read_budget,
-        )
-        .await
-    }
-
-    fn location_for_key(&self, key: &str) -> Result<String, StackError> {
-        let key_segments = key
-            .split('/')
-            .map(str::trim)
-            .filter(|segment| !segment.is_empty())
-            .map(stack_common_object_store::path_segment)
-            .collect::<Vec<_>>();
-        if key_segments.is_empty() {
-            return Err(StackError::bad_request("artifact key is empty"));
-        }
-
-        let prefix = self.prefix.trim_matches('/');
-        if prefix.is_empty() {
-            Ok(key_segments.join("/"))
-        } else {
-            Ok(format!("{prefix}/{}", key_segments.join("/")))
-        }
-    }
-
-    fn uri_for_location(&self, location: &str) -> String {
-        format!("s3://{}/{location}", self.config.bucket)
-    }
-}
-
-#[async_trait]
-impl ArtifactStore for S3CompatibleArtifactStore {
-    type Error = StackError;
-
-    async fn put(&self, key: &str, bytes: &[u8]) -> Result<ArtifactRef, Self::Error> {
-        let location = self.location_for_key(key)?;
-        let uri = self.uri_for_location(&location);
-        stack_common_object_store::parse_s3_object_uri(&self.config, &uri)?;
-        let store = self.object_store()?;
-        let evidence =
-            stack_common_object_store::write_object_bytes(store.as_ref(), &location, bytes).await?;
-        Ok(ArtifactRef::with_evidence(uri, evidence))
-    }
-
-    async fn put_immutable(&self, key: &str, bytes: &[u8]) -> Result<ArtifactRef, Self::Error> {
-        let location = self.location_for_key(key)?;
-        let uri = self.uri_for_location(&location);
-        let store = self.object_store()?;
-        let evidence = stack_common_object_store::write_s3_object_bytes_once(
-            store.as_ref(),
-            &self.config,
-            &uri,
-            bytes,
-        )
-        .await?;
-        Ok(ArtifactRef::with_evidence(uri, evidence))
-    }
-
-    async fn get(&self, artifact_ref: &ArtifactRef) -> Result<Option<Vec<u8>>, Self::Error> {
-        let location =
-            stack_common_object_store::parse_s3_object_uri(&self.config, &artifact_ref.uri)?;
-        let store = self.object_store()?;
-        stack_common_object_store::read_optional_object_bytes(store.as_ref(), &location).await
-    }
-}
-
-#[cfg(test)]
-impl S3CompatibleArtifactStore {
-    pub(crate) fn object_store_arc_for_test(
-        &self,
-    ) -> Result<Arc<dyn object_store::ObjectStore + Send + Sync>, StackError> {
-        self.object_store()
-    }
 }
 
 /// Active signing-key descriptor for a scope.
@@ -574,10 +351,9 @@ pub enum ScopeAction {
 #[derive(Clone, Debug)]
 pub struct ScopeAuthorization<'a> {
     pub actor: &'a str,
-    pub scope: &'a [u8],
+    /// The ledger the request names, under the scope the request was admitted to.
+    pub scope: &'a LedgerScope,
     pub action: ScopeAction,
-    /// Requested context only; the host must independently grant this exact tuple.
-    pub tenant_scope: &'a stack_common_http::tenant::TenantScope,
     /// External identity facts; the host resolves its own internal principal.
     pub identity: Option<&'a stack_common_auth::VerifiedAccessIdentity>,
     /// Exact validated append body for current actor/delegation authorization.
@@ -593,8 +369,8 @@ pub struct ScopeAuthorization<'a> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthorizedScope {
     pub principal: String,
-    pub tenant_scope: stack_common_http::tenant::TenantScope,
-    pub scope: Vec<u8>,
+    /// The ledger the permit covers, under the scope the request was admitted to.
+    pub scope: LedgerScope,
     pub action: ScopeAction,
 }
 
@@ -603,10 +379,20 @@ pub struct AuthorizedScope {
 pub trait ScopeAuthorizer: Send + Sync {
     type Error: std::error::Error + Send + Sync + 'static;
 
+    /// The scopes a verified identity is bound to, for `VerifiedBinding::select`; `None` when
+    /// the authorizer binds every scope the deployment serves (development composition only).
+    ///
+    /// # Errors
+    /// Returns an error when the identity maps to no principal.
+    fn bound_scopes(
+        &self,
+        identity: Option<&stack_common_auth::VerifiedAccessIdentity>,
+    ) -> Result<Option<Vec<ScopeKey>>, Self::Error>;
+
     /// Resolves the principal and authorizes the exact requested resource and action.
     ///
     /// For external identity, implementations must map issuer, subject and client
-    /// through host-selected authority; OAuth scopes and tenant headers are not grants.
+    /// through host-selected authority; OAuth scopes are not grants.
     /// Append implementations also authorize the asserted actor and any application
     /// delegation from the exact body. Every request, including replay, calls this port.
     ///
@@ -1088,163 +874,6 @@ mod tests {
 
         let ctx = ComputeContext::no_delegated_compute("actor");
         assert_client(ctx);
-    }
-
-    #[test]
-    fn s3_artifact_store_builds_sanitized_prefixed_locations() {
-        let store = S3CompatibleArtifactStore::new(
-            S3ObjectConfig {
-                bucket: "proof-bundles".to_string(),
-                endpoint: None,
-                region: None,
-            },
-            "/case exports/",
-        );
-
-        assert_eq!(
-            store
-                .location_for_key("case 1/export bundle.zip")
-                .expect("location"),
-            "case exports/case_1/export_bundle.zip"
-        );
-    }
-
-    #[tokio::test]
-    async fn bounded_artifact_read_preserves_exact_bytes_and_refuses_size_overflow() {
-        let backend = Arc::new(object_store::memory::InMemory::new());
-        let store = S3CompatibleArtifactStore::from_object_store_for_test(
-            S3ObjectConfig {
-                bucket: "proof-bundles".into(),
-                endpoint: None,
-                region: None,
-            },
-            "pfx/",
-            backend,
-        );
-        let artifact = store
-            .put_immutable("case/bundles/exact.zip", b"sealed bytes")
-            .await
-            .unwrap();
-        assert_eq!(
-            store
-                .get_bounded(&artifact, 12, std::time::Duration::from_secs(1))
-                .await
-                .unwrap(),
-            b"sealed bytes"
-        );
-        assert!(
-            store
-                .get_bounded(&artifact, 11, std::time::Duration::from_secs(1))
-                .await
-                .is_err()
-        );
-    }
-
-    #[tokio::test]
-    async fn bounded_artifact_read_refuses_wrong_bucket_prefix_and_invalid_limits() {
-        let backend = Arc::new(object_store::memory::InMemory::new());
-        let store = S3CompatibleArtifactStore::from_object_store_for_test(
-            S3ObjectConfig {
-                bucket: "proof-bundles".into(),
-                endpoint: None,
-                region: None,
-            },
-            "pfx/",
-            backend,
-        );
-        for uri in [
-            "s3://other/pfx/a",
-            "s3://proof-bundles/pfx-other/a",
-            "s3://proof-bundles/pfx",
-        ] {
-            let error = store
-                .get_bounded(
-                    &ArtifactRef::new(uri),
-                    12,
-                    std::time::Duration::from_secs(1),
-                )
-                .await
-                .expect_err("wrong selection");
-            assert_eq!(error.code().as_str(), "INFRA-4000");
-        }
-        let artifact = store.put("case/a", b"bytes").await.unwrap();
-        assert!(
-            store
-                .get_bounded(&artifact, 0, std::time::Duration::from_secs(1))
-                .await
-                .is_err()
-        );
-        assert!(
-            store
-                .get_bounded(&artifact, 12, std::time::Duration::ZERO)
-                .await
-                .is_err()
-        );
-        assert!(
-            store
-                .get_bounded(
-                    &ArtifactRef::new("s3://proof-bundles/pfx/missing"),
-                    12,
-                    std::time::Duration::from_secs(1)
-                )
-                .await
-                .is_err()
-        );
-    }
-
-    #[tokio::test]
-    async fn given_repeated_puts_when_s3_artifact_store_then_reuses_object_store_client() {
-        use object_store::memory::InMemory;
-
-        let config = S3ObjectConfig {
-            bucket: "proof-bundles".to_string(),
-            endpoint: None,
-            region: None,
-        };
-        let backend = Arc::new(InMemory::new()) as Arc<dyn object_store::ObjectStore + Send + Sync>;
-        let store = S3CompatibleArtifactStore::from_object_store_for_test(config, "pfx/", backend);
-        let first = store.object_store_arc_for_test().expect("store handle");
-        store.put("a", b"1").await.expect("put");
-        let second = store.object_store_arc_for_test().expect("store handle");
-        assert!(Arc::ptr_eq(&first, &second));
-        store.put("b", b"2").await.expect("put2");
-        let third = store.object_store_arc_for_test().expect("store handle");
-        assert!(Arc::ptr_eq(&first, &third));
-    }
-
-    #[tokio::test]
-    async fn s3_artifact_store_immutable_put_reuses_same_bytes_and_rejects_conflict() {
-        use object_store::memory::InMemory;
-
-        let config = S3ObjectConfig {
-            bucket: "proof-bundles".to_string(),
-            endpoint: None,
-            region: None,
-        };
-        let backend = Arc::new(InMemory::new()) as Arc<dyn object_store::ObjectStore + Send + Sync>;
-        let store = S3CompatibleArtifactStore::from_object_store_for_test(config, "pfx/", backend);
-
-        let first = store
-            .put_immutable("case/export.zip", b"sealed bytes")
-            .await
-            .expect("first immutable put");
-        let second = store
-            .put_immutable("case/export.zip", b"sealed bytes")
-            .await
-            .expect("second immutable put");
-        assert_eq!(first, second);
-
-        let error = store
-            .put_immutable("case/export.zip", b"changed bytes")
-            .await
-            .expect_err("changed immutable bytes must conflict");
-        assert_eq!(error.code().as_str(), "INFRA-4090");
-        let bytes = store
-            .get(&first)
-            .await
-            .expect("read immutable object")
-            .expect("object bytes");
-        assert_eq!(bytes, b"sealed bytes");
     }
 
     #[tokio::test]

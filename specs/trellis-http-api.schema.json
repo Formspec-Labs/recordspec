@@ -29,26 +29,17 @@
       "trellis-service-client",
       "trellis-server"
     ],
-    "tenantHeaderSets": {
-      "wos": [
-        "x-wos-tenant-id",
-        "x-wos-workspace-id",
-        "x-wos-environment-id",
-        "x-wos-cell-id"
-      ],
-      "formspec": [
-        "x-formspec-tenant-id",
-        "x-formspec-workspace-id",
-        "x-formspec-environment-id",
-        "x-formspec-cell-id"
-      ]
+    "scopeSelector": {
+      "header": "x-stack-scope-key",
+      "ledgerScope": "<scope key: 64 lowercase hex>.<ledger id>",
+      "description": "ADR 0168 §1.6: every {scope} path segment is a ledger scope that names its scope key. A principal bound to one scope may omit the header; one bound to several sends the key of the ledger's scope. A ledger outside the admitted scope answers 404."
     },
     "operations": [
       {
         "operationId": "appendEvent",
         "method": "POST",
         "path": "/v1/scopes/{scope}/events",
-        "tenantScopeRequired": true,
+        "scopeKeyed": true,
         "requiredHeaders": [
           "idempotency-key"
         ],
@@ -80,7 +71,7 @@
         "operationId": "getHeadBundle",
         "method": "GET",
         "path": "/v1/scopes/{scope}/bundles/head",
-        "tenantScopeRequired": true,
+        "scopeKeyed": true,
         "optionalHeaders": [
           "authorization"
         ],
@@ -101,7 +92,7 @@
         "operationId": "getBundleByCheckpointDigest",
         "method": "GET",
         "path": "/v1/scopes/{scope}/bundles/{checkpointDigest}",
-        "tenantScopeRequired": true,
+        "scopeKeyed": true,
         "optionalHeaders": [
           "authorization"
         ],
@@ -127,7 +118,7 @@
         "operationId": "getSigningKeyRegistry",
         "method": "GET",
         "path": "/v1/scopes/{scope}/registries/signing-keys",
-        "tenantScopeRequired": true,
+        "scopeKeyed": true,
         "optionalHeaders": [
           "authorization"
         ],
@@ -148,7 +139,7 @@
         "operationId": "getEventTypeRegistry",
         "method": "GET",
         "path": "/v1/scopes/{scope}/registries/event-types",
-        "tenantScopeRequired": true,
+        "scopeKeyed": true,
         "optionalHeaders": [
           "authorization"
         ],
@@ -169,7 +160,7 @@
         "operationId": "reconcileEvent",
         "method": "POST",
         "path": "/v1/scopes/{scope}/events/reconcile",
-        "tenantScopeRequired": true,
+        "scopeKeyed": true,
         "authorizationAction": "read",
         "sideEffects": "none",
         "request": {
@@ -774,21 +765,11 @@
         "recipientSetSha256",
         "workflowUrl",
         "workflowVersion",
-        "tenantId",
-        "workspaceId",
-        "environmentId",
-        "cellId",
         "sourceId",
         "serviceBindingId"
       ],
       "properties": {
         "caseLedgerId": {
-          "type": "string"
-        },
-        "cellId": {
-          "type": "string"
-        },
-        "environmentId": {
           "type": "string"
         },
         "nativePolicyHash": {
@@ -846,16 +827,10 @@
         "sourceId": {
           "type": "string"
         },
-        "tenantId": {
-          "type": "string"
-        },
         "workflowUrl": {
           "type": "string"
         },
         "workflowVersion": {
-          "type": "string"
-        },
-        "workspaceId": {
           "type": "string"
         }
       },

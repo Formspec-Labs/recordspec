@@ -1,19 +1,21 @@
 // Rust guideline compliant 2026-02-21
 //! Axum router and HTTP handlers (TWREF-086 `http` split).
+//!
+//! Every handler reaches data through the [`Scoped`] handle its gate admitted: the router state
+//! carries verifiers and configuration, never a ledger or bucket (ADR 0168 §1.2).
 
-use axum::body::Bytes;
+use std::sync::Arc;
+
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{Router, get};
 use axum::{Extension, Json};
 use stack_common_error::{ProblemJson, StackError};
 use stack_common_http::idempotency::IDEMPOTENCY_KEY_HEADER;
-use stack_common_http::routes::{Access, Documents, Routes};
-use stack_common_http::tenant::TenantScope;
+use stack_common_http::routes::{Access, Built, Documents, Routes, Scoped};
 use stack_common_ops::HealthRouter;
-use trellis_server_ports::ComputeSensitivity;
-use trellis_server_ports::ScopeAction;
+use stack_common_scope::{Deployment, ScopeBound};
+use trellis_server_ports::{ComputeSensitivity, ExportAt, LedgerScope, ScopeAction};
 use trellis_service_client::endpoints::{
     ACCEPTED_ATTACHMENT, APPEND_EVENT, BundlePath, EVENT_TYPE_REGISTRY, EventTypeRegistryView,
     HEAD_BUNDLE, PINNED_BUNDLE, RECONCILE_EVENT, SEAL_COMPLETION, SIGNING_KEY_REGISTRY, ScopePath,
@@ -21,14 +23,18 @@ use trellis_service_client::endpoints::{
 use trellis_service_client::{SubstrateAppendBody, SubstrateAppendResult};
 
 use crate::append;
-use crate::auth::Admission;
+use crate::auth::{Admission, TrellisHost};
 use crate::event_type_registry_view;
 use crate::openapi::base_document;
-use crate::state::{TrellisHealthProbe, TrellisServerState};
+use crate::state::TrellisServerState;
+use crate::store::{TrellisScoped, TrellisStore};
 
 /// Every Trellis route, declared once; the router and the document derive from this set.
-fn routes(state: TrellisServerState) -> Routes<TrellisServerState, Admission, TrellisServerState> {
-    Routes::new(base_document(), state.clone())
+fn routes(
+    host: TrellisHost,
+    health: HealthRouter,
+) -> Routes<TrellisServerState, Admission, TrellisHost> {
+    Routes::new(base_document(), host)
         .endpoint(
             APPEND_EVENT,
             utoipa_axum::routes!(append_event),
@@ -69,26 +75,37 @@ fn routes(state: TrellisServerState) -> Routes<TrellisServerState, Admission, Tr
             utoipa_axum::routes!(event_type_registry),
             Access::scope(Admission::Read),
         )
-        .merge_health(HealthRouter::new().with_probe(TrellisHealthProbe::new(state)))
+        .merge_health(health)
+        .document_at("/openapi.json")
 }
 
 /// The OpenAPI documents of the declared routes.
 ///
 /// # Errors
 /// Returns an error when a handler's annotation disagrees with its endpoint.
-pub fn documents(state: TrellisServerState) -> Result<Documents, StackError> {
-    routes(state)
+pub fn documents(
+    state: TrellisServerState,
+    deployment: Arc<Deployment<TrellisStore>>,
+) -> Result<Documents, StackError> {
+    routes(TrellisHost::new(state, deployment), HealthRouter::new())
         .build()
-        .map(|built| built.documents)
+        .map(|built| built.documents().clone())
         .map_err(|error| StackError::internal(error.to_string()))
 }
 
-/// Builds the Trellis Axum router.
+/// Builds the Trellis service over the deployment the composition root opened.
+///
+/// The deployment stays with the routes' gate, never in the router state; `health` carries the
+/// composition root's probes (the Postgres pool's, say), mounted at `/livez` and `/readyz`.
 ///
 /// # Errors
-/// Returns an error when shared HTTP middleware cannot be constructed or a route declaration
-/// disagrees with its handler.
-pub fn router(state: TrellisServerState) -> Result<Router, StackError> {
+/// Returns an error when the state's posture is refused, shared HTTP middleware cannot be
+/// constructed, or a route declaration disagrees with its handler.
+pub fn router(
+    state: TrellisServerState,
+    deployment: Arc<Deployment<TrellisStore>>,
+    health: HealthRouter,
+) -> Result<Built<()>, StackError> {
     state.ensure_serving_posture_twref022()?;
     let http_layer = stack_common_http::MiddlewareBuilder::new()
         .with_request_id()
@@ -96,24 +113,10 @@ pub fn router(state: TrellisServerState) -> Result<Router, StackError> {
         .with_catch_panic()
         .build()
         .map_err(|error| StackError::internal(format!("http middleware: {error}")))?;
-    let built = routes(state.clone())
+    let built = routes(TrellisHost::new(state.clone(), deployment), health)
         .build()
         .map_err(|error| StackError::internal(error.to_string()))?;
-    let document = Bytes::from(
-        serde_json::to_vec(&built.documents.public)
-            .map_err(|error| StackError::internal(format!("OpenAPI serialization: {error}")))?,
-    );
-    Ok(built
-        .router
-        .route(
-            "/openapi.json",
-            get(move || {
-                let document = document.clone();
-                async move { ([(header::CONTENT_TYPE, "application/json")], document) }
-            }),
-        )
-        .with_state(state)
-        .layer(http_layer))
+    Ok(built.with_state(state).layer(http_layer))
 }
 
 /// Looks up append identity with current read authority and no publication effects.
@@ -121,15 +124,15 @@ pub fn router(state: TrellisServerState) -> Result<Router, StackError> {
     responses((status=200,description="Read-point disposition; lookup never appends or publishes",body=trellis_service_client::AppendReconciliation),(status=400,description="Invalid lookup identity"),(status=401,description="Current authentication refused"),(status=403,description="Current scope read permission refused")),tag="events",operation_id="reconcileEvent")]
 pub(crate) async fn reconcile_event(
     State(state): State<TrellisServerState>,
+    Scoped(scoped): Scoped<TrellisScoped>,
     Path(ScopePath { scope }): Path<ScopePath>,
-    tenant: TenantScope,
     headers: HeaderMap,
     Json(request): Json<trellis_service_client::AppendReconciliationRequest>,
 ) -> Result<Json<trellis_service_client::AppendReconciliation>, StackError> {
-    let (_, before) = read_authorized(&state, &scope, &tenant, &headers).await?;
+    let (scope, before) = read_authorized(&state, &scoped, &scope, &headers).await?;
     request.validate()?;
-    let result = crate::reconciliation::reconcile(&state, &scope, &request).await;
-    let (_, after) = read_authorized(&state, &scope, &tenant, &headers).await?;
+    let result = crate::reconciliation::reconcile(&scoped, &scope, &request).await;
+    let (_, after) = read_authorized(&state, &scoped, scope.as_str(), &headers).await?;
     if before != after {
         return Err(StackError::unavailable(
             "reconciliation read authority changed",
@@ -142,19 +145,19 @@ pub(crate) async fn reconcile_event(
     responses((status=201,description="Certificate and archive retained",body=SubstrateAppendResult),(status=400,description="Closed trigger or selection refused, including a status or impact outside the vocabulary"),(status=401,description="Current authentication refused"),(status=403,description="Current permission refused, or the caller is not the configured publisher"),(status=409,description="Snapshot, signing-evidence, different-principal or replay conflict"),(status=503,description="Composition not selected or dependency unavailable")),tag="events")]
 pub(crate) async fn seal_completion(
     State(state): State<TrellisServerState>,
+    Scoped(scoped): Scoped<TrellisScoped>,
     Path(ScopePath { scope }): Path<ScopePath>,
-    tenant: TenantScope,
     headers: HeaderMap,
     Json(request): Json<trellis_service_client::CompletionRequest>,
 ) -> Result<(StatusCode, Json<SubstrateAppendResult>), StackError> {
-    // Authenticate before revealing configuration availability.
-    state.bearer_identity(&headers).await?;
+    // The gate authenticated the bearer before revealing configuration availability.
     let (signer, _) = state
         .completion
         .as_ref()
         .ok_or_else(|| StackError::unavailable("completion composition is not selected"))?;
+    let scope = LedgerScope::within(scoped.scope(), &scope)?;
     let result =
-        crate::seal_completion(&state, &headers, &tenant, &scope, &request, signer.as_ref())
+        crate::seal_completion(&state, &scoped, &headers, &scope, &request, signer.as_ref())
             .await?;
     Ok((StatusCode::CREATED, Json(result)))
 }
@@ -176,20 +179,26 @@ pub(crate) async fn seal_completion(
 )]
 pub(crate) async fn append_event(
     State(state): State<TrellisServerState>,
+    Scoped(scoped): Scoped<TrellisScoped>,
     Path(ScopePath { scope }): Path<ScopePath>,
     Extension(crate::auth::AuthorizedAppend(body, admitted)): Extension<
         crate::auth::AuthorizedAppend,
     >,
 ) -> Result<(StatusCode, Json<SubstrateAppendResult>), StackError> {
     let command = append::AppendCommand {
-        scope: scope.clone(),
+        scope: LedgerScope::within(scoped.scope(), &scope)?,
         event_type: body.event_type.clone(),
         idempotency_key: body.idempotency_key.clone(),
         payload: body.payload.clone(),
         client_attestation: body.client_attestation.clone(),
     };
     let outcome = match admitted {
-        None => state.append_runner.run_append(&state, command).await?,
+        None => {
+            state
+                .append_runner
+                .run_append(&state, &scoped, command)
+                .await?
+        }
         Some(admitted) => {
             use crate::source_diagnostics::{self as diag, Outcome, Stage};
             diag::mark(true, Stage::Handler, Outcome::Enter);
@@ -201,7 +210,7 @@ pub(crate) async fn append_event(
                 true,
                 Stage::Handler,
                 state
-                    .append_coordinator()
+                    .append_coordinator(&scoped)
                     .append_selected_source_content(command, &source)
                     .await,
             )?
@@ -225,18 +234,18 @@ pub(crate) async fn append_event(
 )]
 pub(crate) async fn head_bundle(
     State(state): State<TrellisServerState>,
+    Scoped(scoped): Scoped<TrellisScoped>,
     Path(ScopePath { scope }): Path<ScopePath>,
-    tenant_scope: TenantScope,
     headers: HeaderMap,
 ) -> Result<Response, StackError> {
-    let (_, read_permit) = read_authorized(&state, &scope, &tenant_scope, &headers).await?;
-    let head = state
-        .repository
-        .head_checkpoint(scope.as_bytes())
+    let (scope, read_permit) = read_authorized(&state, &scoped, &scope, &headers).await?;
+    let rows = scoped
+        .ledgers()
+        .export(&scope, ExportAt::Head)
         .await?
         .ok_or_else(|| StackError::not_found("scope has no events"))?;
-    let bytes = crate::export::assemble(&state, scope.as_bytes(), &head).await?;
-    let (_, after) = read_authorized(&state, &scope, &tenant_scope, &headers).await?;
+    let bytes = crate::export::assemble(&state, &scoped, &scope, rows).await?;
+    let (_, after) = read_authorized(&state, &scoped, scope.as_str(), &headers).await?;
     if after != read_permit {
         return Err(StackError::unavailable("bundle read authority changed"));
     }
@@ -258,22 +267,22 @@ pub(crate) async fn head_bundle(
 )]
 pub(crate) async fn pinned_bundle(
     State(state): State<TrellisServerState>,
+    Scoped(scoped): Scoped<TrellisScoped>,
     Path(BundlePath {
         scope,
         checkpoint_digest,
     }): Path<BundlePath>,
-    tenant_scope: TenantScope,
     headers: HeaderMap,
 ) -> Result<Response, StackError> {
-    let (_, read_permit) = read_authorized(&state, &scope, &tenant_scope, &headers).await?;
+    let (scope, read_permit) = read_authorized(&state, &scoped, &scope, &headers).await?;
     let digest = parse_checkpoint_digest(&checkpoint_digest)?;
-    let checkpoint = state
-        .repository
-        .checkpoint_by_digest(scope.as_bytes(), &digest)
+    let rows = scoped
+        .ledgers()
+        .export(&scope, ExportAt::Digest(digest))
         .await?
         .ok_or_else(|| StackError::not_found("checkpoint bundle not found"))?;
-    let bytes = crate::export::assemble(&state, scope.as_bytes(), &checkpoint).await?;
-    let (_, after) = read_authorized(&state, &scope, &tenant_scope, &headers).await?;
+    let bytes = crate::export::assemble(&state, &scoped, &scope, rows).await?;
+    let (_, after) = read_authorized(&state, &scoped, scope.as_str(), &headers).await?;
     if after != read_permit {
         return Err(StackError::unavailable("bundle read authority changed"));
     }
@@ -292,12 +301,12 @@ pub(crate) async fn pinned_bundle(
 )]
 pub(crate) async fn signing_key_registry(
     State(state): State<TrellisServerState>,
+    Scoped(scoped): Scoped<TrellisScoped>,
     Path(ScopePath { scope }): Path<ScopePath>,
-    tenant_scope: TenantScope,
     headers: HeaderMap,
 ) -> Result<Response, StackError> {
-    read_authorized(&state, &scope, &tenant_scope, &headers).await?;
-    let bytes = state.signing_key.public_key_registry_cbor()?;
+    read_authorized(&state, &scoped, &scope, &headers).await?;
+    let bytes = trellis_export_writer::encode_signing_key_registry(&state.signing_key_registry())?;
     Ok(bytes_response("application/cbor", bytes))
 }
 
@@ -313,40 +322,28 @@ pub(crate) async fn signing_key_registry(
 )]
 pub(crate) async fn event_type_registry(
     State(state): State<TrellisServerState>,
+    Scoped(scoped): Scoped<TrellisScoped>,
     Path(ScopePath { scope }): Path<ScopePath>,
-    tenant_scope: TenantScope,
     headers: HeaderMap,
 ) -> Result<Json<EventTypeRegistryView>, StackError> {
-    read_authorized(&state, &scope, &tenant_scope, &headers).await?;
+    read_authorized(&state, &scoped, &scope, &headers).await?;
     Ok(Json(event_type_registry_view(
         state.event_type_catalog.as_ref(),
     )))
 }
 
+/// The ledger the path names under the admitted scope, and the current Read permit on it.
 async fn read_authorized(
     state: &TrellisServerState,
+    scoped: &TrellisScoped,
     scope: &str,
-    tenant_scope: &TenantScope,
     headers: &HeaderMap,
-) -> Result<
-    (
-        crate::state::AuthenticatedRequest,
-        trellis_server_ports::AuthorizedScope,
-    ),
-    StackError,
-> {
-    validate_scope(scope)?;
+) -> Result<(LedgerScope, trellis_server_ports::AuthorizedScope), StackError> {
+    let scope = LedgerScope::within(scoped.scope(), scope)?;
     let identity = state.bearer_identity(headers).await?;
-    let permit = crate::auth::authorize_action(
-        state,
-        &identity,
-        tenant_scope,
-        scope,
-        ScopeAction::Read,
-        None,
-    )
-    .await?;
-    Ok((identity, permit))
+    let permit =
+        crate::auth::authorize_action(state, &identity, &scope, ScopeAction::Read, None).await?;
+    Ok((scope, permit))
 }
 
 fn bytes_response(content_type: &'static str, bytes: Vec<u8>) -> Response {
@@ -404,19 +401,6 @@ pub(crate) fn validate_client_attestation_shape(
                 "clientAttestation.cose_sign1 must not be empty",
             ));
         }
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_scope(scope: &str) -> Result<(), StackError> {
-    if scope.trim().is_empty() {
-        return Err(StackError::bad_request("scope is required"));
-    }
-    if scope.contains('/') {
-        return Err(StackError::bad_request("scope must be one path segment"));
-    }
-    if !scope.is_ascii() {
-        return Err(StackError::bad_request("scope must be ASCII"));
     }
     Ok(())
 }

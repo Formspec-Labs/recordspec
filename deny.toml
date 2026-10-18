@@ -30,7 +30,7 @@ deny = [
     { name = "ssi-*", wrappers = ["trellis-interop-did"] },
     { name = "did-method-key", wrappers = ["trellis-interop-did"] },
 
-    # Domain adapters: only the composition root (trellis-server) may name them,
+    # Domain adapters: only the adapter assembly (trellis-server) may name them,
     # so trellis-service-core, trellis-server-ports, trellis-core and trellis-export-writer
     # stay producer-neutral and the adapters cannot depend on each other.
     { name = "trellis-admission-wos", wrappers = ["trellis-server"] },
@@ -39,6 +39,13 @@ deny = [
 
     # Adapters depend on the ports crate only; the generic server is reachable from the composition root alone.
     { name = "trellis-service-core", wrappers = ["trellis-server"] },
+
+    # ADR 0168 §1.2: SQL lives in the Postgres adapter, which reaches rows only through ScopedTx,
+    # and only the binary composition root (trellis-main) opens pools, names the adapter or
+    # builds object-store clients. stack-common's wrappers own the rest.
+    { name = "sqlx", wrappers = ["stack-common-postgres", "trellis-store-postgres-async", "trellis-main"] },
+    { name = "object_store", wrappers = ["stack-common-object-store", "trellis-main"] },
+    { name = "trellis-store-postgres-async", wrappers = ["trellis-main"] },
     { name = "formspec-signature-trellis-binding" },
 
     # Verifier, conformance and interop crates stay off the substrate core, the writer and the ports.

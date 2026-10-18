@@ -2,17 +2,15 @@
 //! Domain adapters the composition root injects into the generic server.
 //!
 //! This crate contains no producer-specific code: admission, event-type
-//! vocabulary, attachment descriptors, export profile and tenant headers all
-//! arrive through [`ServerAdapters`]. `trellis-server` assembles the
+//! vocabulary, attachment descriptors and the export profile all arrive through
+//! [`ServerAdapters`]. `trellis-server` assembles the
 //! shipped set; `deny.toml` keeps the adapter crates out of this crate's graph.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use axum::http::HeaderMap;
 use stack_common_error::StackError;
-use stack_common_http::tenant::{HeaderConfig, TenantScope, extract_tenant};
 use trellis_server_ports::{
     AdmissionEvent, AdmittedEvent, EventAdmissionPolicy, EventType, EventTypeRef,
     EventTypeRegistry, EventTypeSpec, ExportProfile, ExternalAttachmentAdmission, NativeCloseout,
@@ -36,47 +34,6 @@ pub struct ServerAdapters {
     pub native_closeout: Arc<dyn NativeCloseout>,
     /// The owner adapter behind configured Source-content composition.
     pub source_content: SourceContentFactory,
-    /// Tenant header sets accepted on requests.
-    pub tenant_headers: TenantHeaders,
-}
-
-/// Tenant header sets, tried in order; the first names the response/outbound set.
-#[derive(Clone, Debug)]
-pub struct TenantHeaders {
-    primary: HeaderConfig,
-    fallbacks: Vec<HeaderConfig>,
-}
-
-impl TenantHeaders {
-    #[must_use]
-    pub fn new(primary: HeaderConfig) -> Self {
-        Self {
-            primary,
-            fallbacks: Vec::new(),
-        }
-    }
-
-    /// Also accepts `fallback` when the earlier sets are incomplete.
-    #[must_use]
-    pub fn or_else(mut self, fallback: HeaderConfig) -> Self {
-        self.fallbacks.push(fallback);
-        self
-    }
-
-    pub(crate) fn primary(&self) -> HeaderConfig {
-        self.primary
-    }
-
-    pub(crate) fn extract(&self, headers: &HeaderMap) -> Result<TenantScope, StackError> {
-        let mut last = extract_tenant(&self.primary, headers);
-        for fallback in &self.fallbacks {
-            if last.is_ok() {
-                break;
-            }
-            last = extract_tenant(fallback, headers);
-        }
-        last
-    }
 }
 
 /// Register-style admission router: each adapter declares which literals it
@@ -266,45 +223,5 @@ mod tests {
             err.to_string().contains("not registered for admission"),
             "router must surface the registration gap; got: {err}"
         );
-    }
-
-    fn insert(headers: &mut HeaderMap, prefix: &str, tenant: &str, workspace: bool) {
-        headers.insert(
-            format!("x-{prefix}-tenant-id")
-                .parse::<axum::http::HeaderName>()
-                .unwrap(),
-            tenant.parse().unwrap(),
-        );
-        if workspace {
-            for part in ["workspace", "environment", "cell"] {
-                headers.insert(
-                    format!("x-{prefix}-{part}-id")
-                        .parse::<axum::http::HeaderName>()
-                        .unwrap(),
-                    "v".parse().unwrap(),
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn tenant_headers_try_each_set_in_order() {
-        let mut headers = HeaderMap::new();
-        insert(&mut headers, "formspec", "t", true);
-        let wos_only = TenantHeaders::new(HeaderConfig::wos());
-        assert!(wos_only.extract(&headers).is_err());
-        let mixed = wos_only.or_else(HeaderConfig::formspec());
-        assert_eq!(mixed.extract(&headers).unwrap().tenant, "t");
-    }
-
-    /// A partial first set never wins over a complete later set, so the replay tenant and
-    /// the authorised tenant are the same one.
-    #[test]
-    fn partial_first_set_falls_through_to_the_complete_set() {
-        let mut headers = HeaderMap::new();
-        insert(&mut headers, "wos", "wos-only", false);
-        insert(&mut headers, "formspec", "tenant-b", true);
-        let mixed = TenantHeaders::new(HeaderConfig::wos()).or_else(HeaderConfig::formspec());
-        assert_eq!(mixed.extract(&headers).unwrap().tenant, "tenant-b");
     }
 }

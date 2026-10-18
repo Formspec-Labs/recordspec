@@ -7,7 +7,7 @@ use trellis_service_client::{
 async fn committed_state(
     key: &str,
 ) -> (
-    TrellisServerState,
+    Fixture,
     AppendReconciliationRequest,
     SubstrateAppendResult,
 ) {
@@ -20,42 +20,39 @@ async fn committed_state(
     (state, lookup, receipt)
 }
 
-#[derive(Clone)]
-pub(super) struct ReadOnlyArtifacts(pub(super) Arc<dyn ArtifactStore<Error = StackError>>);
+/// Panics on any object write: reconciliation must not write.
+pub(super) struct NoWrites;
 
 #[async_trait]
-impl ArtifactStore for ReadOnlyArtifacts {
-    type Error = StackError;
-    async fn put(&self, _: &str, _: &[u8]) -> Result<ArtifactRef, StackError> {
-        panic!("reconciliation attempted mutable write")
-    }
-    async fn put_immutable(&self, _: &str, _: &[u8]) -> Result<ArtifactRef, StackError> {
-        panic!("reconciliation attempted immutable write")
-    }
-    async fn get(&self, reference: &ArtifactRef) -> Result<Option<Vec<u8>>, StackError> {
-        self.0.get(reference).await
+impl crate::repository_probes::PutHook for NoWrites {
+    async fn before_put(
+        &self,
+        location: &object_store::path::Path,
+        _: usize,
+    ) -> object_store::Result<()> {
+        panic!("reconciliation attempted an object write at {location}")
     }
 }
 
 #[tokio::test]
 async fn reconciliation_returns_the_exact_stored_receipt_and_conflict_without_effects() {
-    let (mut state, lookup, receipt) = committed_state("neutral-committed").await;
-    state.artifact_store = Arc::new(ReadOnlyArtifacts(state.artifact_store.clone()));
+    let (state, lookup, receipt) = committed_state("neutral-committed").await;
+    let state = state.with_artifact_backend(crate::repository_probes::HookedStore::new(NoWrites));
     let before = state.repository.list_scope(b"scope-a").await.unwrap();
     assert_eq!(
-        crate::reconciliation::reconcile(&state, "scope-a", &lookup).await,
+        crate::test_support::reconcile(&state, "scope-a", &lookup).await,
         AppendReconciliation::Committed { receipt }
     );
     let mut changed = lookup.clone();
     changed.content_hash.as_mut().unwrap()[0] ^= 1;
     assert_eq!(
-        crate::reconciliation::reconcile(&state, "scope-a", &changed).await,
+        crate::test_support::reconcile(&state, "scope-a", &changed).await,
         AppendReconciliation::Conflict
     );
     changed = lookup;
     changed.event_type.push_str(".changed");
     assert_eq!(
-        crate::reconciliation::reconcile(&state, "scope-a", &changed).await,
+        crate::test_support::reconcile(&state, "scope-a", &changed).await,
         AppendReconciliation::Conflict
     );
     assert_eq!(
@@ -67,13 +64,12 @@ async fn reconciliation_returns_the_exact_stored_receipt_and_conflict_without_ef
 #[tokio::test]
 async fn reconciliation_distinguishes_event_without_checkpoint_from_absence() {
     let (source, lookup, _) = committed_state("neutral-missing-receipt").await;
-    let mut state = test_state();
-    state.repository = Arc::new(crate::repository_probes::FaultyRepository {
-        inner: source.repository,
+    let state = test_state().with_ledgers(Arc::new(crate::repository_probes::FaultyLedgers {
+        inner: source.ledgers.clone(),
         fault: Arc::new(crate::repository_probes::Fault::HideCheckpoints),
-    });
+    }));
     assert_eq!(
-        crate::reconciliation::reconcile(&state, "scope-a", &lookup).await,
+        crate::test_support::reconcile(&state, "scope-a", &lookup).await,
         AppendReconciliation::Unknown {
             reason: ReconciliationUnknown::ReceiptUnavailable
         }
@@ -83,7 +79,7 @@ async fn reconciliation_distinguishes_event_without_checkpoint_from_absence() {
         ..lookup
     };
     assert!(matches!(
-        crate::reconciliation::reconcile(&state, "scope-a", &absent).await,
+        crate::test_support::reconcile(&state, "scope-a", &absent).await,
         AppendReconciliation::Absent {
             event_count: 1,
             last_event_hash: Some(_)
@@ -110,18 +106,18 @@ async fn reconciliation_refuses_cached_hash_and_signed_key_corruption() {
             b"wrong-key".to_vec(),
         ),
     ] {
-        let mut state = source.clone();
-        let repo = InMemoryEventRepository::new();
+        let state = source
+            .clone()
+            .with_ledgers(Arc::new(MemoryLedgers::new()));
         // Store the corrupted row as a faulty writer would have left it.
         let (corrupted, checkpoint) = state.checkpointer().after(None, &corrupted).unwrap();
-        let mut tx = repo.begin(b"scope-a").await.unwrap();
+        let mut tx = state.repository.begin(b"scope-a").await.unwrap();
         tx.insert(&corrupted, &checkpoint).await.unwrap();
         tx.commit().await.unwrap();
-        state.repository = Arc::new(repo);
         let mut lookup = lookup.clone();
         lookup.idempotency_key = String::from_utf8_lossy(corrupted.idempotency_key().unwrap()).into_owned();
         assert_eq!(
-            crate::reconciliation::reconcile(&state, "scope-a", &lookup).await,
+            crate::test_support::reconcile(&state, "scope-a", &lookup).await,
             AppendReconciliation::Unknown {
                 reason: ReconciliationUnknown::VerificationFailed
             }
@@ -136,6 +132,12 @@ async fn reconciliation_rechecks_current_read_authority_before_disclosure() {
     #[async_trait]
     impl ScopeAuthorizer for RevokedAfterFirst {
         type Error = StackError;
+        fn bound_scopes(
+            &self,
+            _identity: Option<&stack_common_auth::VerifiedAccessIdentity>,
+        ) -> Result<Option<Vec<stack_common_scope::ScopeKey>>, StackError> {
+            Ok(None)
+        }
         async fn authorize(
             &self,
             request: &ScopeAuthorization<'_>,
@@ -150,8 +152,7 @@ async fn reconciliation_rechecks_current_read_authority_before_disclosure() {
             }
             Ok(AuthorizedScope {
                 principal: "neutral-reader".into(),
-                tenant_scope: request.tenant_scope.clone(),
-                scope: request.scope.to_vec(),
+                scope: request.scope.clone(),
                 action: request.action,
             })
         }
@@ -178,8 +179,7 @@ async fn reconciliation_rechecks_current_read_authority_before_disclosure() {
 
 #[tokio::test]
 async fn reconciliation_with_an_unreachable_store_is_unknown() {
-    let mut state = test_state();
-    state.repository = Arc::new(crate::repository_probes::UnreachableRepository);
+    let state = test_state().with_ledgers(Arc::new(crate::repository_probes::UnreachableLedgers));
     let lookup = AppendReconciliationRequest {
         event_type: "neutral.event".into(),
         idempotency_key: "neutral-key".into(),
@@ -187,7 +187,7 @@ async fn reconciliation_with_an_unreachable_store_is_unknown() {
         certificate_id: None,
     };
     assert_eq!(
-        crate::reconciliation::reconcile(&state, "scope-a", &lookup).await,
+        crate::test_support::reconcile(&state, "scope-a", &lookup).await,
         AppendReconciliation::Unknown {
             reason: ReconciliationUnknown::StoreUnavailable
         }

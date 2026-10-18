@@ -7,6 +7,9 @@
 //! `trellis-export-profile-wos`); `deny.toml` keeps every other crate from
 //! depending on them. Consumers that embed a composed server in-process (tests,
 //! fixtures) depend on this crate and see the generic server's API re-exported.
+//!
+//! It opens no store: `trellis-main`, the binary, opens the pool and buckets and builds the
+//! deployment (ADR 0168 §1.2), and in-process consumers build theirs from [`test_harness`].
 
 #![forbid(unsafe_code)]
 

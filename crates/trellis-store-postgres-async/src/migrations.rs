@@ -1,7 +1,15 @@
-//! Async migration runner for the Trellis Postgres schema.
+//! The Trellis Postgres schema, its migration ledger and the serving role's grants.
+//!
+//! Every table's key leads with `scope_key` (ADR 0168 §1.3): one bind, one index prefix, and a
+//! request's rows are one contiguous range. The stack's own schema
+//! ([`stack_common_postgres::SCOPE_MIGRATIONS`]) is applied first; the second migration turns
+//! row security on for every table, so a connection reaches only the rows of the scope keys its
+//! transaction set, whatever SQL it runs, and one that set none reaches nothing.
+//!
+//! The schema was squashed when `scope_key` arrived (no production data existed). A database that
+//! recorded the old versions 1–6 is refused as ahead of this binary; recreate it.
 
-use sqlx::PgPool;
-use stack_common_postgres::{Migration, MigrationSet, run_sqlx_migrations};
+use stack_common_postgres::{Grant, Migration, MigrationSet, ServedSchema};
 
 const LEDGER_TABLE: &str = "trellis_schema_migrations";
 
@@ -11,184 +19,118 @@ const LEDGER_TABLE: &str = "trellis_schema_migrations";
 /// or rollback, so failed migration attempts do not leave a process-held lock.
 const ADVISORY_LOCK_KEY: i64 = 0x7472_656c_6c69_7300; // "trellis\0"
 
-/// Append-only schema migrations for `trellis_events`.
-///
-/// Never edit a row that has shipped. Add a new row instead.
+/// Every Trellis table, in dependency order.
+pub const TABLES: [&str; 4] = [
+    "trellis_events",
+    "trellis_checkpoints",
+    "trellis_external_attachments",
+    "trellis_source_contents",
+];
+
+/// Append-only schema migrations. Never edit a row that has shipped; add a new row instead.
 const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,
-        name: "initial_events",
+        name: "scope_keyed_ledgers",
         up_sql: "\
 CREATE TABLE trellis_events (
+    scope_key BYTEA NOT NULL CHECK (octet_length(scope_key) = 32),
     scope BYTEA NOT NULL,
-    sequence BIGINT NOT NULL,
+    sequence BIGINT NOT NULL CHECK (sequence >= 0),
     canonical_event BYTEA NOT NULL,
     signed_event BYTEA NOT NULL,
-    PRIMARY KEY (scope, sequence)
+    idempotency_key BYTEA NULL CHECK (
+        idempotency_key IS NULL OR octet_length(idempotency_key) BETWEEN 1 AND 64
+    ),
+    canonical_event_hash BYTEA NOT NULL CHECK (octet_length(canonical_event_hash) = 32),
+    PRIMARY KEY (scope_key, scope, sequence)
 );
-",
-    },
-    Migration {
-        version: 2,
-        name: "idempotency_key",
-        up_sql: "\
-ALTER TABLE trellis_events
-    ADD COLUMN idempotency_key BYTEA NULL;
 
-CREATE UNIQUE INDEX trellis_events_scope_idempotency_uidx
-    ON trellis_events (scope, idempotency_key)
+CREATE UNIQUE INDEX trellis_events_idempotency_uidx
+    ON trellis_events (scope_key, scope, idempotency_key)
     WHERE idempotency_key IS NOT NULL;
 
-ALTER TABLE trellis_events
-    ADD CONSTRAINT trellis_events_idempotency_key_length
-    CHECK (
-        idempotency_key IS NULL OR (
-            octet_length(idempotency_key) BETWEEN 1 AND 64
-        )
-    );
-",
-    },
-    Migration {
-        version: 3,
-        name: "canonical_event_hash",
-        up_sql: "\
-ALTER TABLE trellis_events ADD COLUMN canonical_event_hash BYTEA NULL;
-",
-    },
-    Migration {
-        version: 4,
-        name: "bundle_publications",
-        up_sql: "\
-CREATE TABLE trellis_bundle_publications (
-    scope BYTEA NOT NULL,
-    seal_version BIGINT NOT NULL,
-    checkpoint_digest TEXT NOT NULL,
-    export_attempt_id TEXT NOT NULL,
-    artifact_ref TEXT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    published_at TIMESTAMPTZ NULL,
-    PRIMARY KEY (scope, seal_version),
-    UNIQUE (scope, checkpoint_digest),
-    CHECK (seal_version >= 1),
-    CHECK (length(checkpoint_digest) BETWEEN 8 AND 128),
-    CHECK (length(export_attempt_id) BETWEEN 8 AND 128),
-    CHECK (artifact_ref IS NULL OR length(artifact_ref) BETWEEN 1 AND 2048)
-);
-",
-    },
-    Migration {
-        version: 5,
-        name: "external_attachment_retention",
-        up_sql: "\
-CREATE TABLE trellis_external_attachments (
-    scope BYTEA NOT NULL,
-    sequence BIGINT NOT NULL,
-    idempotency_key BYTEA NOT NULL,
-    content_hash BYTEA NOT NULL CHECK (octet_length(content_hash) = 32),
-    ciphertext BYTEA NOT NULL,
-    nonce BYTEA NOT NULL CHECK (octet_length(nonce) = 12),
-    replay_identity BYTEA NOT NULL CHECK (octet_length(replay_identity) = 32),
-    compute_json TEXT NOT NULL,
-    PRIMARY KEY (scope, sequence),
-    UNIQUE (scope, idempotency_key),
-    CHECK (octet_length(idempotency_key) BETWEEN 1 AND 64),
-    FOREIGN KEY (scope, sequence) REFERENCES trellis_events(scope, sequence)
-);
-",
-    },
-    Migration {
-        version: 6,
-        name: "flat_cost_checkpoints",
-        up_sql: "\
-DO $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM trellis_events) THEN
-        RAISE EXCEPTION 'trellis_events holds ledgers written before checkpoint rows existed; recreate the database';
-    END IF;
-END
-$$;
-
-ALTER TABLE trellis_events ALTER COLUMN canonical_event_hash SET NOT NULL;
-
-DROP TABLE trellis_bundle_publications;
-
 CREATE TABLE trellis_checkpoints (
+    scope_key BYTEA NOT NULL CHECK (octet_length(scope_key) = 32),
     scope BYTEA NOT NULL,
     tree_size BIGINT NOT NULL CHECK (tree_size >= 1),
     digest BYTEA NOT NULL CHECK (octet_length(digest) = 32),
     checkpoint BYTEA NOT NULL,
     frontier BYTEA NOT NULL,
     profile_state BYTEA NOT NULL,
-    PRIMARY KEY (scope, tree_size),
-    UNIQUE (scope, digest),
+    PRIMARY KEY (scope_key, scope, tree_size),
+    CONSTRAINT trellis_checkpoints_digest_key UNIQUE (scope_key, scope, digest),
     CHECK (octet_length(frontier) = 32 * bit_count(tree_size::bit(64)))
 );
 
+CREATE TABLE trellis_external_attachments (
+    scope_key BYTEA NOT NULL CHECK (octet_length(scope_key) = 32),
+    scope BYTEA NOT NULL,
+    sequence BIGINT NOT NULL,
+    idempotency_key BYTEA NOT NULL CHECK (octet_length(idempotency_key) BETWEEN 1 AND 64),
+    content_hash BYTEA NOT NULL CHECK (octet_length(content_hash) = 32),
+    ciphertext BYTEA NOT NULL,
+    nonce BYTEA NOT NULL CHECK (octet_length(nonce) = 12),
+    replay_identity BYTEA NOT NULL CHECK (octet_length(replay_identity) = 32),
+    compute_json TEXT NOT NULL,
+    PRIMARY KEY (scope_key, scope, sequence),
+    CONSTRAINT trellis_external_attachments_idempotency_key UNIQUE (scope_key, scope, idempotency_key),
+    FOREIGN KEY (scope_key, scope, sequence)
+        REFERENCES trellis_events (scope_key, scope, sequence)
+);
+
 CREATE TABLE trellis_source_contents (
+    scope_key BYTEA NOT NULL CHECK (octet_length(scope_key) = 32),
     scope BYTEA NOT NULL,
     sequence BIGINT NOT NULL,
     batch_hash BYTEA NOT NULL CHECK (octet_length(batch_hash) = 32),
     size BIGINT NOT NULL CHECK (size > 0),
     artifact_ref TEXT NOT NULL CHECK (length(artifact_ref) BETWEEN 1 AND 2048),
-    PRIMARY KEY (scope, sequence),
-    FOREIGN KEY (scope, sequence) REFERENCES trellis_events (scope, sequence)
+    PRIMARY KEY (scope_key, scope, sequence),
+    FOREIGN KEY (scope_key, scope, sequence)
+        REFERENCES trellis_events (scope_key, scope, sequence)
 );
+
+-- A served ledger scope names its scope key (`<key hex>.<ledger id>`), but the planner assumes the
+-- two key columns independent and, once rows spread over many scope keys, estimates a ledger at a
+-- fraction of a row and picks among indexes sharing the (scope_key, scope) prefix by cost ties
+-- (measured: event by key walked the primary key and filtered). Dependency statistics tell it.
+CREATE STATISTICS trellis_events_scope_dependency (dependencies) ON scope_key, scope
+    FROM trellis_events;
+CREATE STATISTICS trellis_checkpoints_scope_dependency (dependencies) ON scope_key, scope
+    FROM trellis_checkpoints;
+CREATE STATISTICS trellis_external_attachments_scope_dependency (dependencies) ON scope_key, scope
+    FROM trellis_external_attachments;
+CREATE STATISTICS trellis_source_contents_scope_dependency (dependencies) ON scope_key, scope
+    FROM trellis_source_contents;
+",
+    },
+    Migration {
+        version: 2,
+        name: "row_security",
+        up_sql: "\
+SELECT stack_enable_scope_rls('trellis_events');
+SELECT stack_enable_scope_rls('trellis_checkpoints');
+SELECT stack_enable_scope_rls('trellis_external_attachments');
+SELECT stack_enable_scope_rls('trellis_source_contents');
 ",
     },
 ];
 
-/// Error returned by async migration setup.
-#[derive(Debug, thiserror::Error)]
-pub enum MigrationError {
-    /// Database schema has a migration version this binary does not know.
-    #[error(
-        "schema ahead of binary: applied version {applied_version}, declared max {declared_max}"
-    )]
-    SchemaAhead {
-        /// Highest version recorded in the database.
-        applied_version: i32,
-        /// Highest version declared by this binary.
-        declared_max: i32,
-    },
-    /// SQL execution failed while applying or recording migrations.
-    #[error("sqlx: {0}")]
-    Sqlx(#[from] sqlx::Error),
-    /// Shared migration runner rejected the request.
-    #[error("shared migration runner: {0}")]
-    Shared(String),
-}
+/// The Trellis migration set, applied after `SCOPE_MIGRATIONS` by `stack_common_postgres::migrate`.
+pub const TRELLIS_MIGRATIONS: MigrationSet =
+    MigrationSet::new(LEDGER_TABLE, ADVISORY_LOCK_KEY, MIGRATIONS);
 
-impl From<stack_common_postgres::MigrationError> for MigrationError {
-    fn from(error: stack_common_postgres::MigrationError) -> Self {
-        match error {
-            stack_common_postgres::MigrationError::SchemaAhead {
-                applied_version,
-                declared_max,
-            } => Self::SchemaAhead {
-                applied_version,
-                declared_max,
-            },
-            stack_common_postgres::MigrationError::Sqlx(error) => Self::Sqlx(error),
-            other => Self::Shared(other.to_string()),
-        }
-    }
-}
-
-/// Applies pending Trellis Postgres migrations.
-///
-/// The migration list and advisory-lock key come from the shared Postgres contract.
-/// Rows are append-only: old migration SQL must not be edited after landing.
-///
-/// # Errors
-///
-/// Returns [`MigrationError::SchemaAhead`] when the database records a newer
-/// migration than this binary declares, or [`MigrationError::Sqlx`] for SQL
-/// execution failures.
-pub async fn run_migrations(pool: &PgPool) -> Result<(), MigrationError> {
-    run_sqlx_migrations(
-        pool,
-        MigrationSet::new(LEDGER_TABLE, ADVISORY_LOCK_KEY, MIGRATIONS),
-    )
-    .await?;
-    Ok(())
-}
+/// Trellis's schema as the deployment serves it: its migrations, and `SELECT` and `INSERT` on
+/// every table for the serving role. Ledgers are append-only, so the role holds no `UPDATE` or
+/// `DELETE`. `trellis-server migrate` applies it with `stack_common_postgres::migrate`;
+/// `ScopedPool::open` refuses to serve a database it does not describe.
+pub const SCHEMA: ServedSchema = ServedSchema {
+    migrations: &[TRELLIS_MIGRATIONS],
+    grants: &[Grant {
+        privileges: &["SELECT", "INSERT"],
+        tables: &TABLES,
+    }],
+    // Trellis starts no runner, so no transaction spans scopes.
+    spanning: &[],
+};

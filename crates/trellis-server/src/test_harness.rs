@@ -4,19 +4,52 @@
 //! Enable the **`test-harness`** Cargo feature on `trellis-server` from a
 //! dev-dependency only. This keeps production dependency graphs free of
 //! fixture-loaded signing keys.
+//!
+//! The harness opens nothing and makes no scope: a test opens its bucket
+//! (`ScopedBucket::open`) and builds its `Deployment` with the `composition-root` features its
+//! own dev-dependencies enable (ADR 0168 §1.2), then serves it:
+//!
+//! ```ignore
+//! let bucket = ScopedBucket::open(Arc::new(InMemory::new()), &Cell::parse("cell-a")?).await?;
+//! let deployment = Deployment::new(&one_scope("acme", "benefits", "prod"), memory_store(bucket))?;
+//! let app = trellis_server::router(multi_producer_memory_state(), Arc::new(deployment),
+//!     HealthRouter::new())?;
+//! ```
 
 use std::fs;
 use std::sync::Arc;
 
 use integrity_verify::trellis::CertificateAuthorityRegistry;
 use stack_common_error::StackError;
+use stack_common_object_store::ScopedBucket;
+use stack_common_scope::{DeploymentConfig, ScopeConfig};
 use trellis_export_writer::TrellisTimestamp;
 use trellis_service_core::{
-    InMemoryEventRepository, ServerSigningKey, SourceContentComposition, TrellisServerState,
+    MemoryLedgers, ServerSigningKey, SourceContentComposition, TrellisServerState, TrellisStore,
     source_content_composition_from_configuration as compose_source_content,
 };
 
 use crate::composition;
+
+/// A deployment in cell `cell-a` serving the one scope `tenant/workspace/environment`.
+#[must_use]
+pub fn one_scope(tenant: &str, workspace: &str, environment: &str) -> DeploymentConfig {
+    DeploymentConfig {
+        cell: "cell-a".into(),
+        scopes: vec![ScopeConfig {
+            tenant: tenant.into(),
+            workspace: workspace.into(),
+            environment: Some(environment.into()),
+        }],
+        public: None,
+    }
+}
+
+/// In-memory ledgers over the test's bucket, ready for `Deployment::new`.
+#[must_use]
+pub fn memory_store(bucket: ScopedBucket) -> TrellisStore {
+    TrellisStore::new(Arc::new(MemoryLedgers::new()), bucket)
+}
 
 fn fixture_issuer_signing_key() -> ServerSigningKey {
     let key_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -26,7 +59,7 @@ fn fixture_issuer_signing_key() -> ServerSigningKey {
         .expect("fixture COSE signing key")
 }
 
-/// In-memory substrate state with mixed WOS/Formspec tenant headers (compose default).
+/// Substrate state with the shipped WOS and Formspec adapters and the fixture issuer key.
 ///
 /// # Panics
 ///
@@ -34,13 +67,11 @@ fn fixture_issuer_signing_key() -> ServerSigningKey {
 /// relative to this crate.
 #[must_use]
 pub fn multi_producer_memory_state() -> TrellisServerState {
-    TrellisServerState::in_memory(
-        fixture_issuer_signing_key(),
-        composition::adapters(composition::mixed_tenant_headers()),
-    )
+    TrellisServerState::new(fixture_issuer_signing_key(), composition::adapters())
 }
 
-/// Two servers over one ledger, before and after a signing-key rotation.
+/// Two servers' states, before and after a signing-key rotation. Serve both over one
+/// deployment so they share its ledgers.
 pub struct KeyRotationStates {
     /// Signs with the fixture issuer `issuer-001`.
     pub before: TrellisServerState,
@@ -51,7 +82,7 @@ pub struct KeyRotationStates {
     pub history_json: Vec<u8>,
 }
 
-/// In-memory servers sharing one ledger across a rotation at `rotated_at` (unix seconds).
+/// Server states across a rotation at `rotated_at` (unix seconds).
 ///
 /// The first key must stop signing by `rotated_at` and the second start signing no earlier;
 /// an export refuses a signature outside its key's window.
@@ -88,14 +119,7 @@ pub fn key_rotation_memory_states(rotated_at: u64) -> KeyRotationStates {
     let second = second
         .with_history_json(&history_json)
         .expect("key history");
-    let repository: Arc<InMemoryEventRepository> = Arc::new(InMemoryEventRepository::new());
-    let state = |key| {
-        TrellisServerState::new(
-            repository.clone(),
-            key,
-            composition::adapters(composition::mixed_tenant_headers()),
-        )
-    };
+    let state = |key| TrellisServerState::new(key, composition::adapters());
     KeyRotationStates {
         before: state(first),
         after: state(second),
@@ -138,6 +162,6 @@ pub fn source_content_composition_from_configuration(
         configuration,
         service_profile,
         authorities,
-        &composition::adapters(composition::mixed_tenant_headers()),
+        &composition::adapters(),
     )
 }

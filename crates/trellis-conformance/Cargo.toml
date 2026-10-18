@@ -32,7 +32,8 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1"
 sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio-rustls"] }
 stack-common-error = { path = "../../../stack-common/crates/stack-common-error" }
-stack-common-postgres = { path = "../../../stack-common/crates/stack-common-postgres", default-features = false, features = ["testing"] }
+stack-common-postgres = { path = "../../../stack-common/crates/stack-common-postgres", default-features = false, features = ["composition-root", "migrations", "scoped", "testing"] }
+stack-common-scope = { path = "../../../stack-common/crates/stack-common-scope", features = ["composition-root"] }
 trellis-admission-formspec = { path = "../trellis-admission-formspec" }
 trellis-admission-wos = { path = "../trellis-admission-wos" }
 trellis-cddl = { path = "../trellis-cddl" }

@@ -10,30 +10,34 @@ use stack_common_error::StackError;
 use trellis_export_writer::{
     ExportSealFence, ExportWriterInput, RegistrySnapshot as ExportRegistrySnapshot, write_export,
 };
-use trellis_types::StoredCheckpoint;
+use trellis_server_ports::{ExportRows, LedgerScope};
 
 use crate::{
-    EVENT_TYPE_REGISTRY_VERSION, TrellisServerState, append, encode_value, event_hash,
-    event_timestamp, event_type_registry_cbor, external_attachment, reconciliation, source_content,
-    text_map, uint,
+    EVENT_TYPE_REGISTRY_VERSION, TrellisScoped, TrellisServerState, append, encode_value,
+    event_hash, event_timestamp, event_type_registry_cbor, external_attachment,
+    external_repository, reconciliation, source_content, text_map, uint,
 };
 
 const EXPORT_ATTEMPT_DOMAIN: &str = "trellis-export-attempt-v1";
 
-/// The ZIP for the prefix whose head is `head`.
+/// The ZIP for the prefix `rows` end at.
 ///
-/// Reads `head.tree_size` event rows and as many checkpoint rows; builds the proofs from an
-/// in-memory tree (`O(k log k)`); signs only the manifest.
+/// Takes the rows the ledger read in one transaction (`rows.head.tree_size` events and as many
+/// checkpoints, the retained attachments and the closeout's Source binding); builds the proofs
+/// from an in-memory tree (`O(k log k)`); signs only the manifest.
 ///
 /// # Errors
 /// Unavailable when a row the checkpoint implies is missing; a conflict when stored rows contradict
 /// themselves or a Source closeout's retained batch.
 pub(crate) async fn assemble(
     state: &TrellisServerState,
-    scope: &[u8],
-    head: &StoredCheckpoint,
+    scoped: &TrellisScoped,
+    ledger: &LedgerScope,
+    rows: ExportRows,
 ) -> Result<Vec<u8>, StackError> {
-    let rows = state.repository.export_rows(scope, head.tree_size).await?;
+    let scope = ledger.as_bytes();
+    let head = rows.head;
+    let retained = external_repository::retained_by_hash(rows.attachments)?;
     let events = reconciliation::checked_prefix(scope, rows.events)?;
     let last = events
         .last()
@@ -49,23 +53,22 @@ pub(crate) async fn assemble(
         Some(composition) => match composition.final_prefix_guard.classify(scope, &events)? {
             crate::SourceContentPrefixClass::Ordinary => None,
             crate::SourceContentPrefixClass::FinalCloseout { .. } => {
-                Some(source_content::stored_members(state, scope, last.sequence()).await?)
+                Some(source_content::stored_members(scoped, rows.source_content.as_ref()).await?)
             }
         },
         None => None,
     };
 
     let compute = external_attachment::export_compute(
-        state,
-        scope,
         &events,
         &append::default_public_compute_context(),
-    )
-    .await?;
+        &retained,
+    )?;
     let mut evidence_members = state
         .export_profile
         .evidence_members(scope, &events.iter().collect::<Vec<_>>())?;
-    evidence_members.extend(external_attachment::evidence_members(state, scope, &events).await?);
+    evidence_members
+        .extend(external_attachment::evidence_members(scoped, ledger, &events, &retained).await?);
     if let Some(members) = &source_members {
         evidence_members = source_content::merge_source_members(evidence_members, members)?;
     }
@@ -81,8 +84,9 @@ pub(crate) async fn assemble(
             registry_version: EVENT_TYPE_REGISTRY_VERSION.to_string(),
             bound_at_sequence: 0,
         }],
-        signing_key: state.signing_key.export_key(),
-        signing_key_registry: state.signing_key.registry_entries(),
+        // The Manifest key signs the manifest; the registry carries both purposes' keys.
+        signing_key: state.manifest_key.export_key(),
+        signing_key_registry: state.signing_key_registry(),
         generator: "trellis-server".to_string(),
         generated_at,
         checkpoints: rows.checkpoints,

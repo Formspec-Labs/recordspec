@@ -1,8 +1,15 @@
 //! Composes current provider verification and exact deployment resource grants.
+//!
+//! Grants are `(principal, scope, ledger or ledger prefix, action)` (ADR 0168 §1.6). They are
+//! read and validated once at startup and held in memory, indexed so a request finds its grant
+//! in O(log G) per candidate prefix rather than re-reading and re-validating the whole file on
+//! every call (audit #25). A grant change is a file change and a restart, as a new scope is
+//! (ADR 0168 §3.3). A prefix grant names a ledger prefix inside one scope, so it can never reach
+//! another tenant's ledgers: the scope key is part of every ledger scope it admits.
 // Rust guideline compliant 2026-02-21
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -10,6 +17,7 @@ use std::{
 use async_trait::async_trait;
 use axum::http::StatusCode;
 use serde::Deserialize;
+use stack_common_auth::VerifiedAccessIdentity;
 use stack_common_auth::{
     AccessTokenVerifier,
     oidc::{
@@ -18,8 +26,11 @@ use stack_common_auth::{
     },
 };
 use stack_common_error::{ErrorCode, StackError};
-use stack_common_http::tenant::TenantScope;
-use trellis_server_ports::{AuthorizedScope, ScopeAction, ScopeAuthorization, ScopeAuthorizer};
+use stack_common_scope::{DeploymentConfig, ScopeConfig, ScopeKey};
+use trellis_server_ports::{
+    AuthorizedScope, LedgerScope, ScopeAction, ScopeAuthorization, ScopeAuthorizer,
+    validate_ledger_id,
+};
 
 use crate::TrellisServerState;
 
@@ -33,7 +44,7 @@ pub(crate) struct StartupAuth {
 }
 
 impl StartupAuth {
-    pub(crate) fn from_env() -> Result<Self, StackError> {
+    pub(crate) fn from_env(deployment: &DeploymentConfig) -> Result<Self, StackError> {
         let path = std::env::var_os("TRELLIS_OIDC_CONFIG_FILE")
             .filter(|value| !value.is_empty())
             .ok_or_else(|| StackError::bad_request("TRELLIS_OIDC_CONFIG_FILE is required"))?;
@@ -50,10 +61,16 @@ impl StartupAuth {
                 http: Arc::new(ReqwestAuthHttpClient::new().map_err(|_| invalid())?),
                 clock: Arc::new(SystemAuthClock),
             },
+            deployment,
         )
     }
 
-    pub(crate) fn load(path: &Path, dependencies: OidcDependencies) -> Result<Self, StackError> {
+    pub(crate) fn load(
+        path: &Path,
+        dependencies: OidcDependencies,
+        deployment: &DeploymentConfig,
+    ) -> Result<Self, StackError> {
+        let served = crate::state::deployment_keys(deployment)?;
         let profile: Profile = serde_json::from_slice(&read_private(path)?).map_err(|error| {
             if error
                 .to_string()
@@ -65,7 +82,7 @@ impl StartupAuth {
             }
         })?;
         profile.validate()?;
-        let attachment_recipients = profile.attachment_selector()?;
+        let attachment_recipients = profile.attachment_selector(&served)?;
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
         let secret = String::from_utf8(read_private(
             &parent.join(&profile.introspection_client_secret_file),
@@ -105,11 +122,10 @@ impl StartupAuth {
             Arc::new(credentials),
         )
         .map_err(|_| invalid())?;
-        let authorizer = CurrentGrants {
-            path: parent.join(&profile.grants_file),
-            profile,
-        };
-        authorizer.load_grants()?;
+        let grants: GrantFile =
+            serde_json::from_slice(&read_private(&parent.join(&profile.grants_file))?)
+                .map_err(|_| invalid())?;
+        let authorizer = CurrentGrants::index(profile, &grants, &served)?;
         Ok(Self {
             verifier: Arc::new(verifier),
             authorizer: Arc::new(authorizer),
@@ -143,19 +159,21 @@ struct Profile {
     introspection_client_id: String,
     introspection_client_secret_file: PathBuf,
     grants_file: PathBuf,
-    tenant_scope: Deployment,
     identities: Vec<Identity>,
     action_scopes: ActionScopes,
     #[serde(default, deserialize_with = "deserialize_attachment_selection")]
     accepted_attachment_recipients: Option<Vec<AttachmentSelection>>,
 }
 
-// Selected custody shares the OIDC deployment tuple and admitted principal registry.
+// Selected custody names a served scope, a ledger in it and an admitted principal.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct AttachmentSelection {
     principal: String,
-    scope: String,
+    /// The deployment scope the ledger lives under.
+    scope: ScopeConfig,
+    /// The ledger id within that scope.
+    ledger: String,
     recipients: Vec<AttachmentRecipient>,
 }
 
@@ -167,9 +185,9 @@ struct AttachmentRecipient {
     operator_held: bool,
 }
 
+/// Recipients by `(principal, ledger)`.
 struct ScopedAttachmentRecipients {
-    tenant_scope: TenantScope,
-    rows: Vec<(String, Vec<u8>, Vec<crate::ExternalAttachmentRecipient>)>,
+    rows: BTreeMap<(String, LedgerScope), Vec<crate::ExternalAttachmentRecipient>>,
 }
 
 #[async_trait]
@@ -179,13 +197,12 @@ impl crate::ExternalAttachmentRecipientSelector for ScopedAttachmentRecipients {
         permit: &AuthorizedScope,
         _descriptor: &serde_json::Value,
     ) -> Result<Vec<crate::ExternalAttachmentRecipient>, StackError> {
-        if permit.action != ScopeAction::Append || permit.tenant_scope != self.tenant_scope {
+        if permit.action != ScopeAction::Append {
             return Err(attachment_denied());
         }
         self.rows
-            .iter()
-            .find(|(principal, scope, _)| principal == &permit.principal && scope == &permit.scope)
-            .map(|(_, _, recipients)| recipients.clone())
+            .get(&(permit.principal.clone(), permit.scope.clone()))
+            .cloned()
             .ok_or_else(attachment_denied)
     }
 }
@@ -221,32 +238,6 @@ enum ClaimProfile {
     Rfc9068,
 }
 
-#[derive(Clone, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Deployment {
-    tenant: String,
-    workspace: String,
-    environment: String,
-    cell: String,
-}
-
-impl Deployment {
-    fn tuple(&self) -> TenantScope {
-        TenantScope {
-            tenant: self.tenant.clone(),
-            workspace: self.workspace.clone(),
-            environment: self.environment.clone(),
-            cell: self.cell.clone(),
-        }
-    }
-    fn validate(&self) -> Result<(), StackError> {
-        for value in [&self.tenant, &self.workspace, &self.environment, &self.cell] {
-            nonempty(value)?;
-        }
-        Ok(())
-    }
-}
-
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Identity {
@@ -267,6 +258,7 @@ struct ActionScopes {
 impl Profile {
     fn attachment_selector(
         &self,
+        served: &[ScopeKey],
     ) -> Result<Option<Arc<dyn crate::ExternalAttachmentRecipientSelector>>, StackError> {
         let Some(selections) = &self.accepted_attachment_recipients else {
             return Ok(None);
@@ -275,16 +267,18 @@ impl Profile {
         if selections.is_empty() || selections.len() > 1024 {
             return Err(attachment_invalid());
         }
-        let mut row_ids = BTreeSet::new();
-        let mut rows = Vec::with_capacity(selections.len());
+        let mut rows = BTreeMap::new();
         for selection in selections {
+            let scope_key =
+                served_key(&selection.scope, served).map_err(|_| attachment_invalid())?;
+            let ledger = LedgerScope::under(scope_key, &selection.ledger)
+                .map_err(|_| attachment_invalid())?;
+            let row = (selection.principal.clone(), ledger);
             if !self
                 .identities
                 .iter()
                 .any(|identity| identity.principal == selection.principal)
-                || nonempty(&selection.scope).is_err()
-                || crate::http::validate_scope(&selection.scope).is_err()
-                || !row_ids.insert((&selection.principal, &selection.scope))
+                || rows.contains_key(&row)
                 || selection.recipients.is_empty()
                 || selection.recipients.len() > 64
             {
@@ -313,20 +307,12 @@ impl Profile {
             if recipients.iter().all(|recipient| recipient.operator_held) {
                 return Err(attachment_invalid());
             }
-            rows.push((
-                selection.principal.clone(),
-                selection.scope.as_bytes().to_vec(),
-                recipients,
-            ));
+            rows.insert(row, recipients);
         }
-        Ok(Some(Arc::new(ScopedAttachmentRecipients {
-            tenant_scope: self.tenant_scope.tuple(),
-            rows,
-        })))
+        Ok(Some(Arc::new(ScopedAttachmentRecipients { rows })))
     }
 
     fn validate(&self) -> Result<(), StackError> {
-        self.tenant_scope.validate()?;
         unique_nonempty(&self.required_scopes)?;
         unique_nonempty(&self.allowed_clients)?;
         for value in [
@@ -377,11 +363,10 @@ impl Profile {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct GrantFile {
-    tenant_scope: Deployment,
     grants: Vec<Grant>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
 #[serde(rename_all = "camelCase")]
 enum Action {
     Read,
@@ -390,11 +375,11 @@ enum Action {
 }
 
 impl Action {
-    fn port(self) -> ScopeAction {
-        match self {
-            Self::Read => ScopeAction::Read,
-            Self::Append => ScopeAction::Append,
-            Self::Administer => ScopeAction::Administer,
+    fn of(action: ScopeAction) -> Self {
+        match action {
+            ScopeAction::Read => Self::Read,
+            ScopeAction::Append => Self::Append,
+            ScopeAction::Administer => Self::Administer,
         }
     }
 }
@@ -403,37 +388,20 @@ impl Action {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Grant {
     principal: String,
-    /// Exactly one of `scope` (one ledger) and `scopePrefix` (every ledger the prefix starts).
+    /// The deployment scope the grant holds in; every ledger it admits lies under it.
+    scope: ScopeConfig,
+    /// Exactly one of `ledger` (one ledger id) and `ledgerPrefix` (every ledger id it starts).
     #[serde(default)]
-    scope: Option<String>,
-    /// A prefix ending in `.` or `_`, so it stops at a component boundary of a ledger name
-    /// (`<scope key>.<namespace>_<type>_<id>`) and cannot match half a component.
+    ledger: Option<String>,
+    /// A ledger-id prefix ending in `.` or `_`, so it stops at a component boundary of a ledger
+    /// id (`<namespace>_<type>_<id>`) and cannot match half a component.
     #[serde(default)]
-    scope_prefix: Option<String>,
+    ledger_prefix: Option<String>,
     action: Action,
     #[serde(default)]
     actors: Vec<Actor>,
     #[serde(default)]
     payload_actors: Vec<PayloadActor>,
-}
-
-impl Grant {
-    /// The grant's exact scope or prefix, tagged so the two never collide in the uniqueness set.
-    fn selector(&self) -> Result<(bool, &str), StackError> {
-        match (&self.scope, &self.scope_prefix) {
-            (Some(scope), None) => Ok((false, scope)),
-            (None, Some(prefix)) if prefix.ends_with(['.', '_']) => Ok((true, prefix)),
-            _ => Err(invalid()),
-        }
-    }
-
-    fn admits(&self, scope: &str) -> bool {
-        match (&self.scope, &self.scope_prefix) {
-            (Some(exact), _) => exact == scope,
-            (None, Some(prefix)) => scope.starts_with(prefix.as_str()),
-            (None, None) => false,
-        }
-    }
 }
 
 #[derive(Deserialize)]
@@ -451,88 +419,186 @@ struct PayloadActor {
     subjects: Vec<String>,
 }
 
+/// What an admitting grant further requires of an append body.
+#[derive(Default)]
+struct Rule {
+    actors: BTreeSet<(String, String)>,
+    payload_actors: Vec<PayloadActor>,
+}
+
+/// One principal's grants for one scope and action.
+#[derive(Default)]
+struct Selectors {
+    exact: BTreeMap<String, Rule>,
+    prefixes: BTreeMap<String, Rule>,
+}
+
+impl Selectors {
+    /// The most specific rule admitting `ledger_id`: its exact grant, else its longest prefix
+    /// grant. A prefix ends in `.` or `_`, so only those positions are looked up: O(k log G) for
+    /// k boundaries in the id.
+    fn admitting(&self, ledger_id: &str) -> Option<&Rule> {
+        self.exact.get(ledger_id).or_else(|| {
+            ledger_id
+                .char_indices()
+                .rev()
+                .filter(|(_, c)| matches!(c, '.' | '_'))
+                .find_map(|(index, _)| self.prefixes.get(&ledger_id[..=index]))
+        })
+    }
+}
+
+/// The deployment's grants, validated once at startup and held in memory.
 struct CurrentGrants {
-    path: PathBuf,
     profile: Profile,
+    /// `(issuer, subject, client) → principal`.
+    principals: BTreeMap<(String, String, String), String>,
+    /// Each principal's bound scopes, sorted: what `VerifiedBinding::select` chooses among.
+    bound: BTreeMap<String, Vec<ScopeKey>>,
+    /// `(scope key, action) → principal → selectors`.
+    rules: BTreeMap<(ScopeKey, Action), BTreeMap<String, Selectors>>,
+}
+
+/// The key of a configured scope the deployment serves.
+fn served_key(scope: &ScopeConfig, served: &[ScopeKey]) -> Result<ScopeKey, StackError> {
+    let key = scope.key().map_err(|_| invalid())?;
+    served
+        .binary_search(&key)
+        .map(|_| key)
+        .map_err(|_| invalid())
 }
 
 impl CurrentGrants {
-    fn load_grants(&self) -> Result<GrantFile, StackError> {
-        let file: GrantFile =
-            serde_json::from_slice(&read_private(&self.path)?).map_err(|_| invalid())?;
-        self.validate_current(&file)?;
-        Ok(file)
+    fn index(profile: Profile, file: &GrantFile, served: &[ScopeKey]) -> Result<Self, StackError> {
+        let principals = profile
+            .identities
+            .iter()
+            .map(|identity| {
+                (
+                    (
+                        identity.issuer.clone(),
+                        identity.subject.clone(),
+                        identity.client_id.clone(),
+                    ),
+                    identity.principal.clone(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let known: BTreeSet<&str> = profile
+            .identities
+            .iter()
+            .map(|identity| identity.principal.as_str())
+            .collect();
+        let mut bound: BTreeMap<String, Vec<ScopeKey>> = BTreeMap::new();
+        let mut rules: BTreeMap<(ScopeKey, Action), BTreeMap<String, Selectors>> = BTreeMap::new();
+        for grant in &file.grants {
+            if !known.contains(grant.principal.as_str()) {
+                return Err(invalid());
+            }
+            let scope_key = served_key(&grant.scope, served)?;
+            let rule = Self::rule(grant)?;
+            let selectors = rules
+                .entry((scope_key, grant.action))
+                .or_default()
+                .entry(grant.principal.clone())
+                .or_default();
+            let fresh = match (&grant.ledger, &grant.ledger_prefix) {
+                (Some(ledger), None) => {
+                    validate_ledger_id(ledger).map_err(|_| invalid())?;
+                    selectors.exact.insert(ledger.clone(), rule).is_none()
+                }
+                (None, Some(prefix)) if prefix.ends_with(['.', '_']) => {
+                    validate_ledger_id(prefix).map_err(|_| invalid())?;
+                    selectors.prefixes.insert(prefix.clone(), rule).is_none()
+                }
+                _ => return Err(invalid()),
+            };
+            // A selector granted twice for one principal, scope and action is ambiguous.
+            if !fresh {
+                return Err(invalid());
+            }
+            bound
+                .entry(grant.principal.clone())
+                .or_default()
+                .push(scope_key);
+        }
+        for keys in bound.values_mut() {
+            keys.sort();
+            keys.dedup();
+        }
+        Ok(Self {
+            profile,
+            principals,
+            bound,
+            rules,
+        })
     }
 
-    fn validate_current(&self, file: &GrantFile) -> Result<(), StackError> {
-        if file.tenant_scope != self.profile.tenant_scope {
+    fn rule(grant: &Grant) -> Result<Rule, StackError> {
+        if grant.action != Action::Append {
+            if !grant.actors.is_empty() || !grant.payload_actors.is_empty() {
+                return Err(invalid());
+            }
+            return Ok(Rule::default());
+        }
+        if grant.actors.is_empty() {
             return Err(invalid());
         }
-        let mut rows = BTreeSet::new();
-        for grant in &file.grants {
-            let (is_prefix, selector) = grant.selector()?;
-            nonempty(selector)?;
-            crate::http::validate_scope(selector).map_err(|_| invalid())?;
-            if !self
-                .profile
-                .identities
-                .iter()
-                .any(|identity| identity.principal == grant.principal)
-                || !rows.insert((&grant.principal, is_prefix, selector, grant.action))
-            {
+        let mut actors = BTreeSet::new();
+        for actor in &grant.actors {
+            nonempty(&actor.kind)?;
+            nonempty(&actor.subject)?;
+            if !actors.insert((actor.kind.clone(), actor.subject.clone())) {
                 return Err(invalid());
-            }
-            if grant.action != Action::Append {
-                if !grant.actors.is_empty() || !grant.payload_actors.is_empty() {
-                    return Err(invalid());
-                }
-                continue;
-            }
-            if grant.actors.is_empty() {
-                return Err(invalid());
-            }
-            let mut actors = BTreeSet::new();
-            for actor in &grant.actors {
-                nonempty(&actor.kind)?;
-                nonempty(&actor.subject)?;
-                if !actors.insert((&actor.kind, &actor.subject)) {
-                    return Err(invalid());
-                }
-            }
-            let mut pointers = BTreeSet::new();
-            for actor in &grant.payload_actors {
-                validate_pointer(&actor.pointer)?;
-                unique_nonempty(&actor.subjects)?;
-                if !pointers.insert(&actor.pointer) {
-                    return Err(invalid());
-                }
             }
         }
-        Ok(())
+        let mut pointers = BTreeSet::new();
+        let mut payload_actors = Vec::with_capacity(grant.payload_actors.len());
+        for actor in &grant.payload_actors {
+            validate_pointer(&actor.pointer)?;
+            unique_nonempty(&actor.subjects)?;
+            if !pointers.insert(&actor.pointer) {
+                return Err(invalid());
+            }
+            payload_actors.push(PayloadActor {
+                pointer: actor.pointer.clone(),
+                required: actor.required,
+                subjects: actor.subjects.clone(),
+            });
+        }
+        Ok(Rule {
+            actors,
+            payload_actors,
+        })
+    }
+
+    fn principal(&self, identity: &VerifiedAccessIdentity) -> Result<&str, StackError> {
+        let client = identity.client_id.clone().ok_or_else(denied)?;
+        self.principals
+            .get(&(identity.issuer.clone(), identity.subject.clone(), client))
+            .map(String::as_str)
+            .ok_or_else(denied)
     }
 }
 
 #[async_trait]
 impl ScopeAuthorizer for CurrentGrants {
     type Error = StackError;
+
+    fn bound_scopes(
+        &self,
+        identity: Option<&VerifiedAccessIdentity>,
+    ) -> Result<Option<Vec<ScopeKey>>, StackError> {
+        let principal = self.principal(identity.ok_or_else(denied)?)?;
+        Ok(Some(self.bound.get(principal).cloned().unwrap_or_default()))
+    }
+
     async fn authorize(
         &self,
         request: &ScopeAuthorization<'_>,
     ) -> Result<AuthorizedScope, StackError> {
         let identity = request.identity.ok_or_else(denied)?;
-        if request.tenant_scope != &self.profile.tenant_scope.tuple() {
-            return Err(denied());
-        }
-        let principal = self
-            .profile
-            .identities
-            .iter()
-            .find(|binding| {
-                binding.issuer == identity.issuer
-                    && binding.subject == identity.subject
-                    && Some(binding.client_id.as_str()) == identity.client_id.as_deref()
-            })
-            .ok_or_else(denied)?;
+        let principal = self.principal(identity)?;
         let required_scope = match request.action {
             ScopeAction::Read => &self.profile.action_scopes.read,
             ScopeAction::Append => &self.profile.action_scopes.append,
@@ -541,37 +607,21 @@ impl ScopeAuthorizer for CurrentGrants {
         if !identity.scopes.contains(required_scope) {
             return Err(denied());
         }
-        let scope = std::str::from_utf8(request.scope).map_err(|_| denied())?;
-        // File reads never block the async worker. No admitted grants survive this request.
-        let path = self.path.clone();
-        let bytes = tokio::task::spawn_blocking(move || read_private(&path))
-            .await
-            .map_err(|_| StackError::unavailable("current resource authority unavailable"))?
-            .map_err(|_| StackError::unavailable("current resource authority unavailable"))?;
-        // Validate the complete current file before selecting a grant.
-        let file: GrantFile = serde_json::from_slice(&bytes)
-            .map_err(|_| StackError::unavailable("current resource authority unavailable"))?;
-        self.validate_current(&file)
-            .map_err(|_| StackError::unavailable("current resource authority unavailable"))?;
-        let grant = file
-            .grants
-            .iter()
-            .find(|grant| {
-                grant.principal == principal.principal
-                    && grant.admits(scope)
-                    && grant.action.port() == request.action
-            })
+        let rule = self
+            .rules
+            .get(&(*request.scope.key(), Action::of(request.action)))
+            .and_then(|principals| principals.get(principal))
+            .and_then(|selectors| selectors.admitting(request.scope.ledger_id()))
             .ok_or_else(denied)?;
         if request.action == ScopeAction::Append {
             let body = request.append_body.ok_or_else(denied)?;
-            if !grant
+            if !rule
                 .actors
-                .iter()
-                .any(|actor| actor.kind == body.actor.kind && actor.subject == body.actor.subject)
+                .contains(&(body.actor.kind.clone(), body.actor.subject.clone()))
             {
                 return Err(denied());
             }
-            for actor in &grant.payload_actors {
+            for actor in &rule.payload_actors {
                 match body.payload.pointer(&actor.pointer) {
                     None if !actor.required => {}
                     Some(value)
@@ -583,9 +633,8 @@ impl ScopeAuthorizer for CurrentGrants {
             }
         }
         Ok(AuthorizedScope {
-            principal: principal.principal.clone(),
-            tenant_scope: request.tenant_scope.clone(),
-            scope: request.scope.to_vec(),
+            principal: principal.to_owned(),
+            scope: request.scope.clone(),
             action: request.action,
         })
     }

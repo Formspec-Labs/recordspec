@@ -8,9 +8,8 @@ use integrity_cbor::{
     map_lookup_optional_value, map_lookup_text, sha256_bytes,
 };
 use stack_common_error::{ErrorCode, StackError};
-use stack_common_http::tenant::TenantScope;
 use trellis_export_writer::TrellisTimestamp;
-use trellis_server_ports::{ArtifactRef, ScopeAction};
+use trellis_server_ports::{LedgerScope, ScopeAction};
 use trellis_service_client::SubstrateAppendResult;
 use trellis_types::StoredEvent;
 
@@ -190,17 +189,17 @@ impl CompletionSigner for CoseCompletionSigner {
 /// Refuses absent selection, invalid evidence, changed retries or storage failures.
 pub async fn seal_completion(
     state: &crate::TrellisServerState,
+    scoped: &crate::TrellisScoped,
     headers: &HeaderMap,
-    tenant: &TenantScope,
-    scope: &str,
+    ledger: &LedgerScope,
     request: &CompletionRequest,
     signer: &dyn CompletionSigner,
 ) -> Result<SubstrateAppendResult, StackError> {
-    crate::http::validate_scope(scope)?;
+    let scope = ledger.as_str();
     request.validate()?;
     let selected = SelectedCompletion::try_from(&request.selection)?;
     validate_selection(&selected)?;
-    let principal = authorize(state, headers, tenant, scope, request).await?;
+    let principal = authorize(state, headers, ledger, request).await?;
     // Before anything is reserved or signed: only the configured publisher may seal.
     if state
         .completion
@@ -215,10 +214,10 @@ pub async fn seal_completion(
         ));
     }
     state
-        .reserve_completion_request(tenant, &principal, scope, request)
+        .reserve_completion_request(&principal, ledger, request)
         .await?;
     // The seal validates a whole small ledger by design (Core completion prefix bounds).
-    let events = state.repository.prefix(scope.as_bytes(), BOUND).await?;
+    let events = scoped.ledgers().prefix(ledger, BOUND).await?;
     validate_prefix(&events, scope)?;
     let retained = events
         .iter()
@@ -267,17 +266,17 @@ pub async fn seal_completion(
         {
             return Err(StackError::conflict("completion retry facts changed"));
         }
-        let bytes = state
-            .artifact_store
-            .get(&ArtifactRef::new(&key))
+        let bytes = scoped
+            .artifacts()
+            .read_optional(&key)
             .await?
             .ok_or_else(|| StackError::unavailable("retained certificate object missing"))?;
         if bytes != html {
             return Err(StackError::conflict("retained certificate object differs"));
         }
-        let checkpoint = state
-            .repository
-            .checkpoint_at(scope.as_bytes(), event.sequence() + 1)
+        let checkpoint = scoped
+            .ledgers()
+            .checkpoint_at(ledger, event.sequence() + 1)
             .await?
             .ok_or_else(|| StackError::internal("committed seal has no checkpoint"))?;
         (event.clone(), checkpoint)
@@ -305,15 +304,14 @@ pub async fn seal_completion(
         }
         let attestations = Value::Array(attestations);
         verify_attestations(request, &selected, &attestations)?;
-        // Retain the store's actual opaque locator in the signed binding. Object keys
-        // and returned references differ for S3 and memory stores.
-        let reference = state.artifact_store.put_immutable(&key, &html).await?;
-        if state.artifact_store.get(&reference).await?.as_deref() != Some(html.as_slice()) {
+        // Retain the store's actual key in the signed binding: the scope's object store puts the
+        // name under the scope key, and a read re-checks that prefix.
+        let (key, _) = scoped.artifacts().write_once(&key, &html).await?;
+        if scoped.artifacts().read_optional(&key).await?.as_deref() != Some(html.as_slice()) {
             return Err(StackError::unavailable(
                 "certificate immutable write readback failed",
             ));
         }
-        let key = reference.uri;
         let extensions = crate::text_map(vec![
             (
                 COMPLETION_EVENT,
@@ -366,12 +364,12 @@ pub async fn seal_completion(
         certificate_html(&stored)?;
         // Authority may have changed while the operator signed and the object was written; the
         // commit below re-checks the head under the scope lock.
-        if authorize(state, headers, tenant, scope, request).await? != principal {
+        if authorize(state, headers, ledger, request).await? != principal {
             return Err(StackError::conflict(
                 "completion authority or native snapshot changed",
             ));
         }
-        commit(state, &stored).await?
+        commit(state, scoped, ledger, &stored).await?
     };
     crate::ledger::append_result(scope, &stored, Some(request.expected_head), &checkpoint)
 }
@@ -383,9 +381,11 @@ pub async fn seal_completion(
 /// committed checkpoint.
 async fn commit(
     state: &crate::TrellisServerState,
+    scoped: &crate::TrellisScoped,
+    ledger: &LedgerScope,
     event: &StoredEvent,
 ) -> Result<(StoredEvent, trellis_types::StoredCheckpoint), StackError> {
-    let mut tx = state.repository.begin(event.scope()).await?;
+    let mut tx = scoped.ledgers().begin(ledger).await?;
     let events = tx.prefix(BOUND).await?;
     if let Some(prior) = events
         .iter()
@@ -467,8 +467,7 @@ fn validate_selection(selected: &SelectedCompletion) -> Result<(), StackError> {
 async fn authorize(
     state: &crate::TrellisServerState,
     headers: &HeaderMap,
-    tenant: &TenantScope,
-    scope: &str,
+    scope: &LedgerScope,
     request: &CompletionRequest,
 ) -> Result<String, StackError> {
     let identity = state.bearer_identity(headers).await?;
@@ -484,18 +483,11 @@ async fn authorize(
         source_content: None,
     };
     body.validate()?;
-    let append_permit = crate::auth::authorize_action(
-        state,
-        &identity,
-        tenant,
-        scope,
-        ScopeAction::Append,
-        Some(&body),
-    )
-    .await?;
-    let read_permit =
-        crate::auth::authorize_action(state, &identity, tenant, scope, ScopeAction::Read, None)
+    let append_permit =
+        crate::auth::authorize_action(state, &identity, scope, ScopeAction::Append, Some(&body))
             .await?;
+    let read_permit =
+        crate::auth::authorize_action(state, &identity, scope, ScopeAction::Read, None).await?;
     if append_permit.principal != read_permit.principal {
         return Err(StackError::conflict(
             "completion permissions admit different principals",

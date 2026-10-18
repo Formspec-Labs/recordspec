@@ -13,8 +13,9 @@ use trellis_types::{
     CONTENT_DOMAIN, StoredCheckpoint, StoredEvent, Value, domain_separated_sha256,
 };
 
-use crate::TrellisServerState;
-use crate::event_repository::{AttachmentRow, EventRepository};
+use trellis_server_ports::{AttachmentRow, LedgerScope};
+
+use crate::{TrellisScoped, TrellisServerState};
 
 // A finite scope bound applies before a factory can inspect or protect any input.
 const FACTORY_PREFIX_MAX_EVENTS: usize = 256;
@@ -218,14 +219,16 @@ pub(crate) struct Appended {
 /// Refuses excessive prefixes, changed custody, stale heads, factory failures and storage faults.
 pub(crate) async fn append_with(
     state: &TrellisServerState,
-    scope: &[u8],
+    scoped: &TrellisScoped,
+    ledger: &LedgerScope,
     key: &[u8],
     compute: &ComputeContext,
     factory: &dyn ExternalAttachmentFactory,
 ) -> Result<Appended, StackError> {
+    let scope = ledger.as_bytes();
     validate_factory_request(scope, key)?;
     validate_compute(compute)?;
-    let mut tx = state.repository.begin(scope).await?;
+    let mut tx = scoped.ledgers().begin(ledger).await?;
     let events = tx.prefix(FACTORY_PREFIX_MAX_EVENTS as u64 + 1).await?;
     if events.len() > FACTORY_PREFIX_MAX_EVENTS {
         return Err(StackError::conflict("native prefix exceeds event bound"));
@@ -296,32 +299,23 @@ fn retained_from_row(
     Ok((retained, compute))
 }
 
-/// The retained ciphertext in `scope` whose `trellis-content-v1` hash is `hash`.
-pub(crate) async fn body_by_hash(
-    repository: &dyn EventRepository,
-    scope: &[u8],
-    hash: &[u8; 32],
-) -> Result<Option<Vec<u8>>, StackError> {
-    repository
-        .attachment_by_content_hash(scope, hash)
-        .await?
-        .map(retained_from_row)
-        .transpose()
-        .map(|r| r.map(|(r, _)| r.ciphertext().to_vec()))
-}
+/// An export's retained attachments by `trellis-content-v1` hash: each hash's earliest
+/// ciphertext and the custody disclosure it was retained under.
+pub(crate) type Retained = std::collections::BTreeMap<Vec<u8>, (Vec<u8>, ComputeContext)>;
 
-/// The custody disclosure under which the ciphertext with `hash` was retained.
-pub(crate) async fn compute_by_hash(
-    repository: &dyn EventRepository,
-    scope: &[u8],
-    hash: &[u8; 32],
-) -> Result<Option<ComputeContext>, StackError> {
-    repository
-        .attachment_by_content_hash(scope, hash)
-        .await?
-        .map(retained_from_row)
-        .transpose()
-        .map(|r| r.map(|(_, c)| c))
+/// Indexes an export's attachment rows (ascending by sequence) by content hash, keeping the
+/// earliest, so the export reads each body once from rows it already holds.
+pub(crate) fn retained_by_hash(rows: Vec<AttachmentRow>) -> Result<Retained, StackError> {
+    let mut retained = Retained::new();
+    for row in rows {
+        if retained.contains_key(&row.content_hash) {
+            continue;
+        }
+        let hash = row.content_hash.clone();
+        let (attachment, compute) = retained_from_row(row)?;
+        retained.insert(hash, (attachment.ciphertext().to_vec(), compute));
+    }
+    Ok(retained)
 }
 
 fn decode_compute(json: &str) -> Result<ComputeContext, StackError> {
@@ -349,14 +343,14 @@ fn decode_compute(json: &str) -> Result<ComputeContext, StackError> {
 mod tests {
     use super::*;
     use crate::ServerSigningKey;
-    use crate::event_repository::{
-        EventRepository, InMemoryEventRepository, PostgresEventRepository,
-    };
+    use crate::test_support::{Fixture, a, ledger};
     use std::sync::Arc;
     use trellis_core::SigningKeyMaterial;
     use trellis_core::external_attachment::{ExternalAppendLimits, ExternalAttachmentHeader};
     use trellis_export_writer::TrellisTimestamp;
+    use trellis_server_ports::Ledgers;
     use trellis_service_client::ComputeSensitivity;
+    use trellis_store_postgres_async::PgLedgers;
     use trellis_types::{
         Value, decode_cbor_value, map_lookup_bytes, map_lookup_map, map_lookup_u64,
         map_lookup_value,
@@ -366,6 +360,18 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../trellis-store-postgres-async/tests/support/mod.rs"
         ));
+    }
+    /// The ledger's retained attachments as its head export indexes them.
+    async fn retained(scoped: &crate::TrellisScoped, ledger: &LedgerScope) -> Retained {
+        match scoped
+            .ledgers()
+            .export(ledger, trellis_server_ports::ExportAt::Head)
+            .await
+            .unwrap()
+        {
+            Some(rows) => retained_by_hash(rows.attachments).unwrap(),
+            None => Retained::new(),
+        }
     }
     fn fixture(scope: &[u8]) -> (ExternalAttachmentAppend, SigningKeyMaterial, ComputeContext) {
         let canonical = include_bytes!(
@@ -476,25 +482,37 @@ mod tests {
             .unwrap()
             .with_canonical_event_hash(Some(artifacts.canonical_event_hash))
     }
-    fn state_over(repository: Arc<dyn EventRepository>) -> TrellisServerState {
-        TrellisServerState::new(
-            repository,
-            ServerSigningKey::from_cose_key_bytes(
-                include_bytes!("../../../fixtures/vectors/_keys/issuer-001.cose_key").to_vec(),
-                TrellisTimestamp::new(0, 0).unwrap(),
-            )
-            .unwrap(),
-            crate::test_adapters::adapters(),
+    fn state_over(ledgers: Arc<dyn Ledgers>) -> Fixture {
+        Fixture::over(
+            TrellisServerState::new(
+                ServerSigningKey::from_cose_key_bytes(
+                    include_bytes!("../../../fixtures/vectors/_keys/issuer-001.cose_key").to_vec(),
+                    TrellisTimestamp::new(0, 0).unwrap(),
+                )
+                .unwrap(),
+                crate::test_adapters::adapters(),
+            ),
+            ledgers,
+            Arc::new(object_store::memory::InMemory::new()),
         )
     }
+    /// The ledger a fixture scope names, under scope A.
+    fn ledger_of(scope: &[u8]) -> LedgerScope {
+        LedgerScope::within(&a(), std::str::from_utf8(scope).unwrap()).unwrap()
+    }
+    /// A fixture append input under scope A's ledger `id`.
+    fn fixture_in(id: &str) -> (ExternalAttachmentAppend, SigningKeyMaterial, ComputeContext) {
+        fixture(ledger(id).as_bytes())
+    }
     async fn append(
-        state: &TrellisServerState,
+        state: &Fixture,
         input: &ExternalAttachmentAppend,
         compute: &ComputeContext,
     ) -> Result<Appended, StackError> {
         append_with(
-            state,
-            &input.scope,
+            &state.state,
+            &state.scoped(),
+            &ledger_of(&input.scope),
             &input.idempotency_key,
             compute,
             &FixedInputFactory(input.clone()),
@@ -502,10 +520,7 @@ mod tests {
         .await
     }
     /// Appends an event the way the ordinary coordinator would: next sequence, next checkpoint.
-    async fn append_ordinary(
-        state: &TrellisServerState,
-        event: &StoredEvent,
-    ) -> Result<(), StackError> {
+    async fn append_ordinary(state: &Fixture, event: &StoredEvent) -> Result<(), StackError> {
         let mut tx = state.repository.begin(event.scope()).await?;
         let head = tx.head().await?;
         let (event, checkpoint) = state.checkpointer().after(head.as_ref(), event)?;
@@ -514,8 +529,8 @@ mod tests {
     }
     #[tokio::test]
     async fn memory_retains_exact_retry_after_head_advance_and_refuses_changed_custody() {
-        let state = state_over(Arc::new(InMemoryEventRepository::new()));
-        let (input, key, compute) = fixture(b"memory-native");
+        let state = state_over(Arc::new(crate::MemoryLedgers::new()));
+        let (input, key, compute) = fixture_in("memory-native");
         let first = append(&state, &input, &compute).await.unwrap();
         append_ordinary(&state, &ordinary_after(first.retained.event(), &key))
             .await
@@ -536,39 +551,25 @@ mod tests {
             2
         );
         let hash = domain_separated_sha256(CONTENT_DOMAIN, first.retained.ciphertext());
+        let scoped = state.scoped();
         assert_eq!(
-            body_by_hash(state.repository.as_ref(), &input.scope, &hash)
+            retained(&scoped, &ledger_of(&input.scope))
                 .await
-                .unwrap(),
-            Some(first.retained.ciphertext().to_vec())
+                .get(hash.as_slice()),
+            Some(&(first.retained.ciphertext().to_vec(), compute.clone()))
         );
-        assert_eq!(
-            compute_by_hash(state.repository.as_ref(), &input.scope, &hash)
-                .await
-                .unwrap(),
-            Some(compute.clone())
-        );
-        assert!(
-            body_by_hash(state.repository.as_ref(), b"other-scope", &hash)
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(retained(&scoped, &ledger("other-scope")).await.is_empty());
         let changed =
             ComputeContext::new("changed", "operator", ComputeSensitivity::ProviderReadable);
         assert!(append(&state, &input, &changed).await.is_err());
     }
     #[tokio::test]
     async fn postgres_retention_recovers_on_new_repository_and_exact_retry_after_head_advance() {
-        let cluster = stack_common_postgres::testing::EphemeralCluster::start_required();
-        let pool = support::tls_pool(&cluster, 4).await;
-        trellis_store_postgres_async::run_migrations(&pool)
-            .await
-            .unwrap();
-        let state = state_over(Arc::new(PostgresEventRepository::new(pool.clone())));
-        let (input, key, compute) = fixture(b"pg-native-recovery");
+        let db = support::database(4).await;
+        let state = state_over(Arc::new(PgLedgers::new(db.scoped.clone())));
+        let (input, key, compute) = fixture_in("pg-native-recovery");
         let first = append(&state, &input, &compute).await.unwrap();
-        let restarted = state_over(Arc::new(PostgresEventRepository::new(pool.clone())));
+        let restarted = state_over(Arc::new(PgLedgers::new(db.scoped.clone())));
         append_ordinary(&restarted, &ordinary_after(first.retained.event(), &key))
             .await
             .unwrap();
@@ -576,39 +577,24 @@ mod tests {
         assert_eq!(retry.retained, first.retained);
         assert_eq!(retry.checkpoint, first.checkpoint);
         let hash = domain_separated_sha256(CONTENT_DOMAIN, first.retained.ciphertext());
+        let scoped = restarted.scoped();
         assert_eq!(
-            body_by_hash(restarted.repository.as_ref(), &input.scope, &hash)
+            retained(&scoped, &ledger_of(&input.scope))
                 .await
-                .unwrap(),
-            Some(first.retained.ciphertext().to_vec())
+                .get(hash.as_slice()),
+            Some(&(first.retained.ciphertext().to_vec(), compute.clone()))
         );
-        assert_eq!(
-            compute_by_hash(restarted.repository.as_ref(), &input.scope, &hash)
-                .await
-                .unwrap(),
-            Some(compute.clone())
-        );
-        assert!(
-            body_by_hash(restarted.repository.as_ref(), b"foreign", &hash)
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(retained(&scoped, &ledger("foreign")).await.is_empty());
         let changed =
             ComputeContext::new("changed", "operator", ComputeSensitivity::ProviderReadable);
         assert!(append(&restarted, &input, &changed).await.is_err());
-        pool.close().await;
     }
     #[tokio::test]
     async fn postgres_body_insert_failure_rolls_back_signed_event_checkpoint_and_body() {
-        let cluster = stack_common_postgres::testing::EphemeralCluster::start_required();
-        let pool = support::tls_pool(&cluster, 4).await;
-        trellis_store_postgres_async::run_migrations(&pool)
-            .await
-            .unwrap();
-        sqlx::query("ALTER TABLE trellis_external_attachments ADD CONSTRAINT test_body_insert_refusal CHECK (false)").execute(&pool).await.unwrap();
-        let state = state_over(Arc::new(PostgresEventRepository::new(pool.clone())));
-        let (input, _key, compute) = fixture(b"pg-native-rollback");
+        let db = support::database(4).await;
+        sqlx::query("ALTER TABLE trellis_external_attachments ADD CONSTRAINT test_body_insert_refusal CHECK (false)").execute(&db.owner).await.unwrap();
+        let state = state_over(Arc::new(PgLedgers::new(db.scoped.clone())));
+        let (input, _key, compute) = fixture_in("pg-native-rollback");
         assert!(append(&state, &input, &compute).await.is_err());
         assert!(
             state
@@ -620,7 +606,7 @@ mod tests {
         );
         for table in ["trellis_external_attachments", "trellis_checkpoints"] {
             let count: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table}"))
-                .fetch_one(&pool)
+                .fetch_one(&db.owner)
                 .await
                 .unwrap();
             assert_eq!(count, 0, "{table}");
@@ -628,29 +614,24 @@ mod tests {
         sqlx::query(
             "ALTER TABLE trellis_external_attachments DROP CONSTRAINT test_body_insert_refusal",
         )
-        .execute(&pool)
+        .execute(&db.owner)
         .await
         .unwrap();
         assert!(append(&state, &input, &compute).await.is_ok());
-        pool.close().await;
     }
     #[tokio::test]
     async fn postgres_cross_instance_appends_share_scope_lock_and_reject_stale_head() {
-        let cluster = stack_common_postgres::testing::EphemeralCluster::start_required();
-        let pool = support::tls_pool(&cluster, 4).await;
-        trellis_store_postgres_async::run_migrations(&pool)
-            .await
-            .unwrap();
-        let state = state_over(Arc::new(PostgresEventRepository::new(pool.clone())));
-        let other = state_over(Arc::new(PostgresEventRepository::new(pool.clone())));
-        let (input, key, compute) = fixture(b"pg-native-concurrent");
-        let (a, b) = tokio::join!(
+        let db = support::database(4).await;
+        let state = state_over(Arc::new(PgLedgers::new(db.scoped.clone())));
+        let other = state_over(Arc::new(PgLedgers::new(db.scoped.clone())));
+        let (input, key, compute) = fixture_in("pg-native-concurrent");
+        let (first, second) = tokio::join!(
             append(&state, &input, &compute),
             append(&other, &input, &compute)
         );
-        let (a, b) = (a.unwrap(), b.unwrap());
-        assert_eq!(a.retained, b.retained);
-        assert_eq!(a.checkpoint, b.checkpoint);
+        let (first, second) = (first.unwrap(), second.unwrap());
+        assert_eq!(first.retained, second.retained);
+        assert_eq!(first.checkpoint, second.checkpoint);
         assert_eq!(
             state
                 .repository
@@ -661,7 +642,7 @@ mod tests {
             1
         );
         let mut stale = input.clone();
-        stale.scope = b"pg-stale-empty".to_vec();
+        stale.scope = ledger("pg-stale-empty").as_bytes().to_vec();
         stale.expected_head = Some([9; 32]);
         assert!(append(&other, &stale, &compute).await.is_err());
         assert!(
@@ -673,8 +654,9 @@ mod tests {
                 .is_empty()
         );
         // A held scope lock also blocks an ordinary append on another instance.
-        let event = ordinary_after(a.retained.event(), &key);
-        let held = trellis_store_postgres_async::begin_scope(&pool, &input.scope)
+        let event = ordinary_after(first.retained.event(), &key);
+        let mut held = db.scoped.begin(&a()).await.unwrap();
+        trellis_store_postgres_async::lock_ledger(&mut held, &input.scope)
             .await
             .unwrap();
         let pending = append_ordinary(&other, &event);
@@ -695,7 +677,6 @@ mod tests {
                 .len(),
             2
         );
-        pool.close().await;
     }
     #[test]
     fn retained_restoration_refuses_tampered_body_nonce_and_row_identity() {
@@ -833,21 +814,29 @@ mod tests {
                 Ok(self.input.clone())
             }
         }
-        let state = state_over(Arc::new(InMemoryEventRepository::new()));
-        let (input, _key, compute) = fixture(b"lazy-factory");
+        let state = state_over(Arc::new(crate::MemoryLedgers::new()));
+        let (input, _key, compute) = fixture_in("lazy-factory");
         let factory = Factory {
             input: input.clone(),
             fresh: AtomicUsize::new(0),
             replay: AtomicUsize::new(0),
         };
         async fn run(
-            state: &TrellisServerState,
+            state: &Fixture,
             scope: &[u8],
             input: &ExternalAttachmentAppend,
             compute: &ComputeContext,
             factory: &dyn ExternalAttachmentFactory,
         ) -> Result<Appended, StackError> {
-            append_with(state, scope, &input.idempotency_key, compute, factory).await
+            append_with(
+                &state.state,
+                &state.scoped(),
+                &ledger_of(scope),
+                &input.idempotency_key,
+                compute,
+                factory,
+            )
+            .await
         }
         let first = run(&state, &input.scope, &input, &compute, &factory)
             .await
@@ -859,9 +848,15 @@ mod tests {
         assert_eq!(factory.fresh.load(Ordering::SeqCst), 1);
         assert_eq!(factory.replay.load(Ordering::SeqCst), 1);
         assert!(
-            run(&state, b"other-scope", &input, &compute, &factory)
-                .await
-                .is_err()
+            run(
+                &state,
+                ledger("other-scope").as_bytes(),
+                &input,
+                &compute,
+                &factory
+            )
+            .await
+            .is_err()
         );
         assert!(
             state

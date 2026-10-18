@@ -5,12 +5,16 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio-rustls", "uuid", "json", "migrate"] }
-stack-common-idempotency = { path = "../../../stack-common/crates/stack-common-idempotency", default-features = false }
-stack-common-postgres = { path = "../../../stack-common/crates/stack-common-postgres", default-features = false, features = ["migrations", "pool"] }
+async-trait = "0.1"
+sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio-rustls"] }
+stack-common-error = { path = "../../../stack-common/crates/stack-common-error", default-features = false }
+stack-common-postgres = { path = "../../../stack-common/crates/stack-common-postgres", default-features = false, features = ["migrations", "scoped"] }
+stack-common-scope = { path = "../../../stack-common/crates/stack-common-scope" }
 thiserror = "1"
+trellis-server-ports = { path = "../trellis-server-ports" }
 trellis-types = { path = "../trellis-types" }
 
 [dev-dependencies]
-stack-common-postgres = { path = "../../../stack-common/crates/stack-common-postgres", default-features = false, features = ["migrations", "pool", "testing"] }
+stack-common-postgres = { path = "../../../stack-common/crates/stack-common-postgres", default-features = false, features = ["composition-root", "migrations", "pool", "scoped", "testing"] }
+stack-common-scope = { path = "../../../stack-common/crates/stack-common-scope", features = ["composition-root"] }
 tokio = { version = "1", features = ["full", "macros", "test-util"] }

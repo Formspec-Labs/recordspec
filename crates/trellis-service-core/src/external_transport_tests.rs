@@ -5,13 +5,11 @@ use stack_common_auth::{
     AccessTokenError, AccessTokenVerifier, ClientCredentialsTokenProvider, ServiceAccessToken,
     TokenAcquisitionError, VerifiedAccessIdentity,
 };
-use stack_common_http::tenant::{HeaderConfig, TenantScope};
+use stack_common_scope::ScopeKey;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use trellis_server_ports::{
-    ArtifactStore, AuthorizedScope, ScopeAction, ScopeAuthorization, ScopeAuthorizer,
-};
+use trellis_server_ports::{AuthorizedScope, ScopeAction, ScopeAuthorization, ScopeAuthorizer};
 use trellis_service_client::{
     AcceptedAttachmentAppendBody, AppendActor, SubstrateClient, TrellisServiceClient,
     TrellisServiceClientConfig,
@@ -23,13 +21,9 @@ mod support {
     ));
 }
 
-fn tenant() -> TenantScope {
-    TenantScope {
-        tenant: "native-test".into(),
-        workspace: "workspace".into(),
-        environment: "test".into(),
-        cell: "cell".into(),
-    }
+/// Scope A's ledger `id`, as the transport client names it.
+fn case(id: &str) -> trellis_server_ports::LedgerScope {
+    crate::test_support::ledger(id)
 }
 struct CurrentToken {
     token: String,
@@ -59,10 +53,16 @@ impl AccessTokenVerifier for Verifier {
         })
     }
 }
-struct Grants(TenantScope);
+struct Grants(ScopeKey);
 #[async_trait]
 impl ScopeAuthorizer for Grants {
     type Error = StackError;
+    fn bound_scopes(
+        &self,
+        _identity: Option<&stack_common_auth::VerifiedAccessIdentity>,
+    ) -> Result<Option<Vec<stack_common_scope::ScopeKey>>, StackError> {
+        Ok(None)
+    }
     async fn authorize(&self, r: &ScopeAuthorization<'_>) -> Result<AuthorizedScope, StackError> {
         let valid = r.identity.is_some_and(|i| {
             i.issuer == "https://controlled-transport.example"
@@ -75,7 +75,7 @@ impl ScopeAuthorizer for Grants {
         let actor = r.action != ScopeAction::Append
             || r.append_body
                 .is_some_and(|b| b.actor.kind == "service" && b.actor.subject == "formspec-server");
-        if !valid || !actor || r.tenant_scope != &self.0 || r.scope != b"case_123" {
+        if !valid || !actor || r.scope.key() != &self.0 || r.scope.ledger_id() != "case_123" {
             return Err(StackError::new(
                 stack_common_error::ErrorCode::new("INFRA-4030").unwrap(),
                 StatusCode::FORBIDDEN,
@@ -84,8 +84,7 @@ impl ScopeAuthorizer for Grants {
         }
         Ok(AuthorizedScope {
             principal: "controlled-producer".into(),
-            tenant_scope: r.tenant_scope.clone(),
-            scope: r.scope.to_vec(),
+            scope: r.scope.clone(),
             action: r.action,
         })
     }
@@ -137,67 +136,6 @@ impl integrity_seam::SecureRandom for CountedOsRandom {
         Ok(())
     }
 }
-struct FileArtifacts(PathBuf);
-impl FileArtifacts {
-    fn path(&self, key: &str) -> Result<PathBuf, StackError> {
-        if key.is_empty()
-            || key.starts_with('/')
-            || key.split('/').any(|p| p == ".." || p.is_empty())
-        {
-            return Err(StackError::bad_request("invalid test artifact key"));
-        }
-        Ok(self.0.join(key))
-    }
-}
-#[async_trait]
-impl ArtifactStore for FileArtifacts {
-    type Error = StackError;
-    async fn put(&self, key: &str, bytes: &[u8]) -> Result<ArtifactRef, StackError> {
-        let path = self.path(key)?;
-        std::fs::create_dir_all(path.parent().unwrap())
-            .map_err(|e| StackError::unavailable(e.to_string()))?;
-        std::fs::write(path, bytes).map_err(|e| StackError::unavailable(e.to_string()))?;
-        Ok(ArtifactRef::new(format!("test-file:{key}")))
-    }
-    async fn put_immutable(&self, key: &str, bytes: &[u8]) -> Result<ArtifactRef, StackError> {
-        use std::io::Write;
-        let path = self.path(key)?;
-        std::fs::create_dir_all(path.parent().unwrap())
-            .map_err(|e| StackError::unavailable(e.to_string()))?;
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(mut file) => {
-                file.write_all(bytes)
-                    .and_then(|_| file.sync_all())
-                    .map_err(|e| StackError::unavailable(e.to_string()))?;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                if std::fs::read(&path).map_err(|e| StackError::unavailable(e.to_string()))?
-                    != bytes
-                {
-                    return Err(StackError::conflict("immutable artifact bytes changed"));
-                }
-            }
-            Err(e) => return Err(StackError::unavailable(e.to_string())),
-        }
-        Ok(ArtifactRef::new(format!("test-file:{key}")))
-    }
-    async fn get(&self, reference: &ArtifactRef) -> Result<Option<Vec<u8>>, StackError> {
-        let key = reference
-            .uri
-            .strip_prefix("test-file:")
-            .ok_or_else(|| StackError::bad_request("invalid test artifact reference"))?;
-        match std::fs::read(self.path(key)?) {
-            Ok(bytes) => Ok(Some(bytes)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(StackError::unavailable(e.to_string())),
-        }
-    }
-}
-
 #[tokio::test]
 #[ignore = "Child process fixture; launched only by cross_process_native_transport_qualification"]
 async fn native_transport_child_server() {
@@ -207,23 +145,26 @@ async fn native_transport_child_server() {
         .unwrap()
         .parse()
         .unwrap();
+    // The parent migrated the database; the child serves through the app role.
     let pool = sqlx::PgPool::connect(&database).await.unwrap();
-    trellis_store_postgres_async::run_migrations(&pool)
-        .await
-        .unwrap();
-    let configured_tenant = if root.join("tenant.json").exists() {
-        serde_json::from_slice(&std::fs::read(root.join("tenant.json")).unwrap()).unwrap()
-    } else {
-        tenant()
-    };
-    let mut state = TrellisServerState::new(
-        Arc::new(PostgresEventRepository::new(pool.clone())),
-        test_signing_key(),
-        crate::test_adapters::adapters(),
+    let scoped = stack_common_postgres::ScopedPool::open(
+        pool,
+        &stack_common_scope::Cell::parse("cell-a").unwrap(),
+        &trellis_store_postgres_async::SCHEMA,
     )
-    .with_artifact_store(Arc::new(FileArtifacts(root.join("artifacts"))))
+    .await
+    .unwrap();
+    std::fs::create_dir_all(root.join("artifacts")).unwrap();
+    let artifacts =
+        object_store::local::LocalFileSystem::new_with_prefix(root.join("artifacts")).unwrap();
+    let mut state = Fixture::open(
+        TrellisServerState::new(test_signing_key(), crate::test_adapters::adapters()),
+        Arc::new(trellis_store_postgres_async::PgLedgers::new(scoped)),
+        Arc::new(artifacts),
+    )
+    .await
     .with_access_token_verifier(Arc::new(Verifier))
-    .with_scope_authorizer(Arc::new(Grants(configured_tenant)))
+    .with_scope_authorizer(Arc::new(Grants(*crate::test_support::a().key())))
     .with_production_like_scope_posture(true)
     .with_external_attachment_recipients(Arc::new(Recipients(root.join("policy"))));
     state.external_attachment_random = Arc::new(CountedOsRandom {
@@ -233,7 +174,9 @@ async fn native_transport_child_server() {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
         .await
         .unwrap();
-    axum::serve(listener, router(state).unwrap()).await.unwrap();
+    axum::serve(listener, router(state).unwrap().into_make_service())
+        .await
+        .unwrap();
 }
 struct ChildServer(Child);
 impl Drop for ChildServer {
@@ -284,11 +227,14 @@ async fn start_child(root: &Path, database: &str, port: u16) -> ChildServer {
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
     }
 }
+/// The app role's connection string: the child serves as the role row security binds.
+fn app_dsn(db: &support::Database) -> String {
+    db.cluster
+        .database_url(sqlx::postgres::PgSslMode::Require)
+        .replacen("postgres://postgres@", &format!("postgres://{}@", support::APP_ROLE), 1)
+}
 fn client(endpoint: &str, token: &str, calls: Arc<AtomicUsize>) -> TrellisServiceClient {
-    TrellisServiceClient::new(TrellisServiceClientConfig::new(
-        endpoint,
-        HeaderConfig::formspec(),
-    ))
+    TrellisServiceClient::new(TrellisServiceClientConfig::new(endpoint))
     .unwrap()
     .with_token_provider(Arc::new(CurrentToken {
         token: token.into(),
@@ -307,8 +253,9 @@ async fn raw_status(
     let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
         .await
         .unwrap();
+    let path = scoped_uri(path);
     let request = format!(
-        "{method} {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nAuthorization: Bearer {token}\r\nidempotency-key: {key}\r\nx-formspec-tenant-id: native-test\r\nx-formspec-workspace-id: workspace\r\nx-formspec-environment-id: test\r\nx-formspec-cell-id: cell\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        "{method} {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nAuthorization: Bearer {token}\r\nidempotency-key: {key}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
         body.len()
     );
     stream.write_all(request.as_bytes()).await.unwrap();
@@ -415,9 +362,9 @@ fn evidence_root() -> (PathBuf, Option<tempfile::TempDir>) {
 
 #[tokio::test]
 async fn cross_process_native_transport_qualification() {
-    let cluster = stack_common_postgres::testing::EphemeralCluster::start_required();
-    let pool = support::tls_pool(&cluster, 4).await;
-    let database = cluster.dsn();
+    let db = support::database(4).await;
+    let pool = db.owner.clone();
+    let database = app_dsn(&db);
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     std::fs::write(root.join("policy"), "reader").unwrap();
@@ -440,10 +387,10 @@ async fn cross_process_native_transport_qualification() {
         ),
     };
     let first = transport
-        .append_accepted_attachment("case_123", &tenant(), &body)
+        .append_accepted_attachment(&case("case_123"), &body)
         .await
         .unwrap();
-    let initial_row:(Vec<u8>,Vec<u8>,Vec<u8>,Vec<u8>)=sqlx::query_as("SELECT e.canonical_event,e.signed_event,a.ciphertext,a.nonce FROM trellis_events e JOIN trellis_external_attachments a ON a.scope=e.scope AND a.sequence=e.sequence WHERE e.scope=$1").bind(b"case_123".as_slice()).fetch_one(&pool).await.unwrap();
+    let initial_row:(Vec<u8>,Vec<u8>,Vec<u8>,Vec<u8>)=sqlx::query_as("SELECT e.canonical_event,e.signed_event,a.ciphertext,a.nonce FROM trellis_events e JOIN trellis_external_attachments a ON a.scope=e.scope AND a.sequence=e.sequence WHERE e.scope=$1").bind(case("case_123").as_bytes().to_vec()).fetch_one(&pool).await.unwrap();
     let first_entropy = std::fs::read_to_string(root.join("random-count")).unwrap();
     assert!(first_entropy.parse::<usize>().unwrap() > 0);
     let checkpoints: i64 = sqlx::query_scalar("SELECT count(*) FROM trellis_checkpoints")
@@ -472,10 +419,10 @@ async fn cross_process_native_transport_qualification() {
     );
     let checkpoint = first.checkpoint_ref.rsplit('/').next().unwrap();
     let pinned = transport
-        .bundle("case_123", checkpoint, &tenant())
+        .bundle(&case("case_123"), checkpoint)
         .await
         .unwrap();
-    let head = transport.head_bundle("case_123", &tenant()).await.unwrap();
+    let head = transport.head_bundle(&case("case_123")).await.unwrap();
     assert_eq!(pinned, head);
     let public = trellis_cddl::parse_ed25519_cose_key(test_signing_key().core_key().as_bytes())
         .unwrap()
@@ -485,7 +432,7 @@ async fn cross_process_native_transport_qualification() {
     assert!(count.parse::<usize>().unwrap() > 0);
     assert_eq!(
         transport
-            .append_accepted_attachment("case_123", &tenant(), &body)
+            .append_accepted_attachment(&case("case_123"), &body)
             .await
             .unwrap(),
         first
@@ -498,14 +445,14 @@ async fn cross_process_native_transport_qualification() {
     std::fs::write(root.join("policy"), "changed-key").unwrap();
     assert!(
         transport
-            .append_accepted_attachment("case_123", &tenant(), &body)
+            .append_accepted_attachment(&case("case_123"), &body)
             .await
             .is_err()
     );
     std::fs::write(root.join("policy"), "changed-id").unwrap();
     assert!(
         transport
-            .append_accepted_attachment("case_123", &tenant(), &body)
+            .append_accepted_attachment(&case("case_123"), &body)
             .await
             .is_err()
     );
@@ -514,27 +461,27 @@ async fn cross_process_native_transport_qualification() {
     // This retry has no process-local HTTP cache and still refuses the changed selection.
     assert!(
         transport
-            .append_accepted_attachment("case_123", &tenant(), &body)
+            .append_accepted_attachment(&case("case_123"), &body)
             .await
             .is_err()
     );
     std::fs::write(root.join("policy"), "reader").unwrap();
     assert_eq!(
         transport
-            .append_accepted_attachment("case_123", &tenant(), &body)
+            .append_accepted_attachment(&case("case_123"), &body)
             .await
             .unwrap(),
         first
     );
     assert_eq!(
         transport
-            .bundle("case_123", checkpoint, &tenant())
+            .bundle(&case("case_123"), checkpoint)
             .await
             .unwrap(),
         pinned
     );
     assert_eq!(
-        transport.head_bundle("case_123", &tenant()).await.unwrap(),
+        transport.head_bundle(&case("case_123")).await.unwrap(),
         pinned
     );
     assert_eq!(
@@ -543,40 +490,42 @@ async fn cross_process_native_transport_qualification() {
     );
     assert!(
         client(&endpoint, "no-append", calls.clone())
-            .append_accepted_attachment("case_123", &tenant(), &body)
+            .append_accepted_attachment(&case("case_123"), &body)
             .await
             .is_err()
     );
     assert!(
         client(&endpoint, "no-read", calls.clone())
-            .bundle("case_123", checkpoint, &tenant())
+            .bundle(&case("case_123"), checkpoint)
             .await
             .is_err()
     );
     assert_eq!(
         client(&endpoint, "no-admin", calls.clone())
-            .head_bundle("case_123", &tenant())
+            .head_bundle(&case("case_123"))
             .await
             .unwrap(),
         pinned
     );
     assert!(
         client(&endpoint, "no-read", calls.clone())
-            .head_bundle("case_123", &tenant())
+            .head_bundle(&case("case_123"))
             .await
             .is_err()
     );
     assert!(
         transport
-            .append_accepted_attachment("case_other", &tenant(), &body)
+            .append_accepted_attachment(&case("case_other"), &body)
             .await
             .is_err()
     );
-    let mut foreign = tenant();
-    foreign.tenant = "foreign".into();
+    // Another scope's ledger: its key selects a scope the deployment does not admit.
     assert!(
         transport
-            .append_accepted_attachment("case_123", &foreign, &body)
+            .append_accepted_attachment(
+                &trellis_server_ports::LedgerScope::of(&crate::test_support::b(), "case_123").unwrap(),
+                &body
+            )
             .await
             .is_err()
     );
@@ -618,7 +567,7 @@ async fn cross_process_native_transport_qualification() {
     );
     assert!(
         transport
-            .append_accepted_attachment("case_123", &tenant(), &wrong)
+            .append_accepted_attachment(&case("case_123"), &wrong)
             .await
             .is_err()
     );
@@ -631,7 +580,7 @@ async fn cross_process_native_transport_qualification() {
         .await
         .unwrap();
     assert_eq!(event_count, 1);
-    let final_row:(Vec<u8>,Vec<u8>,Vec<u8>,Vec<u8>)=sqlx::query_as("SELECT e.canonical_event,e.signed_event,a.ciphertext,a.nonce FROM trellis_events e JOIN trellis_external_attachments a ON a.scope=e.scope AND a.sequence=e.sequence WHERE e.scope=$1").bind(b"case_123".as_slice()).fetch_one(&pool).await.unwrap();
+    let final_row:(Vec<u8>,Vec<u8>,Vec<u8>,Vec<u8>)=sqlx::query_as("SELECT e.canonical_event,e.signed_event,a.ciphertext,a.nonce FROM trellis_events e JOIN trellis_external_attachments a ON a.scope=e.scope AND a.sequence=e.sequence WHERE e.scope=$1").bind(case("case_123").as_bytes().to_vec()).fetch_one(&pool).await.unwrap();
     assert_eq!(
         initial_row, final_row,
         "restart must preserve exact committed bytes"
@@ -676,7 +625,7 @@ async fn cross_process_native_transport_qualification() {
         evidence.display()
     );
     drop(server.take());
-    pool.close().await;
+
 }
 
 #[tokio::test]
@@ -721,23 +670,13 @@ async fn actual_source_png_jpeg_cross_process_protection() {
             input["acceptedIntakeReceipt"].is_null(),
             "this scenario must not claim WOS acceptance"
         );
-        let scope = &input["scope"];
-        let exact_tenant = TenantScope {
-            tenant: scope["tenant_id"].as_str().unwrap().into(),
-            workspace: scope["workspace_id"].as_str().unwrap().into(),
-            environment: scope["environment_id"].as_str().unwrap().into(),
-            cell: scope["cell_id"].as_str().unwrap().into(),
-        };
-        let cluster = stack_common_postgres::testing::EphemeralCluster::start_required();
-        let pool = support::tls_pool(&cluster, 4).await;
-        let database = cluster.dsn();
+        // The Trellis scope is the test's own (scope A); the Source descriptor's tenant names
+        // stay as captured.
+        let db = support::database(4).await;
+        let pool = db.owner.clone();
+        let database = app_dsn(&db);
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
-        std::fs::write(
-            root.join("tenant.json"),
-            serde_json::to_vec(&exact_tenant).unwrap(),
-        )
-        .unwrap();
         std::fs::write(root.join("policy"), "reader").unwrap();
         std::fs::write(root.join("random-count"), "0").unwrap();
         let reserve = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -772,17 +711,17 @@ async fn actual_source_png_jpeg_cross_process_protection() {
             ),
         };
         let result = transport
-            .append_accepted_attachment("case_123", &exact_tenant, &body)
+            .append_accepted_attachment(&case("case_123"), &body)
             .await
             .unwrap();
         let checkpoint = result.checkpoint_ref.rsplit('/').next().unwrap();
         let zip = transport
-            .bundle("case_123", checkpoint, &exact_tenant)
+            .bundle(&case("case_123"), checkpoint)
             .await
             .unwrap();
         assert_eq!(
             transport
-                .head_bundle("case_123", &exact_tenant)
+                .head_bundle(&case("case_123"))
                 .await
                 .unwrap(),
             zip
@@ -797,14 +736,14 @@ async fn actual_source_png_jpeg_cross_process_protection() {
         server = Some(start_child(root, &database, port).await);
         assert_eq!(
             transport
-                .append_accepted_attachment("case_123", &exact_tenant, &body)
+                .append_accepted_attachment(&case("case_123"), &body)
                 .await
                 .unwrap(),
             result
         );
         assert_eq!(
             transport
-                .bundle("case_123", checkpoint, &exact_tenant)
+                .bundle(&case("case_123"), checkpoint)
                 .await
                 .unwrap(),
             zip
@@ -816,7 +755,7 @@ async fn actual_source_png_jpeg_cross_process_protection() {
         let row: (Vec<u8>, Vec<u8>) = sqlx::query_as(
             "SELECT canonical_event,signed_event FROM trellis_events WHERE scope=$1",
         )
-        .bind(b"case_123".as_slice())
+        .bind(case("case_123").as_bytes().to_vec())
         .fetch_one(&pool)
         .await
         .unwrap();
@@ -844,6 +783,6 @@ async fn actual_source_png_jpeg_cross_process_protection() {
             evidence.display()
         );
         drop(server.take());
-        pool.close().await;
+
     }
 }

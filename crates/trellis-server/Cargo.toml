@@ -7,33 +7,16 @@ license.workspace = true
 
 [features]
 default = []
-# The image's complete feature set (root ops/managed-single-cell compose passes FEATURES=deployment;
-# docker/cargo-image.sh builds with --no-default-features). Empty today; a production-only
-# capability would be listed here, never in `default`.
-deployment = []
 # Fixture-backed in-process state for cross-crate tests; consumers enable it from dev-dependencies only.
 test-harness = ["trellis-service-core/source-diagnostics"]
 
-[[bin]]
-name = "trellis-server"
-path = "src/main.rs"
-
-# Builds the route declarations over the fixture-backed state: `--features test-harness`.
-[[bin]]
-name = "emit_openapi"
-path = "src/bin/emit_openapi.rs"
-required-features = ["test-harness"]
-
 [dependencies]
 async-trait = "0.1"
-axum = "0.8"
 integrity-verify = { path = "../../../integrity-stack/crates/integrity-verify" }
 serde_json = "1"
 stack-common-error = { path = "../../../stack-common/crates/stack-common-error" }
-stack-common-http = { path = "../../../stack-common/crates/stack-common-http" }
-stack-common-ops = { path = "../../../stack-common/crates/stack-common-ops" }
-tokio = { version = "1", features = ["full"] }
-tracing = "0.1"
+stack-common-object-store = { path = "../../../stack-common/crates/stack-common-object-store" }
+stack-common-scope = { path = "../../../stack-common/crates/stack-common-scope" }
 trellis-admission-formspec = { path = "../trellis-admission-formspec" }
 trellis-admission-wos = { path = "../trellis-admission-wos" }
 trellis-export-profile-wos = { path = "../trellis-export-profile-wos" }
@@ -42,9 +25,8 @@ trellis-service-core = { path = "../trellis-service-core" }
 trellis-server-ports = { path = "../trellis-server-ports" }
 trellis-service-client = { path = "../trellis-service-client" }
 trellis-types = { path = "../trellis-types" }
-utoipa = "6"
 
 [dev-dependencies]
 stack-common-typeid = { path = "../../../stack-common/crates/stack-common-typeid", features = ["testing"] }
-tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt"] }
 wos-events = { path = "../../../work-spec/crates/wos-events" }

@@ -4,10 +4,15 @@
 //! `TRELLIS_PROFILE=development`) and feeds the rules this server's settings. The development profile
 //! accepts fixture keys and in-memory storage so tests and local runs keep working.
 
+use integrity_seam::Purpose;
 use stack_common_error::StackError;
 use stack_common_posture::{Profile, Refusals};
 
 use crate::ServerSigningKey;
+
+/// Every purpose Trellis signs for (ADR 0169 §1.1): events and checkpoints, and export
+/// manifests (Core `artifact_type = "manifest"`).
+pub const TRELLIS_PURPOSES: &[Purpose] = &[Purpose::Ledger, Purpose::Manifest];
 
 /// Key ids (hex of the 16-byte `kid` derived from the public key) of every key the parser accepts
 /// under `fixtures/vectors/_keys/` (the recipient keys parse as signing keys too, so they are
@@ -23,6 +28,22 @@ const FIXTURE_SIGNING_KEY_KIDS: &[&str] = &[
     "b6d2352f6a28c81ad62e4e455405e31d", // ephemeral-042-recipient-001
 ];
 
+/// The public keys Trellis signs each purpose with: every row of the Ledger key's history, and
+/// every row of the Manifest key's.
+fn signing_purposes(
+    ledger: &ServerSigningKey,
+    manifest: &ServerSigningKey,
+) -> Vec<(Purpose, [u8; 32])> {
+    let rows = |purpose, key: &ServerSigningKey| {
+        key.registry_entries()
+            .into_iter()
+            .map(move |row| (purpose, row.public_key))
+    };
+    rows(Purpose::Ledger, ledger)
+        .chain(rows(Purpose::Manifest, manifest))
+        .collect()
+}
+
 /// Reads `TRELLIS_PROFILE` (production unless it says `development`).
 pub(crate) fn profile_from_env() -> Result<Profile, StackError> {
     Profile::from_setting(
@@ -34,7 +55,11 @@ pub(crate) fn profile_from_env() -> Result<Profile, StackError> {
 
 /// Reads the signing key. Production takes it only from an owner-only file (like WOS's grant keys),
 /// since committed fixture keys are world-readable; development reads any file.
-pub(crate) fn read_signing_key(profile: Profile, path: &str) -> Result<Vec<u8>, StackError> {
+pub(crate) fn read_signing_key(
+    profile: Profile,
+    variable: &str,
+    path: &str,
+) -> Result<Vec<u8>, StackError> {
     let read = if profile.is_production() {
         stack_common_private_file::read_private_file(
             std::path::Path::new(path),
@@ -45,20 +70,23 @@ pub(crate) fn read_signing_key(profile: Profile, path: &str) -> Result<Vec<u8>, 
     } else {
         std::fs::read(path).map_err(|error| error.to_string())
     };
-    read.map_err(|error| {
-        StackError::bad_request(format!(
-            "failed to read TRELLIS_SIGNING_KEY_COSE_PATH: {error}"
-        ))
-    })
+    read.map_err(|error| StackError::bad_request(format!("failed to read {variable}: {error}")))
 }
 
 const SIGNING_KEY_MAX_BYTES: u64 = 4096;
 
-/// Refuses a production start on in-memory storage or a publicly known signing key.
+/// What a production start refuses (serving and `config-check` alike): in-memory storage, a
+/// publicly known signing key, a purpose without a key, or one public key serving both purposes
+/// (ADR 0169 §1.2). Run it after the key histories are applied: the purpose rule covers every
+/// published key, current and retired.
+///
+/// # Errors
+/// A bad request listing every refusal.
 pub(crate) fn check(
     profile: Profile,
     storage_is_memory: bool,
-    signing_key: &ServerSigningKey,
+    ledger: &ServerSigningKey,
+    manifest: &ServerSigningKey,
 ) -> Result<(), StackError> {
     if !profile.is_production() {
         return Ok(());
@@ -67,9 +95,15 @@ pub(crate) fn check(
     refusals.durable_storage("TRELLIS_STORAGE=memory", storage_is_memory);
     refusals.not_a_known_key(
         "TRELLIS_SIGNING_KEY_COSE_PATH",
-        &signing_key.kid_hex(),
+        &ledger.kid_hex(),
         FIXTURE_SIGNING_KEY_KIDS,
     );
+    refusals.not_a_known_key(
+        "TRELLIS_MANIFEST_SIGNING_KEY_COSE_PATH",
+        &manifest.kid_hex(),
+        FIXTURE_SIGNING_KEY_KIDS,
+    );
+    refusals.purpose_keys(TRELLIS_PURPOSES, signing_purposes(ledger, manifest));
     refusals
         .finish("trellis production config")
         .map_err(|refused| StackError::bad_request(refused.to_string()))
@@ -125,14 +159,14 @@ mod tests {
     #[test]
     fn production_refuses_the_fixture_signing_key() {
         for (name, key) in fixture_signing_keys() {
-            let error = check(Profile::Production, false, &key)
+            let error = check(Profile::Production, false, &key, &key)
                 .unwrap_err()
                 .to_string();
             assert!(
                 error.contains("publicly known fixture key"),
                 "{name}: {error}"
             );
-            check(Profile::Development, true, &key)
+            check(Profile::Development, true, &key, &key)
                 .unwrap_or_else(|e| panic!("{name}: dev must accept: {e}"));
         }
     }
@@ -148,12 +182,12 @@ mod tests {
         for (mode, accepted) in [(0o644, false), (0o640, false), (0o600, true), (0o400, true)] {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
             assert_eq!(
-                read_signing_key(Profile::Production, path).is_ok(),
+                read_signing_key(Profile::Production, "KEY", path).is_ok(),
                 accepted,
                 "{mode:o}"
             );
             assert!(
-                read_signing_key(Profile::Development, path).is_ok(),
+                read_signing_key(Profile::Development, "KEY", path).is_ok(),
                 "development reads {mode:o}"
             );
         }
@@ -162,12 +196,49 @@ mod tests {
     #[test]
     fn production_refuses_in_memory_storage() {
         let (_, key) = fixture_signing_keys().remove(0);
-        let error = check(Profile::Production, true, &key)
+        let error = check(Profile::Production, true, &key, &key)
             .unwrap_err()
             .to_string();
         assert!(
             error.contains("TRELLIS_STORAGE=memory selects in-memory"),
             "{error}"
         );
+    }
+
+    /// ADR 0169 §1.2: production refuses one public key for both purposes, current or retired,
+    /// and accepts a Manifest key of its own; development is not checked.
+    #[test]
+    fn production_needs_a_manifest_key_of_its_own() {
+        let ledger = generated_key(1);
+        let manifest = generated_key(2);
+        assert!(check(Profile::Development, false, &ledger, &ledger).is_ok());
+        let refused = check(Profile::Production, false, &ledger, &ledger)
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("share one public key"), "{refused}");
+        check(Profile::Production, false, &ledger, &manifest).unwrap();
+
+        // A Manifest history that names the Ledger key as a retired row shares it too.
+        let history = format!(
+            r#"[{{"public_key":"{}","valid_from_unix_secs":0,"valid_to_unix_secs":10}},
+               {{"public_key":"{}","valid_from_unix_secs":10}}]"#,
+            hex::encode(ledger.registry_entries()[0].public_key),
+            hex::encode(manifest.registry_entries()[0].public_key),
+        );
+        let manifest = manifest.with_history_json(history.as_bytes()).unwrap();
+        let refused = check(Profile::Production, false, &ledger, &manifest)
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("share one public key"), "{refused}");
+    }
+
+    /// A key no fixture names: a COSE_Key from a fixed seed, as cose-key.sh writes one.
+    fn generated_key(seed: u8) -> ServerSigningKey {
+        let signing = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+        let mut cose = vec![0xa5, 1, 1, 3, 0x27, 0x20, 6, 0x21, 0x58, 32];
+        cose.extend_from_slice(signing.verifying_key().as_bytes());
+        cose.extend_from_slice(&[0x23, 0x58, 32]);
+        cose.extend_from_slice(&[seed; 32]);
+        ServerSigningKey::from_cose_key_bytes(cose, TrellisTimestamp::new(0, 0).unwrap()).unwrap()
     }
 }

@@ -1,9 +1,10 @@
 // Controlled identity/permission tests, not live identity-provider qualification.
 use super::*;
 use stack_common_auth::{AccessTokenError, AccessTokenVerifier, VerifiedAccessIdentity};
-use stack_common_http::tenant::TenantScope;
 use std::sync::atomic::{AtomicBool, AtomicU8};
-use trellis_server_ports::{AuthorizedScope, ScopeAction, ScopeAuthorization, ScopeAuthorizer};
+use trellis_server_ports::{
+    AuthorizedScope, LedgerScope, ScopeAction, ScopeAuthorization, ScopeAuthorizer,
+};
 
 struct CurrentVerifier {
     status: Arc<AtomicU8>,
@@ -53,6 +54,12 @@ fn denied() -> StackError {
 #[async_trait]
 impl ScopeAuthorizer for ExactGrants {
     type Error = StackError;
+    fn bound_scopes(
+        &self,
+        _identity: Option<&stack_common_auth::VerifiedAccessIdentity>,
+    ) -> Result<Option<Vec<stack_common_scope::ScopeKey>>, StackError> {
+        Ok(None)
+    }
     async fn authorize(
         &self,
         request: &ScopeAuthorization<'_>,
@@ -63,8 +70,8 @@ impl ScopeAuthorizer for ExactGrants {
             || identity.issuer != "https://controlled-issuer.example"
             || identity.subject != "producer-subject"
             || identity.client_id.as_deref() != Some("producer-client")
-            || request.tenant_scope != &expected_tenant()
-            || request.scope != b"case_123"
+            || request.scope.key() != crate::test_support::a().key()
+            || request.scope.ledger_id() != "case_123"
             || (request.action == ScopeAction::Administer
                 && !self.administer.load(Ordering::SeqCst))
             || (request.action == ScopeAction::Append
@@ -84,14 +91,16 @@ impl ScopeAuthorizer for ExactGrants {
                 "internal-producer-{}",
                 self.principal.load(Ordering::SeqCst)
             ),
-            tenant_scope: request.tenant_scope.clone(),
-            scope: request.scope.to_vec(),
+            scope: request.scope.clone(),
             action: request.action,
         };
         match self.invalid_permit.load(Ordering::SeqCst) {
             1 => permit.principal.clear(),
-            2 => permit.tenant_scope.workspace = "foreign-workspace".into(),
-            3 => permit.scope = b"foreign-scope".to_vec(),
+            2 => {
+                permit.scope =
+                    LedgerScope::of(&crate::test_support::b(), permit.scope.ledger_id()).unwrap()
+            }
+            3 => permit.scope = crate::test_support::ledger("foreign-ledger"),
             4 => permit.action = ScopeAction::Read,
             5 if request.action == ScopeAction::Administer => {
                 permit.principal = "changed-principal".into()
@@ -99,15 +108,6 @@ impl ScopeAuthorizer for ExactGrants {
             _ => {}
         }
         Ok(permit)
-    }
-}
-
-fn expected_tenant() -> TenantScope {
-    TenantScope {
-        tenant: "tenant-a".into(),
-        workspace: "workspace-a".into(),
-        environment: "prod".into(),
-        cell: "cell-a".into(),
     }
 }
 
@@ -122,7 +122,7 @@ struct Controls {
     delegation: Arc<AtomicBool>,
 }
 
-fn external_state() -> (TrellisServerState, Controls) {
+fn external_state() -> (Fixture, Controls) {
     let controls = Controls {
         verifier: Arc::new(AtomicU8::new(0)),
         verification_calls: Arc::new(AtomicUsize::new(0)),
@@ -133,10 +133,7 @@ fn external_state() -> (TrellisServerState, Controls) {
         principal: Arc::new(AtomicU8::new(17)),
         delegation: Arc::new(AtomicBool::new(true)),
     };
-    let state = TrellisServerState::new(
-        Arc::new(InMemoryEventRepository::new()),
-        test_signing_key(),
-        crate::test_adapters::adapters(),
+    let state = Fixture::new(TrellisServerState::new(test_signing_key(), crate::test_adapters::adapters()),
     )
     .with_access_token_verifier(Arc::new(CurrentVerifier {
         status: controls.verifier.clone(),
@@ -215,8 +212,8 @@ fn head_request() -> Request<Body> {
 async fn head_read_with_authority_change(
     change: impl Fn(&Controls) + Send + Sync + 'static,
 ) -> (StatusCode, usize) {
-    use crate::repository_probes::{FaultyRepository, Fault};
-    let (mut state, controls) = external_state();
+    use crate::repository_probes::{Fault, FaultyLedgers};
+    let (state, controls) = external_state();
     let response = router(state.clone())
         .unwrap()
         .oneshot(request(append_body("head-read-fixture")))
@@ -225,13 +222,14 @@ async fn head_read_with_authority_change(
     assert_eq!(response.status(), StatusCode::CREATED);
     let reads = Arc::new(AtomicUsize::new(0));
     let counted = reads.clone();
-    state.repository = Arc::new(FaultyRepository {
-        inner: state.repository,
+    let inner = state.ledgers.clone();
+    let state = state.with_ledgers(Arc::new(FaultyLedgers {
+        inner,
         fault: Arc::new(Fault::AfterExportRows(Box::new(move || {
             counted.fetch_add(1, Ordering::SeqCst);
             change(&controls);
         }))),
-    });
+    }));
     let status = router(state)
         .unwrap()
         .oneshot(head_request())
@@ -245,10 +243,9 @@ async fn head_read_with_authority_change(
 async fn head_export_read_returns_a_verifiable_export_and_writes_nothing() {
     let (state, _) = external_state();
     let counts = Arc::new(crate::repository_probes::Counts::default());
-    let state = state.with_artifact_store(Arc::new(crate::repository_probes::CountingArtifactStore {
-        inner: Arc::new(crate::artifacts::InMemoryArtifactStore::default()),
-        counts: counts.clone(),
-    }));
+    let state = state.with_artifact_backend(crate::repository_probes::HookedStore::new(
+        crate::repository_probes::CountObjectBytes(counts.clone()),
+    ));
     let app = router(state).unwrap();
     let appended = app
         .clone()
@@ -279,27 +276,38 @@ async fn head_export_read_is_refused_when_read_authority_changes_while_it_is_ass
 
 #[tokio::test]
 async fn head_export_read_refuses_a_foreign_scope_before_reading_the_ledger() {
-    use crate::repository_probes::{FaultyRepository, Fault};
-    let (mut state, _) = external_state();
+    use crate::repository_probes::{Fault, FaultyLedgers};
+    let (state, _) = external_state();
     let reads = Arc::new(AtomicUsize::new(0));
     let counted = reads.clone();
-    state.repository = Arc::new(FaultyRepository {
-        inner: state.repository,
+    let inner = state.ledgers.clone();
+    let state = state.with_ledgers(Arc::new(FaultyLedgers {
+        inner,
         fault: Arc::new(Fault::AfterExportRows(Box::new(move || {
             counted.fetch_add(1, Ordering::SeqCst);
         }))),
-    });
-    let mut request = head_request();
-    *request.uri_mut() = "/v1/scopes/foreign-scope/bundles/head".parse().unwrap();
+    }));
+    let app = router(state).unwrap();
+    // A ledger of the admitted scope that no grant covers: refused by the grant.
+    let mut ungranted = head_request();
+    *ungranted.uri_mut() = scoped_uri("/v1/scopes/foreign-scope/bundles/head").parse().unwrap();
     assert_eq!(
-        router(state)
-            .unwrap()
-            .oneshot(request)
-            .await
-            .unwrap()
-            .status(),
+        app.clone().oneshot(ungranted).await.unwrap().status(),
         StatusCode::FORBIDDEN
     );
+    // A ledger under another scope key, or under none: not this scope's, so not found.
+    for foreign in [
+        "/v1/scopes/foreign-scope/bundles/head".to_owned(),
+        format!("/v1/scopes/{}.case_123/bundles/head", crate::test_support::b().key()),
+    ] {
+        let mut request = head_request();
+        *request.uri_mut() = foreign.parse().unwrap();
+        assert_eq!(
+            app.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::NOT_FOUND,
+            "{foreign}"
+        );
+    }
     assert_eq!(reads.load(Ordering::SeqCst), 0);
 }
 
@@ -343,7 +351,7 @@ async fn authorized_append_replay_rechecks_current_identity_and_grants() {
 }
 
 #[tokio::test]
-async fn authorized_append_replay_refuses_each_foreign_tenant_and_actor() {
+async fn authorized_append_replay_refuses_each_foreign_scope_and_actor() {
     let (state, _) = external_state();
     let repository = state.repository.clone();
     let app = router(state).unwrap();
@@ -356,19 +364,20 @@ async fn authorized_append_replay_refuses_each_foreign_tenant_and_actor() {
             .status(),
         StatusCode::CREATED
     );
-    for header in [
-        "x-wos-tenant-id",
-        "x-wos-workspace-id",
-        "x-wos-environment-id",
-        "x-wos-cell-id",
-    ] {
-        let mut foreign = request(body.clone());
-        foreign
-            .headers_mut()
-            .insert(header, "foreign".parse().unwrap());
+    // Selecting another scope, or naming another scope's ledger, reaches nothing.
+    let b = crate::test_support::b();
+    let mut selects_b = request(body.clone());
+    selects_b
+        .headers_mut()
+        .insert("x-stack-scope-key", b.key().to_string().parse().unwrap());
+    let mut names_b = request(body.clone());
+    *names_b.uri_mut() = format!("/v1/scopes/{}.case_123/events", b.key())
+        .parse()
+        .unwrap();
+    for foreign in [selects_b, names_b] {
         assert_eq!(
             app.clone().oneshot(foreign).await.unwrap().status(),
-            StatusCode::FORBIDDEN
+            StatusCode::NOT_FOUND
         );
     }
     let mut actor: SubstrateAppendBody = serde_json::from_slice(&body).unwrap();
@@ -473,10 +482,7 @@ async fn authorized_append_replay_refuses_ungranted_payload_human() {
 
 #[test]
 fn authorized_append_replay_external_mode_requires_injected_host_grants() {
-    let state = TrellisServerState::new(
-        Arc::new(InMemoryEventRepository::new()),
-        test_signing_key(),
-        crate::test_adapters::adapters(),
+    let state = Fixture::new(TrellisServerState::new(test_signing_key(), crate::test_adapters::adapters()),
     )
     .with_access_token_verifier(Arc::new(CurrentVerifier {
         status: Arc::new(AtomicU8::new(0)),

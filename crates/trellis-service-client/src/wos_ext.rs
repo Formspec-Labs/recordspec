@@ -17,12 +17,12 @@
 
 use async_trait::async_trait;
 use stack_common_error::StackError;
-use stack_common_http::tenant::TenantScope;
 use wos_events::{NativeProvenanceEvent, ProvenanceRecord};
 pub use wos_events::{WOS_CANONICAL_EVENT_LITERALS, WOS_NATIVE_PROVENANCE_EVENT_LITERAL};
 
 use crate::{
-    AppendActor, ComputeContext, SubstrateAppendRequest, SubstrateAppendResult, SubstrateClient,
+    AppendActor, ComputeContext, LedgerScope, SubstrateAppendRequest, SubstrateAppendResult,
+    SubstrateClient,
 };
 
 /// Builds a typed WOS provenance append request from a [`ProvenanceRecord`].
@@ -33,8 +33,7 @@ use crate::{
 /// # Errors
 /// Returns an error when native record validation or JSON serialization fails.
 pub fn wos_provenance_append_request(
-    scope: impl Into<String>,
-    tenant_scope: TenantScope,
+    scope: LedgerScope,
     idempotency_key: impl Into<String>,
     actor: AppendActor,
     record: ProvenanceRecord,
@@ -45,7 +44,6 @@ pub fn wos_provenance_append_request(
             .map_err(|_| StackError::bad_request("invalid native provenance record"))?;
         return SubstrateAppendRequest::new_json(
             scope,
-            tenant_scope,
             WOS_NATIVE_PROVENANCE_EVENT_LITERAL,
             idempotency_key,
             actor,
@@ -72,7 +70,6 @@ pub fn wos_provenance_append_request(
     })?;
     SubstrateAppendRequest::new_json(
         scope,
-        tenant_scope,
         event_type,
         idempotency_key,
         actor,
@@ -84,8 +81,7 @@ pub fn wos_provenance_append_request(
 /// Producer-facing inputs for the typed WOS provenance helper.
 #[derive(Clone, Debug)]
 pub struct WosProvenanceAppend {
-    pub scope: String,
-    pub tenant_scope: TenantScope,
+    pub scope: LedgerScope,
     pub idempotency_key: String,
     pub actor: AppendActor,
     pub record: ProvenanceRecord,
@@ -109,7 +105,6 @@ pub trait SubstrateClientExt: SubstrateClient {
     ) -> Result<SubstrateAppendResult, StackError> {
         let request = wos_provenance_append_request(
             input.scope,
-            input.tenant_scope,
             input.idempotency_key,
             input.actor,
             input.record,
@@ -125,14 +120,6 @@ impl<T> SubstrateClientExt for T where T: SubstrateClient + ?Sized {}
 mod native_provenance_tests {
     use super::*;
     use stack_common_typeid::testing::fixture_minter;
-    fn tenant() -> TenantScope {
-        TenantScope {
-            tenant: "tenant".into(),
-            workspace: "workspace".into(),
-            environment: "test".into(),
-            cell: "cell".into(),
-        }
-    }
     #[test]
     fn native_provenance_client_preserves_original_record() {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
@@ -145,8 +132,7 @@ mod native_provenance_tests {
         // maintained serializer, which omits empty optional collections.
         let original = serde_json::to_value(&record).unwrap();
         let request = wos_provenance_append_request(
-            "case-1",
-            tenant(),
+            crate::test_ledger("case-1"),
             "native-client",
             AppendActor::service("wos-server"),
             record,
@@ -164,8 +150,7 @@ mod native_provenance_tests {
             let record = ProvenanceRecord::blank(&fixture_minter(), kind);
             let original = serde_json::to_value(&record).unwrap();
             let request = wos_provenance_append_request(
-                "case-1",
-                tenant(),
+                crate::test_ledger("case-1"),
                 "canonical-client",
                 AppendActor::service("wos-server"),
                 record,

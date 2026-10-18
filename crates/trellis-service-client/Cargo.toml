@@ -20,11 +20,15 @@ serde_json = "1"
 stack-common-auth = { path = "../../../stack-common/crates/stack-common-auth" }
 stack-common-error = { path = "../../../stack-common/crates/stack-common-error", default-features = false }
 stack-common-http = { path = "../../../stack-common/crates/stack-common-http", features = ["client"] }
+stack-common-scope = { path = "../../../stack-common/crates/stack-common-scope" }
+stack-common-typeid = { path = "../../../stack-common/crates/stack-common-typeid" }
 trellis-types = { path = "../trellis-types" }
 tokio = { version = "1", features = ["time"] }
 utoipa = "6"
 wos-events = { path = "../../../work-spec/crates/wos-events" }
 
 [dev-dependencies]
+# The tests name ledgers under fixture scopes.
+stack-common-scope = { path = "../../../stack-common/crates/stack-common-scope", features = ["composition-root"] }
 stack-common-typeid = { path = "../../../stack-common/crates/stack-common-typeid", features = ["testing"] }
 tokio = { version = "1", features = ["macros", "rt"] }

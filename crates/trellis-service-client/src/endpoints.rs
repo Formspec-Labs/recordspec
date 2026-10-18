@@ -8,6 +8,9 @@
 
 use serde::{Deserialize, Serialize};
 use stack_common_http::routes::{Absent, Cbor, Endpoint, Zip};
+use stack_common_typeid::STACK_ID_EXTENSION;
+use utoipa::openapi::extensions::ExtensionsBuilder;
+use utoipa::openapi::schema::{Object, ObjectBuilder, Type};
 use utoipa::{IntoParams, ToSchema};
 
 use crate::{
@@ -15,10 +18,50 @@ use crate::{
     CompletionRequest, SubstrateAppendBody, SubstrateAppendResult,
 };
 
+/// The id family the ledger scope parameter is documented under (`x-stack-id`): the cross-scope
+/// harness fills a parameter of a family with another scope's id of it (ADR 0168 §1.8), so every
+/// ledger route is probed with A's ledger and must answer 404 or 401.
+pub const LEDGER_SCOPE_FAMILY: &str = "trellis-ledger";
+
+/// A ledger scope in a path, `<scope key>.<ledger id>` (ADR 0168 §1.6), as `LedgerScope::within`
+/// parses it; documented as an id of [`LEDGER_SCOPE_FAMILY`]. Fields name it as their
+/// `value_type`, as `Id<F>` aliases are named, so the parameter stays required.
+pub struct LedgerScopeParam;
+
+impl utoipa::PartialSchema for LedgerScopeParam {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        ledger_scope_schema().into()
+    }
+}
+
+impl ToSchema for LedgerScopeParam {
+    fn name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("LedgerScope")
+    }
+}
+
+fn ledger_scope_schema() -> Object {
+    ObjectBuilder::new()
+        .schema_type(Type::String)
+        .description(Some(
+            "Ledger scope: the scope key (64 lowercase hex), `.`, and a ledger id of 1-256 \
+             printable ASCII characters other than `/` and `:`, not `.` or `..`.",
+        ))
+        .pattern(Some(r"^[0-9a-f]{64}\.(?!\.?$)[!-.0-9;-~]{1,256}$"))
+        .extensions(Some(
+            ExtensionsBuilder::new()
+                .add(STACK_ID_EXTENSION, LEDGER_SCOPE_FAMILY)
+                .build(),
+        ))
+        .build()
+}
+
 /// Path of every ledger-scoped route.
 #[derive(Clone, Debug, Serialize, Deserialize, IntoParams, ToSchema)]
 pub struct ScopePath {
     /// Trellis ledger scope.
+    #[param(value_type = LedgerScopeParam)]
+    #[schema(value_type = LedgerScopeParam)]
     pub scope: String,
 }
 
@@ -27,6 +70,8 @@ pub struct ScopePath {
 #[serde(rename_all = "camelCase")]
 pub struct BundlePath {
     /// Trellis ledger scope.
+    #[param(value_type = LedgerScopeParam)]
+    #[schema(value_type = LedgerScopeParam)]
     pub scope: String,
     /// Checkpoint digest in `sha256:<64 hex>` form.
     pub checkpoint_digest: String,

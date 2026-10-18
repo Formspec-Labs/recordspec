@@ -40,10 +40,11 @@
 //! ## Trust boundaries
 //!
 //! **Case scope versus URL scope (TWREF-005).** The `{scope}` path segment
-//! names a Trellis deployment namespace (tenant/workspace routing), not a
-//! governed WOS case identity by itself. Callers such as `wos-server` or
-//! `formspec-server` map their product identifiers into that scope and tenant
-//! headers. Trellis admission enforces event shape and registry literals for
+//! is a ledger scope, `<scope key hex>.<ledger id>` (ADR 0168 §1.6): the
+//! deployment scope the caller is bound to, then a ledger id, not a governed
+//! WOS case identity by itself. Callers such as `wos-server` or
+//! `formspec-server` map their product identifiers into the ledger id; the
+//! client selects the scope (`x-stack-scope-key`) from the ledger scope. Trellis admission enforces event shape and registry literals for
 //! whatever scope is supplied; it does not substitute WOS relationship checks
 //! from other services.
 //!
@@ -65,6 +66,7 @@
 
 mod completion;
 pub mod endpoints;
+mod ledger_scope;
 mod reconciliation;
 pub mod source_content;
 mod source_diagnostics;
@@ -91,10 +93,11 @@ use stack_common_auth::client_credentials::ClientCredentialsTokenProvider;
 
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+pub use ledger_scope::{LedgerScope, validate_ledger_id};
 use serde::{Deserialize, Serialize};
 use stack_common_error::StackError;
 use stack_common_http::routes::{Absent, CallError, Target};
-use stack_common_http::tenant::{HeaderConfig, TenantScope};
+pub use stack_common_scope::SCOPE_KEY_HEADER;
 use utoipa::ToSchema;
 use utoipa::openapi::schema::{ObjectBuilder, SchemaType, Type};
 use utoipa::openapi::{RefOr, Schema};
@@ -252,10 +255,9 @@ pub struct ClientAttestation {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubstrateAppendRequest {
+    /// The ledger the event is appended to.
     #[serde(skip)]
-    pub scope: String,
-    #[serde(skip)]
-    pub tenant_scope: TenantScope,
+    pub scope: LedgerScope,
     pub event_type: String,
     pub idempotency_key: String,
     pub actor: AppendActor,
@@ -426,8 +428,7 @@ impl SubstrateAppendRequest {
     /// # Errors
     /// Returns an error when required routing or event fields are empty.
     pub fn new_json(
-        scope: impl Into<String>,
-        tenant_scope: TenantScope,
+        scope: LedgerScope,
         event_type: impl Into<String>,
         idempotency_key: impl Into<String>,
         actor: AppendActor,
@@ -435,8 +436,7 @@ impl SubstrateAppendRequest {
         compute_context: ComputeContext,
     ) -> Result<Self, StackError> {
         let request = Self {
-            scope: scope.into(),
-            tenant_scope,
+            scope,
             event_type: event_type.into(),
             idempotency_key: idempotency_key.into(),
             actor,
@@ -477,7 +477,6 @@ impl SubstrateAppendRequest {
     }
 
     fn validate(&self) -> Result<(), StackError> {
-        validate_scope(&self.scope)?;
         self.body().validate()?;
         Ok(())
     }
@@ -531,7 +530,7 @@ impl SubstrateAppendResult {
     /// # Errors
     /// Returns an error when the append response is missing an identity or names a checkpoint
     /// outside the requested scope.
-    pub fn validate_for_event_append(&self, scope: &str) -> Result<(), StackError> {
+    pub fn validate_for_event_append(&self, scope: &LedgerScope) -> Result<(), StackError> {
         validate_required("event_id", &self.event_id)?;
         if let Some(prior_event_hash) = &self.prior_event_hash {
             validate_required("prior_event_hash", prior_event_hash)?;
@@ -558,8 +557,7 @@ pub trait SubstrateClient: Send + Sync {
     /// Refuses unsupported clients, invalid input or unavailable transport/admission.
     async fn reconcile_event(
         &self,
-        _scope: &str,
-        _tenant_scope: &TenantScope,
+        _scope: &LedgerScope,
         _request: &AppendReconciliationRequest,
     ) -> Result<AppendReconciliation, StackError> {
         Err(StackError::unavailable(
@@ -581,11 +579,7 @@ pub trait SubstrateClient: Send + Sync {
     ///
     /// # Errors
     /// Returns an error if the service rejects the request.
-    async fn head_bundle(
-        &self,
-        scope: &str,
-        tenant_scope: &TenantScope,
-    ) -> Result<Vec<u8>, StackError>;
+    async fn head_bundle(&self, scope: &LedgerScope) -> Result<Vec<u8>, StackError>;
 
     /// Fetches the export bundle pinned at `checkpoint_digest`.
     ///
@@ -593,20 +587,15 @@ pub trait SubstrateClient: Send + Sync {
     /// Returns an error if the service rejects the request.
     async fn bundle(
         &self,
-        scope: &str,
+        scope: &LedgerScope,
         checkpoint_digest: &str,
-        tenant_scope: &TenantScope,
     ) -> Result<Vec<u8>, StackError>;
 
     /// Fetches the current signing-key registry projection.
     ///
     /// # Errors
     /// Returns an error if the service rejects the request.
-    async fn signing_key_registry(
-        &self,
-        scope: &str,
-        tenant_scope: &TenantScope,
-    ) -> Result<Vec<u8>, StackError>;
+    async fn signing_key_registry(&self, scope: &LedgerScope) -> Result<Vec<u8>, StackError>;
 
     /// Fetches the current event-type registry projection.
     ///
@@ -614,8 +603,7 @@ pub trait SubstrateClient: Send + Sync {
     /// Returns an error if the service rejects the request.
     async fn event_type_registry(
         &self,
-        scope: &str,
-        tenant_scope: &TenantScope,
+        scope: &LedgerScope,
     ) -> Result<serde_json::Value, StackError>;
 }
 
@@ -624,7 +612,6 @@ pub trait SubstrateClient: Send + Sync {
 pub struct TrellisServiceClientConfig {
     pub endpoint: String,
     pub service_bearer_token: Option<String>,
-    pub tenant_headers: HeaderConfig,
     pub timeout: Duration,
 }
 
@@ -636,7 +623,6 @@ impl fmt::Debug for TrellisServiceClientConfig {
                 "service_bearer_token",
                 &self.service_bearer_token.as_ref().map(|_| "[REDACTED]"),
             )
-            .field("tenant_headers", &self.tenant_headers)
             .field("timeout", &self.timeout)
             .finish()
     }
@@ -644,11 +630,10 @@ impl fmt::Debug for TrellisServiceClientConfig {
 
 impl TrellisServiceClientConfig {
     #[must_use]
-    pub fn new(endpoint: impl Into<String>, tenant_headers: HeaderConfig) -> Self {
+    pub fn new(endpoint: impl Into<String>) -> Self {
         Self {
             endpoint: endpoint.into(),
             service_bearer_token: None,
-            tenant_headers,
             timeout: DEFAULT_TIMEOUT,
         }
     }
@@ -710,7 +695,7 @@ impl TrellisServiceClient {
 
     /// Sends original attachment bytes through the server's selected protection path.
     ///
-    /// Reuses bearer, tenant and idempotency headers from the maintained client.
+    /// Reuses bearer, scope-selector and idempotency headers from the maintained client.
     /// The descriptor is domain-validated by the server; successful responses must
     /// identify the requested scope and accepted attachment event literal.
     ///
@@ -718,23 +703,21 @@ impl TrellisServiceClient {
     /// Refuses invalid transport fields, HTTP failures and invalid append receipts.
     pub async fn append_accepted_attachment(
         &self,
-        scope: &str,
-        tenant: &TenantScope,
+        scope: &LedgerScope,
         body: &AcceptedAttachmentAppendBody,
     ) -> Result<SubstrateAppendResult, StackError> {
-        validate_scope(scope)?;
         body.validate()?;
         let request = self.target().call(
             endpoints::ACCEPTED_ATTACHMENT,
             &endpoints::ScopePath {
-                scope: scope.to_owned(),
+                scope: scope.to_string(),
             },
             &Absent,
             body,
             Some(&body.idempotency_key),
         );
         let response = self
-            .authorized(request, tenant)
+            .authorized(request, scope)
             .await?
             .send()
             .await
@@ -753,23 +736,21 @@ impl TrellisServiceClient {
     /// Refuses invalid triggers or selections and invalid append receipts.
     pub async fn seal_completion(
         &self,
-        scope: &str,
-        tenant: &TenantScope,
+        scope: &LedgerScope,
         body: &CompletionRequest,
     ) -> Result<SubstrateAppendResult, StackError> {
-        validate_scope(scope)?;
         body.validate()?;
         let request = self.target().call(
             endpoints::SEAL_COMPLETION,
             &endpoints::ScopePath {
-                scope: scope.to_owned(),
+                scope: scope.to_string(),
             },
             &Absent,
             body,
             Some(&body.idempotency_key),
         );
         let response = self
-            .authorized(request, tenant)
+            .authorized(request, scope)
             .await?
             .send()
             .await
@@ -779,14 +760,14 @@ impl TrellisServiceClient {
 
     async fn append_response(
         response: reqwest::Response,
-        scope: &str,
+        scope: &LedgerScope,
     ) -> Result<SubstrateAppendResult, StackError> {
         Self::append_response_diagnostic(response, scope, false).await
     }
 
     async fn append_response_diagnostic(
         response: reqwest::Response,
-        scope: &str,
+        scope: &LedgerScope,
         selected: bool,
     ) -> Result<SubstrateAppendResult, StackError> {
         use source_diagnostics::{Outcome, Stage};
@@ -845,27 +826,20 @@ impl TrellisServiceClient {
         Target::new(&self.http, &self.config.endpoint)
     }
 
-    /// Adds tenant headers and the service credential to a request an endpoint described.
+    /// Adds the scope selector and the service credential to a request an endpoint described.
+    ///
+    /// The `x-stack-scope-key` selector is the key the [`LedgerScope`] was made under, so a
+    /// principal bound to several scopes is admitted to the one its ledger lives under, and the
+    /// server checks the ledger against it.
     async fn authorized(
         &self,
         request: Result<reqwest::RequestBuilder, CallError>,
-        tenant_scope: &TenantScope,
+        scope: &LedgerScope,
     ) -> Result<reqwest::RequestBuilder, StackError> {
-        let mut request = request
-            .map_err(|error| StackError::bad_request(format!("trellis request refused: {error}")))?
-            .header(
-                self.config.tenant_headers.tenant,
-                tenant_scope.tenant.as_str(),
-            )
-            .header(
-                self.config.tenant_headers.workspace,
-                tenant_scope.workspace.as_str(),
-            )
-            .header(
-                self.config.tenant_headers.environment,
-                tenant_scope.environment.as_str(),
-            )
-            .header(self.config.tenant_headers.cell, tenant_scope.cell.as_str());
+        let mut request = request.map_err(|error| {
+            StackError::bad_request(format!("trellis request refused: {error}"))
+        })?;
+        request = request.header(SCOPE_KEY_HEADER, scope.key().to_string());
         if let Some(provider) = &self.token_provider {
             let token = provider
                 .access_token()
@@ -892,14 +866,14 @@ impl TrellisServiceClient {
         let called = self.target().call(
             endpoints::APPEND_EVENT,
             &endpoints::ScopePath {
-                scope: request.scope.clone(),
+                scope: request.scope.to_string(),
             },
             &Absent,
             &request.body(),
             Some(&request.idempotency_key),
         );
         let outgoing = self
-            .authorized(called, &request.tenant_scope)
+            .authorized(called, &request.scope)
             .await
             .map_err(|error| {
                 source_diagnostics::mark(source_selected, Stage::Request, Outcome::Refused);
@@ -928,25 +902,23 @@ impl TrellisServiceClient {
 impl SubstrateClient for TrellisServiceClient {
     async fn reconcile_event(
         &self,
-        scope: &str,
-        tenant_scope: &TenantScope,
+        scope: &LedgerScope,
         request: &AppendReconciliationRequest,
     ) -> Result<AppendReconciliation, StackError> {
-        validate_scope(scope)?;
         request.validate()?;
         // Bound token acquisition, HTTP and decoding together; never retry or fall back to append.
         tokio::time::timeout(self.config.timeout, async {
             let called = self.target().call(
                 endpoints::RECONCILE_EVENT,
                 &endpoints::ScopePath {
-                    scope: scope.to_owned(),
+                    scope: scope.to_string(),
                 },
                 &Absent,
                 request,
                 None,
             );
             let response = self
-                .authorized(called, tenant_scope)
+                .authorized(called, scope)
                 .await?
                 .send()
                 .await
@@ -978,81 +950,66 @@ impl SubstrateClient for TrellisServiceClient {
         self.send_event_append(request).await
     }
 
-    async fn head_bundle(
-        &self,
-        scope: &str,
-        tenant_scope: &TenantScope,
-    ) -> Result<Vec<u8>, StackError> {
-        validate_scope(scope)?;
+    async fn head_bundle(&self, scope: &LedgerScope) -> Result<Vec<u8>, StackError> {
         let called = self.target().call(
             endpoints::HEAD_BUNDLE,
             &endpoints::ScopePath {
-                scope: scope.to_owned(),
+                scope: scope.to_string(),
             },
             &Absent,
             &Absent,
             None,
         );
-        self.bytes_get(called, tenant_scope, "head bundle").await
+        self.bytes_get(called, scope, "head bundle").await
     }
 
     async fn bundle(
         &self,
-        scope: &str,
+        scope: &LedgerScope,
         checkpoint_digest: &str,
-        tenant_scope: &TenantScope,
     ) -> Result<Vec<u8>, StackError> {
-        validate_scope(scope)?;
         validate_required("checkpoint_digest", checkpoint_digest)?;
         let called = self.target().call(
             endpoints::PINNED_BUNDLE,
             &endpoints::BundlePath {
-                scope: scope.to_owned(),
+                scope: scope.to_string(),
                 checkpoint_digest: checkpoint_digest.to_owned(),
             },
             &Absent,
             &Absent,
             None,
         );
-        self.bytes_get(called, tenant_scope, "pinned bundle").await
+        self.bytes_get(called, scope, "pinned bundle").await
     }
 
-    async fn signing_key_registry(
-        &self,
-        scope: &str,
-        tenant_scope: &TenantScope,
-    ) -> Result<Vec<u8>, StackError> {
-        validate_scope(scope)?;
+    async fn signing_key_registry(&self, scope: &LedgerScope) -> Result<Vec<u8>, StackError> {
         let called = self.target().call(
             endpoints::SIGNING_KEY_REGISTRY,
             &endpoints::ScopePath {
-                scope: scope.to_owned(),
+                scope: scope.to_string(),
             },
             &Absent,
             &Absent,
             None,
         );
-        self.bytes_get(called, tenant_scope, "signing-key registry")
-            .await
+        self.bytes_get(called, scope, "signing-key registry").await
     }
 
     async fn event_type_registry(
         &self,
-        scope: &str,
-        tenant_scope: &TenantScope,
+        scope: &LedgerScope,
     ) -> Result<serde_json::Value, StackError> {
-        validate_scope(scope)?;
         let called = self.target().call(
             endpoints::EVENT_TYPE_REGISTRY,
             &endpoints::ScopePath {
-                scope: scope.to_owned(),
+                scope: scope.to_string(),
             },
             &Absent,
             &Absent,
             None,
         );
         let response = self
-            .authorized(called, tenant_scope)
+            .authorized(called, scope)
             .await?
             .send()
             .await
@@ -1086,7 +1043,7 @@ impl SubstrateClient for TrellisServiceClient {
 impl TrellisServiceClient {
     /// Downloads a pinned ZIP while bounding accumulated response bytes.
     ///
-    /// Uses the existing service credentials, tenant headers, and request timeout.
+    /// Uses the existing service credentials, scope selector, and request timeout.
     /// Checks every chunk before growing the output, including chunked responses.
     /// This qualifies media type and size; callers must verify ZIP evidence separately.
     ///
@@ -1095,12 +1052,10 @@ impl TrellisServiceClient {
     /// media types, oversized bodies, allocation failure, and interrupted reads.
     pub async fn bundle_bounded(
         &self,
-        scope: &str,
+        scope: &LedgerScope,
         checkpoint_digest: &str,
-        tenant_scope: &TenantScope,
         max_bytes: usize,
     ) -> Result<Vec<u8>, StackError> {
-        validate_scope(scope)?;
         validate_required("checkpoint_digest", checkpoint_digest)?;
         if max_bytes == 0 {
             return Err(StackError::bad_request(
@@ -1110,36 +1065,35 @@ impl TrellisServiceClient {
         let called = self.target().call(
             endpoints::PINNED_BUNDLE,
             &endpoints::BundlePath {
-                scope: scope.to_owned(),
+                scope: scope.to_string(),
                 checkpoint_digest: checkpoint_digest.to_owned(),
             },
             &Absent,
             &Absent,
             None,
         );
-        self.bytes_get_inner(called, tenant_scope, "pinned bundle", Some(max_bytes))
+        self.bytes_get_inner(called, scope, "pinned bundle", Some(max_bytes))
             .await
     }
 
     async fn bytes_get(
         &self,
         called: Result<reqwest::RequestBuilder, CallError>,
-        tenant_scope: &TenantScope,
+        scope: &LedgerScope,
         label: &str,
     ) -> Result<Vec<u8>, StackError> {
-        self.bytes_get_inner(called, tenant_scope, label, None)
-            .await
+        self.bytes_get_inner(called, scope, label, None).await
     }
 
     async fn bytes_get_inner(
         &self,
         called: Result<reqwest::RequestBuilder, CallError>,
-        tenant_scope: &TenantScope,
+        scope: &LedgerScope,
         label: &str,
         max_bytes: Option<usize>,
     ) -> Result<Vec<u8>, StackError> {
         let mut response = self
-            .authorized(called, tenant_scope)
+            .authorized(called, scope)
             .await?
             .send()
             .await
@@ -1213,21 +1167,27 @@ fn validate_endpoint(endpoint: &str) -> Result<(), StackError> {
     Ok(())
 }
 
-fn validate_scope(scope: &str) -> Result<(), StackError> {
-    validate_required("scope", scope)?;
-    if scope.contains('/') {
-        return Err(StackError::bad_request(
-            "trellis scope must be a single path segment",
-        ));
-    }
-    Ok(())
-}
-
 fn validate_required(field: &str, value: &str) -> Result<(), StackError> {
     if value.trim().is_empty() {
         return Err(StackError::bad_request(format!("{field} is required")));
     }
     Ok(())
+}
+
+/// A ledger under the tests' fixture scope (acme/benefits/prod).
+#[cfg(test)]
+pub(crate) fn test_ledger(id: &str) -> LedgerScope {
+    LedgerScope::of(
+        &stack_common_scope::Scope::fixture("acme", "benefits", Some("prod")),
+        id,
+    )
+    .unwrap()
+}
+
+/// `text` with the bare ledger id `case_123` replaced by its ledger scope, for wire assertions.
+#[cfg(test)]
+pub(crate) fn scoped_text(text: &str) -> String {
+    text.replace("case_123", test_ledger("case_123").as_str())
 }
 
 #[cfg(test)]
@@ -1263,10 +1223,15 @@ mod tests {
     #[tokio::test]
     async fn attachment_append_posts_closed_body_with_authenticated_headers() {
         let endpoint = test_server(|request| {
-            assert!(request.starts_with("POST /v1/scopes/case_123/accepted-attachments "));
+            assert!(request.starts_with(&crate::scoped_text(
+                "POST /v1/scopes/case_123/accepted-attachments "
+            )));
             assert!(request.contains("authorization: Bearer attachment-token\r\n"));
             assert!(request.contains("idempotency-key: attachment-1\r\n"));
-            assert!(request.contains("x-wos-tenant-id: tenant-a\r\n"));
+            assert!(
+                !request.contains("x-wos-tenant-id"),
+                "tenant headers are gone"
+            );
             let value: serde_json::Value = serde_json::from_str(request_body(&request)).unwrap();
             assert_eq!(value.as_object().unwrap().len(), 4);
             assert_eq!(value["actor"]["kind"], "service");
@@ -1278,17 +1243,18 @@ mod tests {
             );
             response(
                 "application/json",
-                r#"{"eventId":"evt_1","sequence":0,"canonicalEventHash":"sha256:abc","checkpointRef":"trellis://case_123/checkpoints/cp_1"}"#,
+                &crate::scoped_text(
+                    r#"{"eventId":"evt_1","sequence":0,"canonicalEventHash":"sha256:abc","checkpointRef":"trellis://case_123/checkpoints/cp_1"}"#,
+                ),
             )
         });
         let client = TrellisServiceClient::new(
-            TrellisServiceClientConfig::new(endpoint, HeaderConfig::wos())
-                .with_service_bearer_token("attachment-token"),
+            TrellisServiceClientConfig::new(endpoint).with_service_bearer_token("attachment-token"),
         )
         .unwrap();
         assert!(
             client
-                .append_accepted_attachment("case_123", &tenant_scope(), &attachment_body())
+                .append_accepted_attachment(&crate::test_ledger("case_123"), &attachment_body())
                 .await
                 .is_ok()
         );
@@ -1350,11 +1316,14 @@ mod tests {
     async fn append_wos_provenance_posts_shared_wire_shape() {
         let endpoint = test_server(|request| {
             assert!(
-                request.starts_with("POST /v1/scopes/case_123/events "),
+                request.starts_with(&crate::scoped_text("POST /v1/scopes/case_123/events ")),
                 "wrong request line: {request}"
             );
             assert!(request.contains("idempotency-key: idem-1\r\n"));
-            assert!(request.contains("x-wos-tenant-id: tenant-a\r\n"));
+            assert!(
+                !request.contains("x-wos-tenant-id"),
+                "tenant headers are gone"
+            );
             let body = request_body(&request);
             let value: serde_json::Value = serde_json::from_str(body).expect("append body is JSON");
             assert_eq!(value["eventType"], "wos.kernel.case_created");
@@ -1364,21 +1333,19 @@ mod tests {
             assert_eq!(value["computeContext"]["sensitivity"], "publicMetadata");
             response(
                 "application/json",
-                r#"{"eventId":"evt_1","sequence":7,"canonicalEventHash":"sha256:abc","checkpointRef":"trellis://case_123/checkpoints/cp_1"}"#,
+                &crate::scoped_text(
+                    r#"{"eventId":"evt_1","sequence":7,"canonicalEventHash":"sha256:abc","checkpointRef":"trellis://case_123/checkpoints/cp_1"}"#,
+                ),
             )
         });
-        let client = TrellisServiceClient::new(TrellisServiceClientConfig::new(
-            endpoint,
-            HeaderConfig::wos(),
-        ))
-        .expect("client");
+        let client =
+            TrellisServiceClient::new(TrellisServiceClientConfig::new(endpoint)).expect("client");
         let mut record = ProvenanceRecord::blank(&fixture_minter(), ProvenanceKind::CaseCreated);
         record.id = "prov_1".to_string();
 
         let result = client
             .append_wos_provenance(WosProvenanceAppend {
-                scope: "case_123".to_string(),
-                tenant_scope: tenant_scope(),
+                scope: crate::test_ledger("case_123"),
                 idempotency_key: "idem-1".to_string(),
                 actor: AppendActor::service("wos-server"),
                 record,
@@ -1395,19 +1362,16 @@ mod tests {
     async fn head_bundle_uses_v1_bundle_endpoint() {
         let endpoint = test_server(|request| {
             assert!(
-                request.starts_with("GET /v1/scopes/case_123/bundles/head "),
+                request.starts_with(&crate::scoped_text("GET /v1/scopes/case_123/bundles/head ")),
                 "wrong request line: {request}"
             );
             response("application/zip", "zip-bytes")
         });
-        let client = TrellisServiceClient::new(TrellisServiceClientConfig::new(
-            endpoint,
-            HeaderConfig::wos(),
-        ))
-        .expect("client");
+        let client =
+            TrellisServiceClient::new(TrellisServiceClientConfig::new(endpoint)).expect("client");
 
         let bytes = client
-            .head_bundle("case_123", &tenant_scope())
+            .head_bundle(&crate::test_ledger("case_123"))
             .await
             .expect("bundle");
 
@@ -1425,7 +1389,7 @@ mod tests {
         };
 
         let error = result
-            .validate_for_event_append("case_123")
+            .validate_for_event_append(&crate::test_ledger("case_123"))
             .expect_err("a checkpoint of another scope is no receipt for this one");
         assert!(
             error.to_string().contains("outside the requested scope"),
@@ -1433,10 +1397,10 @@ mod tests {
         );
         assert!(
             SubstrateAppendResult {
-                checkpoint_ref: "trellis://case_123/checkpoints/cp_1".to_string(),
+                checkpoint_ref: crate::scoped_text("trellis://case_123/checkpoints/cp_1"),
                 ..result
             }
-            .validate_for_event_append("case_123")
+            .validate_for_event_append(&crate::test_ledger("case_123"))
             .is_ok()
         );
     }
@@ -1481,17 +1445,15 @@ mod tests {
     #[tokio::test]
     async fn bounded_bundle_exact_limit_preserves_bytes_and_pinned_path() {
         let endpoint = test_server(|request| {
-            assert!(request.starts_with("GET /v1/scopes/case_123/bundles/sha256%3Aabc "));
+            assert!(request.starts_with(&crate::scoped_text(
+                "GET /v1/scopes/case_123/bundles/sha256%3Aabc "
+            )));
             response("application/zip", "zip-bytes")
         });
-        let client = TrellisServiceClient::new(TrellisServiceClientConfig::new(
-            endpoint,
-            HeaderConfig::wos(),
-        ))
-        .unwrap();
+        let client = TrellisServiceClient::new(TrellisServiceClientConfig::new(endpoint)).unwrap();
         assert_eq!(
             client
-                .bundle_bounded("case_123", "sha256:abc", &tenant_scope(), 9)
+                .bundle_bounded(&crate::test_ledger("case_123"), "sha256:abc", 9)
                 .await
                 .unwrap(),
             b"zip-bytes"
@@ -1502,14 +1464,11 @@ mod tests {
     async fn bounded_bundle_refuses_declared_oversize_and_wrong_media_type() {
         for (mime, limit) in [("application/zip", 8), ("text/html", 64)] {
             let endpoint = test_server(move |_| response(mime, "zip-bytes"));
-            let client = TrellisServiceClient::new(TrellisServiceClientConfig::new(
-                endpoint,
-                HeaderConfig::wos(),
-            ))
-            .unwrap();
+            let client =
+                TrellisServiceClient::new(TrellisServiceClientConfig::new(endpoint)).unwrap();
             assert!(
                 client
-                    .bundle_bounded("case_123", "sha256:abc", &tenant_scope(), limit)
+                    .bundle_bounded(&crate::test_ledger("case_123"), "sha256:abc", limit)
                     .await
                     .is_err()
             );
@@ -1522,13 +1481,10 @@ mod tests {
             let endpoint = test_server(|_| {
                 "HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n4\r\nzip-\r\n5\r\nbytes\r\n0\r\n\r\n".to_string()
             });
-            let client = TrellisServiceClient::new(TrellisServiceClientConfig::new(
-                endpoint,
-                HeaderConfig::wos(),
-            ))
-            .unwrap();
+            let client =
+                TrellisServiceClient::new(TrellisServiceClientConfig::new(endpoint)).unwrap();
             let result = client
-                .bundle_bounded("case_123", "sha256:abc", &tenant_scope(), limit)
+                .bundle_bounded(&crate::test_ledger("case_123"), "sha256:abc", limit)
                 .await;
             if limit == 9 {
                 assert_eq!(result.unwrap(), b"zip-bytes");
@@ -1546,14 +1502,11 @@ mod tests {
             "HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Length: 9\r\n\r\nzip",
         ] {
             let endpoint = test_server(move |_| raw.to_owned());
-            let client = TrellisServiceClient::new(TrellisServiceClientConfig::new(
-                endpoint,
-                HeaderConfig::wos(),
-            ))
-            .unwrap();
+            let client =
+                TrellisServiceClient::new(TrellisServiceClientConfig::new(endpoint)).unwrap();
             assert!(
                 client
-                    .bundle_bounded("case_123", "sha256:abc", &tenant_scope(), 9)
+                    .bundle_bounded(&crate::test_ledger("case_123"), "sha256:abc", 9)
                     .await
                     .is_err()
             );
@@ -1562,13 +1515,11 @@ mod tests {
 
     #[tokio::test]
     async fn bounded_bundle_zero_limit_refuses_before_network() {
-        let client = TrellisServiceClient::new(TrellisServiceClientConfig::new(
-            "http://127.0.0.1:1",
-            HeaderConfig::wos(),
-        ))
-        .unwrap();
+        let client =
+            TrellisServiceClient::new(TrellisServiceClientConfig::new("http://127.0.0.1:1"))
+                .unwrap();
         let error = client
-            .bundle_bounded("case_123", "sha256:abc", &tenant_scope(), 0)
+            .bundle_bounded(&crate::test_ledger("case_123"), "sha256:abc", 0)
             .await
             .expect_err("invalid limit");
         assert!(
@@ -1578,12 +1529,26 @@ mod tests {
         );
     }
 
-    fn tenant_scope() -> TenantScope {
-        TenantScope {
-            tenant: "tenant-a".to_string(),
-            workspace: "workspace-a".to_string(),
-            environment: "prod".to_string(),
-            cell: "cell-a".to_string(),
+    /// The client sends the key the ledger scope was made under as the scope selector, for
+    /// every ledger it names.
+    #[tokio::test]
+    async fn the_scope_selector_is_the_key_the_ledger_scope_names() {
+        for ledger in [
+            crate::test_ledger("case_123"),
+            LedgerScope::of(
+                &stack_common_scope::Scope::fixture("globex", "benefits", None),
+                "case.with.dots",
+            )
+            .unwrap(),
+        ] {
+            let expected = format!("x-stack-scope-key: {}\r\n", ledger.key());
+            let endpoint = test_server(move |request| {
+                assert!(request.contains(&expected), "{request}");
+                response("application/zip", "PK")
+            });
+            let client =
+                TrellisServiceClient::new(TrellisServiceClientConfig::new(endpoint)).unwrap();
+            assert!(client.head_bundle(&ledger).await.is_ok(), "{ledger}");
         }
     }
 

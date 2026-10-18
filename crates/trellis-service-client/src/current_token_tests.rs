@@ -29,10 +29,7 @@ fn tokens(fail_after: usize) -> Arc<Tokens> {
 }
 
 fn client(endpoint: String, provider: Arc<Tokens>) -> TrellisServiceClient {
-    TrellisServiceClient::new(TrellisServiceClientConfig::new(
-        endpoint,
-        HeaderConfig::wos(),
-    ))
+    TrellisServiceClient::new(TrellisServiceClientConfig::new(endpoint))
     .unwrap()
     .with_token_provider(provider)
     .unwrap()
@@ -40,8 +37,7 @@ fn client(endpoint: String, provider: Arc<Tokens>) -> TrellisServiceClient {
 
 fn append() -> SubstrateAppendRequest {
     SubstrateAppendRequest::new_json(
-        "case_123",
-        tenant_scope(),
+        crate::test_ledger("case_123"),
         "example.event",
         "test-idempotency-key",
         AppendActor::service("producer"),
@@ -91,9 +87,8 @@ async fn all_seven_operations_acquire_changed_current_tokens_once_each() {
                 }
             }
             let request = String::from_utf8(bytes).unwrap();
-            assert!(request.starts_with(path), "{request}");
-            assert!(request.contains("x-wos-workspace-id:"));
-            assert!(request.contains("x-wos-environment-id:"));
+            assert!(request.starts_with(&crate::scoped_text(path)), "{request}");
+            assert!(!request.contains("x-wos-"), "tenant headers are gone");
             assert!(request.contains(&format!(
                 "authorization: Bearer public-test-token-{}\r\n",
                 index + 1
@@ -113,7 +108,8 @@ async fn all_seven_operations_acquire_changed_current_tokens_once_each() {
             };
             // Close each connection so the fixture reads one complete request per socket.
             let wire =
-                response("application/json", body).replacen("\r\n", "\r\nconnection: close\r\n", 1);
+                response("application/json", &crate::scoped_text(body))
+                    .replacen("\r\n", "\r\nconnection: close\r\n", 1);
             stream.write_all(wire.as_bytes()).unwrap();
         }
     });
@@ -122,34 +118,32 @@ async fn all_seven_operations_acquire_changed_current_tokens_once_each() {
     client.append_event(append()).await.unwrap();
     assert_eq!(
         client
-            .head_bundle("case_123", &tenant_scope())
+            .head_bundle(&crate::test_ledger("case_123"))
             .await
             .unwrap(),
         b"test-bytes"
     );
     client
-        .bundle("case_123", "checkpoint-1", &tenant_scope())
+        .bundle(&crate::test_ledger("case_123"), "checkpoint-1")
         .await
         .unwrap();
     client
-        .signing_key_registry("case_123", &tenant_scope())
+        .signing_key_registry(&crate::test_ledger("case_123"))
         .await
         .unwrap();
     assert_eq!(
         client
-            .event_type_registry("case_123", &tenant_scope())
+            .event_type_registry(&crate::test_ledger("case_123"))
             .await
             .unwrap(),
         serde_json::json!({"registryVersion":"v1","eventTypes":[]})
     );
     client
-        .append_accepted_attachment("case_123", &tenant_scope(), &attachment_body())
+        .append_accepted_attachment(&crate::test_ledger("case_123"), &attachment_body())
         .await
         .unwrap();
     client
-        .seal_completion(
-            "case_123",
-            &tenant_scope(),
+        .seal_completion(&crate::test_ledger("case_123"),
             &crate::completion::tests::request(),
         )
         .await
@@ -176,27 +170,31 @@ async fn failed_provider_and_invalid_input_send_zero_http_and_never_reuse_prior_
     });
     let failing = client(endpoint, provider.clone());
     failing
-        .head_bundle("case_123", &tenant_scope())
+        .head_bundle(&crate::test_ledger("case_123"))
         .await
         .unwrap();
     let listener = server.join().unwrap();
     listener.set_nonblocking(true).unwrap();
-    assert!(failing.head_bundle("", &tenant_scope()).await.is_err());
+    // Refused input never acquires a token.
+    assert!(failing
+        .bundle_bounded(&crate::test_ledger("case_123"), "", 9)
+        .await
+        .is_err());
     assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
     assert!(failing
-        .head_bundle("case_123", &tenant_scope())
+        .head_bundle(&crate::test_ledger("case_123"))
         .await
         .is_err());
     assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
     let mut invalid = attachment_body();
     invalid.original_bytes.clear();
     assert!(failing
-        .append_accepted_attachment("case_123", &tenant_scope(), &invalid)
+        .append_accepted_attachment(&crate::test_ledger("case_123"), &invalid)
         .await
         .is_err());
     assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
     assert!(failing
-        .append_accepted_attachment("case_123", &tenant_scope(), &attachment_body())
+        .append_accepted_attachment(&crate::test_ledger("case_123"), &attachment_body())
         .await
         .is_err());
     assert_eq!(provider.calls.load(Ordering::SeqCst), 3);
@@ -209,7 +207,7 @@ async fn failed_provider_and_invalid_input_send_zero_http_and_never_reuse_prior_
 #[test]
 fn provider_rejects_every_static_bearer_and_debug_redacts_credentials() {
     for bearer in ["", " ", "private-static-bearer"] {
-        let config = TrellisServiceClientConfig::new("http://127.0.0.1:1", HeaderConfig::wos())
+        let config = TrellisServiceClientConfig::new("http://127.0.0.1:1")
             .with_service_bearer_token(bearer);
         let config_debug = format!("{config:?}");
         assert!(config_debug.contains("[REDACTED]"));
@@ -234,7 +232,7 @@ async fn redirects_fail_without_forwarding_credentials_or_acquiring_again() {
     });
     let provider = tokens(usize::MAX);
     assert!(client(endpoint, provider.clone())
-        .head_bundle("case_123", &tenant_scope())
+        .head_bundle(&crate::test_ledger("case_123"))
         .await
         .is_err());
     assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
@@ -265,14 +263,12 @@ async fn completion_seal_sends_the_selection_in_the_body_under_the_machine_token
         assert_eq!(serde_json::from_str::<serde_json::Value>(body).unwrap(), expected);
         response(
             "application/json",
-            r#"{"eventId":"evt_3","sequence":3,"canonicalEventHash":"sha256:cdef","checkpointRef":"trellis://case_123/checkpoints/cp_3"}"#,
+            &crate::scoped_text(r#"{"eventId":"evt_3","sequence":3,"canonicalEventHash":"sha256:cdef","checkpointRef":"trellis://case_123/checkpoints/cp_3"}"#),
         )
     });
     let provider = tokens(usize::MAX);
     client(endpoint, provider.clone())
-        .seal_completion(
-            "case_123",
-            &tenant_scope(),
+        .seal_completion(&crate::test_ledger("case_123"),
             &crate::completion::tests::request(),
         )
         .await
@@ -289,7 +285,7 @@ async fn completion_seal_with_an_invalid_selection_sends_nothing_and_acquires_no
     let mut body = crate::completion::tests::request();
     body.selection.signer_labels.pop();
     assert!(client
-        .seal_completion("case_123", &tenant_scope(), &body)
+        .seal_completion(&crate::test_ledger("case_123"), &body)
         .await
         .is_err());
     assert_eq!(provider.calls.load(Ordering::SeqCst), 0);

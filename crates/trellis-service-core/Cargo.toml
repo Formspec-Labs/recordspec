@@ -27,7 +27,6 @@ integrity-cose = { path = "../../../integrity-stack/crates/integrity-cose" }
 integrity-verify = { path = "../../../integrity-stack/crates/integrity-verify" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
-sqlx = { version = "0.8", features = ["postgres", "runtime-tokio-rustls"] }
 sha2 = "0.10"
 stack-common-auth = { path = "../../../stack-common/crates/stack-common-auth", features = ["oidc"] }
 stack-common-error = { path = "../../../stack-common/crates/stack-common-error" }
@@ -36,7 +35,9 @@ stack-common-http = { path = "../../../stack-common/crates/stack-common-http" }
 stack-common-idempotency = { path = "../../../stack-common/crates/stack-common-idempotency", default-features = false, features = ["replay"] }
 stack-common-posture = { path = "../../../stack-common/crates/stack-common-posture" }
 stack-common-private-file = { path = "../../../stack-common/crates/stack-common-private-file" }
+stack-common-object-store = { path = "../../../stack-common/crates/stack-common-object-store" }
 stack-common-ops = { path = "../../../stack-common/crates/stack-common-ops" }
+stack-common-scope = { path = "../../../stack-common/crates/stack-common-scope" }
 time = { version = "0.3", features = ["formatting"] }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
@@ -45,13 +46,14 @@ trellis-core = { path = "../trellis-core" }
 trellis-export-writer = { path = "../trellis-export-writer" }
 trellis-server-ports = { path = "../trellis-server-ports" }
 trellis-service-client = { path = "../trellis-service-client" }
-trellis-store-postgres-async = { path = "../trellis-store-postgres-async" }
 trellis-types = { path = "../trellis-types" }
 utoipa = "6"
 utoipa-axum = "0.3"
 
 [dev-dependencies]
 # Tests drive the real adapters; production layering is enforced by deny.toml (dev-deps excluded).
+# Derives non-fixture signing keys for the purpose-key posture tests.
+ed25519-dalek = "2.1"
 trellis-admission-formspec = { path = "../trellis-admission-formspec" }
 trellis-admission-wos = { path = "../trellis-admission-wos" }
 trellis-export-profile-wos = { path = "../trellis-export-profile-wos" }
@@ -59,8 +61,14 @@ trellis-verify-wos = { path = "../trellis-verify-wos" }
 stack-common-typeid = { path = "../../../stack-common/crates/stack-common-typeid", features = ["testing"] }
 jsonwebtoken = "9"
 tempfile = "3"
+futures = "0.3"
 object_store = { version = "0.11", default-features = false, features = ["aws"] }
-stack-common-postgres = { path = "../../../stack-common/crates/stack-common-postgres", default-features = false, features = ["testing"] }
-integrity-seam = { path = "../../../integrity-stack/crates/integrity-seam" }
+# Tests open buckets and pools and build deployments, as the composition root does.
+sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio-rustls"] }
+stack-common-http-testkit = { path = "../../../stack-common/crates/stack-common-http-testkit" }
+stack-common-object-store = { path = "../../../stack-common/crates/stack-common-object-store", features = ["composition-root"] }
+stack-common-postgres = { path = "../../../stack-common/crates/stack-common-postgres", default-features = false, features = ["composition-root", "migrations", "pool", "scoped", "testing"] }
+stack-common-scope = { path = "../../../stack-common/crates/stack-common-scope", features = ["composition-root"] }
+trellis-store-postgres-async = { path = "../trellis-store-postgres-async" }
 tower = { version = "0.5", features = ["util"] }
 wos-events = { path = "../../../work-spec/crates/wos-events" }

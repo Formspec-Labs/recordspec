@@ -1,17 +1,25 @@
 // Rust guideline compliant 2026-02-21
-//! Test decorators over [`EventRepository`]: what a unit of work touched, and how it fails.
+//! Test decorators over the ledger and object ports: what a unit of work touched, and how it fails.
 
+use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use async_trait::async_trait;
-use stack_common_error::StackError;
-use trellis_server_ports::{ArtifactRef, ArtifactStore};
-use trellis_types::{StoredCheckpoint, StoredEvent};
-
-use crate::event_repository::{
-    AttachmentRow, EventRepository, ExportRows, ScopeTx, SourceContentBinding,
+use futures::stream::BoxStream;
+use object_store::memory::InMemory;
+use object_store::path::Path;
+use object_store::{
+    GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore, PutMultipartOpts,
+    PutOptions, PutPayload, PutResult,
 };
+use stack_common_error::StackError;
+use stack_common_scope::Scope;
+use trellis_server_ports::{
+    AttachmentRow, ExportAt, ExportRows, LedgerScope, LedgerTx, Ledgers, ScopedLedgers,
+    SourceContentBinding,
+};
+use trellis_types::{StoredCheckpoint, StoredEvent};
 
 /// What the repository and artifact store were asked to read and write.
 #[derive(Default)]
@@ -38,13 +46,27 @@ impl Counts {
 }
 
 /// Counts the rows a unit of work reads and writes, then delegates.
-pub(crate) struct CountingRepository {
-    pub(crate) inner: Arc<dyn EventRepository>,
+pub(crate) struct CountingLedgers {
+    pub(crate) inner: Arc<dyn Ledgers>,
     pub(crate) counts: Arc<Counts>,
 }
 
+impl Ledgers for CountingLedgers {
+    fn scoped(&self, scope: &Scope) -> Arc<dyn ScopedLedgers> {
+        Arc::new(CountingScoped {
+            inner: self.inner.scoped(scope),
+            counts: Arc::clone(&self.counts),
+        })
+    }
+}
+
+struct CountingScoped {
+    inner: Arc<dyn ScopedLedgers>,
+    counts: Arc<Counts>,
+}
+
 struct CountingTx {
-    inner: Box<dyn ScopeTx>,
+    inner: Box<dyn LedgerTx>,
     counts: Arc<Counts>,
 }
 
@@ -58,7 +80,7 @@ impl CountingTx {
 }
 
 #[async_trait]
-impl ScopeTx for CountingTx {
+impl LedgerTx for CountingTx {
     async fn head(&mut self) -> Result<Option<StoredCheckpoint>, StackError> {
         let head = self.inner.head().await?;
         Ok(self.read(usize::from(head.is_some()), head))
@@ -135,91 +157,55 @@ impl ScopeTx for CountingTx {
 }
 
 #[async_trait]
-impl EventRepository for CountingRepository {
-    async fn begin(&self, scope: &[u8]) -> Result<Box<dyn ScopeTx>, StackError> {
+impl ScopedLedgers for CountingScoped {
+    async fn begin(&self, ledger: &LedgerScope) -> Result<Box<dyn LedgerTx>, StackError> {
         Ok(Box::new(CountingTx {
-            inner: self.inner.begin(scope).await?,
+            inner: self.inner.begin(ledger).await?,
             counts: Arc::clone(&self.counts),
         }))
     }
 
-    async fn head_checkpoint(&self, scope: &[u8]) -> Result<Option<StoredCheckpoint>, StackError> {
-        self.inner.head_checkpoint(scope).await
+    async fn export(
+        &self,
+        ledger: &LedgerScope,
+        at: ExportAt,
+    ) -> Result<Option<ExportRows>, StackError> {
+        self.inner.export(ledger, at).await
+    }
+
+    async fn head_checkpoint(
+        &self,
+        ledger: &LedgerScope,
+    ) -> Result<Option<StoredCheckpoint>, StackError> {
+        self.inner.head_checkpoint(ledger).await
     }
 
     async fn checkpoint_at(
         &self,
-        scope: &[u8],
+        ledger: &LedgerScope,
         tree_size: u64,
     ) -> Result<Option<StoredCheckpoint>, StackError> {
-        self.inner.checkpoint_at(scope, tree_size).await
+        self.inner.checkpoint_at(ledger, tree_size).await
     }
 
     async fn checkpoint_by_digest(
         &self,
-        scope: &[u8],
+        ledger: &LedgerScope,
         digest: &[u8; 32],
     ) -> Result<Option<StoredCheckpoint>, StackError> {
-        self.inner.checkpoint_by_digest(scope, digest).await
+        self.inner.checkpoint_by_digest(ledger, digest).await
     }
 
-    async fn last_event(&self, scope: &[u8]) -> Result<Option<StoredEvent>, StackError> {
-        self.inner.last_event(scope).await
+    async fn last_event(&self, ledger: &LedgerScope) -> Result<Option<StoredEvent>, StackError> {
+        self.inner.last_event(ledger).await
     }
 
-    async fn prefix(&self, scope: &[u8], limit: u64) -> Result<Vec<StoredEvent>, StackError> {
-        self.inner.prefix(scope, limit).await
-    }
-
-    async fn export_rows(&self, scope: &[u8], tree_size: u64) -> Result<ExportRows, StackError> {
-        self.inner.export_rows(scope, tree_size).await
-    }
-
-    async fn attachment_by_content_hash(
+    async fn prefix(
         &self,
-        scope: &[u8],
-        content_hash: &[u8; 32],
-    ) -> Result<Option<AttachmentRow>, StackError> {
-        self.inner
-            .attachment_by_content_hash(scope, content_hash)
-            .await
-    }
-
-    async fn source_content(
-        &self,
-        scope: &[u8],
-        sequence: u64,
-    ) -> Result<Option<SourceContentBinding>, StackError> {
-        self.inner.source_content(scope, sequence).await
-    }
-}
-
-/// Counts the bytes written to the artifact store, then delegates.
-pub(crate) struct CountingArtifactStore {
-    pub(crate) inner: Arc<dyn ArtifactStore<Error = StackError>>,
-    pub(crate) counts: Arc<Counts>,
-}
-
-#[async_trait]
-impl ArtifactStore for CountingArtifactStore {
-    type Error = StackError;
-
-    async fn put(&self, key: &str, bytes: &[u8]) -> Result<ArtifactRef, Self::Error> {
-        self.counts
-            .object_bytes
-            .fetch_add(bytes.len() as u64, Ordering::SeqCst);
-        self.inner.put(key, bytes).await
-    }
-
-    async fn put_immutable(&self, key: &str, bytes: &[u8]) -> Result<ArtifactRef, Self::Error> {
-        self.counts
-            .object_bytes
-            .fetch_add(bytes.len() as u64, Ordering::SeqCst);
-        self.inner.put_immutable(key, bytes).await
-    }
-
-    async fn get(&self, artifact_ref: &ArtifactRef) -> Result<Option<Vec<u8>>, Self::Error> {
-        self.inner.get(artifact_ref).await
+        ledger: &LedgerScope,
+        limit: u64,
+    ) -> Result<Vec<StoredEvent>, StackError> {
+        self.inner.prefix(ledger, limit).await
     }
 }
 
@@ -237,18 +223,32 @@ pub(crate) enum Fault {
 }
 
 /// Fails units of work as configured, then delegates.
-pub(crate) struct FaultyRepository {
-    pub(crate) inner: Arc<dyn EventRepository>,
+pub(crate) struct FaultyLedgers {
+    pub(crate) inner: Arc<dyn Ledgers>,
     pub(crate) fault: Arc<Fault>,
 }
 
+impl Ledgers for FaultyLedgers {
+    fn scoped(&self, scope: &Scope) -> Arc<dyn ScopedLedgers> {
+        Arc::new(FaultyScoped {
+            inner: self.inner.scoped(scope),
+            fault: Arc::clone(&self.fault),
+        })
+    }
+}
+
+struct FaultyScoped {
+    inner: Arc<dyn ScopedLedgers>,
+    fault: Arc<Fault>,
+}
+
 struct FaultyTx {
-    inner: Box<dyn ScopeTx>,
+    inner: Box<dyn LedgerTx>,
     fault: Arc<Fault>,
 }
 
 #[async_trait]
-impl ScopeTx for FaultyTx {
+impl LedgerTx for FaultyTx {
     async fn head(&mut self) -> Result<Option<StoredCheckpoint>, StackError> {
         self.inner.head().await
     }
@@ -317,149 +317,228 @@ impl ScopeTx for FaultyTx {
 }
 
 #[async_trait]
-impl EventRepository for FaultyRepository {
-    async fn begin(&self, scope: &[u8]) -> Result<Box<dyn ScopeTx>, StackError> {
+impl ScopedLedgers for FaultyScoped {
+    async fn begin(&self, ledger: &LedgerScope) -> Result<Box<dyn LedgerTx>, StackError> {
         Ok(Box::new(FaultyTx {
-            inner: self.inner.begin(scope).await?,
+            inner: self.inner.begin(ledger).await?,
             fault: Arc::clone(&self.fault),
         }))
     }
 
-    async fn head_checkpoint(&self, scope: &[u8]) -> Result<Option<StoredCheckpoint>, StackError> {
-        self.inner.head_checkpoint(scope).await
-    }
-
-    async fn checkpoint_at(
+    async fn export(
         &self,
-        scope: &[u8],
-        tree_size: u64,
-    ) -> Result<Option<StoredCheckpoint>, StackError> {
-        self.inner.checkpoint_at(scope, tree_size).await
-    }
-
-    async fn checkpoint_by_digest(
-        &self,
-        scope: &[u8],
-        digest: &[u8; 32],
-    ) -> Result<Option<StoredCheckpoint>, StackError> {
-        self.inner.checkpoint_by_digest(scope, digest).await
-    }
-
-    async fn last_event(&self, scope: &[u8]) -> Result<Option<StoredEvent>, StackError> {
-        self.inner.last_event(scope).await
-    }
-
-    async fn prefix(&self, scope: &[u8], limit: u64) -> Result<Vec<StoredEvent>, StackError> {
-        self.inner.prefix(scope, limit).await
-    }
-
-    async fn export_rows(&self, scope: &[u8], tree_size: u64) -> Result<ExportRows, StackError> {
-        let rows = self.inner.export_rows(scope, tree_size).await?;
+        ledger: &LedgerScope,
+        at: ExportAt,
+    ) -> Result<Option<ExportRows>, StackError> {
+        let rows = self.inner.export(ledger, at).await?;
         if let Fault::AfterExportRows(hook) = &*self.fault {
             hook();
         }
         Ok(rows)
     }
 
-    async fn attachment_by_content_hash(
+    async fn head_checkpoint(
         &self,
-        scope: &[u8],
-        content_hash: &[u8; 32],
-    ) -> Result<Option<AttachmentRow>, StackError> {
-        self.inner
-            .attachment_by_content_hash(scope, content_hash)
-            .await
+        ledger: &LedgerScope,
+    ) -> Result<Option<StoredCheckpoint>, StackError> {
+        self.inner.head_checkpoint(ledger).await
     }
 
-    async fn source_content(
+    async fn checkpoint_at(
         &self,
-        scope: &[u8],
-        sequence: u64,
-    ) -> Result<Option<SourceContentBinding>, StackError> {
-        self.inner.source_content(scope, sequence).await
+        ledger: &LedgerScope,
+        tree_size: u64,
+    ) -> Result<Option<StoredCheckpoint>, StackError> {
+        self.inner.checkpoint_at(ledger, tree_size).await
+    }
+
+    async fn checkpoint_by_digest(
+        &self,
+        ledger: &LedgerScope,
+        digest: &[u8; 32],
+    ) -> Result<Option<StoredCheckpoint>, StackError> {
+        self.inner.checkpoint_by_digest(ledger, digest).await
+    }
+
+    async fn last_event(&self, ledger: &LedgerScope) -> Result<Option<StoredEvent>, StackError> {
+        self.inner.last_event(ledger).await
+    }
+
+    async fn prefix(
+        &self,
+        ledger: &LedgerScope,
+        limit: u64,
+    ) -> Result<Vec<StoredEvent>, StackError> {
+        self.inner.prefix(ledger, limit).await
     }
 }
 
-/// A repository whose every operation fails as an unreachable database would.
-pub(crate) struct UnreachableRepository;
+/// Ledgers whose every operation fails as an unreachable database would.
+pub(crate) struct UnreachableLedgers;
+
+impl Ledgers for UnreachableLedgers {
+    fn scoped(&self, _: &Scope) -> Arc<dyn ScopedLedgers> {
+        Arc::new(UnreachableLedgers)
+    }
+}
 
 fn unreachable_store() -> StackError {
     StackError::unavailable("repository unreachable for test probe")
 }
 
 #[async_trait]
-impl EventRepository for UnreachableRepository {
-    async fn begin(&self, _: &[u8]) -> Result<Box<dyn ScopeTx>, StackError> {
+impl ScopedLedgers for UnreachableLedgers {
+    async fn begin(&self, _: &LedgerScope) -> Result<Box<dyn LedgerTx>, StackError> {
         Err(unreachable_store())
     }
-    async fn head_checkpoint(&self, _: &[u8]) -> Result<Option<StoredCheckpoint>, StackError> {
+    async fn head_checkpoint(
+        &self,
+        _: &LedgerScope,
+    ) -> Result<Option<StoredCheckpoint>, StackError> {
         Err(unreachable_store())
     }
     async fn checkpoint_at(
         &self,
-        _: &[u8],
+        _: &LedgerScope,
         _: u64,
     ) -> Result<Option<StoredCheckpoint>, StackError> {
         Err(unreachable_store())
     }
     async fn checkpoint_by_digest(
         &self,
-        _: &[u8],
+        _: &LedgerScope,
         _: &[u8; 32],
     ) -> Result<Option<StoredCheckpoint>, StackError> {
         Err(unreachable_store())
     }
-    async fn last_event(&self, _: &[u8]) -> Result<Option<StoredEvent>, StackError> {
+    async fn last_event(&self, _: &LedgerScope) -> Result<Option<StoredEvent>, StackError> {
         Err(unreachable_store())
     }
-    async fn prefix(&self, _: &[u8], _: u64) -> Result<Vec<StoredEvent>, StackError> {
+    async fn prefix(&self, _: &LedgerScope, _: u64) -> Result<Vec<StoredEvent>, StackError> {
         Err(unreachable_store())
     }
-    async fn export_rows(&self, _: &[u8], _: u64) -> Result<ExportRows, StackError> {
-        Err(unreachable_store())
-    }
-    async fn attachment_by_content_hash(
-        &self,
-        _: &[u8],
-        _: &[u8; 32],
-    ) -> Result<Option<AttachmentRow>, StackError> {
-        Err(unreachable_store())
-    }
-    async fn source_content(
-        &self,
-        _: &[u8],
-        _: u64,
-    ) -> Result<Option<SourceContentBinding>, StackError> {
+    async fn export(&self, _: &LedgerScope, _: ExportAt) -> Result<Option<ExportRows>, StackError> {
         Err(unreachable_store())
     }
 }
 
-/// Fails the first `remaining` immutable puts as a refusing artifact store would, then delegates.
-pub(crate) struct FailsFirstImmutablePut {
-    pub(crate) remaining: AtomicUsize,
-    pub(crate) inner: crate::artifacts::InMemoryArtifactStore,
+/// What a [`HookedStore`] does before each object write.
+#[async_trait]
+pub(crate) trait PutHook: Send + Sync + 'static {
+    /// Runs before `bytes` are written at `location`; an error refuses the write.
+    async fn before_put(&self, location: &Path, bytes: usize) -> object_store::Result<()>;
+}
+
+/// An in-memory object store that runs a hook before every write but the bucket's cell record:
+/// counts the bytes, refuses the write, or probes what is locked while it happens.
+pub(crate) struct HookedStore {
+    inner: InMemory,
+    hook: Arc<dyn PutHook>,
+}
+
+impl HookedStore {
+    pub(crate) fn new(hook: impl PutHook) -> Arc<Self> {
+        Arc::new(Self {
+            inner: InMemory::new(),
+            hook: Arc::new(hook),
+        })
+    }
+}
+
+impl fmt::Debug for HookedStore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("HookedStore")
+    }
+}
+
+impl fmt::Display for HookedStore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("HookedStore")
+    }
 }
 
 #[async_trait]
-impl ArtifactStore for FailsFirstImmutablePut {
-    type Error = StackError;
-
-    async fn put(&self, key: &str, bytes: &[u8]) -> Result<ArtifactRef, Self::Error> {
-        self.inner.put(key, bytes).await
+impl ObjectStore for HookedStore {
+    async fn put_opts(
+        &self,
+        location: &Path,
+        payload: PutPayload,
+        opts: PutOptions,
+    ) -> object_store::Result<PutResult> {
+        if location.as_ref() != "stack-cell" {
+            self.hook
+                .before_put(location, payload.content_length())
+                .await?;
+        }
+        self.inner.put_opts(location, payload, opts).await
     }
 
-    async fn put_immutable(&self, key: &str, bytes: &[u8]) -> Result<ArtifactRef, Self::Error> {
+    async fn put_multipart_opts(
+        &self,
+        location: &Path,
+        opts: PutMultipartOpts,
+    ) -> object_store::Result<Box<dyn MultipartUpload>> {
+        self.inner.put_multipart_opts(location, opts).await
+    }
+
+    async fn get_opts(
+        &self,
+        location: &Path,
+        options: GetOptions,
+    ) -> object_store::Result<GetResult> {
+        self.inner.get_opts(location, options).await
+    }
+
+    async fn delete(&self, location: &Path) -> object_store::Result<()> {
+        self.inner.delete(location).await
+    }
+
+    fn list(&self, prefix: Option<&Path>) -> BoxStream<'_, object_store::Result<ObjectMeta>> {
+        self.inner.list(prefix)
+    }
+
+    async fn list_with_delimiter(&self, prefix: Option<&Path>) -> object_store::Result<ListResult> {
+        self.inner.list_with_delimiter(prefix).await
+    }
+
+    async fn copy(&self, from: &Path, to: &Path) -> object_store::Result<()> {
+        self.inner.copy(from, to).await
+    }
+
+    async fn copy_if_not_exists(&self, from: &Path, to: &Path) -> object_store::Result<()> {
+        self.inner.copy_if_not_exists(from, to).await
+    }
+}
+
+/// Counts the bytes written to the object store.
+pub(crate) struct CountObjectBytes(pub(crate) Arc<Counts>);
+
+#[async_trait]
+impl PutHook for CountObjectBytes {
+    async fn before_put(&self, _: &Path, bytes: usize) -> object_store::Result<()> {
+        self.0
+            .object_bytes
+            .fetch_add(bytes as u64, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+/// Refuses the first `remaining` writes, as a refusing object store would.
+pub(crate) struct RefuseFirstPuts(pub(crate) AtomicUsize);
+
+#[async_trait]
+impl PutHook for RefuseFirstPuts {
+    async fn before_put(&self, _: &Path, _: usize) -> object_store::Result<()> {
         if self
-            .remaining
+            .0
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
             .is_ok()
         {
-            return Err(StackError::conflict("injected artifact-store fault"));
+            return Err(object_store::Error::Generic {
+                store: "HookedStore",
+                source: "injected object-store fault".into(),
+            });
         }
-        self.inner.put_immutable(key, bytes).await
-    }
-
-    async fn get(&self, artifact_ref: &ArtifactRef) -> Result<Option<Vec<u8>>, Self::Error> {
-        self.inner.get(artifact_ref).await
+        Ok(())
     }
 }

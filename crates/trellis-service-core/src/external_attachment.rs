@@ -1,7 +1,7 @@
 // Rust guideline compliant 2026-02-21
 //! Invokes native protected append through maintained identity and permission checks.
 
-use crate::TrellisServerState;
+use crate::TrellisScoped;
 use integrity_cbor::{
     Value, decode_cbor_value, encode_canonical_cbor_value, map_lookup_optional_value,
 };
@@ -22,9 +22,10 @@ pub struct ExternalAttachmentRecipientPolicy {
 
 /// Collects exact retained bodies and chain-derived attachment catalog entries.
 pub(crate) async fn evidence_members(
-    state: &TrellisServerState,
-    scope: &[u8],
+    scoped: &TrellisScoped,
+    scope: &trellis_server_ports::LedgerScope,
     events: &[StoredEvent],
+    retained: &crate::external_repository::Retained,
 ) -> Result<Vec<ExportEvidenceMember>, StackError> {
     let mut members = Vec::new();
     let mut catalog = Vec::new();
@@ -36,13 +37,12 @@ pub(crate) async fn evidence_members(
                 StackError::conflict(format!("retained native profile invalid: {error}"))
             })?;
         let (content_hash, bytes) = if let Some(profile) = &profile {
-            let bytes = crate::external_repository::body_by_hash(
-                state.repository.as_ref(),
-                scope,
-                &profile.content_hash,
-            )
-            .await?
-            .ok_or_else(|| StackError::conflict("retained protected attachment body missing"))?;
+            let bytes = retained
+                .get(profile.content_hash.as_slice())
+                .map(|(ciphertext, _)| ciphertext.clone())
+                .ok_or_else(|| {
+                    StackError::conflict("retained protected attachment body missing")
+                })?;
             if bytes.len() as u64
                 != profile
                     .original_byte_length
@@ -69,13 +69,7 @@ pub(crate) async fn evidence_members(
                 .map_err(crate::cbor_bad_request)?;
             let key = integrity_cbor::map_lookup_text(binding, "attachment_id")
                 .map_err(crate::cbor_bad_request)?;
-            if state
-                .artifact_store
-                .get(&trellis_server_ports::ArtifactRef::new(key))
-                .await?
-                .as_deref()
-                != Some(bytes.as_slice())
-            {
+            if scoped.artifacts().read_optional(&key).await?.as_deref() != Some(bytes.as_slice()) {
                 return Err(StackError::unavailable(
                     "retained certificate artifact missing or changed",
                 ));
@@ -87,8 +81,8 @@ pub(crate) async fn evidence_members(
         aggregate = aggregate
             .checked_add(bytes.len())
             .ok_or_else(|| StackError::conflict("attachment export size overflow"))?;
-        if aggregate > 16 * 1024 * 1024
-            || events.len() > 256
+        if aggregate as u64 > trellis_server_ports::MAX_EXPORT_ATTACHMENT_BYTES
+            || events.len() as u64 > trellis_server_ports::MAX_ATTACHMENT_EXPORT_EVENTS
             || integrity_cbor::domain_separated_sha256(trellis_types::CONTENT_DOMAIN, &bytes)
                 != content_hash
         {
@@ -131,7 +125,7 @@ pub(crate) async fn evidence_members(
         }
         fields.push((
             Value::Text("binding_event_hash".into()),
-            Value::Bytes(crate::event_hash(scope, event)?.to_vec()),
+            Value::Bytes(crate::event_hash(scope.as_bytes(), event)?.to_vec()),
         ));
         catalog.push(Value::Map(fields));
     }
@@ -206,11 +200,10 @@ pub(crate) fn custody_selection(
     })
 }
 
-pub(crate) async fn export_compute(
-    state: &TrellisServerState,
-    scope: &[u8],
+pub(crate) fn export_compute(
     events: &[StoredEvent],
     requested: &trellis_server_ports::ComputeContext,
+    retained: &crate::external_repository::Retained,
 ) -> Result<trellis_server_ports::ComputeContext, StackError> {
     let mut selected = None;
     for event in events {
@@ -219,15 +212,12 @@ pub(crate) async fn export_compute(
                 StackError::conflict(format!("retained native profile invalid: {error}"))
             })?;
         if let Some(profile) = profile {
-            let compute = crate::external_repository::compute_by_hash(
-                state.repository.as_ref(),
-                scope,
-                &profile.content_hash,
-            )
-            .await?
-            .ok_or_else(|| {
-                StackError::conflict("retained attachment custody declaration absent")
-            })?;
+            let compute = retained
+                .get(profile.content_hash.as_slice())
+                .map(|(_, compute)| compute.clone())
+                .ok_or_else(|| {
+                    StackError::conflict("retained attachment custody declaration absent")
+                })?;
             if !matches!(
                 compute.sensitivity,
                 ComputeSensitivity::ReaderHeld | ComputeSensitivity::ProviderReadable

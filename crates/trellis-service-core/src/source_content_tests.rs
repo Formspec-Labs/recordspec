@@ -28,37 +28,12 @@ struct CountingReader {
 impl SourceContentObjectReader for CountingReader {
     async fn read(
         &self,
-        tenant: &stack_common_http::tenant::TenantScope,
+        objects: &stack_common_object_store::ScopedObjects,
         claim: &SourceContentClaim,
         budget: std::time::Duration,
     ) -> Result<PreparedSourceContentBatchV1, StackError> {
         self.reads.fetch_add(1, Ordering::SeqCst);
-        self.inner.read(tenant, claim, budget).await
-    }
-}
-
-fn config() -> trellis_server_ports::S3ObjectConfig {
-    trellis_server_ports::S3ObjectConfig {
-        bucket: "source-content".into(),
-        endpoint: None,
-        region: None,
-    }
-}
-fn store_over(
-    backend: &Arc<object_store::memory::InMemory>,
-) -> trellis_server_ports::S3CompatibleArtifactStore {
-    trellis_server_ports::S3CompatibleArtifactStore::from_object_store_for_test(
-        config(),
-        "pfx/",
-        backend.clone(),
-    )
-}
-fn tenant_a() -> stack_common_http::tenant::TenantScope {
-    stack_common_http::tenant::TenantScope {
-        tenant: "tenant-a".into(),
-        workspace: "workspace-a".into(),
-        environment: "prod".into(),
-        cell: "cell-a".into(),
+        self.inner.read(objects, claim, budget).await
     }
 }
 fn pins() -> ConfiguredSourceContentPins {
@@ -122,9 +97,7 @@ fn composition_over(
 /// A composition whose store holds nothing; for tests that must never reach the object.
 fn selected(final_prefix: bool) -> (SourceContentComposition, Arc<CountingReader>) {
     let reader = Arc::new(CountingReader {
-        inner: StoreSourceContentReader::new(store_over(&Arc::new(
-            object_store::memory::InMemory::new(),
-        ))),
+        inner: StoreSourceContentReader,
         reads: AtomicUsize::new(0),
     });
     (composition_over(reader.clone(), final_prefix).0, reader)
@@ -132,7 +105,7 @@ fn selected(final_prefix: bool) -> (SourceContentComposition, Arc<CountingReader
 fn command(body: &[u8]) -> append::AppendCommand {
     let body: SubstrateAppendBody = serde_json::from_slice(body).unwrap();
     append::AppendCommand {
-        scope: "case_123".into(),
+        scope: crate::test_support::ledger("case_123"),
         event_type: body.event_type,
         idempotency_key: body.idempotency_key,
         payload: body.payload,
@@ -180,7 +153,7 @@ async fn source_content_final_guard_refuses_a_bare_final_closeout_export() {
         .unwrap();
     let (composition, reader) = selected(true);
     let state = state.with_source_content(composition);
-    let error = export::assemble(&state, b"case_123", &head)
+    let error = crate::test_support::assemble(&state, b"case_123", &head)
         .await
         .unwrap_err();
     assert_eq!(
@@ -241,7 +214,7 @@ async fn source_content_real_native_guard_requires_one_closeout_last_without_cas
     let state = test_state();
     let body = neutral_native_body("real-native-closeout", "neutral.closeout");
     let mut cmd = command(&serde_json::to_vec(&body).unwrap());
-    cmd.scope = "distinct-ledger-namespace".into();
+    cmd.scope = crate::test_support::ledger("distinct-ledger-namespace");
     state.append_coordinator().append(cmd).await.unwrap();
     let mut events = state
         .repository
@@ -251,7 +224,7 @@ async fn source_content_real_native_guard_requires_one_closeout_last_without_cas
     let guard = real_guard();
     assert!(matches!(
         guard
-            .classify(b"distinct-ledger-namespace", &events)
+            .classify(crate::test_support::ledger("distinct-ledger-namespace").as_bytes(), &events)
             .unwrap(),
         SourceContentPrefixClass::FinalCloseout { .. }
     ));
@@ -259,13 +232,13 @@ async fn source_content_real_native_guard_requires_one_closeout_last_without_cas
     events.push(duplicate);
     assert!(
         guard
-            .classify(b"distinct-ledger-namespace", &events)
+            .classify(crate::test_support::ledger("distinct-ledger-namespace").as_bytes(), &events)
             .is_err()
     );
     events.pop();
     let ordinary = neutral_native_body("real-native-after", "neutral.other");
     let mut cmd = command(&serde_json::to_vec(&ordinary).unwrap());
-    cmd.scope = "distinct-ledger-namespace".into();
+    cmd.scope = crate::test_support::ledger("distinct-ledger-namespace");
     state.append_coordinator().append(cmd).await.unwrap();
     let after = state
         .repository
@@ -274,7 +247,7 @@ async fn source_content_real_native_guard_requires_one_closeout_last_without_cas
         .unwrap();
     assert!(
         guard
-            .classify(b"distinct-ledger-namespace", &after)
+            .classify(crate::test_support::ledger("distinct-ledger-namespace").as_bytes(), &after)
             .is_err()
     );
 }
@@ -319,7 +292,7 @@ fn neutral_encoded(value: &Value) -> Vec<u8> {
 // Real neutral encryption and canonical catalogs exercise publication plumbing.
 // These fixtures confer no Source signing authority or independent-reader readiness.
 async fn committed_original_fixture() -> (
-    TrellisServerState,
+    Fixture,
     SubstrateAppendBody,
     SourceContentSelection,
     PreparedSourceContentBatchV1,
@@ -368,7 +341,7 @@ async fn committed_original_fixture() -> (
         .await
         .unwrap();
     let prefix = state.repository.list_scope(b"case_123").await.unwrap();
-    let occurrence_hash = event_hash(b"case_123", &prefix[0]).unwrap();
+    let occurrence_hash = event_hash(crate::test_support::ledger("case_123").as_bytes(), &prefix[0]).unwrap();
     let closeout = neutral_native_body("neutral-source-closeout", "neutral.closeout");
     let original_record: wos_events::ProvenanceRecord = serde_json::from_value(
         wos_events::NativeProvenanceEvent::from_json(&closeout.payload)
@@ -397,7 +370,7 @@ async fn committed_original_fixture() -> (
         process_id: "neutral-process".into(),
         native_prefix_digest:
             trellis_types::completion_selection::completion_selection_prefix_digest(
-                b"case_123",
+                crate::test_support::ledger("case_123").as_bytes(),
                 &prefix,
             )
             .unwrap(),
@@ -409,10 +382,6 @@ async fn committed_original_fixture() -> (
         recipient_set_sha256: [9; 32],
         workflow_url: "urn:neutral:workflow".into(),
         workflow_version: "1.0.0".into(),
-        tenant_id: "tenant-a".into(),
-        workspace_id: "workspace-a".into(),
-        environment_id: "prod".into(),
-        cell_id: "cell-a".into(),
         source_id: "neutral-source".into(),
         service_binding_id: "neutral-binding".into(),
     };
@@ -557,14 +526,13 @@ async fn committed_original_fixture() -> (
     (state, closeout, selection, batch)
 }
 
-fn object_key(tenant: &stack_common_http::tenant::TenantScope, claim: &SourceContentClaim) -> String {
-    trellis_server_ports::source_content_object_key(tenant, &claim.selection.preparation_key)
-        .unwrap()
+fn object_name(claim: &SourceContentClaim) -> String {
+    trellis_server_ports::source_content_object_name(&claim.selection.preparation_key).unwrap()
 }
 
 /// A fixture whose closeout body carries a claim for a real prepared batch.
 struct Sourced {
-    state: TrellisServerState,
+    state: Fixture,
     body: SubstrateAppendBody,
     batch: PreparedSourceContentBatchV1,
     claim: SourceContentClaim,
@@ -572,13 +540,16 @@ struct Sourced {
     reader: Arc<CountingReader>,
 }
 impl Sourced {
-    async fn put_object(&self, tenant: &stack_common_http::tenant::TenantScope) {
-        use trellis_server_ports::ArtifactStore;
-        store_over(&self.backend)
-            .put_immutable(
-                &object_key(tenant, &self.claim),
-                &serde_json::to_vec(&self.batch).unwrap(),
-            )
+    /// Writes the prepared batch where WOS would, under `scope`'s key.
+    async fn put_object(&self, scope: &stack_common_scope::Scope) {
+        self.put_bytes(scope, &serde_json::to_vec(&self.batch).unwrap())
+            .await;
+    }
+    async fn put_bytes(&self, scope: &stack_common_scope::Scope, bytes: &[u8]) {
+        self.state
+            .source_objects
+            .scoped(scope)
+            .write_once(&object_name(&self.claim), bytes)
             .await
             .unwrap();
     }
@@ -603,14 +574,16 @@ async fn sourced(
     };
     body.source_content = Some(claim.clone());
     let reader = Arc::new(CountingReader {
-        inner: StoreSourceContentReader::new(store_over(&backend)),
+        inner: StoreSourceContentReader,
         reads: AtomicUsize::new(0),
     });
     let (mut composition, _) = composition_over(reader.clone(), false);
     composition.final_prefix_guard = Arc::new(real_guard());
     adjust(&mut composition);
     let fixture = Sourced {
-        state: state.with_source_content(composition),
+        state: state
+            .with_source_content(composition)
+            .with_source_backend(backend.clone()),
         body,
         batch,
         claim,
@@ -618,7 +591,7 @@ async fn sourced(
         reader,
     };
     if stored {
-        fixture.put_object(&tenant_a()).await;
+        fixture.put_object(&crate::test_support::a()).await;
     }
     fixture
 }
@@ -656,7 +629,7 @@ async fn source_content_committed_original_read_writer_and_immutable_replay() {
         .unwrap();
     let head = f.state.repository.head_checkpoint(b"case_123").await.unwrap().unwrap();
     assert_eq!(head.tree_size, 2);
-    let bytes = export::assemble(&f.state, b"case_123", &head).await.unwrap();
+    let bytes = crate::test_support::assemble(&f.state, b"case_123", &head).await.unwrap();
     let entries = integrity_bundle::read_stored_zip(&bytes).unwrap();
     assert!(
         entries
@@ -673,7 +646,7 @@ async fn source_content_committed_original_read_writer_and_immutable_replay() {
     assert_eq!(first.result, replay.result);
     assert_eq!(f.ledger_len().await, 2);
     assert_eq!(
-        export::assemble(&f.state, b"case_123", &head).await.unwrap(),
+        crate::test_support::assemble(&f.state, b"case_123", &head).await.unwrap(),
         bytes,
         "the export is a function of the stored rows and the retained batch"
     );
@@ -692,18 +665,21 @@ async fn a_purged_case_still_exports() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
     let head = f.state.repository.head_checkpoint(b"case_123").await.unwrap().unwrap();
-    let before = export::assemble(&f.state, b"case_123", &head).await.unwrap();
+    let before = crate::test_support::assemble(&f.state, b"case_123", &head).await.unwrap();
 
     // WOS purges its object: nothing remains under the contributor's key.
-    let location = object_store::path::Path::from(format!(
-        "pfx/{}",
-        object_key(&tenant_a(), &f.claim)
-    ));
+    let location = object_store::path::Path::from(
+        f.state
+            .source_objects
+            .scoped(&crate::test_support::a())
+            .key(&object_name(&f.claim))
+            .unwrap(),
+    );
     f.backend.delete(&location).await.unwrap();
     assert!(f.backend.get(&location).await.is_err(), "the WOS copy is gone");
     let reads_before = f.reader.reads.load(Ordering::SeqCst);
 
-    let after = export::assemble(&f.state, b"case_123", &head).await.unwrap();
+    let after = crate::test_support::assemble(&f.state, b"case_123", &head).await.unwrap();
     assert_eq!(after, before);
     assert_eq!(
         f.reader.reads.load(Ordering::SeqCst),
@@ -793,7 +769,7 @@ async fn source_content_missing_object_is_503_and_the_identical_retry_succeeds_o
         (StatusCode::SERVICE_UNAVAILABLE, "source-content.object-missing".into())
     );
     assert_eq!(f.ledger_len().await, 1);
-    f.put_object(&tenant_a()).await;
+    f.put_object(&crate::test_support::a()).await;
     let retry = app.oneshot(post_request(EVENTS, f.payload())).await.unwrap();
     assert_eq!(retry.status(), StatusCode::CREATED);
     assert_eq!(f.ledger_len().await, 2);
@@ -801,12 +777,9 @@ async fn source_content_missing_object_is_503_and_the_identical_retry_succeeds_o
 
 #[tokio::test]
 async fn source_content_hash_mismatch_is_422_with_no_ledger_record() {
-    use trellis_server_ports::ArtifactStore;
     let f = sourced(false, |_| {}).await;
-    store_over(&f.backend)
-        .put(&object_key(&tenant_a(), &f.claim), b"corrupted object bytes")
-        .await
-        .unwrap();
+    f.put_bytes(&crate::test_support::a(), b"corrupted object bytes")
+        .await;
     let app = router(f.state.clone()).unwrap();
     let response = app.clone().oneshot(post_request(EVENTS, f.payload())).await.unwrap();
     assert_eq!(
@@ -864,12 +837,10 @@ async fn source_content_wrong_publisher_or_pins_are_refused_before_any_object_re
 }
 
 #[tokio::test]
-async fn source_content_claim_cannot_resolve_outside_the_append_tenant_scope() {
-    // The object exists, but only under another tenant's key; the claim carries no address.
+async fn source_content_claim_cannot_resolve_outside_the_append_scope() {
+    // The object exists, but only under another scope's key; the claim carries no address.
     let f = sourced(false, |_| {}).await;
-    let mut other = tenant_a();
-    other.tenant = "tenant-b".into();
-    f.put_object(&other).await;
+    f.put_object(&crate::test_support::b()).await;
     let response = router(f.state.clone())
         .unwrap()
         .oneshot(post_request(EVENTS, f.payload()))
@@ -897,51 +868,51 @@ async fn source_content_claim_without_a_composition_is_refused() {
     assert_eq!(f.ledger_len().await, 1);
 }
 
-/// Probe store: records each immutable key and proves the scope lock is free while it is written.
-struct LockProbeStore {
-    repository: Arc<dyn EventRepository>,
-    keys: std::sync::Mutex<Vec<String>>,
-    inner: crate::artifacts::InMemoryArtifactStore,
+/// Probe hook: records each object key and proves the ledger lock is free while it is written.
+struct LockProbe {
+    repository: crate::test_support::TestLedgers,
+    keys: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 #[async_trait::async_trait]
-impl trellis_server_ports::ArtifactStore for LockProbeStore {
-    type Error = StackError;
-
-    async fn put(&self, key: &str, bytes: &[u8]) -> Result<ArtifactRef, StackError> {
-        self.inner.put(key, bytes).await
-    }
-
-    async fn put_immutable(&self, key: &str, bytes: &[u8]) -> Result<ArtifactRef, StackError> {
+impl crate::repository_probes::PutHook for LockProbe {
+    async fn before_put(
+        &self,
+        location: &object_store::path::Path,
+        _: usize,
+    ) -> object_store::Result<()> {
         tokio::time::timeout(std::time::Duration::from_secs(2), self.repository.begin(b"case_123"))
             .await
-            .expect("the scope lock is free while the batch copy is written")
+            .expect("the ledger lock is free while the batch copy is written")
             .expect("begin");
-        self.keys.lock().unwrap().push(key.to_string());
-        self.inner.put_immutable(key, bytes).await
-    }
-
-    async fn get(&self, artifact_ref: &ArtifactRef) -> Result<Option<Vec<u8>>, StackError> {
-        self.inner.get(artifact_ref).await
+        self.keys.lock().unwrap().push(location.to_string());
+        Ok(())
     }
 }
 
-/// The batch copy is written under the ledger scope's key, before the scope lock is taken.
+/// The batch copy is written under the scope's key and the ledger scope, before the ledger lock
+/// is taken.
 #[tokio::test]
 async fn source_content_batch_copy_is_scope_keyed_and_written_before_the_scope_lock() {
     let f = sourced(true, |_| {}).await;
-    let probe = Arc::new(LockProbeStore {
-        repository: f.state.repository.clone(),
-        keys: Default::default(),
-        inner: Default::default(),
-    });
-    let state = f.state.clone().with_artifact_store(probe.clone());
+    let keys = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let state = f
+        .state
+        .clone()
+        .with_artifact_backend(crate::repository_probes::HookedStore::new(LockProbe {
+            repository: f.state.repository.clone(),
+            keys: keys.clone(),
+        }));
     let app = router(state.clone()).unwrap();
     let response = app.oneshot(post_request(EVENTS, f.payload())).await.unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
-    let keys = probe.keys.lock().unwrap();
+    let keys = keys.lock().unwrap();
     assert_eq!(keys.len(), 1);
-    assert!(keys[0].starts_with("case_123/source-content-batches/"), "{}", keys[0]);
+    let expected = format!(
+        "{}/case_123/source-content-batches/",
+        crate::test_support::a().key()
+    );
+    assert!(keys[0].starts_with(&expected), "{}", keys[0]);
 }
 
 #[tokio::test]
@@ -949,11 +920,8 @@ async fn source_content_batch_copy_failure_commits_nothing_and_the_resend_succee
     // The copy is written before the commit, so a failed copy leaves no closeout behind, and the
     // answer is a retryable 5xx that the HTTP layer does not cache.
     let f = sourced(true, |_| {}).await;
-    let state = f.state.clone().with_artifact_store(Arc::new(
-        crate::repository_probes::FailsFirstImmutablePut {
-            remaining: AtomicUsize::new(1),
-            inner: Default::default(),
-        },
+    let state = f.state.clone().with_artifact_backend(crate::repository_probes::HookedStore::new(
+        crate::repository_probes::RefuseFirstPuts(AtomicUsize::new(1)),
     ));
     let app = router(state.clone()).unwrap();
     let first = app.clone().oneshot(post_request(EVENTS, f.payload())).await.unwrap();
@@ -963,7 +931,7 @@ async fn source_content_batch_copy_failure_commits_nothing_and_the_resend_succee
     assert_eq!(resend.status(), StatusCode::CREATED);
     assert_eq!(state.repository.list_scope(b"case_123").await.unwrap().len(), 2);
     let head = state.repository.head_checkpoint(b"case_123").await.unwrap().unwrap();
-    let zip = export::assemble(&state, b"case_123", &head).await.unwrap();
+    let zip = crate::test_support::assemble(&state, b"case_123", &head).await.unwrap();
     assert!(
         integrity_bundle::read_stored_zip(&zip)
             .unwrap()

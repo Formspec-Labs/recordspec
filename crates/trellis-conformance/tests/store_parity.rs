@@ -11,21 +11,25 @@
 //!
 //! This is also the first-class integration test exercising the
 //! transaction-composition surface
-//! ([`trellis_store_postgres_async::append_checkpointed_in_tx`]) against the full
-//! append corpus, and that the checkpoint stored beside each event is the
+//! ([`trellis_store_postgres_async::append_checkpointed`] in a scope's `ScopedTx`) against the
+//! full append corpus, and that the checkpoint stored beside each event is the
 //! checkpoint `trellis-core` issued, byte for byte.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use sqlx::PgPool;
-use stack_common_postgres::testing::EphemeralCluster;
 use trellis_core::checkpoint::{IssuedCheckpoint, PriorCheckpoint, issue_checkpoint};
 use trellis_core::{AuthoredEvent, SigningKeyMaterial, append_event};
 use trellis_store_memory::MemoryStore;
-use trellis_store_postgres_async::{
-    append_checkpointed_in_tx, build_pool, checkpoint_at, run_migrations,
-};
+use trellis_store_postgres_async::{append_checkpointed, checkpoint_at};
+
+mod support {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../trellis-store-postgres-async/tests/support/mod.rs"
+    ));
+}
 use trellis_types::merkle::{Frontier, TrellisHasher};
 use trellis_types::{StoredCheckpoint, StoredEvent};
 
@@ -57,7 +61,8 @@ fn signing_key_name(inputs: &toml::value::Table) -> &str {
 
 #[tokio::test]
 async fn append_corpus_byte_parity_memory_vs_postgres() {
-    let (_cluster, pool) = started_pool().await;
+    let db = support::database(8).await;
+    let pool = db.owner.clone();
 
     let mut checked = 0usize;
     for dir in append_vector_dirs() {
@@ -111,15 +116,17 @@ async fn append_corpus_byte_parity_memory_vs_postgres() {
             .with_canonical_event_hash(Some(postgres_artifacts.canonical_event_hash));
         let issued = issue_checkpoint_for(&runner_stored, &signing_key);
         let stored_checkpoint = issued.stored(runner_stored.scope(), b"profile-state".to_vec());
-        let mut tx = pool.begin().await.unwrap();
-        append_checkpointed_in_tx(&mut tx, &runner_stored, &stored_checkpoint)
+        let mut tx = db.scoped.begin(&support::a()).await.unwrap();
+        append_checkpointed(&mut tx, &runner_stored, &stored_checkpoint)
             .await
             .unwrap();
         tx.commit().await.unwrap();
-        let read_back = checkpoint_at(&pool, runner_stored.scope(), runner_stored.sequence() + 1)
+        let mut tx = db.scoped.begin(&support::a()).await.unwrap();
+        let read_back = checkpoint_at(&mut tx, runner_stored.scope(), runner_stored.sequence() + 1)
             .await
             .unwrap()
             .expect("the checkpoint committed with the event");
+        drop(tx);
         assert_eq!(
             read_back,
             stored_checkpoint,
@@ -180,26 +187,31 @@ async fn transaction_composition_atomic_with_caller_projections() {
     // append + a caller-supplied projection update commit atomically OR
     // roll back together. This is the architectural invariant VISION.md
     // §VIII rejection of dual-write rests on.
-    let (_cluster, pool) = started_pool().await;
+    let db = support::database(8).await;
+    let pool = db.owner.clone();
 
     // Composition root would create this kind of table per its own schema; we
-    // model the seam with a simple side table.
-    sqlx::query("CREATE TABLE projection_demo (case_id TEXT PRIMARY KEY, status TEXT)")
-        .execute(&pool)
-        .await
-        .unwrap();
+    // model the seam with a simple side table the serving role may write.
+    sqlx::raw_sql(&format!(
+        "CREATE TABLE projection_demo (case_id TEXT PRIMARY KEY, status TEXT); \
+         GRANT SELECT, INSERT ON projection_demo TO {}",
+        support::APP_ROLE
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
 
     // Happy path: canonical + projection commit together.
     {
-        let mut tx = pool.begin().await.unwrap();
+        let mut tx = db.scoped.begin(&support::a()).await.unwrap();
         let (event, checkpoint) = first_event_and_checkpoint(b"case-1", vec![0xab], vec![0xcd]);
-        append_checkpointed_in_tx(&mut tx, &event, &checkpoint)
+        append_checkpointed(&mut tx, &event, &checkpoint)
             .await
             .unwrap();
         sqlx::query("INSERT INTO projection_demo (case_id, status) VALUES ($1, $2)")
             .bind("case-1")
             .bind("open")
-            .execute(&mut *tx)
+            .execute(tx.conn())
             .await
             .unwrap();
         tx.commit().await.unwrap();
@@ -208,9 +220,9 @@ async fn transaction_composition_atomic_with_caller_projections() {
 
     // Sad path: projection write fails -> canonical event MUST roll back.
     {
-        let mut tx = pool.begin().await.unwrap();
+        let mut tx = db.scoped.begin(&support::a()).await.unwrap();
         let (event, checkpoint) = first_event_and_checkpoint(b"case-2", vec![0xee], vec![0xff]);
-        append_checkpointed_in_tx(&mut tx, &event, &checkpoint)
+        append_checkpointed(&mut tx, &event, &checkpoint)
             .await
             .unwrap();
         // PK conflict against case-1 row.
@@ -218,10 +230,10 @@ async fn transaction_composition_atomic_with_caller_projections() {
             sqlx::query("INSERT INTO projection_demo (case_id, status) VALUES ($1, $2)")
                 .bind("case-1")
                 .bind("duplicate")
-                .execute(&mut *tx)
+                .execute(tx.conn())
                 .await;
         assert!(projection_err.is_err());
-        tx.rollback().await.unwrap();
+        drop(tx);
     }
     assert!(
         scope_event_count(&pool, b"case-2").await == 0,
@@ -268,15 +280,6 @@ fn first_event_and_checkpoint(
         profile_state: Vec::new(),
     };
     (event, checkpoint)
-}
-
-async fn started_pool() -> (EphemeralCluster, PgPool) {
-    let cluster = EphemeralCluster::start_required();
-
-    cluster.assert_tls_contract().await;
-    let pool = build_pool(&cluster.dsn(), 8).await.unwrap();
-    run_migrations(&pool).await.unwrap();
-    (cluster, pool)
 }
 
 async fn load_scope_event(pool: &PgPool, scope: &[u8], sequence: u64) -> Option<StoredEvent> {

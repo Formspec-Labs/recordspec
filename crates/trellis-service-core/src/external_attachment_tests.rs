@@ -9,7 +9,8 @@ use trellis_server_ports::AttachmentBinding;
 use trellis_service_client::{SubstrateAppendBody, SubstrateAppendResult};
 use axum::http::HeaderMap;
 use stack_common_auth::{AccessTokenError, AccessTokenVerifier, VerifiedAccessIdentity};
-use stack_common_http::tenant::TenantScope;
+use stack_common_scope::Scope;
+use trellis_server_ports::LedgerScope;
 use std::sync::atomic::AtomicBool;
 use trellis_admission_formspec::accepted_attachment::{
     ACCEPTED_ATTACHMENT_EVENT, AcceptedAttachmentDescriptor,
@@ -46,18 +47,15 @@ struct NativeGrants {
     allowed: Arc<AtomicBool>,
 }
 
-fn native_tenant() -> TenantScope {
-    TenantScope {
-        tenant: "tenant-a".into(),
-        workspace: "workspace-a".into(),
-        environment: "prod".into(),
-        cell: "cell-a".into(),
-    }
-}
-
 #[async_trait]
 impl ScopeAuthorizer for NativeGrants {
     type Error = StackError;
+    fn bound_scopes(
+        &self,
+        _identity: Option<&stack_common_auth::VerifiedAccessIdentity>,
+    ) -> Result<Option<Vec<stack_common_scope::ScopeKey>>, StackError> {
+        Ok(None)
+    }
 
     async fn authorize(
         &self,
@@ -78,8 +76,8 @@ impl ScopeAuthorizer for NativeGrants {
         if !self.allowed.load(Ordering::SeqCst)
             || !valid_identity
             || !valid_actor
-            || request.tenant_scope != &native_tenant()
-            || !matches!(request.scope, b"case_123" | b"case_other")
+            || request.scope.key() != crate::test_support::a().key()
+            || !matches!(request.scope.ledger_id(), "case_123" | "case_other")
         {
             return Err(StackError::new(
                 stack_common_error::ErrorCode::new("INFRA-4030").unwrap(),
@@ -89,14 +87,13 @@ impl ScopeAuthorizer for NativeGrants {
         }
         Ok(AuthorizedScope {
             principal: "internal-owning-producer".into(),
-            tenant_scope: request.tenant_scope.clone(),
-            scope: request.scope.to_vec(),
+            scope: request.scope.clone(),
             action: request.action,
         })
     }
 }
 
-fn native_state() -> (TrellisServerState, Arc<AtomicBool>, Arc<AtomicBool>) {
+fn native_state() -> (Fixture, Arc<AtomicBool>, Arc<AtomicBool>) {
     let identity = Arc::new(AtomicBool::new(true));
     let grants = Arc::new(AtomicBool::new(true));
     let state = test_state()
@@ -116,6 +113,12 @@ async fn retained_head_read_advances_after_an_actual_accepted_attachment() {
     #[async_trait]
     impl ScopeAuthorizer for ReadAppendOnly {
         type Error = StackError;
+        fn bound_scopes(
+            &self,
+            _identity: Option<&stack_common_auth::VerifiedAccessIdentity>,
+        ) -> Result<Option<Vec<stack_common_scope::ScopeKey>>, StackError> {
+            Ok(None)
+        }
         async fn authorize(
             &self,
             request: &ScopeAuthorization<'_>,
@@ -164,9 +167,9 @@ async fn retained_head_read_advances_after_an_actual_accepted_attachment() {
     let result = append_prepared_external_attachment(
         &state,
         &native_headers(&authorization.idempotency_key),
-        &native_tenant(),
+        &crate::test_support::a(),
         &authorization,
-        b"case_123",
+        crate::test_support::ledger("case_123").as_bytes(),
         trellis_admission_formspec::accepted_attachment::ACCEPTED_ATTACHMENT_EVENT,
         &serde_json::to_value(&descriptor).unwrap(),
         &binding_of(&prepared),
@@ -222,9 +225,9 @@ fn native_headers(key: &str) -> HeaderMap {
 /// storage failure or export verification/publication failure. Publication failure
 /// leaves the atomic committed operation available for an authorized retry.
 async fn append_prepared_external_attachment(
-    state: &TrellisServerState,
+    state: &Fixture,
     headers: &HeaderMap,
-    tenant: &TenantScope,
+    admitted: &Scope,
     authorization: &SubstrateAppendBody,
     prepared_scope: &[u8],
     event_type: &str,
@@ -235,7 +238,7 @@ async fn append_prepared_external_attachment(
 ) -> Result<SubstrateAppendResult, StackError> {
     let scope = std::str::from_utf8(&input.scope)
         .map_err(|_| StackError::bad_request("attachment scope must be UTF-8"))?;
-    crate::http::validate_scope(scope)?;
+    let ledger = LedgerScope::within(admitted, scope)?;
     let identity = state.bearer_identity(headers).await?;
     authorization.validate()?;
     crate::http::validate_idempotency_header(headers, &authorization.idempotency_key)?;
@@ -257,10 +260,9 @@ async fn append_prepared_external_attachment(
         ));
     }
     crate::auth::authorize_action(
-        state,
+        &state.state,
         &identity,
-        tenant,
-        scope,
+        &ledger,
         ScopeAction::Append,
         Some(authorization),
     )
@@ -271,7 +273,6 @@ async fn append_prepared_external_attachment(
             "compute declaration differs from trusted recipient custody",
         ));
     }
-    let scope = scope.to_owned();
     let now = crate::now_timestamp()?;
     if !state.signing_key.is_active_at(now) {
         return Err(StackError::bad_request(
@@ -282,8 +283,9 @@ async fn append_prepared_external_attachment(
     input.header.authored_at_nanos = now.subsec_nanos;
     let key = input.idempotency_key.clone();
     let appended = crate::external_repository::append_with(
-        state,
-        scope.as_bytes(),
+        &state.state,
+        &state.scoped(),
+        &ledger,
         &key,
         &authorization.compute_context,
         &crate::external_repository::FixedInputFactory(input),
@@ -291,7 +293,7 @@ async fn append_prepared_external_attachment(
     .await?;
     let event = appended.retained.event();
     crate::ledger::append_result(
-        &scope,
+        ledger.as_str(),
         event,
         crate::ledger::prior_event_hash(event)?,
         &appended.checkpoint,
@@ -376,7 +378,7 @@ pub(super) fn external_fixture_input() -> (
     let prepared = descriptor
         .clone()
         .prepare(
-            b"case_123",
+            crate::test_support::ledger("case_123").as_bytes(),
             &original,
             &ciphertext,
             &[],
@@ -384,7 +386,7 @@ pub(super) fn external_fixture_input() -> (
         )
         .unwrap();
     let input = ExternalAttachmentAppend {
-        scope: b"case_123".to_vec(),
+        scope: crate::test_support::ledger("case_123").as_bytes().to_vec(),
         idempotency_key: b"native-external-047".to_vec(),
         header: ExternalAttachmentHeader {
             event_type: ACCEPTED_ATTACHMENT_EVENT.into(),
@@ -481,7 +483,7 @@ fn native_authorization(
 }
 
 async fn native_bundle(
-    state: &TrellisServerState,
+    state: &Fixture,
     result: &trellis_service_client::SubstrateAppendResult,
 ) -> Vec<u8> {
     let digest = hex::decode(result.checkpoint_ref.rsplit("sha256:").next().unwrap())
@@ -494,7 +496,7 @@ async fn native_bundle(
         .await
         .unwrap()
         .unwrap();
-    crate::export::assemble(state, b"case_123", &checkpoint)
+    crate::test_support::assemble(state, b"case_123", &checkpoint)
         .await
         .unwrap()
 }
@@ -521,9 +523,9 @@ async fn native_service_append_exports_verified_ciphertext_and_recipient_opens_o
     let result = append_prepared_external_attachment(
         &state,
         &native_headers(&authorization.idempotency_key),
-        &native_tenant(),
+        &crate::test_support::a(),
         &authorization,
-        b"case_123",
+        crate::test_support::ledger("case_123").as_bytes(),
         trellis_admission_formspec::accepted_attachment::ACCEPTED_ATTACHMENT_EVENT,
         &serde_json::to_value(&descriptor).unwrap(),
         &binding_of(&prepared),
@@ -533,7 +535,7 @@ async fn native_service_append_exports_verified_ciphertext_and_recipient_opens_o
     .await
     .unwrap();
     result
-        .validate_for_event_append("case_123")
+        .validate_for_event_append(&crate::test_support::ledger("case_123"))
         .unwrap();
     let zip = native_bundle(&state, &result).await;
     let report = integrity_verify::trellis::verify_export_zip(&zip);
@@ -621,9 +623,9 @@ async fn native_exact_replay_after_head_advance_preserves_original_event_and_exp
     let first = append_prepared_external_attachment(
         &state,
         &headers,
-        &native_tenant(),
+        &crate::test_support::a(),
         &authorization,
-        b"case_123",
+        crate::test_support::ledger("case_123").as_bytes(),
         trellis_admission_formspec::accepted_attachment::ACCEPTED_ATTACHMENT_EVENT,
         &serde_json::to_value(&descriptor).unwrap(),
         &binding_of(&prepared),
@@ -647,9 +649,9 @@ async fn native_exact_replay_after_head_advance_preserves_original_event_and_exp
     let replay = append_prepared_external_attachment(
         &state,
         &headers,
-        &native_tenant(),
+        &crate::test_support::a(),
         &authorization,
-        b"case_123",
+        crate::test_support::ledger("case_123").as_bytes(),
         trellis_admission_formspec::accepted_attachment::ACCEPTED_ATTACHMENT_EVENT,
         &serde_json::to_value(&descriptor).unwrap(),
         &binding_of(&prepared),
@@ -687,9 +689,9 @@ async fn native_changed_preparation_wrap_and_body_conflict_without_replacing_ret
     let first = append_prepared_external_attachment(
         &state,
         &headers,
-        &native_tenant(),
+        &crate::test_support::a(),
         &authorization,
-        b"case_123",
+        crate::test_support::ledger("case_123").as_bytes(),
         trellis_admission_formspec::accepted_attachment::ACCEPTED_ATTACHMENT_EVENT,
         &serde_json::to_value(&descriptor).unwrap(),
         &binding_of(&prepared),
@@ -739,9 +741,9 @@ async fn native_changed_preparation_wrap_and_body_conflict_without_replacing_ret
         let error = append_prepared_external_attachment(
             &state,
             &headers,
-            &native_tenant(),
+            &crate::test_support::a(),
             &changed_authorization,
-            b"case_123",
+            crate::test_support::ledger("case_123").as_bytes(),
             trellis_admission_formspec::accepted_attachment::ACCEPTED_ATTACHMENT_EVENT,
             &serde_json::to_value(&changed_descriptor).unwrap(),
             &binding_of(&changed_prepared),
@@ -756,15 +758,19 @@ async fn native_changed_preparation_wrap_and_body_conflict_without_replacing_ret
         state.repository.list_scope(b"case_123").await.unwrap(),
         before
     );
-    assert_eq!(
-        crate::external_repository::body_by_hash(
-            state.repository.as_ref(),
-            b"case_123",
-            &prepared.content_hash()
+    let rows = state
+        .scoped()
+        .ledgers()
+        .export(
+            &crate::test_support::ledger("case_123"),
+            trellis_server_ports::ExportAt::Head,
         )
         .await
         .unwrap()
-        .unwrap(),
+        .unwrap();
+    let retained = crate::external_repository::retained_by_hash(rows.attachments).unwrap();
+    assert_eq!(
+        retained[prepared.content_hash().as_slice()].0,
         input.ciphertext
     );
     assert!(!native_bundle(&state, &first).await.is_empty());
@@ -789,9 +795,9 @@ async fn native_replay_rechecks_current_identity_grant_tenant_and_service_actor(
     append_prepared_external_attachment(
         &state,
         &headers,
-        &native_tenant(),
+        &crate::test_support::a(),
         &authorization,
-        b"case_123",
+        crate::test_support::ledger("case_123").as_bytes(),
         trellis_admission_formspec::accepted_attachment::ACCEPTED_ATTACHMENT_EVENT,
         &serde_json::to_value(&descriptor).unwrap(),
         &binding_of(&prepared),
@@ -804,9 +810,9 @@ async fn native_replay_rechecks_current_identity_grant_tenant_and_service_actor(
     let error = append_prepared_external_attachment(
         &state,
         &headers,
-        &native_tenant(),
+        &crate::test_support::a(),
         &authorization,
-        b"case_123",
+        crate::test_support::ledger("case_123").as_bytes(),
         trellis_admission_formspec::accepted_attachment::ACCEPTED_ATTACHMENT_EVENT,
         &serde_json::to_value(&descriptor).unwrap(),
         &binding_of(&prepared),
@@ -821,9 +827,9 @@ async fn native_replay_rechecks_current_identity_grant_tenant_and_service_actor(
     let error = append_prepared_external_attachment(
         &state,
         &headers,
-        &native_tenant(),
+        &crate::test_support::a(),
         &authorization,
-        b"case_123",
+        crate::test_support::ledger("case_123").as_bytes(),
         trellis_admission_formspec::accepted_attachment::ACCEPTED_ATTACHMENT_EVENT,
         &serde_json::to_value(&descriptor).unwrap(),
         &binding_of(&prepared),
@@ -834,13 +840,13 @@ async fn native_replay_rechecks_current_identity_grant_tenant_and_service_actor(
     .unwrap_err();
     assert_eq!(error.status(), StatusCode::FORBIDDEN);
     let mut changed_scope = input.clone();
-    changed_scope.scope = b"case_other".to_vec();
+    changed_scope.scope = crate::test_support::ledger("case_other").as_bytes().to_vec();
     let error = append_prepared_external_attachment(
         &state,
         &headers,
-        &native_tenant(),
+        &crate::test_support::a(),
         &authorization,
-        b"case_123",
+        crate::test_support::ledger("case_123").as_bytes(),
         trellis_admission_formspec::accepted_attachment::ACCEPTED_ATTACHMENT_EVENT,
         &serde_json::to_value(&descriptor).unwrap(),
         &binding_of(&prepared),
@@ -863,14 +869,13 @@ async fn native_replay_rechecks_current_identity_grant_tenant_and_service_actor(
             .is_empty()
     );
     grants.store(true, Ordering::SeqCst);
-    let mut foreign = native_tenant();
-    foreign.workspace = "foreign-workspace".into();
+    // Admitted to another scope, the same ledger is not found.
     let error = append_prepared_external_attachment(
         &state,
         &headers,
-        &foreign,
+        &crate::test_support::b(),
         &authorization,
-        b"case_123",
+        crate::test_support::ledger("case_123").as_bytes(),
         trellis_admission_formspec::accepted_attachment::ACCEPTED_ATTACHMENT_EVENT,
         &serde_json::to_value(&descriptor).unwrap(),
         &binding_of(&prepared),
@@ -879,16 +884,16 @@ async fn native_replay_rechecks_current_identity_grant_tenant_and_service_actor(
     )
     .await
     .unwrap_err();
-    assert_eq!(error.status(), StatusCode::FORBIDDEN);
+    assert_eq!(error.status(), StatusCode::NOT_FOUND);
     let mut foreign_actor = authorization.clone();
     foreign_actor.actor = trellis_service_client::AppendActor::service("foreign-service");
     foreign_actor.compute_context.actor = "foreign-service".into();
     let error = append_prepared_external_attachment(
         &state,
         &headers,
-        &native_tenant(),
+        &crate::test_support::a(),
         &foreign_actor,
-        b"case_123",
+        crate::test_support::ledger("case_123").as_bytes(),
         trellis_admission_formspec::accepted_attachment::ACCEPTED_ATTACHMENT_EVENT,
         &serde_json::to_value(&descriptor).unwrap(),
         &binding_of(&prepared),

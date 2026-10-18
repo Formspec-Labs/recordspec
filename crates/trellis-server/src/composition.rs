@@ -7,7 +7,6 @@
 use std::sync::Arc;
 
 use stack_common_error::StackError;
-use stack_common_http::tenant::HeaderConfig;
 use trellis_admission_formspec::accepted_attachment::{
     FormspecAttachmentAdmission, accepted_attachment_event_type_spec,
 };
@@ -15,13 +14,13 @@ use trellis_admission_formspec::{FormspecAppendAdmissionPolicy, formspec_event_t
 use trellis_admission_wos::{WosEventAdmissionPolicy, WosNativeCloseout, wos_event_type_specs};
 use trellis_export_profile_wos::WosExportProfile;
 use trellis_server_ports::{EventAdmissionPolicy, EventTypeSpec, NativeCloseout};
-use trellis_service_core::{AdmissionRouter, ServerAdapters, TenantHeaders};
+use trellis_service_core::{AdmissionRouter, ServerAdapters};
 
 use crate::source_content::source_content_parts;
 
-/// The shipped WOS and Formspec adapters, accepting the given tenant headers.
+/// The shipped WOS and Formspec adapters.
 #[must_use]
-pub fn adapters(tenant_headers: TenantHeaders) -> ServerAdapters {
+pub fn adapters() -> ServerAdapters {
     ServerAdapters {
         admission_policy: default_admission_policy(),
         event_type_specs: default_event_type_specs(),
@@ -29,7 +28,6 @@ pub fn adapters(tenant_headers: TenantHeaders) -> ServerAdapters {
         export_profile: Arc::new(WosExportProfile),
         native_closeout: native_closeout(),
         source_content: Arc::new(source_content_parts),
-        tenant_headers,
     }
 }
 
@@ -37,30 +35,6 @@ pub fn adapters(tenant_headers: TenantHeaders) -> ServerAdapters {
 #[must_use]
 pub fn native_closeout() -> Arc<dyn NativeCloseout> {
     Arc::new(WosNativeCloseout)
-}
-
-/// Both producers' tenant headers, WOS first.
-#[must_use]
-pub fn mixed_tenant_headers() -> TenantHeaders {
-    TenantHeaders::new(HeaderConfig::wos()).or_else(HeaderConfig::formspec())
-}
-
-/// Reads `TRELLIS_TENANT_HEADER_SET=wos|formspec|mixed` (default `mixed`).
-///
-/// # Errors
-/// Refuses any other value.
-pub fn tenant_headers_from_env() -> Result<TenantHeaders, StackError> {
-    match std::env::var("TRELLIS_TENANT_HEADER_SET")
-        .unwrap_or_else(|_| "mixed".to_string())
-        .as_str()
-    {
-        "wos" => Ok(TenantHeaders::new(HeaderConfig::wos())),
-        "formspec" => Ok(TenantHeaders::new(HeaderConfig::formspec())),
-        "mixed" => Ok(mixed_tenant_headers()),
-        other => Err(StackError::bad_request(format!(
-            "unsupported TRELLIS_TENANT_HEADER_SET `{other}`"
-        ))),
-    }
 }
 
 /// Registers every shipped adapter against the literals it owns.

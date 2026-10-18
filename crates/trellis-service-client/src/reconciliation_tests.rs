@@ -26,10 +26,13 @@ fn reconciliation_builder_shares_canonical_payload_identity_and_key_byte_bound()
 }
 
 #[tokio::test]
-async fn reconciliation_client_uses_dedicated_encoded_route_and_current_tenant() {
+async fn reconciliation_client_uses_dedicated_encoded_route() {
     let endpoint = test_server(|request| {
-        assert!(request.starts_with("POST /v1/scopes/case%3Aneutral/events/reconcile "));
-        assert!(request.to_lowercase().contains("x-wos-tenant-id: tenant-a"));
+        assert!(request.starts_with(&format!(
+            "POST /v1/scopes/{}/events/reconcile ",
+            crate::test_ledger("case_neutral")
+        )));
+        assert!(!request.to_lowercase().contains("x-wos-tenant-id"));
         assert!(!request.to_lowercase().contains("idempotency-key:"));
         let body: serde_json::Value = serde_json::from_str(request_body(&request)).unwrap();
         assert_eq!(body["idempotencyKey"], "neutral-key");
@@ -38,10 +41,7 @@ async fn reconciliation_client_uses_dedicated_encoded_route_and_current_tenant()
             "{\"status\":\"absent\",\"eventCount\":0,\"lastEventHash\":null}",
         )
     });
-    let client = TrellisServiceClient::new(TrellisServiceClientConfig::new(
-        endpoint,
-        HeaderConfig::wos(),
-    ))
+    let client = TrellisServiceClient::new(TrellisServiceClientConfig::new(endpoint))
     .unwrap();
     let lookup = AppendReconciliationRequest {
         event_type: "neutral.event".into(),
@@ -51,7 +51,7 @@ async fn reconciliation_client_uses_dedicated_encoded_route_and_current_tenant()
     };
     assert_eq!(
         client
-            .reconcile_event("case:neutral", &tenant_scope(), &lookup)
+            .reconcile_event(&crate::test_ledger("case_neutral"), &lookup)
             .await
             .unwrap(),
         AppendReconciliation::Absent {
@@ -69,10 +69,7 @@ async fn reconciliation_client_refuses_malformed_receipts_and_receipts_for_anoth
         "{\"status\":\"committed\",\"receipt\":{\"eventId\":\"event\",\"sequence\":0,\"canonicalEventHash\":\"hash\",\"checkpointRef\":\"trellis://other_scope/checkpoints/hash\"}}",
     ] {
         let endpoint = test_server(move |_| response("application/json", body));
-        let client = TrellisServiceClient::new(TrellisServiceClientConfig::new(
-            endpoint,
-            HeaderConfig::wos(),
-        ))
+        let client = TrellisServiceClient::new(TrellisServiceClientConfig::new(endpoint))
         .unwrap();
         let lookup = AppendReconciliationRequest {
             event_type: "neutral.event".into(),
@@ -82,7 +79,7 @@ async fn reconciliation_client_refuses_malformed_receipts_and_receipts_for_anoth
         };
         assert!(
             client
-                .reconcile_event("case_123", &tenant_scope(), &lookup)
+                .reconcile_event(&crate::test_ledger("case_123"), &lookup)
                 .await
                 .is_err()
         );

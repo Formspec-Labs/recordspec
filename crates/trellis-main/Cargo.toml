@@ -1,0 +1,47 @@
+[package]
+name = "trellis-main"
+version.workspace = true
+edition.workspace = true
+description = "Trellis server binary: the composition root that opens the deployment's pool and buckets"
+license.workspace = true
+
+[features]
+default = []
+# The image's complete feature set (root ops/managed-single-cell compose passes FEATURES=deployment;
+# docker/cargo-image.sh builds with --no-default-features). Empty today; a production-only
+# capability would be listed here, never in `default`.
+deployment = []
+# Builds the route declarations over the fixture-backed state: `--features emit-openapi`.
+emit-openapi = ["trellis-server/test-harness"]
+
+# Binary-only on purpose: the composition root enables `composition-root`, which no library may
+# (ADR 0168 §1.2, stack-common/scripts/scope_fence.py).
+[[bin]]
+name = "trellis-server"
+path = "src/main.rs"
+
+[[bin]]
+name = "emit_openapi"
+path = "src/bin/emit_openapi.rs"
+required-features = ["emit-openapi"]
+
+[dependencies]
+axum = "0.8"
+integrity-seam = { path = "../../../integrity-stack/crates/integrity-seam" }
+object_store = { version = "0.11", default-features = false, features = ["aws"] }
+serde_json = "1"
+sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio-rustls"] }
+stack-common-object-store = { path = "../../../stack-common/crates/stack-common-object-store", features = ["composition-root", "health"] }
+stack-common-ops = { path = "../../../stack-common/crates/stack-common-ops" }
+stack-common-postgres = { path = "../../../stack-common/crates/stack-common-postgres", default-features = false, features = ["composition-root", "error", "health", "pool", "scoped"] }
+stack-common-posture = { path = "../../../stack-common/crates/stack-common-posture" }
+stack-common-scope = { path = "../../../stack-common/crates/stack-common-scope", features = ["composition-root"] }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+trellis-server = { path = "../trellis-server" }
+trellis-server-ports = { path = "../trellis-server-ports" }
+trellis-store-postgres-async = { path = "../trellis-store-postgres-async" }
+
+[dev-dependencies]
+serde_json = "1"
+tempfile = "3"

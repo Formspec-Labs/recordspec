@@ -6,16 +6,23 @@
 //! a backward index scan, so an append reads the head checkpoint, the last event and the
 //! idempotency index, and writes two rows, whatever the ledger's length.
 //!
-//! Callers choose the executor: pass `&PgPool` for a stand-alone read or `&mut *tx` inside the
-//! scope-locked transaction [`begin_scope`] opens.
+//! Every statement runs in a [`ScopedTx`]: `$1` is the scope key, so each query is
+//! `WHERE scope_key = $1 AND scope = $2 …` and walks the `(scope_key, scope, …)` key in order. The
+//! scope key comes from the transaction, never from a caller, so these functions cannot reach
+//! another scope's rows; they write `event.scope()` as given, and the [`crate::PgLedgers`]
+//! adapter checks it against the ledger it was opened for.
 
-use sqlx::{PgExecutor, PgPool, Postgres, Transaction};
+use stack_common_postgres::ScopedTx;
+
+use crate::statements;
 use trellis_types::{
     StoredCheckpoint, StoredEvent, domain_separated_sha256, idempotency_key_length_in_bound,
 };
 
-/// Domain tag of the per-scope advisory lock key.
-const SCOPE_LOCK_DOMAIN: &str = "trellis-append-scope-lock-v1";
+pub use trellis_server_ports::SourceContentBinding;
+
+/// Domain tag of the per-ledger advisory lock key.
+const LEDGER_LOCK_DOMAIN: &str = "trellis-append-scope-lock-v1";
 
 /// Error returned when a stored row cannot be read.
 #[derive(Debug, thiserror::Error)]
@@ -49,34 +56,28 @@ pub enum AppendError {
     Sqlx(#[from] sqlx::Error),
 }
 
-/// Opens a transaction that holds the scope's advisory lock before it does anything else.
+/// Takes the ledger's advisory lock as the transaction's first work, under `READ COMMITTED`.
 ///
 /// `READ COMMITTED` is set first, so every later statement sees every commit that finished while
 /// this caller waited for the lock; the connection default may be stricter.
 ///
 /// # Errors
-/// Returns the SQL error if the transaction cannot start or take the lock.
-pub async fn begin_scope(
-    pool: &PgPool,
-    scope: &[u8],
-) -> Result<Transaction<'static, Postgres>, sqlx::Error> {
-    let mut tx = pool.begin().await?;
+/// Returns the SQL error if the isolation level or the lock cannot be taken.
+pub async fn lock_ledger(tx: &mut ScopedTx, ledger: &[u8]) -> Result<(), sqlx::Error> {
     sqlx::query("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
-        .execute(&mut *tx)
+        .execute(tx.conn())
         .await?;
-    let hash = domain_separated_sha256(SCOPE_LOCK_DOMAIN, scope);
+    let hash = domain_separated_sha256(LEDGER_LOCK_DOMAIN, ledger);
     let mut prefix = [0; 8];
     prefix.copy_from_slice(&hash[..8]);
     sqlx::query("SELECT pg_advisory_xact_lock($1)")
         .bind(i64::from_be_bytes(prefix))
-        .execute(&mut *tx)
+        .execute(tx.conn())
         .await?;
-    Ok(tx)
+    Ok(())
 }
 
 type EventRow = (Vec<u8>, i64, Vec<u8>, Vec<u8>, Option<Vec<u8>>, Vec<u8>);
-const EVENT_COLUMNS: &str =
-    "scope, sequence, canonical_event, signed_event, idempotency_key, canonical_event_hash";
 
 fn event_from_row(row: EventRow) -> Result<StoredEvent, ReadError> {
     let (scope, sequence, canonical, signed, key, hash) = row;
@@ -104,7 +105,6 @@ pub(crate) fn event_from_row_parts(
 }
 
 type CheckpointRow = (Vec<u8>, i64, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>);
-const CHECKPOINT_COLUMNS: &str = "scope, tree_size, digest, checkpoint, frontier, profile_state";
 
 fn checkpoint_from_row(
     (scope, tree_size, digest, checkpoint, frontier, profile_state): CheckpointRow,
@@ -121,64 +121,64 @@ fn checkpoint_from_row(
     })
 }
 
-/// The scope's head checkpoint: the row with the highest `tree_size`. One index row.
+fn bigint(value: u64, what: &'static str) -> Result<i64, ReadError> {
+    i64::try_from(value).map_err(|_| ReadError::Malformed(what))
+}
+
+/// The ledger's head checkpoint: the row with the highest `tree_size`. One index row.
 ///
 /// # Errors
 /// [`ReadError`] on SQL failure or a malformed row.
-pub async fn head_checkpoint<'e>(
-    executor: impl PgExecutor<'e>,
-    scope: &[u8],
+pub async fn head_checkpoint(
+    tx: &mut ScopedTx,
+    ledger: &[u8],
 ) -> Result<Option<StoredCheckpoint>, ReadError> {
-    sqlx::query_as::<_, CheckpointRow>(&format!(
-        "SELECT {CHECKPOINT_COLUMNS} FROM trellis_checkpoints \
-         WHERE scope = $1 ORDER BY tree_size DESC LIMIT 1"
-    ))
-    .bind(scope)
-    .fetch_optional(executor)
-    .await?
-    .map(checkpoint_from_row)
-    .transpose()
+    let query = tx.query_as::<CheckpointRow>(statements::HEAD_CHECKPOINT);
+    query
+        .bind(ledger)
+        .fetch_optional(tx.conn())
+        .await?
+        .map(checkpoint_from_row)
+        .transpose()
 }
 
 /// The checkpoint at exactly `tree_size`.
 ///
 /// # Errors
 /// [`ReadError`] on SQL failure or a malformed row.
-pub async fn checkpoint_at<'e>(
-    executor: impl PgExecutor<'e>,
-    scope: &[u8],
+pub async fn checkpoint_at(
+    tx: &mut ScopedTx,
+    ledger: &[u8],
     tree_size: u64,
 ) -> Result<Option<StoredCheckpoint>, ReadError> {
-    let tree_size = i64::try_from(tree_size).map_err(|_| ReadError::Malformed("tree_size"))?;
-    sqlx::query_as::<_, CheckpointRow>(&format!(
-        "SELECT {CHECKPOINT_COLUMNS} FROM trellis_checkpoints WHERE scope = $1 AND tree_size = $2"
-    ))
-    .bind(scope)
-    .bind(tree_size)
-    .fetch_optional(executor)
-    .await?
-    .map(checkpoint_from_row)
-    .transpose()
+    let tree_size = bigint(tree_size, "tree_size")?;
+    let query = tx.query_as::<CheckpointRow>(statements::CHECKPOINT_AT);
+    query
+        .bind(ledger)
+        .bind(tree_size)
+        .fetch_optional(tx.conn())
+        .await?
+        .map(checkpoint_from_row)
+        .transpose()
 }
 
-/// The checkpoint whose Core §11.2 digest is `digest`, within `scope`.
+/// The checkpoint whose Core §11.2 digest is `digest`, within the ledger.
 ///
 /// # Errors
 /// [`ReadError`] on SQL failure or a malformed row.
-pub async fn checkpoint_by_digest<'e>(
-    executor: impl PgExecutor<'e>,
-    scope: &[u8],
+pub async fn checkpoint_by_digest(
+    tx: &mut ScopedTx,
+    ledger: &[u8],
     digest: &[u8; 32],
 ) -> Result<Option<StoredCheckpoint>, ReadError> {
-    sqlx::query_as::<_, CheckpointRow>(&format!(
-        "SELECT {CHECKPOINT_COLUMNS} FROM trellis_checkpoints WHERE scope = $1 AND digest = $2"
-    ))
-    .bind(scope)
-    .bind(digest.as_slice())
-    .fetch_optional(executor)
-    .await?
-    .map(checkpoint_from_row)
-    .transpose()
+    let query = tx.query_as::<CheckpointRow>(statements::CHECKPOINT_BY_DIGEST);
+    query
+        .bind(ledger)
+        .bind(digest.as_slice())
+        .fetch_optional(tx.conn())
+        .await?
+        .map(checkpoint_from_row)
+        .transpose()
 }
 
 /// Every checkpoint with `tree_size <= through`, ascending: the `040-checkpoints.cbor` rows of an
@@ -186,102 +186,113 @@ pub async fn checkpoint_by_digest<'e>(
 ///
 /// # Errors
 /// [`ReadError`] on SQL failure or a malformed row.
-pub async fn checkpoints_through<'e>(
-    executor: impl PgExecutor<'e>,
-    scope: &[u8],
+pub async fn checkpoints_through(
+    tx: &mut ScopedTx,
+    ledger: &[u8],
     through: u64,
 ) -> Result<Vec<StoredCheckpoint>, ReadError> {
-    let through = i64::try_from(through).map_err(|_| ReadError::Malformed("tree_size"))?;
-    sqlx::query_as::<_, CheckpointRow>(&format!(
-        "SELECT {CHECKPOINT_COLUMNS} FROM trellis_checkpoints \
-         WHERE scope = $1 AND tree_size <= $2 ORDER BY tree_size"
-    ))
-    .bind(scope)
-    .bind(through)
-    .fetch_all(executor)
-    .await?
-    .into_iter()
-    .map(checkpoint_from_row)
-    .collect()
+    let through = bigint(through, "tree_size")?;
+    let query = tx.query_as::<CheckpointRow>(statements::CHECKPOINTS_THROUGH);
+    query
+        .bind(ledger)
+        .bind(through)
+        .fetch_all(tx.conn())
+        .await?
+        .into_iter()
+        .map(checkpoint_from_row)
+        .collect()
 }
 
-/// The scope's most recent event. One index row.
+/// The ledger's most recent event. One index row.
 ///
 /// # Errors
 /// [`ReadError`] on SQL failure or a malformed row.
-pub async fn last_event<'e>(
-    executor: impl PgExecutor<'e>,
-    scope: &[u8],
+pub async fn last_event(
+    tx: &mut ScopedTx,
+    ledger: &[u8],
 ) -> Result<Option<StoredEvent>, ReadError> {
-    sqlx::query_as::<_, EventRow>(&format!(
-        "SELECT {EVENT_COLUMNS} FROM trellis_events WHERE scope = $1 \
-         ORDER BY sequence DESC LIMIT 1"
-    ))
-    .bind(scope)
-    .fetch_optional(executor)
-    .await?
-    .map(event_from_row)
-    .transpose()
+    let query = tx.query_as::<EventRow>(statements::LAST_EVENT);
+    query
+        .bind(ledger)
+        .fetch_optional(tx.conn())
+        .await?
+        .map(event_from_row)
+        .transpose()
 }
 
-/// The event committed under `key` in `scope`, if any. One index row.
+/// The event committed under `key` in the ledger, if any. One index row.
 ///
 /// # Errors
 /// [`ReadError`] on SQL failure or a malformed row.
-pub async fn event_by_key<'e>(
-    executor: impl PgExecutor<'e>,
-    scope: &[u8],
+pub async fn event_by_key(
+    tx: &mut ScopedTx,
+    ledger: &[u8],
     key: &[u8],
 ) -> Result<Option<StoredEvent>, ReadError> {
-    sqlx::query_as::<_, EventRow>(&format!(
-        "SELECT {EVENT_COLUMNS} FROM trellis_events WHERE scope = $1 AND idempotency_key = $2"
-    ))
-    .bind(scope)
-    .bind(key)
-    .fetch_optional(executor)
-    .await?
-    .map(event_from_row)
-    .transpose()
+    let query = tx.query_as::<EventRow>(statements::EVENT_BY_KEY);
+    query
+        .bind(ledger)
+        .bind(key)
+        .fetch_optional(tx.conn())
+        .await?
+        .map(event_from_row)
+        .transpose()
 }
 
-/// Events with `sequence < before`, ascending, at most `limit` of them: a bounded prefix read for
-/// the flows that validate a whole small ledger (the completion seal, attachments, a Source
-/// closeout) and the `events` member of an export.
+/// The ledger's first `limit` events, ascending: a bounded prefix read for the flows that validate
+/// a whole small ledger (the completion seal, attachments, a Source closeout).
 ///
 /// # Errors
 /// [`ReadError`] on SQL failure or a malformed row.
-pub async fn events_before<'e>(
-    executor: impl PgExecutor<'e>,
-    scope: &[u8],
-    before: u64,
+pub async fn prefix(
+    tx: &mut ScopedTx,
+    ledger: &[u8],
     limit: u64,
 ) -> Result<Vec<StoredEvent>, ReadError> {
-    let before = i64::try_from(before).map_err(|_| ReadError::Malformed("sequence"))?;
-    let limit = i64::try_from(limit).map_err(|_| ReadError::Malformed("limit"))?;
-    sqlx::query_as::<_, EventRow>(&format!(
-        "SELECT {EVENT_COLUMNS} FROM trellis_events \
-         WHERE scope = $1 AND sequence < $2 ORDER BY sequence LIMIT $3"
-    ))
-    .bind(scope)
-    .bind(before)
-    .bind(limit)
-    .fetch_all(executor)
-    .await?
-    .into_iter()
-    .map(event_from_row)
-    .collect()
+    let limit = bigint(limit, "limit")?;
+    let query = tx.query_as::<EventRow>(statements::PREFIX);
+    query
+        .bind(ledger)
+        .bind(limit)
+        .fetch_all(tx.conn())
+        .await?
+        .into_iter()
+        .map(event_from_row)
+        .collect()
+}
+
+/// Events with `sequence < before`, ascending: the `events` member of an export whose head has
+/// tree size `before`.
+///
+/// # Errors
+/// [`ReadError`] on SQL failure or a malformed row.
+pub async fn events_before(
+    tx: &mut ScopedTx,
+    ledger: &[u8],
+    before: u64,
+) -> Result<Vec<StoredEvent>, ReadError> {
+    let before = bigint(before, "sequence")?;
+    let query = tx.query_as::<EventRow>(statements::EVENTS_BEFORE);
+    query
+        .bind(ledger)
+        .bind(before)
+        .fetch_all(tx.conn())
+        .await?
+        .into_iter()
+        .map(event_from_row)
+        .collect()
 }
 
 /// Writes one event and the checkpoint for the tree it produced: two inserts, nothing read.
 ///
-/// The caller owns the transaction (see [`begin_scope`]) and has already read the head, so a
+/// The caller holds the ledger's lock (see [`lock_ledger`]) and has already read the head, so a
 /// failed unique key means another writer got there first and is reported as
 /// [`AppendError::Conflict`] with nothing written.
 ///
 /// # Errors
 /// [`AppendError`] for a malformed pair, a taken key or a SQL failure.
-pub async fn append_checkpointed_in_tx(
-    tx: &mut Transaction<'_, Postgres>,
+pub async fn append_checkpointed(
+    tx: &mut ScopedTx,
     event: &StoredEvent,
     checkpoint: &StoredCheckpoint,
 ) -> Result<(), AppendError> {
@@ -308,33 +319,36 @@ pub async fn append_checkpointed_in_tx(
             "frontier is not popcount(tree_size) hashes",
         ));
     }
-    sqlx::query(&format!(
-        "INSERT INTO trellis_events ({EVENT_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6)"
-    ))
-    .bind(event.scope())
-    .bind(sequence)
-    .bind(event.canonical_event())
-    .bind(event.signed_event())
-    .bind(event.idempotency_key())
-    .bind(hash.as_slice())
-    .execute(&mut **tx)
-    .await
-    .map_err(unique_violation_or_sqlx)?;
-    sqlx::query(&format!(
-        "INSERT INTO trellis_checkpoints ({CHECKPOINT_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6)"
-    ))
-    .bind(&checkpoint.scope)
-    .bind(
-        i64::try_from(checkpoint.tree_size)
-            .map_err(|_| AppendError::DomainViolation(checkpoint.tree_size))?,
-    )
-    .bind(checkpoint.digest.as_slice())
-    .bind(&checkpoint.checkpoint)
-    .bind(&checkpoint.frontier)
-    .bind(&checkpoint.profile_state)
-    .execute(&mut **tx)
-    .await
-    .map_err(unique_violation_or_sqlx)?;
+    let tree_size = i64::try_from(checkpoint.tree_size)
+        .map_err(|_| AppendError::DomainViolation(checkpoint.tree_size))?;
+    let query = tx.query(
+        "INSERT INTO trellis_events (scope_key, scope, sequence, canonical_event, signed_event, \
+         idempotency_key, canonical_event_hash) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+    );
+    query
+        .bind(event.scope())
+        .bind(sequence)
+        .bind(event.canonical_event())
+        .bind(event.signed_event())
+        .bind(event.idempotency_key())
+        .bind(hash.as_slice())
+        .execute(tx.conn())
+        .await
+        .map_err(unique_violation_or_sqlx)?;
+    let query = tx.query(
+        "INSERT INTO trellis_checkpoints (scope_key, scope, tree_size, digest, checkpoint, \
+         frontier, profile_state) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+    );
+    query
+        .bind(&checkpoint.scope)
+        .bind(tree_size)
+        .bind(checkpoint.digest.as_slice())
+        .bind(&checkpoint.checkpoint)
+        .bind(&checkpoint.frontier)
+        .bind(&checkpoint.profile_state)
+        .execute(tx.conn())
+        .await
+        .map_err(unique_violation_or_sqlx)?;
     Ok(())
 }
 
@@ -347,39 +361,33 @@ pub(crate) fn unique_violation_or_sqlx(error: sqlx::Error) -> AppendError {
     }
 }
 
-/// Trellis's own copy of a Source closeout's admitted batch: where it lives, not the bytes.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SourceContentBinding {
-    /// SHA-256 of the stored batch; the object key is derived from it.
-    pub batch_hash: [u8; 32],
-    /// Byte length of the stored batch.
-    pub size: u64,
-    /// The artifact store's own locator for the batch object.
-    pub artifact_ref: String,
-}
-
 /// Binds the closeout event at `sequence` to its batch copy. Same transaction as the event.
 ///
 /// # Errors
 /// [`AppendError`] for a domain violation, a taken key or a SQL failure.
 pub async fn insert_source_content(
-    tx: &mut Transaction<'_, Postgres>,
-    scope: &[u8],
+    tx: &mut ScopedTx,
+    ledger: &[u8],
     sequence: u64,
     binding: &SourceContentBinding,
 ) -> Result<(), AppendError> {
-    sqlx::query(
-        "INSERT INTO trellis_source_contents (scope, sequence, batch_hash, size, artifact_ref) \
-         VALUES ($1, $2, $3, $4, $5)",
-    )
-    .bind(scope)
-    .bind(i64::try_from(sequence).map_err(|_| AppendError::DomainViolation(sequence))?)
-    .bind(binding.batch_hash.as_slice())
-    .bind(i64::try_from(binding.size).map_err(|_| AppendError::DomainViolation(binding.size))?)
-    .bind(&binding.artifact_ref)
-    .execute(&mut **tx)
-    .await
-    .map_err(unique_violation_or_sqlx)?;
+    let sequence = i64::try_from(sequence).map_err(|_| AppendError::DomainViolation(sequence))?;
+    let size =
+        i64::try_from(binding.size).map_err(|_| AppendError::DomainViolation(binding.size))?;
+    let query = tx.query(
+        "INSERT INTO trellis_source_contents \
+         (scope_key, scope, sequence, batch_hash, size, artifact_ref) \
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    );
+    query
+        .bind(ledger)
+        .bind(sequence)
+        .bind(binding.batch_hash.as_slice())
+        .bind(size)
+        .bind(&binding.artifact_ref)
+        .execute(tx.conn())
+        .await
+        .map_err(unique_violation_or_sqlx)?;
     Ok(())
 }
 
@@ -387,20 +395,18 @@ pub async fn insert_source_content(
 ///
 /// # Errors
 /// [`ReadError`] on SQL failure or a malformed row.
-pub async fn source_content<'e>(
-    executor: impl PgExecutor<'e>,
-    scope: &[u8],
+pub async fn source_content(
+    tx: &mut ScopedTx,
+    ledger: &[u8],
     sequence: u64,
 ) -> Result<Option<SourceContentBinding>, ReadError> {
-    let sequence = i64::try_from(sequence).map_err(|_| ReadError::Malformed("sequence"))?;
-    let row: Option<(Vec<u8>, i64, String)> = sqlx::query_as(
-        "SELECT batch_hash, size, artifact_ref FROM trellis_source_contents \
-         WHERE scope = $1 AND sequence = $2",
-    )
-    .bind(scope)
-    .bind(sequence)
-    .fetch_optional(executor)
-    .await?;
+    let sequence = bigint(sequence, "sequence")?;
+    let query = tx.query_as::<(Vec<u8>, i64, String)>(statements::SOURCE_CONTENT);
+    let row = query
+        .bind(ledger)
+        .bind(sequence)
+        .fetch_optional(tx.conn())
+        .await?;
     row.map(|(hash, size, artifact_ref)| {
         Ok(SourceContentBinding {
             artifact_ref,

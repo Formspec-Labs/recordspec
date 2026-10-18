@@ -15,7 +15,7 @@ PYTHON ?= uv run --frozen --extra dev --project $(CURDIR)/$(TRELLIS_PY_DIR) pyth
 CARGO = cargo
 PYTEST = $(PYTHON) -m pytest
 
-.PHONY: all help build test test-rust test-python test-scripts test-postgres check-specs check-specs-strict check-verifier-isolation check-layering lint fmt clean
+.PHONY: all help build test test-rust test-python test-scripts test-postgres check-specs check-specs-strict check-verifier-isolation check-layering check-scope lint fmt clean
 
 all: build test
 
@@ -33,6 +33,7 @@ help:
 	@echo "  make check-specs-strict  Run check-specs + vector-renumbering guard (CI variant)"
 	@echo "  make check-verifier-isolation  Assert integrity-verify stays HPKE-clean (Core §16)"
 	@echo "  make check-layering Assert the generic server cannot reach the domain adapters (deny.toml)"
+	@echo "  make check-scope    ADR 0168 fence: no library forges a scope, opens a pool or bucket, or mints ids"
 	@echo "  make lint           Run Rust clippy"
 	@echo "  make fmt            Check Rust formatting"
 	@echo "  make clean          Clean build artifacts"
@@ -42,7 +43,7 @@ build:
 	@echo "Building Rust workspace..."
 	$(CARGO) build --workspace
 
-test: test-rust test-python test-scripts check-specs check-verifier-isolation check-layering
+test: test-rust test-python test-scripts check-specs check-verifier-isolation check-layering check-scope
 
 test-rust:
 	@echo "Running Rust tests..."
@@ -108,10 +109,19 @@ check-specs-strict:
 check-verifier-isolation:
 	@bash $(SCRIPTS_DIR)/check-verifier-isolation.sh
 
-# Layering is a build-graph property: deny.toml `wrappers` rules let only the
-# composition root (trellis-server) depend on the WOS/Formspec adapters.
+# Layering is a build-graph property: deny.toml `wrappers` rules let only the adapter
+# assembly (trellis-server) depend on the WOS/Formspec adapters, and only the Postgres adapter
+# and the binary composition root (trellis-main) depend on sqlx and object_store.
 check-layering:
 	$(CARGO) deny check bans
+
+# ADR 0168 §1.2, stack-common's shared fence: no library enables or forwards a
+# composition-root or testing feature, every library builds alone with all its features (so
+# none can call Deployment::new, Scope::fixture, ScopedPool::open or ScopedBucket::open), and
+# clippy's shared disallowed-methods list keeps pool and bucket builders, raw object access and
+# id minting in their owners (trellis-main carries the #[expect] for its builders).
+check-scope:
+	python3 ../stack-common/scripts/scope_fence.py --all-features
 
 lint:
 	@echo "Running Rust clippy..."

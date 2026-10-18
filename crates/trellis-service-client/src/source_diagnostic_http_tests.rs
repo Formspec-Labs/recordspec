@@ -80,7 +80,7 @@ async fn source_diagnostics_receipt_validation_returns_the_existing_refusal() {
     let body = r#"{"eventId":"synthetic-event","sequence":0,"canonicalEventHash":"sha256:abc","checkpointRef":"trellis://other_scope/checkpoints/synthetic"}"#;
     let expected = serde_json::from_str::<SubstrateAppendResult>(body)
         .unwrap()
-        .validate_for_event_append("case_123")
+        .validate_for_event_append(&crate::test_ledger("case_123"))
         .unwrap_err();
     let endpoint = test_server(move |_| response("application/json", body));
     let error = client(endpoint, tokens(usize::MAX))

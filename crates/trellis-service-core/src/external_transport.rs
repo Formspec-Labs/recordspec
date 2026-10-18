@@ -18,14 +18,14 @@ use integrity_seam::SecureRandom;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use stack_common_error::StackError;
-use stack_common_http::tenant::TenantScope;
+use stack_common_http::routes::Scoped;
 use std::sync::Arc;
 use trellis_core::external_attachment::{
     ExternalAppendLimits, ExternalAttachmentAppend, ExternalAttachmentHeader,
     RetainedExternalAttachment,
 };
 use trellis_server_ports::{
-    AttachmentLimits, AuthorizedScope, ComputeContext, ComputeSensitivity, ScopeAction,
+    AttachmentLimits, AuthorizedScope, ComputeContext, ComputeSensitivity, LedgerScope, ScopeAction,
 };
 use trellis_service_client::endpoints::ACCEPTED_ATTACHMENT;
 use trellis_service_client::{AppendActor, SubstrateAppendBody, SubstrateAppendResult};
@@ -75,7 +75,7 @@ pub(crate) struct WireRequest {
     original_bytes: String,
 }
 pub(crate) struct AuthorizedExternal {
-    scope: String,
+    scope: LedgerScope,
     request: WireRequest,
     payload: serde_json::Value,
     original: Vec<u8>,
@@ -124,12 +124,10 @@ fn selected_custody(
 
 pub(crate) async fn admit(
     state: &TrellisServerState,
-    scope: String,
-    tenant: &TenantScope,
+    identity: &crate::state::AuthenticatedRequest,
+    scope: LedgerScope,
     request: &mut Request,
 ) -> Result<String, StackError> {
-    let identity = state.bearer_identity(request.headers()).await?;
-    crate::http::validate_scope(&scope)?;
     let raw = to_bytes(
         std::mem::replace(request.body_mut(), Body::empty()),
         RAW_CAP,
@@ -182,8 +180,7 @@ pub(crate) async fn admit(
     authorization.validate()?;
     let permit = crate::auth::authorize_action(
         state,
-        &identity,
-        tenant,
+        identity,
         &scope,
         ScopeAction::Append,
         Some(&authorization),
@@ -214,10 +211,10 @@ pub(crate) async fn admit(
         "trellis-server",
         sensitivity,
     );
+    // The gate prefixes the scope key; `native_replay_call` reads the route at index 2.
     let partition = serde_json::to_string(&(
         permit.principal,
-        &permit.tenant_scope,
-        &scope,
+        scope.as_str(),
         "accepted-attachment",
         policy_fingerprint,
     ))
@@ -241,6 +238,7 @@ pub(crate) async fn admit(
     responses((status=201,description="Protected event and its checkpoint committed",body=SubstrateAppendResult),(status=400,description="Invalid closed request"),(status=401,description="Authentication refused"),(status=403,description="Exact permission refused"),(status=409,description="Replay or prefix conflict"),(status=503,description="Storage or selected recipient policy unavailable")),tag="events")]
 pub(crate) async fn append(
     State(state): State<TrellisServerState>,
+    Scoped(scoped): Scoped<crate::TrellisScoped>,
     Extension(authorized): Extension<Arc<AuthorizedExternal>>,
 ) -> Result<(StatusCode, Json<SubstrateAppendResult>), StackError> {
     let now = crate::now_timestamp()?;
@@ -257,7 +255,8 @@ pub(crate) async fn append(
     };
     let appended = crate::external_repository::append_with(
         &state,
-        authorized.scope.as_bytes(),
+        &scoped,
+        &authorized.scope,
         authorized.request.idempotency_key.as_bytes(),
         &authorized.compute,
         &factory,
@@ -265,7 +264,7 @@ pub(crate) async fn append(
     .await?;
     let event = appended.retained.event();
     let result = crate::ledger::append_result(
-        &authorized.scope,
+        authorized.scope.as_str(),
         event,
         crate::ledger::prior_event_hash(event)?,
         &appended.checkpoint,

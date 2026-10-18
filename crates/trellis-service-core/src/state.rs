@@ -1,43 +1,34 @@
 // Rust guideline compliant 2026-02-21
-//! Cloneable Axum state, env bootstrap, and health probe (TWREF-086 `state` split).
+//! Cloneable Axum state and env bootstrap (TWREF-086 `state` split).
+//!
+//! The router state holds configuration and verifiers only, never a ledger, pool or bucket: data
+//! is reached through the scoped handle each request's gate admits (ADR 0168 §1.2). Startup reads
+//! the environment into a [`Startup`]: the state, the deployment's scopes, and the storage the
+//! composition root opens.
 
 use std::env;
 use std::fs;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use axum::http::header::AUTHORIZATION;
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::Response;
 #[cfg(test)]
 use stack_common_auth::JwtVerifier;
 use stack_common_auth::{AccessTokenVerifier, VerifiedAccessIdentity};
 use stack_common_error::{ErrorCode, StackError};
-use stack_common_http::idempotency::{
-    HttpIdempotencyState, IdempotencyCall, IdempotencyDecision, IdempotencyDriverError,
-    IdempotencyFailure, IdempotencyOperation,
-};
-use stack_common_http::problem_response;
-use stack_common_http::tenant::{HeaderConfig, TenantHeaderConfigProvider, TenantScope};
-use stack_common_idempotency::{
-    HttpReplayScope, HttpReplayStore, InMemoryHttpReplayStore, ReplayOutcome,
-    ScopedHttpReplayStore, ScopedReplayOutcome, StoredResponse,
-};
-use stack_common_ops::{ComponentHealth, HealthProbe};
+use stack_common_http::idempotency::IdempotencyCall;
+use stack_common_idempotency::{HttpReplayScope, InMemoryHttpReplayStore, ScopedHttpReplayStore};
+use stack_common_object_store::S3ObjectConfig;
+use stack_common_scope::{DeploymentConfig, ScopeKey};
 use trellis_export_writer::TrellisTimestamp;
-use trellis_server_ports::{
-    ArtifactStore, EventAdmissionPolicy, ExportProfile, NativeCloseout, S3CompatibleArtifactStore,
-    S3ObjectConfig, ScopeAuthorizer,
-};
+use trellis_server_ports::{EventAdmissionPolicy, ExportProfile, NativeCloseout, ScopeAuthorizer};
 
 use crate::ServerSigningKey;
 #[cfg(test)]
 use crate::TrellisClaims;
-use crate::adapters::{EventTypeCatalog, ServerAdapters, TenantHeaders};
+use crate::adapters::{EventTypeCatalog, ServerAdapters};
 use crate::admission::AllowAllScopeAuthorizer;
 use crate::append::{AppendRunner, DefaultAppendRunner};
-use crate::artifacts::InMemoryArtifactStore;
-use crate::event_repository::{EventRepository, InMemoryEventRepository, PostgresEventRepository};
 use crate::oidc_startup::StartupAuth;
 
 /// Explicit verifier selection; verification never falls back between modes.
@@ -93,13 +84,14 @@ pub struct TrellisServerState {
     pub(crate) external_attachment_admission:
         Arc<dyn trellis_server_ports::ExternalAttachmentAdmission>,
     pub(crate) external_attachment_random: Arc<dyn integrity_seam::SecureRandom>,
-    pub(crate) repository: Arc<dyn EventRepository>,
-    pub(crate) artifact_store: Arc<dyn ArtifactStore<Error = StackError>>,
     pub(crate) admission_policy: Arc<dyn EventAdmissionPolicy<Error = StackError>>,
     pub(crate) authorizer: Arc<dyn ScopeAuthorizer<Error = StackError>>,
+    /// The Ledger purpose key: signs events and checkpoints.
     pub(crate) signing_key: ServerSigningKey,
-    tenant_headers: TenantHeaders,
-    replay_store: Arc<InMemoryHttpReplayStore>,
+    /// The Manifest purpose key: signs export manifests (Core `artifact_type = "manifest"`).
+    /// The Ledger key until [`Self::with_manifest_key`]; production refuses that (ADR 0169 §1.2).
+    pub(crate) manifest_key: ServerSigningKey,
+    pub(crate) replay_store: Arc<InMemoryHttpReplayStore>,
     authentication: Authentication,
     /// True when startup selected current provider verification and exact resource grants.
     production_like_scope_posture: bool,
@@ -116,34 +108,24 @@ pub struct TrellisServerState {
 }
 
 impl TrellisServerState {
+    /// State with the shipped adapters and no authentication: every request is admitted to the
+    /// deployment's one scope (or the one its `x-stack-scope-key` selects). Router construction
+    /// refuses it beside external authentication or a production posture.
+    ///
+    /// The ledgers and buckets are not part of the state: the composition root moves them into
+    /// the deployment it passes to [`crate::router`], so several servers (before and after a key
+    /// rotation, say) can serve one ledger store.
     #[must_use]
-    pub fn in_memory(signing_key: ServerSigningKey, adapters: ServerAdapters) -> Self {
-        Self::new(
-            Arc::new(InMemoryEventRepository::new()),
-            signing_key,
-            adapters,
-        )
-    }
-
-    /// State over a caller-supplied repository, so several servers (for example before and
-    /// after a key rotation) can share one ledger.
-    #[must_use]
-    pub fn new(
-        repository: Arc<dyn EventRepository>,
-        signing_key: ServerSigningKey,
-        adapters: ServerAdapters,
-    ) -> Self {
+    pub fn new(signing_key: ServerSigningKey, adapters: ServerAdapters) -> Self {
         Self {
             completion: None,
             external_attachment_recipients: None,
             external_attachment_admission: adapters.external_attachment_admission,
             external_attachment_random: Arc::new(integrity_seam::OsSecureRandom),
-            repository,
-            artifact_store: Arc::new(InMemoryArtifactStore::default()),
             admission_policy: adapters.admission_policy,
             authorizer: Arc::new(AllowAllScopeAuthorizer),
+            manifest_key: signing_key.clone(),
             signing_key,
-            tenant_headers: adapters.tenant_headers,
             replay_store: Arc::new(InMemoryHttpReplayStore::new()),
             authentication: Authentication::Unconfigured,
             production_like_scope_posture: false,
@@ -154,6 +136,24 @@ impl TrellisServerState {
             native_closeout: adapters.native_closeout,
             source_content: None,
         }
+    }
+
+    /// Signs export manifests with `manifest_key`, its own purpose key (ADR 0169 §1.2).
+    #[must_use]
+    pub fn with_manifest_key(mut self, manifest_key: ServerSigningKey) -> Self {
+        self.manifest_key = manifest_key;
+        self
+    }
+
+    /// Every registry row an export carries: the Ledger key's history, then the Manifest key's
+    /// when it is a different key. Each is its own supersession chain.
+    #[must_use]
+    pub fn signing_key_registry(&self) -> Vec<trellis_export_writer::SigningKeyRegistryEntry> {
+        let mut rows = self.signing_key.registry_entries();
+        if self.manifest_key.kid_hex() != self.signing_key.kid_hex() {
+            rows.extend(self.manifest_key.registry_entries());
+        }
+        rows
     }
 
     /// Selects the separate operator signer that enables the completion seal, and the only
@@ -170,12 +170,12 @@ impl TrellisServerState {
 
     pub(crate) async fn reserve_completion_request(
         &self,
-        tenant: &TenantScope,
         principal: &str,
-        scope: &str,
+        scope: &trellis_server_ports::LedgerScope,
         request: &trellis_service_client::CompletionRequest,
     ) -> Result<(), StackError> {
-        let partition = serde_json::to_string(&(principal, tenant, scope, "completion"))
+        // The ledger scope names its scope key, so the partition is per scope and principal.
+        let partition = serde_json::to_string(&(principal, scope.as_str(), "completion"))
             .map_err(|_| StackError::internal("completion replay partition failed"))?;
         let body = serde_json::to_vec(request)
             .map_err(|_| StackError::bad_request("completion trigger invalid"))?;
@@ -227,15 +227,6 @@ impl TrellisServerState {
         self
     }
 
-    #[must_use]
-    pub fn with_artifact_store(
-        mut self,
-        artifact_store: Arc<dyn ArtifactStore<Error = StackError>>,
-    ) -> Self {
-        self.artifact_store = artifact_store;
-        self
-    }
-
     #[cfg(test)]
     #[must_use]
     pub fn with_jwt_verifier(mut self, verifier: JwtVerifier<TrellisClaims>) -> Self {
@@ -246,8 +237,8 @@ impl TrellisServerState {
     /// Selects injected external access-token verification without local-token fallback.
     ///
     /// Supply the maintained current-authority verifier when revocation is required.
-    /// The host must also inject an authorizer that maps identities and grants exact
-    /// tenant, scope, action and actor delegation; router construction rejects allow-all.
+    /// The host must also inject an authorizer that maps identities to their bound scopes and
+    /// grants exact ledger, action and actor delegation; router construction rejects allow-all.
     #[must_use]
     pub fn with_access_token_verifier(mut self, verifier: Arc<dyn AccessTokenVerifier>) -> Self {
         self.authentication = Authentication::External(verifier);
@@ -312,8 +303,11 @@ impl TrellisServerState {
     }
 
     #[must_use]
-    pub(crate) fn append_coordinator(&self) -> crate::append::AppendCoordinator<'_> {
-        crate::append::AppendCoordinator::new(self)
+    pub(crate) fn append_coordinator<'a>(
+        &'a self,
+        scoped: &'a crate::TrellisScoped,
+    ) -> crate::append::AppendCoordinator<'a> {
+        crate::append::AppendCoordinator::new(self, scoped)
     }
 
     pub(crate) async fn bearer_identity(
@@ -360,209 +354,207 @@ impl TrellisServerState {
     }
 }
 
-impl TenantHeaderConfigProvider for TrellisServerState {
-    fn tenant_header_config(&self) -> HeaderConfig {
-        self.tenant_headers.primary()
-    }
-
-    fn extract_tenant_scope(&self, headers: &HeaderMap) -> Result<TenantScope, StackError> {
-        self.tenant_headers.extract(headers)
-    }
-}
-
-#[async_trait]
-impl HttpIdempotencyState for TrellisServerState {
-    type Error = StackError;
-
-    async fn reserve_http_idempotency(
-        &self,
-        call: &IdempotencyCall,
-    ) -> Result<IdempotencyDecision, IdempotencyDriverError<Self::Error>> {
-        if native_replay_call(call) {
-            return match self
-                .replay_store
-                .check_or_record(
-                    &NativeReplayScope(tenant_replay_scope(&self.tenant_headers, call)),
-                    "",
-                    &call.request.key,
-                    &call.request.request_hash,
-                )
-                .await
-            {
-                Ok(ScopedReplayOutcome::Recorded) => Ok(IdempotencyDecision::Fresh),
-                Ok(ScopedReplayOutcome::Replayed { response }) => {
-                    Ok(IdempotencyDecision::Replay(response))
-                }
-                Err(error) if error.status() == StatusCode::CONFLICT => {
-                    Ok(IdempotencyDecision::Conflict)
-                }
-                Err(error) => Err(IdempotencyDriverError::store(error)),
-            };
-        }
-        match self
-            .replay_store
-            .check(
-                &tenant_replay_scope(&self.tenant_headers, call),
-                &call.request.key,
-                &call.request.request_hash,
-            )
-            .await
-            .map_err(IdempotencyDriverError::store)?
-        {
-            ReplayOutcome::Fresh => Ok(IdempotencyDecision::Fresh),
-            ReplayOutcome::Replay(response) => Ok(IdempotencyDecision::Replay(response)),
-            ReplayOutcome::Conflict => Ok(IdempotencyDecision::Conflict),
-        }
-    }
-
-    async fn record_http_idempotency_response(
-        &self,
-        call: &IdempotencyCall,
-        response: StoredResponse,
-    ) -> Result<(), IdempotencyDriverError<Self::Error>> {
-        if native_replay_call(call) {
-            return self
-                .replay_store
-                .record_response(
-                    &NativeReplayScope(tenant_replay_scope(&self.tenant_headers, call)),
-                    "",
-                    &call.request.key,
-                    &call.request.request_hash,
-                    response,
-                )
-                .await
-                .map_err(IdempotencyDriverError::store);
-        }
-        self.replay_store
-            .record(
-                &tenant_replay_scope(&self.tenant_headers, call),
-                &call.request.key,
-                &call.request.request_hash,
-                response,
-            )
-            .await
-            .map_err(IdempotencyDriverError::store)
-    }
-
-    fn idempotency_failure_response(&self, failure: IdempotencyFailure) -> Response {
-        let error = match failure {
-            IdempotencyFailure::MissingKey => StackError::bad_request("idempotency key required"),
-            IdempotencyFailure::RequestBodyCaptureFailed => {
-                StackError::bad_request("request body capture failed")
-            }
-            IdempotencyFailure::Conflict => {
-                StackError::conflict("idempotency key reused with a different body")
-            }
-            IdempotencyFailure::ResponseBodyCaptureFailed => {
-                StackError::internal("response body capture failed")
-            }
-        };
-        problem_response(error)
-    }
-
-    fn idempotency_store_error_response(
-        &self,
-        _operation: IdempotencyOperation,
-        error: Self::Error,
-    ) -> Response {
-        problem_response(error)
-    }
-}
-
-fn tenant_replay_scope(tenant_headers: &TenantHeaders, call: &IdempotencyCall) -> String {
-    if let Some(partition) = &call.replay_partition {
-        // Length-prefix the trusted partition so arbitrary principal/route text cannot collide.
-        return format!("{}:{}{}", partition.len(), partition, call.request.scope);
-    }
-    let tenant = tenant_headers
-        .extract(&call.headers)
-        .map_or_else(|_| "unknown-tenant".to_owned(), |scope| scope.tenant);
-    format!("{tenant}:{}", call.request.scope)
-}
-
-/// Builds a server state from environment variables.
+/// What startup read from the environment: the router state, the deployment's scopes and the
+/// storage the composition root opens.
 ///
-/// Required unless `TRELLIS_STORAGE=memory`:
-/// - `TRELLIS_DATABASE_URL`
+/// Reading it opens nothing: no pool, no bucket, no network. The composition root (`trellis-main`)
+/// opens [`StorageConfig`]'s database and buckets for [`Startup::deployment`]'s cell, builds the
+/// [`crate::TrellisStore`], and moves it into the `Deployment` it serves.
+pub struct Startup {
+    pub state: TrellisServerState,
+    pub deployment: DeploymentConfig,
+    pub storage: StorageConfig,
+}
+
+/// Where the deployment's ledgers and objects live.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StorageConfig {
+    /// Postgres, or `None` for in-memory ledgers (`TRELLIS_STORAGE=memory`).
+    pub database: Option<DatabaseConfig>,
+    /// Trellis's own bucket, or `None` for an in-memory bucket.
+    pub artifacts: Option<ObjectStoreConfig>,
+    /// The bucket WOS prepares Source batches in, when Source content is composed.
+    pub source_content: Option<ObjectStoreConfig>,
+}
+
+/// The serving role's Postgres connection (ADR 0168 §6.5). Serving never migrates, so it holds
+/// no owner credential; `trellis-server migrate` reads `TRELLIS_MIGRATION_DATABASE_URL` itself.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DatabaseConfig {
+    /// The serving role: owns no table, neither superuser nor `BYPASSRLS`.
+    pub url: String,
+}
+
+impl std::fmt::Debug for DatabaseConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // URLs carry credentials.
+        f.debug_struct("DatabaseConfig").finish_non_exhaustive()
+    }
+}
+
+/// An S3-compatible bucket and the key prefix the deployment's objects sit under.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObjectStoreConfig {
+    pub s3: S3ObjectConfig,
+    pub prefix: String,
+}
+
+/// Reads the server's configuration from environment variables.
 ///
 /// Always required:
-/// - `TRELLIS_SIGNING_KEY_COSE_PATH`
+/// - `TRELLIS_SIGNING_KEY_COSE_PATH` (the Ledger key: events and checkpoints)
+/// - `TRELLIS_DEPLOYMENT_FILE` (the deployment's cell and scopes, ADR 0168 §3.3)
 /// - `TRELLIS_OIDC_CONFIG_FILE` (strict current provider and exact resource grants)
 ///
+/// Required unless `TRELLIS_STORAGE=memory`:
+/// - `TRELLIS_DATABASE_URL` (the serving role; `trellis-server migrate` ran as the owner first)
+///
 /// Optional:
+/// - `TRELLIS_SIGNING_KEY_HISTORY_PATH`, `TRELLIS_MANIFEST_SIGNING_KEY_HISTORY_PATH` (each key's
+///   public history, oldest first, ending at the key)
+/// - `TRELLIS_MANIFEST_SIGNING_KEY_COSE_PATH` (the Manifest key: export manifests); the Ledger key
+///   signs manifests without it, which production refuses (ADR 0169 §1.2)
 /// - `TRELLIS_PROFILE=development|production` (default `production`); production refuses in-memory
-///   storage, a signing key file other users can read, and any publicly known fixture signing key
-/// - `TRELLIS_STORAGE=memory` (in-memory repository; skips `TRELLIS_DATABASE_URL`)
+///   storage, a signing key file other users can read, any publicly known fixture signing key,
+///   and one public key serving both purposes
+/// - `TRELLIS_STORAGE=memory` (in-memory ledgers; skips the database URLs)
 /// - `TRELLIS_COMPLETION_OPERATOR_CONFIG_FILE` (completion operator signing keys)
 /// - `TRELLIS_SOURCE_CONTENT_CONFIG_FILE` (Source-content publisher, pins, object store, native policy)
-/// - `TRELLIS_ARTIFACT_BUCKET`
-/// - `TRELLIS_ARTIFACT_PREFIX`
-/// - `TRELLIS_ARTIFACT_ENDPOINT`
-/// - `TRELLIS_ARTIFACT_REGION`
+/// - `TRELLIS_ARTIFACT_BUCKET`, `TRELLIS_ARTIFACT_PREFIX`, `TRELLIS_ARTIFACT_ENDPOINT`,
+///   `TRELLIS_ARTIFACT_REGION` (Trellis's own bucket; in memory without a bucket)
 ///
 /// # Errors
-/// Returns an error when OIDC configuration is missing or invalid, legacy auth
-/// environment settings are supplied, or signing-key/backend setup fails.
-pub async fn state_from_env(adapters: ServerAdapters) -> Result<TrellisServerState, StackError> {
-    // Qualify required authentication before reading signing keys or opening storage.
-    let authentication = StartupAuth::from_env()?;
+/// Returns an error when OIDC or deployment configuration is missing or invalid, legacy auth
+/// environment settings are supplied, or the signing key is refused.
+pub fn startup_from_env(adapters: ServerAdapters) -> Result<Startup, StackError> {
+    let deployment = deployment_from_env()?;
+    // Qualify required authentication before reading signing keys.
+    let authentication = StartupAuth::from_env(&deployment)?;
     let completion = crate::completion_startup::StartupCompletion::from_env(&adapters)?;
     let trellis_storage_is_memory = matches!(env::var("TRELLIS_STORAGE").as_deref(), Ok("memory"));
 
-    let signing_key_path = env::var("TRELLIS_SIGNING_KEY_COSE_PATH")
-        .map_err(|_| StackError::bad_request("TRELLIS_SIGNING_KEY_COSE_PATH is required"))?;
     let profile = crate::posture::profile_from_env()?;
-    let signing_key_bytes = crate::posture::read_signing_key(profile, &signing_key_path)?;
-    let signing_key =
-        ServerSigningKey::from_cose_key_bytes(signing_key_bytes, TrellisTimestamp::new(0, 0)?)?;
-    crate::posture::check(profile, trellis_storage_is_memory, &signing_key)?;
-    let signing_key = match env_optional("TRELLIS_SIGNING_KEY_HISTORY_PATH") {
-        Some(path) => {
-            let history = fs::read(&path).map_err(|error| {
-                StackError::bad_request(format!(
-                    "failed to read TRELLIS_SIGNING_KEY_HISTORY_PATH: {error}"
-                ))
-            })?;
-            signing_key.with_history_json(&history)?
-        }
-        None => signing_key,
-    };
+    let signing_key = purpose_key_from_env(
+        profile,
+        "TRELLIS_SIGNING_KEY_COSE_PATH",
+        "TRELLIS_SIGNING_KEY_HISTORY_PATH",
+    )?
+    .ok_or_else(|| StackError::bad_request("TRELLIS_SIGNING_KEY_COSE_PATH is required"))?;
+    let manifest_key = purpose_key_from_env(
+        profile,
+        "TRELLIS_MANIFEST_SIGNING_KEY_COSE_PATH",
+        "TRELLIS_MANIFEST_SIGNING_KEY_HISTORY_PATH",
+    )?
+    .unwrap_or_else(|| signing_key.clone());
+    crate::posture::check(
+        profile,
+        trellis_storage_is_memory,
+        &signing_key,
+        &manifest_key,
+    )?;
 
-    let repository: Arc<dyn EventRepository> = if trellis_storage_is_memory {
-        Arc::new(InMemoryEventRepository::new())
+    let database = if trellis_storage_is_memory {
+        None
     } else {
-        let database_url = env::var("TRELLIS_DATABASE_URL")
-            .map_err(|_| StackError::bad_request("TRELLIS_DATABASE_URL is required"))?;
-        let pool = trellis_store_postgres_async::build_pool(&database_url, 10)
-            .await
-            .map_err(|error| StackError::unavailable(format!("postgres pool: {error}")))?;
-        trellis_store_postgres_async::run_migrations(&pool)
-            .await
-            .map_err(|error| StackError::unavailable(format!("postgres migrations: {error}")))?;
-        Arc::new(PostgresEventRepository::new(pool))
+        Some(DatabaseConfig {
+            url: env_optional("TRELLIS_DATABASE_URL")
+                .ok_or_else(|| StackError::bad_request("TRELLIS_DATABASE_URL is required"))?,
+        })
     };
-
-    let mut state = TrellisServerState::new(repository, signing_key, adapters);
-    if let Some(artifact_store) = artifact_store_from_env() {
-        state = state.with_artifact_store(artifact_store);
-    }
-
-    let state = authentication.apply(state);
-    Ok(match completion {
+    let state = authentication
+        .apply(TrellisServerState::new(signing_key, adapters).with_manifest_key(manifest_key));
+    let (state, source_content) = match completion {
         Some(completion) => completion.apply(state),
-        None => state,
+        None => (state, None),
+    };
+    Ok(Startup {
+        state,
+        deployment,
+        storage: StorageConfig {
+            database,
+            artifacts: artifact_store_from_env(),
+            source_content,
+        },
     })
 }
 
-fn artifact_store_from_env() -> Option<Arc<dyn ArtifactStore<Error = StackError>>> {
+/// One purpose's signing key from `key_variable` (absent when unset), with the public history
+/// `history_variable` names applied when set.
+fn purpose_key_from_env(
+    profile: stack_common_posture::Profile,
+    key_variable: &str,
+    history_variable: &str,
+) -> Result<Option<ServerSigningKey>, StackError> {
+    let Some(path) = env_optional(key_variable) else {
+        return Ok(None);
+    };
+    let bytes = crate::posture::read_signing_key(profile, key_variable, &path)?;
+    let key = ServerSigningKey::from_cose_key_bytes(bytes, TrellisTimestamp::new(0, 0)?)?;
+    let Some(history) = env_optional(history_variable) else {
+        return Ok(Some(key));
+    };
+    let history = fs::read(&history).map_err(|error| {
+        StackError::bad_request(format!("failed to read {history_variable}: {error}"))
+    })?;
+    key.with_history_json(&history).map(Some)
+}
+
+/// Longest deployment file accepted, in bytes.
+const MAX_DEPLOYMENT_FILE: u64 = 1024 * 1024;
+
+/// Reads `TRELLIS_DEPLOYMENT_FILE`: the deployment's cell and the scopes it serves.
+///
+/// # Errors
+/// Refuses a missing, oversized or malformed file, or scopes whose keys collide.
+pub fn deployment_from_env() -> Result<DeploymentConfig, StackError> {
+    let path = env_optional("TRELLIS_DEPLOYMENT_FILE")
+        .ok_or_else(|| StackError::bad_request("TRELLIS_DEPLOYMENT_FILE is required"))?;
+    let invalid = || StackError::bad_request("TRELLIS_DEPLOYMENT_FILE is not a deployment");
+    let file = fs::File::open(&path).map_err(|_| invalid())?;
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(
+        &mut std::io::Read::take(file, MAX_DEPLOYMENT_FILE + 1),
+        &mut bytes,
+    )
+    .map_err(|_| invalid())?;
+    if bytes.len() as u64 > MAX_DEPLOYMENT_FILE {
+        return Err(invalid());
+    }
+    let config: DeploymentConfig = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
+    deployment_keys(&config)?;
+    Ok(config)
+}
+
+/// The keys of the deployment's scopes, sorted; `Deployment::new` makes the remaining checks
+/// (no scope listed twice, the public scope listed) when the composition root builds it.
+///
+/// # Errors
+/// A bad request when a name breaks the scope grammar.
+pub(crate) fn deployment_keys(config: &DeploymentConfig) -> Result<Vec<ScopeKey>, StackError> {
+    let mut keys = config
+        .scopes
+        .iter()
+        .map(|scope| {
+            scope
+                .key()
+                .map_err(|e| StackError::bad_request(format!("deployment: {e}")))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    keys.sort();
+    Ok(keys)
+}
+
+fn artifact_store_from_env() -> Option<ObjectStoreConfig> {
     let bucket = env_optional("TRELLIS_ARTIFACT_BUCKET")?;
     let prefix = env_optional("TRELLIS_ARTIFACT_PREFIX").unwrap_or_else(|| "trellis".to_string());
-    let config = S3ObjectConfig {
-        bucket,
-        endpoint: env_optional("TRELLIS_ARTIFACT_ENDPOINT"),
-        region: env_optional("TRELLIS_ARTIFACT_REGION"),
-    };
-    Some(Arc::new(S3CompatibleArtifactStore::new(config, prefix)))
+    Some(ObjectStoreConfig {
+        s3: S3ObjectConfig {
+            bucket,
+            endpoint: env_optional("TRELLIS_ARTIFACT_ENDPOINT"),
+            region: env_optional("TRELLIS_ARTIFACT_REGION"),
+        },
+        prefix,
+    })
 }
 
 fn env_optional(name: &str) -> Option<String> {
@@ -572,58 +564,27 @@ fn env_optional(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-#[derive(Clone)]
-pub(crate) struct TrellisHealthProbe {
-    state: TrellisServerState,
-}
-
-impl TrellisHealthProbe {
-    pub(crate) fn new(state: TrellisServerState) -> Self {
-        Self { state }
-    }
-}
-
-#[async_trait]
-impl HealthProbe for TrellisHealthProbe {
-    async fn check(&self) -> ComponentHealth {
-        let mut issues = Vec::new();
-        if let Err(error) = self.state.repository.head_checkpoint(b"__healthz__").await {
-            issues.push(format!("repository: {error}"));
-        }
-        let probe_key = "__healthz__/artifact-roundtrip";
-        let probe_bytes = b"trellis-health-probe";
-        match self.state.artifact_store.put(probe_key, probe_bytes).await {
-            Ok(artifact_ref) => match self.state.artifact_store.get(&artifact_ref).await {
-                Ok(Some(bytes)) if bytes == probe_bytes => {}
-                Ok(Some(_)) => issues.push("artifact-store: roundtrip bytes mismatch".into()),
-                Ok(None) => issues.push("artifact-store: stored object missing".into()),
-                Err(error) => issues.push(format!("artifact-store read: {error}")),
-            },
-            Err(error) => issues.push(format!("artifact-store write: {error}")),
-        }
-        if issues.is_empty() {
-            ComponentHealth::healthy("trellis-server", "repository and artifact store reachable")
-        } else {
-            ComponentHealth::degraded("trellis-server", issues.join("; "))
-        }
-    }
-}
-
-// This partition is minted by the authenticated typed middleware, never a request header.
-fn native_replay_call(call: &IdempotencyCall) -> bool {
+/// Whether the trusted partition names the accepted-attachment route.
+///
+/// The gate mints the partition as `{scope key}:{principal}` (never from a request header), and
+/// the accepted-attachment admission's principal is the JSON tuple
+/// `(principal, ledger scope, "accepted-attachment", policy fingerprint)`.
+pub(crate) fn native_replay_call(call: &IdempotencyCall) -> bool {
     call.replay_partition
         .as_deref()
-        .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+        .and_then(|value| value.split_once(':'))
+        .and_then(|(_, principal)| serde_json::from_str::<serde_json::Value>(principal).ok())
         .and_then(|value| {
             value
                 .as_array()
-                .and_then(|values| values.get(3))
+                .and_then(|values| values.get(2))
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned)
         })
         .is_some_and(|route| route == "accepted-attachment")
 }
-struct NativeReplayScope(String);
+
+pub(crate) struct NativeReplayScope(pub(crate) String);
 impl HttpReplayScope for NativeReplayScope {
     fn replay_scope_id(&self) -> String {
         self.0.clone()

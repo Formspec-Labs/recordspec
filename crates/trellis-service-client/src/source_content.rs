@@ -52,6 +52,11 @@ pub struct PreparedSourceContentBatchV1 {
 }
 
 /// Exact native and independently selected provider identity for a committed batch.
+///
+/// It names no scope: the batch is bound to its ledger by `native_prefix_digest`, over events
+/// that each sign their ledger scope (`<scope key>.<ledger id>`, ADR 0168 §1.6), and its object
+/// lives under the admitted scope's key; the old tenant, workspace, environment and cell routing
+/// fields bound nothing and are gone.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SourceContentIdentityV1 {
@@ -71,10 +76,6 @@ pub struct SourceContentIdentityV1 {
     pub recipient_set_sha256: [u8; 32],
     pub workflow_url: String,
     pub workflow_version: String,
-    pub tenant_id: String,
-    pub workspace_id: String,
-    pub environment_id: String,
-    pub cell_id: String,
     pub source_id: String,
     pub service_binding_id: String,
 }
@@ -156,7 +157,7 @@ pub const MAX_SOURCE_CONTENT_RECORDS: usize = 32;
 /// What WOS asserts about the batch object it wrote, built once at record build.
 ///
 /// Every append attempt sends it unchanged in `SubstrateAppendBody::source_content`. The
-/// object's address is not part of it: Trellis derives the key from its own tenant scope and
+/// object's address is not part of it: Trellis derives the key from the request's scope and
 /// `selection.preparation_key`. `hash` guards the stored bytes and `preparation_key` their meaning.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -235,10 +236,6 @@ pub(crate) mod tests {
             recipient_set_sha256: [6; 32],
             workflow_url: "urn:test:workflow".into(),
             workflow_version: "1".into(),
-            tenant_id: "tenant".into(),
-            workspace_id: "workspace".into(),
-            environment_id: "environment".into(),
-            cell_id: "cell".into(),
             source_id: "source".into(),
             service_binding_id: "binding".into(),
         };
@@ -342,13 +339,7 @@ pub(crate) mod tests {
     fn append_body_omits_the_claim_when_absent_and_carries_it_when_present() {
         use crate::{AppendActor, ComputeContext, SubstrateAppendRequest};
         let request = SubstrateAppendRequest::new_json(
-            "case_123",
-            stack_common_http::tenant::TenantScope {
-                tenant: "t".into(),
-                workspace: "w".into(),
-                environment: "e".into(),
-                cell: "c".into(),
-            },
+            crate::test_ledger("case_123"),
             "wos.provenance.recorded",
             "key",
             AppendActor::service("wos-server"),

@@ -8,7 +8,6 @@
 use std::sync::Arc;
 
 use stack_common_error::StackError;
-use stack_common_http::tenant::HeaderConfig;
 use trellis_admission_formspec::accepted_attachment::{
     FormspecAttachmentAdmission, accepted_attachment_event_type_spec,
 };
@@ -19,7 +18,7 @@ use trellis_server_ports::{EventAdmissionPolicy, NativeCloseout};
 
 use crate::{
     AdmissionRouter, PreparedSourceContentBatchV1, ServerAdapters, SourceContentBatchChecker,
-    SourceContentParts, SourceContentSelection, StructuralSourcePublicationVerifier, TenantHeaders,
+    SourceContentParts, SourceContentSelection, StructuralSourcePublicationVerifier,
 };
 
 /// Source-content owner ports for tests that never reach the owner.
@@ -84,7 +83,6 @@ pub(crate) fn adapters() -> ServerAdapters {
             batch_checker: Arc::new(Inert),
             structural: Arc::new(Inert),
         }),
-        tenant_headers: TenantHeaders::new(HeaderConfig::wos()).or_else(HeaderConfig::formspec()),
     }
 }
 

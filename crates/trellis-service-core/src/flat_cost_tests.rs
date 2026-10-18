@@ -6,8 +6,11 @@ use std::sync::atomic::{AtomicBool, AtomicUsize};
 
 use super::*;
 use crate::repository_probes::{
-    Counts, CountingArtifactStore, CountingRepository, Fault, FaultyRepository,
+    CountObjectBytes, CountingLedgers, Counts, Fault, FaultyLedgers, HookedStore,
 };
+use crate::test_support::ledger;
+use trellis_server_ports::Ledgers;
+use trellis_store_postgres_async::PgLedgers;
 
 const APPENDS: u64 = 1024;
 
@@ -17,7 +20,7 @@ type TableDelta = (String, i64, i64);
 fn append_command(scope: &str, key: &str) -> append::AppendCommand {
     let body: SubstrateAppendBody = serde_json::from_slice(&append_body(key)).unwrap();
     append::AppendCommand {
-        scope: scope.to_string(),
+        scope: ledger(scope),
         event_type: body.event_type,
         idempotency_key: body.idempotency_key,
         payload: body.payload,
@@ -36,27 +39,21 @@ fn cbor_uint_len(value: u64) -> u64 {
     }
 }
 
-fn counted_state(
-    repository: Arc<dyn EventRepository>,
-) -> (TrellisServerState, Arc<Counts>) {
+fn counted_state(ledgers: Arc<dyn Ledgers>) -> (Fixture, Arc<Counts>) {
     let counts = Arc::new(Counts::default());
-    let state = TrellisServerState::new(
-        Arc::new(CountingRepository {
-            inner: repository,
+    let state = Fixture::over(
+        TrellisServerState::new(test_signing_key(), crate::test_adapters::adapters()),
+        Arc::new(CountingLedgers {
+            inner: ledgers,
             counts: counts.clone(),
         }),
-        test_signing_key(),
-        crate::test_adapters::adapters(),
-    )
-    .with_artifact_store(Arc::new(CountingArtifactStore {
-        inner: Arc::new(crate::artifacts::InMemoryArtifactStore::default()),
-        counts: counts.clone(),
-    }));
+        HookedStore::new(CountObjectBytes(counts.clone())),
+    );
     (state, counts)
 }
 
 /// Appends [`APPENDS`] events to one scope and returns what each append cost.
-async fn costs_of_each_append(state: &TrellisServerState, counts: &Counts) -> Vec<[u64; 4]> {
+async fn costs_of_each_append(state: &Fixture, counts: &Counts) -> Vec<[u64; 4]> {
     let mut costs = Vec::new();
     for index in 1..=APPENDS {
         let before = counts.snapshot();
@@ -110,7 +107,7 @@ fn assert_cost_is_flat(costs: &[[u64; 4]], first_append: u64) {
 /// exactly the event and its checkpoint, and writes no object bytes.
 #[tokio::test]
 async fn append_cost_is_flat_in_ledger_length() {
-    let (state, counts) = counted_state(Arc::new(InMemoryEventRepository::new()));
+    let (state, counts) = counted_state(Arc::new(MemoryLedgers::new()));
     let costs = costs_of_each_append(&state, &counts).await;
     assert_eq!(costs[0][0], 0, "the first append reads nothing: there is no head");
     assert_eq!(costs[0][1], 2, "the first append writes the event and its checkpoint");
@@ -124,7 +121,7 @@ async fn append_cost_is_flat_in_ledger_length() {
         .unwrap()
         .expect("head");
     assert_eq!(head.tree_size, APPENDS);
-    let zip = export::assemble(&state, b"case_flat", &head)
+    let zip = crate::test_support::assemble(&state, b"case_flat", &head)
         .await
         .expect("export of the whole ledger");
     assert!(export_bundle_cryptographically_verified(&zip));
@@ -134,7 +131,6 @@ async fn append_cost_is_flat_in_ledger_length() {
 /// the index tuples an append fetches do not depend on the ledger's length.
 #[tokio::test]
 async fn append_cost_is_flat_in_ledger_length_on_postgres() {
-    use stack_common_postgres::testing::EphemeralCluster;
     mod support {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -142,34 +138,33 @@ async fn append_cost_is_flat_in_ledger_length_on_postgres() {
         ));
     }
 
-    let cluster = EphemeralCluster::start_required();
     // One connection serves the appends and the statistics reads: a backend flushes its own
     // counters only on request, and `pg_stat_force_next_flush` asks from inside that backend.
-    let pool = support::tls_pool(&cluster, 1).await;
-    trellis_store_postgres_async::run_migrations(&pool).await.unwrap();
-    let (state, counts) = counted_state(Arc::new(PostgresEventRepository::new(pool.clone())));
+    let db = support::database(1).await;
+    let pool = db.app.clone();
+    let (state, counts) = counted_state(Arc::new(PgLedgers::new(db.scoped.clone())));
 
-    // A deployment-wide ledger already holds other scopes' rows. Tiny tables are scanned by any
-    // planner; this one must show that an append stays on the indexes once there is data.
-    sqlx::query(
-        "INSERT INTO trellis_events (scope, sequence, canonical_event, signed_event, \
-         idempotency_key, canonical_event_hash) \
-         SELECT convert_to('filler-' || (g / 1000), 'UTF8'), g % 1000, '\\x01'::bytea, \
-         '\\x02'::bytea, convert_to('k' || g, 'UTF8'), decode(repeat('ab', 32), 'hex') \
-         FROM generate_series(0, 99999) AS g",
+    // A shared deployment's tables already hold 100 other ledgers of 1000 events, each under its
+    // own scope: the spread that misled the planner before the schema's dependency statistics.
+    // Tiny tables are scanned by any planner; this one must show that an append stays on the
+    // indexes once there is data, with row security on.
+    sqlx::raw_sql(
+        "CREATE TEMP TABLE filler AS SELECT g, g / 1000 AS l, \
+             decode(md5((g / 1000)::text) || md5((g / 1000)::text), 'hex') AS k \
+         FROM generate_series(0, 99999) AS g; \
+         INSERT INTO trellis_events (scope_key, scope, sequence, canonical_event, signed_event, \
+             idempotency_key, canonical_event_hash) \
+         SELECT k, convert_to(encode(k, 'hex') || '.filler-' || l, 'UTF8'), g % 1000, \
+             '\\x01'::bytea, '\\x02'::bytea, convert_to('k' || g, 'UTF8'), \
+             decode(repeat('ab', 32), 'hex') FROM filler; \
+         INSERT INTO trellis_checkpoints (scope_key, scope, tree_size, digest, checkpoint, \
+             frontier, profile_state) \
+         SELECT k, convert_to(encode(k, 'hex') || '.filler-' || l, 'UTF8'), (g % 1000) + 1, \
+             decode(lpad(to_hex(g), 64, '0'), 'hex'), '\\x03'::bytea, \
+             decode(repeat('00', (32 * bit_count(((g % 1000) + 1)::bit(64)))::int), 'hex'), \
+             '\\x'::bytea FROM filler;",
     )
-    .execute(&pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO trellis_checkpoints (scope, tree_size, digest, checkpoint, frontier, \
-         profile_state) \
-         SELECT convert_to('filler-' || (g / 1000), 'UTF8'), (g % 1000) + 1, \
-         decode(lpad(to_hex(g), 64, '0'), 'hex'), '\\x03'::bytea, \
-         decode(repeat('00', (32 * bit_count(((g % 1000) + 1)::bit(64)))::int), 'hex'), '\\x'::bytea \
-         FROM generate_series(0, 99999) AS g",
-    )
-    .execute(&pool)
+    .execute(&db.owner)
     .await
     .unwrap();
     for index in 0..8 {
@@ -180,7 +175,7 @@ async fn append_cost_is_flat_in_ledger_length_on_postgres() {
             .unwrap();
     }
     sqlx::query("ANALYZE trellis_events, trellis_checkpoints")
-        .execute(&pool)
+        .execute(&db.owner)
         .await
         .unwrap();
     let stats = || async {
@@ -250,7 +245,6 @@ async fn append_cost_is_flat_in_ledger_length_on_postgres() {
 /// then every append commits at its own sequence and none answers 409.
 #[tokio::test]
 async fn replicas_racing_one_scope_all_commit_and_none_answers_409() {
-    use stack_common_postgres::testing::EphemeralCluster;
     mod support {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -258,17 +252,15 @@ async fn replicas_racing_one_scope_all_commit_and_none_answers_409() {
         ));
     }
 
-    let cluster = EphemeralCluster::start_required();
-    let pool = support::tls_pool(&cluster, 16).await;
-    trellis_store_postgres_async::run_migrations(&pool).await.unwrap();
-    let replica = |pool: &sqlx::PgPool| {
-        TrellisServerState::new(
-            Arc::new(PostgresEventRepository::new(pool.clone())),
-            test_signing_key(),
-            crate::test_adapters::adapters(),
+    let db = support::database(16).await;
+    let replica = || {
+        Fixture::over(
+            TrellisServerState::new(test_signing_key(), crate::test_adapters::adapters()),
+            Arc::new(PgLedgers::new(db.scoped.clone())),
+            Arc::new(object_store::memory::InMemory::new()),
         )
     };
-    let replicas = [replica(&pool), replica(&pool)];
+    let replicas = [replica(), replica()];
     let mut racers = tokio::task::JoinSet::new();
     for index in 0..16usize {
         let state = replicas[index % 2].clone();
@@ -300,7 +292,7 @@ async fn replicas_racing_one_scope_all_commit_and_none_answers_409() {
         .await
         .unwrap()
         .unwrap();
-    let zip = export::assemble(&replicas[1], b"case_race", &head).await.unwrap();
+    let zip = crate::test_support::assemble(&replicas[1], b"case_race", &head).await.unwrap();
     assert!(
         export_bundle_cryptographically_verified(&zip),
         "the interleaved ledger is one chain"
@@ -314,14 +306,10 @@ async fn replicas_racing_one_scope_all_commit_and_none_answers_409() {
 async fn a_lost_race_answers_503_and_is_not_cached() {
     let armed = Fault::LostRace(AtomicBool::new(true));
     let fault = Arc::new(armed);
-    let state = TrellisServerState::new(
-        Arc::new(FaultyRepository {
-            inner: Arc::new(InMemoryEventRepository::new()),
-            fault: fault.clone(),
-        }),
-        test_signing_key(),
-        crate::test_adapters::adapters(),
-    );
+    let state = test_state().with_ledgers(Arc::new(FaultyLedgers {
+        inner: Arc::new(MemoryLedgers::new()),
+        fault: fault.clone(),
+    }));
     let app = router(state.clone()).expect("router");
     let body = append_body("idem-lost-race");
     let lost = app
@@ -348,14 +336,10 @@ async fn a_lost_race_answers_503_and_is_not_cached() {
 /// was written by the failed attempts and the retry commits exactly one event.
 #[tokio::test]
 async fn a_failed_commit_writes_nothing_and_the_retry_commits_once() {
-    let state = TrellisServerState::new(
-        Arc::new(FaultyRepository {
-            inner: Arc::new(InMemoryEventRepository::new()),
-            fault: Arc::new(Fault::FirstCommits(AtomicUsize::new(2))),
-        }),
-        test_signing_key(),
-        crate::test_adapters::adapters(),
-    );
+    let state = test_state().with_ledgers(Arc::new(FaultyLedgers {
+        inner: Arc::new(MemoryLedgers::new()),
+        fault: Arc::new(Fault::FirstCommits(AtomicUsize::new(2))),
+    }));
     let app = router(state.clone()).expect("router");
     let path = "/v1/scopes/case_commit_fault/events";
     for attempt in 0..2 {
@@ -485,14 +469,16 @@ fn history_json(retired: &[(&ServerSigningKey, u64, u64)], current: &ServerSigni
 async fn exports_before_and_after_a_key_rotation_both_verify() {
     let key_a = fixture_key("issuer-001.cose_key");
     let key_b = fixture_key("issuer-002.cose_key");
-    let repository: Arc<dyn EventRepository> = Arc::new(InMemoryEventRepository::new());
+    let ledgers: Arc<dyn Ledgers> = Arc::new(MemoryLedgers::new());
+    let over = |key: ServerSigningKey| {
+        Fixture::over(
+            TrellisServerState::new(key, crate::test_adapters::adapters()),
+            ledgers.clone(),
+            Arc::new(object_store::memory::InMemory::new()),
+        )
+    };
 
-    let app_a = router(TrellisServerState::new(
-        repository.clone(),
-        key_a.clone(),
-        crate::test_adapters::adapters(),
-    ))
-    .expect("router");
+    let app_a = router(over(key_a.clone())).expect("router");
     let before = post_append(&app_a, "/v1/scopes/case_rotate/events", append_body("idem-rot-1")).await;
 
     // The rotation instant, a whole second after A's last signature and no later than B's first.
@@ -500,12 +486,7 @@ async fn exports_before_and_after_a_key_rotation_both_verify() {
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     let history = history_json(&[(&key_a, 0, rotated_at)], &key_b);
     let key_b = key_b.with_history_json(&history).expect("history");
-    let app_b = router(TrellisServerState::new(
-        repository,
-        key_b,
-        crate::test_adapters::adapters(),
-    ))
-    .expect("router");
+    let app_b = router(over(key_b)).expect("router");
     let after = post_append(&app_b, "/v1/scopes/case_rotate/events", append_body("idem-rot-2")).await;
 
     assert!(export_bundle_cryptographically_verified(
@@ -633,4 +614,39 @@ async fn an_export_signed_outside_its_keys_window_is_refused() {
         String::from_utf8_lossy(&body).contains("outside the validity window"),
         "{body:?}"
     );
+}
+
+/// ADR 0169 §1.2: with a Manifest key of its own, the export's manifest cites that key, the
+/// registry carries both purposes' keys (each its own chain), and the export verifies.
+#[tokio::test]
+async fn an_export_signed_by_its_own_manifest_key_verifies_and_carries_both_keys() {
+    let manifest = fixture_key("issuer-002.cose_key");
+    let state = test_state().map(|state| state.with_manifest_key(manifest.clone()));
+    let app = router(state.clone()).expect("router");
+    let receipt = post_append(
+        &app,
+        "/v1/scopes/case_manifest/events",
+        append_body("idem-manifest"),
+    )
+    .await;
+    let zip = pinned_zip(&app, "case_manifest", &receipt).await;
+    let report = trellis_verify_wos::verify_export_zip(&zip);
+    assert!(report.trellis.integrity_verified, "{report:?}");
+
+    let entries = integrity_bundle::read_stored_zip(&zip).unwrap();
+    let manifest_bytes = entries
+        .iter()
+        .find(|entry| entry.path().ends_with("000-manifest.cbor"))
+        .expect("manifest member")
+        .bytes();
+    let signed = integrity_cose::decode_cose_sign1(manifest_bytes).unwrap();
+    assert_eq!(
+        signed.kid().map(hex::encode),
+        Some(manifest.kid_hex()),
+        "the manifest cites the Manifest key"
+    );
+    let registry = state.signing_key_registry();
+    assert_eq!(registry.len(), 2);
+    assert!(registry.iter().all(|row| row.supersedes.is_none()));
+    assert_ne!(state.signing_key.kid_hex(), manifest.kid_hex());
 }

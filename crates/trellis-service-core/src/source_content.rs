@@ -14,10 +14,10 @@ use trellis_types::StoredEvent;
 use std::sync::Arc;
 use std::time::Duration;
 
-use stack_common_http::tenant::TenantScope;
-use trellis_server_ports::{ArtifactRef, S3CompatibleArtifactStore, source_content_object_key};
+use stack_common_object_store::ScopedObjects;
+use trellis_server_ports::{LedgerScope, SourceContentBinding, source_content_object_name};
 
-use crate::event_repository::SourceContentBinding;
+use crate::TrellisScoped;
 
 // Match the owner's encoded auxiliary/read and final archive budget.
 const MAX_BATCH_BYTES: usize =
@@ -86,10 +86,12 @@ pub(crate) struct AdmittedSourceContent {
 /// Reads the prepared batch object the claim names, from Trellis's own derived key.
 #[async_trait]
 pub trait SourceContentObjectReader: Send + Sync {
-    /// Reads `claim`'s object under `tenant`, verifies its SHA-256 and decodes it.
+    /// Reads `claim`'s object from the request scope's `objects`, verifies its SHA-256 and
+    /// decodes it.
     ///
-    /// The key is derived from `tenant` and the claim's preparation key only; nothing in
-    /// the claim can name another object. The read is bounded by the claimed size and `budget`.
+    /// The key is the scope's key and the claim's preparation key only; nothing in the claim can
+    /// name another object, and `objects` reaches only the admitted scope. The read is bounded by
+    /// the claimed size and `budget`.
     ///
     /// # Errors
     /// `source-content.object-missing` when the read fails or times out,
@@ -97,41 +99,31 @@ pub trait SourceContentObjectReader: Send + Sync {
     /// `source-content.claim-differs` when they do not decode to the batch the key names.
     async fn read(
         &self,
-        tenant: &TenantScope,
+        objects: &ScopedObjects,
         claim: &SourceContentClaim,
         budget: Duration,
     ) -> Result<PreparedSourceContentBatchV1, StackError>;
 }
 
-/// [`SourceContentObjectReader`] over the artifact store with this cell's read credential.
-pub struct StoreSourceContentReader {
-    store: S3CompatibleArtifactStore,
-}
-
-impl StoreSourceContentReader {
-    #[must_use]
-    pub fn new(store: S3CompatibleArtifactStore) -> Self {
-        Self { store }
-    }
-}
+/// [`SourceContentObjectReader`] over the scope's Source-content objects.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct StoreSourceContentReader;
 
 #[async_trait]
 impl SourceContentObjectReader for StoreSourceContentReader {
     async fn read(
         &self,
-        tenant: &TenantScope,
+        objects: &ScopedObjects,
         claim: &SourceContentClaim,
         budget: Duration,
     ) -> Result<PreparedSourceContentBatchV1, StackError> {
-        let object: ArtifactRef = self.store.artifact_ref_for_key(&source_content_object_key(
-            tenant,
+        let key = objects.key(&source_content_object_name(
             &claim.selection.preparation_key,
         )?)?;
         let max = usize::try_from(claim.size)
             .map_err(|_| StackError::bad_request("Source content claim invalid"))?;
-        let bytes = self
-            .store
-            .get_bounded(&object, max, budget)
+        let bytes = objects
+            .read_bounded(&key, max, budget)
             .await
             .map_err(|_| SourceContentRefusal::ObjectMissing.error())?;
         if hex::encode(sha256_bytes(&bytes)) != claim.hash {
@@ -507,13 +499,14 @@ const BATCH_KEY_ROOT: &str = "source-content-batches";
 ///
 /// WOS may purge its object once the closeout commits (ADR 0163), but the export at the closeout
 /// checkpoint must still carry the batch's members, so the copy is Trellis's and write-once. The
-/// key is the ledger scope plus the digest of the stored bytes (ADR 0168 1.4: object keys live under the scope), so a retry writes the same bytes to the same key and no other scope can reach it.
+/// name is the ledger scope plus the digest of the stored bytes, under the scope's key (ADR 0168
+/// §1.4), so a retry writes the same bytes to the same key and no other scope can reach it.
 ///
 /// # Errors
 /// Refuses a batch over the byte budget or an unavailable artifact store.
 pub(crate) async fn retain_batch(
-    state: &crate::TrellisServerState,
-    scope: &str,
+    scoped: &TrellisScoped,
+    scope: &LedgerScope,
     batch: &PreparedSourceContentBatchV1,
 ) -> Result<SourceContentBinding, StackError> {
     let bytes = serde_json::to_vec(batch).map_err(|_| refused())?;
@@ -521,40 +514,41 @@ pub(crate) async fn retain_batch(
         return Err(StackError::bad_request("Source batch byte limit"));
     }
     let batch_hash = sha256_bytes(&bytes);
-    let reference = state
-        .artifact_store
-        .put_immutable(
-            &format!("{scope}/{BATCH_KEY_ROOT}/{}", hex::encode(batch_hash)),
+    let (key, _) = scoped
+        .artifacts()
+        .write_once(
+            // Under the scope's key already, so the ledger id names the ledger.
+            &format!(
+                "{}/{BATCH_KEY_ROOT}/{}",
+                scope.ledger_id(),
+                hex::encode(batch_hash)
+            ),
             &bytes,
         )
         .await?;
     Ok(SourceContentBinding {
         batch_hash,
         size: bytes.len() as u64,
-        artifact_ref: reference.uri,
+        artifact_ref: key,
     })
 }
 
-/// The export members of the batch Trellis retained for the closeout at `sequence`.
+/// The export members of the batch Trellis retained for the closeout the export ends at, whose
+/// binding the export's rows carry.
 ///
 /// # Errors
 /// Unavailable when no batch is bound to the closeout or its bytes are gone, a conflict when they
 /// differ from the binding.
 pub(crate) async fn stored_members(
-    state: &crate::TrellisServerState,
-    scope: &[u8],
-    sequence: u64,
+    scoped: &TrellisScoped,
+    binding: Option<&SourceContentBinding>,
 ) -> Result<Vec<ExportEvidenceMember>, StackError> {
-    let binding = state
-        .repository
-        .source_content(scope, sequence)
-        .await?
-        .ok_or_else(|| {
-            StackError::unavailable("final closeout requires committed Source content")
-        })?;
-    let bytes = state
-        .artifact_store
-        .get(&ArtifactRef::new(binding.artifact_ref))
+    let binding = binding.ok_or_else(|| {
+        StackError::unavailable("final closeout requires committed Source content")
+    })?;
+    let bytes = scoped
+        .artifacts()
+        .read_optional(&binding.artifact_ref)
         .await?
         .ok_or_else(|| StackError::unavailable("retained Source batch unavailable"))?;
     if bytes.len() as u64 != binding.size || sha256_bytes(&bytes) != binding.batch_hash {
@@ -619,7 +613,7 @@ impl SourceContentComposition {
     pub(crate) async fn admit_claim(
         &self,
         closeout: &dyn NativeCloseout,
-        tenant: &TenantScope,
+        scoped: &TrellisScoped,
         principal: &str,
         body: &trellis_service_client::SubstrateAppendBody,
         started: std::time::Instant,
@@ -639,10 +633,13 @@ impl SourceContentComposition {
             return Err(SourceContentRefusal::PinsDiffer.error());
         }
         closeout.validate(CloseoutSource::Append(body), identity)?;
+        let objects = scoped
+            .source_content()
+            .ok_or_else(|| StackError::unavailable("Source content object store is absent"))?;
         let batch = self
             .object_reader
             .read(
-                tenant,
+                objects,
                 claim,
                 APPEND_BUDGET.saturating_sub(started.elapsed()),
             )

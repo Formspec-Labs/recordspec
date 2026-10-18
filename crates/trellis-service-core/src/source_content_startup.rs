@@ -3,17 +3,19 @@
 
 use serde::Deserialize;
 use stack_common_error::StackError;
+use stack_common_object_store::S3ObjectConfig;
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-use trellis_server_ports::{NativeCloseout, S3CompatibleArtifactStore, S3ObjectConfig};
+use trellis_server_ports::NativeCloseout;
 
-use crate::ServerAdapters;
 use crate::source_content::{
     ConfiguredNativeCloseoutGuard, ConfiguredSourceContentPins, SourceContentComposition,
     SourceContentFactory, SourceContentInputs, StoreSourceContentReader,
 };
+use crate::state::ObjectStoreConfig;
+use crate::{ServerAdapters, SourceContentObjectReader};
 
 /// Optional additive composition in the existing private completion service profile.
 #[derive(Deserialize)]
@@ -22,8 +24,8 @@ pub(crate) struct SourceContentStartupConfiguration {
     pins: ConfiguredSourceContentPins,
     /// The one principal allowed to append a Source closeout (the WOS machine).
     publisher: String,
-    /// Where WOS writes prepared batches. The read credential is the launcher's
-    /// process credential, as for WOS's archive read store; Trellis only ever reads.
+    /// Where WOS writes prepared batches, under each scope's key. The read credential is the
+    /// launcher's process credential, as for WOS's archive read store; Trellis only ever reads.
     object_store: SourceContentObjectStore,
     native_host_selection_file: PathBuf,
     native_host_selection_sha256: String,
@@ -64,6 +66,18 @@ impl SourceContentStartupConfiguration {
         ConfiguredNativeCloseoutGuard::new(closeout, self.pins.native_policy_hash, owning)
     }
 
+    /// The bucket WOS prepares batches in; the composition root opens it.
+    pub(crate) fn object_store(&self) -> ObjectStoreConfig {
+        ObjectStoreConfig {
+            s3: S3ObjectConfig {
+                bucket: self.object_store.bucket.clone(),
+                endpoint: self.object_store.endpoint.clone(),
+                region: self.object_store.region.clone(),
+            },
+            prefix: self.object_store.prefix.clone(),
+        }
+    }
+
     pub(crate) fn compose(
         &self,
         guard: ConfiguredNativeCloseoutGuard,
@@ -71,16 +85,9 @@ impl SourceContentStartupConfiguration {
         authorities: Option<integrity_verify::trellis::CertificateAuthorityRegistry>,
     ) -> SourceContentComposition {
         let parts = factory(SourceContentInputs { authorities });
-        let store = S3CompatibleArtifactStore::new(
-            S3ObjectConfig {
-                bucket: self.object_store.bucket.clone(),
-                endpoint: self.object_store.endpoint.clone(),
-                region: self.object_store.region.clone(),
-            },
-            self.object_store.prefix.clone(),
-        );
+        let reader: Arc<dyn SourceContentObjectReader> = Arc::new(StoreSourceContentReader);
         SourceContentComposition {
-            object_reader: Arc::new(StoreSourceContentReader::new(store)),
+            object_reader: reader,
             batch_checker: parts.batch_checker,
             final_prefix_guard: Arc::new(guard),
             structural: parts.structural,
