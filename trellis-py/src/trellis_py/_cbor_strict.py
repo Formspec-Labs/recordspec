@@ -15,12 +15,9 @@ Independence: this module defines its own :class:`CborStrictError` so that
 
 from __future__ import annotations
 
+import math
 import struct
 from dataclasses import dataclass, field
-
-import cbor2
-
-from trellis_py._cbor_canonical import encode_canonical_cbor_value
 
 
 class CborStrictError(Exception):
@@ -257,13 +254,100 @@ class _Walker:
 
 
 def _canonical_key(key_bytes: bytes) -> bytes:
-    """The key's canonical encoding, so differently encoded copies of one key collide (R4).
+    """The key's canonical encoding, compared the way Rust's `decode_cbor_value` compares keys (R4).
 
-    `0x01` and the non-minimal `0x18 0x01` are both key 1, as in Rust's
-    `integrity_cbor::decode_cbor_value`. A key the canonical emitter cannot
-    express (a tag) compares as written.
+    Rust canonicalizes each decoded key before comparing, so this re-encodes the
+    key's bytes the same way: integers and lengths in their smallest form,
+    indefinite strings joined, nested maps sorted, tags kept as tag number plus
+    canonical content, and floats in their smallest lossless width (as
+    ciborium writes them). A key that has no canonical encoding, a NaN, ±Inf or
+    -0.0 float, refuses the whole item, as Rust refuses it.
     """
-    try:
-        return encode_canonical_cbor_value(cbor2.loads(key_bytes))
-    except Exception:  # noqa: BLE001 - any refusal leaves the written bytes as the identity
-        return key_bytes
+    encoded, _ = _canonical_at(key_bytes, 0)
+    return encoded
+
+
+def _head(major: int, value: int) -> bytes:
+    if value < 24:
+        return bytes([(major << 5) | value])
+    for info, size in ((24, 1), (25, 2), (26, 4), (27, 8)):
+        if value < 1 << (8 * size):
+            return bytes([(major << 5) | info]) + value.to_bytes(size, "big")
+    raise CborStrictError("CBOR argument exceeds 64 bits")
+
+
+def _argument(buf: bytes, offset: int, info: int) -> tuple[int, int]:
+    if info < 24:
+        return info, offset
+    size = {24: 1, 25: 2, 26: 4, 27: 8}[info]
+    return int.from_bytes(buf[offset : offset + size], "big"), offset + size
+
+
+def _canonical_float(value: float) -> bytes:
+    if math.isnan(value) or math.isinf(value):
+        raise CborStrictError("CBOR float must be finite for canonical encoding")
+    if value == 0.0 and math.copysign(1.0, value) < 0:
+        raise CborStrictError("CBOR float must use canonical +0, not -0")
+    for prefix, fmt in ((b"\xf9", ">e"), (b"\xfa", ">f")):
+        try:
+            packed = struct.pack(fmt, value)
+        except (OverflowError, struct.error):
+            continue
+        if struct.unpack(fmt, packed)[0] == value:
+            return prefix + packed
+    return b"\xfb" + struct.pack(">d", value)
+
+
+def _canonical_at(buf: bytes, offset: int) -> tuple[bytes, int]:
+    """Canonical bytes of the one item at `offset`, which the walker already checked."""
+    initial = buf[offset]
+    major, info = initial >> 5, initial & 0x1F
+    offset += 1
+    if major in (0, 1):
+        value, offset = _argument(buf, offset, info)
+        return _head(major, value), offset
+    if major in (2, 3):
+        payload = b""
+        if info == _INDEF:
+            while buf[offset] != _BREAK_BYTE:
+                chunk_info = buf[offset] & 0x1F
+                length, offset = _argument(buf, offset + 1, chunk_info)
+                payload += buf[offset : offset + length]
+                offset += length
+            offset += 1
+        else:
+            length, offset = _argument(buf, offset, info)
+            payload, offset = buf[offset : offset + length], offset + length
+        return _head(major, len(payload)) + payload, offset
+    if major in (4, 5):
+        items: list[bytes] = []
+        if info == _INDEF:
+            while buf[offset] != _BREAK_BYTE:
+                item, offset = _canonical_at(buf, offset)
+                items.append(item)
+            offset += 1
+        else:
+            count, offset = _argument(buf, offset, info)
+            for _ in range(count * (2 if major == 5 else 1)):
+                item, offset = _canonical_at(buf, offset)
+                items.append(item)
+        if major == 4:
+            return _head(4, len(items)) + b"".join(items), offset
+        pairs = sorted(zip(items[0::2], items[1::2]))
+        for left, right in zip(pairs, pairs[1:]):
+            if left[0] == right[0]:
+                raise CborDuplicateKeyError(left[0].hex(), offset)
+        return _head(5, len(pairs)) + b"".join(key + value for key, value in pairs), offset
+    if major == 6:
+        tag, offset = _argument(buf, offset, info)
+        item, offset = _canonical_at(buf, offset)
+        return _head(6, tag) + item, offset
+    if info == 25:
+        return _canonical_float(struct.unpack(">e", buf[offset : offset + 2])[0]), offset + 2
+    if info == 26:
+        return _canonical_float(struct.unpack(">f", buf[offset : offset + 4])[0]), offset + 4
+    if info == 27:
+        return _canonical_float(struct.unpack(">d", buf[offset : offset + 8])[0]), offset + 8
+    if info == 24:
+        return bytes(buf[offset - 1 : offset + 1]), offset + 1
+    return bytes([initial]), offset

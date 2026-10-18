@@ -84,6 +84,24 @@ def test_non_minimal_integer_key_is_the_same_key() -> None:
         reject_duplicate_canonical_map_keys(data)
 
 
+@pytest.mark.parametrize("key", ["f9 7e 00", "fb 7f f8 00 00 00 00 00 00", "f9 7c 00", "f9 80 00", "fb 80 00 00 00 00 00 00 00"])
+def test_float_keys_without_a_canonical_encoding_refuse(key) -> None:
+    # NaN, +Inf and -0.0 keys have no canonical encoding; Rust's decoder refuses them.
+    with pytest.raises(CborStrictError, match="CBOR float must"):
+        reject_duplicate_canonical_map_keys(_h(f"a1 {key} 01"))
+
+
+def test_float_keys_compare_by_value_and_tagged_keys_by_canonical_content() -> None:
+    # 1.5 as f16 and as f64 is one key.
+    with pytest.raises(CborStrictError, match="duplicate canonical CBOR map key `f93e00`"):
+        reject_duplicate_canonical_map_keys(_h("a2 f9 3e 00 01 fb 3f f8 00 00 00 00 00 00 02"))
+    # tag 7 wrapping 1, minimal and non-minimal, is one key ...
+    with pytest.raises(CborStrictError, match="duplicate canonical CBOR map key `c701`"):
+        reject_duplicate_canonical_map_keys(_h("a2 c7 01 01 c7 18 01 02"))
+    # ... and differs from the untagged 1.
+    reject_duplicate_canonical_map_keys(_h("a2 c7 01 01 01 02"))
+
+
 def test_nested_duplicate_key_explicitly_rejected() -> None:
     # {"outer": {"a": 1, "a": 2}}
     # a1 65 6f 75 74 65 72 a2 61 61 01 61 61 02
