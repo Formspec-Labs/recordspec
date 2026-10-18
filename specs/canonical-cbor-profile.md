@@ -59,7 +59,7 @@ Maps MUST NOT contain duplicate keys, where "duplicate" means byte-identical can
 
 **Rust enforcement (decoder side).** `integrity_cbor::decode_cbor_value` refuses any map that repeats a canonical-encoded key at any depth. `ciborium` keeps every map entry, so the check runs on the decoded value. The WOS 062/063 catalog and record parsers in `trellis-verify-wos` (`records.rs`) decode through it. Python's `trellis_py._cbor_strict.reject_duplicate_canonical_map_keys` walks the bytes before `cbor2.loads`, because Python dicts coalesce repeated keys.
 
-**Status.** Encoder-side fully enforced. Decoder-side fully enforced in `decode_cbor_value`. Vector `verify/042-source-content-publication-catalog-repeated-key` holds both runtimes to the same refusal. Private `ciborium::from_reader` calls that bypass `decode_cbor_value` do not yet carry the decoder-side check.
+**Status.** Encoder-side fully enforced. Decoder-side fully enforced in `decode_cbor_value`. Vector `verify/058-source-content-publication-catalog-repeated-key` holds both runtimes to the same refusal. Private `ciborium::from_reader` calls that bypass `decode_cbor_value` do not yet carry the decoder-side check.
 
 ### R5 — Finite floats only; negative zero rejected
 

@@ -1457,17 +1457,17 @@ the canonical profile never emits the tag, so the catalog is refused.
 """,
     )
 
-    repeated = SOURCE_CONTENT_VERIFY / "042-source-content-publication-catalog-repeated-key"
+    repeated = SOURCE_CONTENT_VERIFY / "058-source-content-publication-catalog-repeated-key"
     write_publication_vector(
         out_dir=repeated,
-        vector_id="verify/042-source-content-publication-catalog-repeated-key",
+        vector_id="verify/058-source-content-publication-catalog-repeated-key",
         description="Publication phase refusal. The intake catalog row's `handoff` map carries `responseHash` twice, the genuine value first. Canonical CBOR rule R4 makes a repeated map key a decode failure at any depth, so both runtimes refuse it as `intake_handoff_catalog_invalid` instead of reading either copy.",
         export_zip=protected_bundle(
             repeated / "input-export.zip", native_event_hash=intake_hash, repeat_handoff_key=True
         ),
         verifier=PUBLICATION_VERIFIER,
         report={**refused, "first_failure_kind": "intake_handoff_catalog_invalid"},
-        derivation="""# Derivation — `verify/042-source-content-publication-catalog-repeated-key`
+        derivation="""# Derivation — `verify/058-source-content-publication-catalog-repeated-key`
 
 As `verify/028`, but the `063` row's `handoff` map is encoded by hand with a
 second `responseHash` entry after the genuine one. A reader that keeps the first

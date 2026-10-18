@@ -1,4 +1,4 @@
-id          = "verify/042-source-content-publication-catalog-repeated-key"
+id          = "verify/058-source-content-publication-catalog-repeated-key"
 op          = "verify"
 status      = "active"
 description = """Publication phase refusal. The intake catalog row's `handoff` map carries `responseHash` twice, the genuine value first. Canonical CBOR rule R4 makes a repeated map key a decode failure at any depth, so both runtimes refuse it as `intake_handoff_catalog_invalid` instead of reading either copy."""

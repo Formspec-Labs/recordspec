@@ -1,4 +1,4 @@
-# Derivation — `verify/042-source-content-publication-catalog-repeated-key`
+# Derivation — `verify/058-source-content-publication-catalog-repeated-key`
 
 As `verify/028`, but the `063` row's `handoff` map is encoded by hand with a
 second `responseHash` entry after the genuine one. A reader that keeps the first
