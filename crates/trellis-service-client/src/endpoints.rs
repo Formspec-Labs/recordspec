@@ -7,7 +7,7 @@
 //! limit and the `Idempotency-Key` requirement are stated here once.
 
 use serde::{Deserialize, Serialize};
-use stack_common_http::routes::{Absent, Endpoint, Shape, Wire};
+use stack_common_http::routes::{Absent, Cbor, Endpoint, Zip};
 use utoipa::{IntoParams, ToSchema};
 
 use crate::{
@@ -50,26 +50,6 @@ pub struct EventTypeRegistryView {
     pub registry_version: String,
     /// Registered event types.
     pub event_types: Vec<EventTypeRegistryEntry>,
-}
-
-/// A Core section 18 export, `application/zip` bytes.
-#[derive(Clone, Copy, Debug)]
-pub struct Zip;
-
-impl Wire for Zip {
-    fn shape() -> Shape {
-        Shape::Media("application/zip")
-    }
-}
-
-/// A CBOR registry snapshot, `application/cbor` bytes.
-#[derive(Clone, Copy, Debug)]
-pub struct Cbor;
-
-impl Wire for Cbor {
-    fn shape() -> Shape {
-        Shape::Media("application/cbor")
-    }
 }
 
 /// Seal body limit. The worst case the request validator admits is about 0.84 MiB (measured
