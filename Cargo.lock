@@ -3414,6 +3414,7 @@ dependencies = [
  "serde_urlencoded",
  "stack-common-error",
  "stack-common-idempotency",
+ "stack-common-json-schema",
  "stack-common-ops",
  "thiserror 1.0.69",
  "tower",
@@ -3430,6 +3431,13 @@ dependencies = [
  "async-trait",
  "stack-common-error",
  "stack-common-hash",
+]
+
+[[package]]
+name = "stack-common-json-schema"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]
@@ -3486,9 +3494,11 @@ dependencies = [
 name = "stack-common-schema-codegen"
 version = "0.1.0"
 dependencies = [
+ "heck",
  "prettyplease",
  "schemars 0.8.22",
  "serde_json",
+ "stack-common-json-schema",
  "syn 2.0.117",
  "thiserror 1.0.69",
  "typify",

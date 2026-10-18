@@ -60,18 +60,14 @@ impl Authenticate<Admission> for TrellisServerState {
             Requirement::Scope(Admission::AppendEvent) => {
                 let (scope, tenant) = scope_and_tenant(self, request).await?;
                 let partition = admit_append(self, &scope, &tenant, request).await?;
-                Ok(Authenticated {
-                    principal: Some(partition),
-                })
+                Ok(Authenticated::principal(partition))
             }
             Requirement::Scope(Admission::AcceptedAttachment) => {
                 let (scope, tenant) = scope_and_tenant(self, request).await?;
                 let partition = crate::external_transport::admit(self, scope, &tenant, request)
                     .await
                     .map_err(IntoResponse::into_response)?;
-                Ok(Authenticated {
-                    principal: Some(partition),
-                })
+                Ok(Authenticated::principal(partition))
             }
             Requirement::Scope(Admission::Read | Admission::SealCompletion) => {
                 // The handler authorizes against the ledger scope; the bearer is refused here first.
