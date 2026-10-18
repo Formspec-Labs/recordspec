@@ -141,7 +141,7 @@ pub(crate) struct ResponseBindingPins {
 
 /// Holds structurally joined bytes; it grants no decryption or signature authority.
 pub(crate) struct CodecBoundResponse {
-    pub(crate) response: serde_json::Value,
+    pub(crate) response: integrity_canonical::ResponseJson,
 }
 
 /// Checks exact record, ciphertext, identity, policy pins and complete Response bytes.
@@ -178,9 +178,11 @@ pub(crate) fn bind_opened_response(
     // The protected plaintext is the Formspec response handoff encoding.
     let response = integrity_canonical::parse_canonical_response_handoff_bytes(opened)
         .map_err(|_| ParseError::from("protected Response JSON is invalid"))?;
-    if !response.is_object()
-        || response.get("id").and_then(serde_json::Value::as_str)
-            != Some(locator.response_id.as_str())
+    if response
+        .value()
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        != Some(locator.response_id.as_str())
     {
         return Err("protected Response full identity differs".into());
     }

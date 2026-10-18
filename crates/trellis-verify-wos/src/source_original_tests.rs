@@ -23,7 +23,9 @@ struct Fixture {
 fn fixture() -> Fixture {
     // Protected plaintext is the Formspec response handoff encoding, as the producer writes it.
     let opened = integrity_canonical::canonical_response_handoff_bytes(
-        &serde_json::json!({"id":"response","data":{"original":"complete"},"authoredSignatures":[]}),
+        serde_json::json!({"id":"response","data":{"original":"complete"},"authoredSignatures":[]})
+            .to_string()
+            .as_bytes(),
     )
     .unwrap();
     let ciphertext = vec![3; opened.len() + 16];

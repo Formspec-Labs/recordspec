@@ -180,7 +180,7 @@ fn opened_fixture() -> (
     };
     // Protected plaintext is the Formspec response handoff encoding, as the producer writes it.
     let opened = integrity_canonical::canonical_response_handoff_bytes(
-        &serde_json::json!({"id":SOURCE_RESPONSE_ID,"data":{"answer":"retained"},"authoredSignatures":[]}),
+        serde_json::json!({"id":SOURCE_RESPONSE_ID,"data":{"answer":"retained"},"authoredSignatures":[]}).to_string().as_bytes(),
     )
     .unwrap();
     // This codec body is not HPKE ciphertext and establishes no cryptographic claim.
@@ -216,8 +216,8 @@ fn opened_fixture() -> (
 fn protected_response_codec_joins_complete_record_body_and_independent_pins() {
     let (locator, pins, record, opened) = opened_fixture();
     let bound = crate::records::bind_opened_response(&locator, &pins, &record, &opened).unwrap();
-    assert_eq!(bound.response["data"]["answer"], "retained");
-    assert_eq!(bound.response["id"], SOURCE_RESPONSE_ID);
+    assert_eq!(bound.response.value()["data"]["answer"], "retained");
+    assert_eq!(bound.response.value()["id"], SOURCE_RESPONSE_ID);
     assert_eq!(locator.response_ref, NATIVE_RESPONSE_REF);
     assert_ne!(locator.response_ref, locator.response_id);
     let mut foreign_id = pins.clone();
@@ -550,15 +550,33 @@ fn catalog_rows_refuse_any_repeated_key_and_tolerate_single_legacy_unknowns() {
     let mut value = catalog_value();
     let handoff = field(row(&mut value), "handoff").clone();
     row(&mut value).push((Value::Text("handoff".into()), handoff));
-    assert!(crate::records::parse_intake_manifest_entries(&trellis_types::encode_cbor_value(&value).unwrap()).is_err());
+    assert!(
+        crate::records::parse_intake_manifest_entries(
+            &trellis_types::encode_cbor_value(&value).unwrap()
+        )
+        .is_err()
+    );
     let mut value = catalog_value();
     let handoff = field(row(&mut value), "handoff").as_map_mut().unwrap();
-    handoff.push((Value::Text("responseHash".into()), Value::Text("sha256:forged".into())));
-    assert!(crate::records::parse_intake_manifest_entries(&trellis_types::encode_cbor_value(&value).unwrap()).is_err());
+    handoff.push((
+        Value::Text("responseHash".into()),
+        Value::Text("sha256:forged".into()),
+    ));
+    assert!(
+        crate::records::parse_intake_manifest_entries(
+            &trellis_types::encode_cbor_value(&value).unwrap()
+        )
+        .is_err()
+    );
     let mut value = signature_catalog_value();
     row(&mut value).push((Value::Text("legacy_extension".into()), Value::Bool(true)));
     row(&mut value).push((Value::Text("legacy_extension".into()), Value::Bool(false)));
-    assert!(crate::records::parse_signature_manifest_entries(&trellis_types::encode_cbor_value(&value).unwrap()).is_err());
+    assert!(
+        crate::records::parse_signature_manifest_entries(
+            &trellis_types::encode_cbor_value(&value).unwrap()
+        )
+        .is_err()
+    );
     for name in ["protected_response", "response_bytes"] {
         let mut value = catalog_value();
         let entry = row(&mut value);

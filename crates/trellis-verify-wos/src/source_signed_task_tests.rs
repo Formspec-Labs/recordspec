@@ -45,7 +45,7 @@ fn fixture(family: SourceTaskFamily) -> Fixture {
     let events = vec![event(&created, [1; 32]), event(&completed, [2; 32])];
     // Protected plaintext is the Formspec response handoff encoding, as the producer writes it.
     let opened = integrity_canonical::canonical_response_handoff_bytes(
-        &serde_json::json!({"id":"response","data":{"affirmation":"retained literal"},"authoredSignatures":[]}),
+        serde_json::json!({"id":"response","data":{"affirmation":"retained literal"},"authoredSignatures":[]}).to_string().as_bytes(),
     )
     .unwrap();
     // Deliberately fake ciphertext: exercises the existing codec, never actual opening.
