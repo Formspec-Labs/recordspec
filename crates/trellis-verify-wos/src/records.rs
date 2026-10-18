@@ -12,8 +12,8 @@ pub(crate) use protected_response::{
 
 use ciborium::Value;
 use trellis_types::{
-    CborHelperError, decode_cbor_value, map_lookup_array, map_lookup_bytes, map_lookup_fixed_bytes, map_lookup_map,
-    map_lookup_optional_fixed_bytes, map_lookup_optional_value, map_lookup_text,
+    CborHelperError, decode_cbor_value, map_lookup_array, map_lookup_bytes, map_lookup_fixed_bytes,
+    map_lookup_map, map_lookup_optional_fixed_bytes, map_lookup_optional_value, map_lookup_text,
 };
 
 #[derive(Debug)]
