@@ -23,7 +23,7 @@ const OPERATOR_CONFIG: &str = "TRELLIS_COMPLETION_OPERATOR_CONFIG_FILE";
 const SOURCE_CONTENT_CONFIG: &str = "TRELLIS_SOURCE_CONTENT_CONFIG_FILE";
 
 pub(crate) struct StartupCompletion {
-    signer: Option<OperatorSigners>,
+    signer: Option<(OperatorSigners, String)>,
     source_content: Option<(
         crate::SourceContentComposition,
         crate::state::ObjectStoreConfig,
@@ -53,15 +53,18 @@ impl StartupCompletion {
         operator: Option<&Path>,
         adapters: &ServerAdapters,
     ) -> Result<Self, StackError> {
-        let rows: Vec<OperatorProfile> = match operator {
-            Some(path) => serde_json::from_slice(&read_private(path)?).map_err(|_| invalid())?,
-            None => Vec::new(),
+        let (publisher, rows) = match operator {
+            Some(path) => {
+                let selected: OperatorConfiguration =
+                    serde_json::from_slice(&read_private(path)?).map_err(|_| invalid())?;
+                text(&selected.publisher)?;
+                if selected.operators.is_empty() || selected.operators.len() > 8 {
+                    return Err(invalid());
+                }
+                (Some(selected.publisher), selected.operators)
+            }
+            None => (None, Vec::new()),
         };
-        // The operator key signs whatever selection the caller sent, so the seal needs the one
-        // configured publisher, which the Source-content file names.
-        if (operator.is_some() && (rows.is_empty() || source.is_none())) || rows.len() > 8 {
-            return Err(invalid());
-        }
         let mut authorities = BTreeSet::new();
         let mut signers = Vec::with_capacity(rows.len());
         let mut trusted = integrity_verify::trellis::CertificateAuthorityRegistry::new();
@@ -114,18 +117,22 @@ impl StartupCompletion {
                 let configuration: SourceContentStartupConfiguration =
                     serde_json::from_slice(&read_private(path)?).map_err(|_| invalid())?;
                 let guard = configuration.load(path, adapters.native_closeout.clone())?;
-                Ok::<_, StackError>((
-                    configuration.compose(
-                        guard,
-                        &adapters.source_content,
-                        operator.map(|_| trusted),
-                    ),
-                    configuration.object_store(),
-                ))
+                let composition = configuration.compose(
+                    guard,
+                    &adapters.source_content,
+                    operator.map(|_| trusted),
+                );
+                if publisher
+                    .as_ref()
+                    .is_some_and(|selected| selected != &composition.publisher)
+                {
+                    return Err(invalid());
+                }
+                Ok::<_, StackError>((composition, configuration.object_store()))
             })
             .transpose()?;
         Ok(Self {
-            signer: operator.map(|_| OperatorSigners(signers)),
+            signer: publisher.map(|publisher| (OperatorSigners(signers), publisher)),
             source_content,
         })
     }
@@ -136,13 +143,7 @@ impl StartupCompletion {
         state: TrellisServerState,
     ) -> (TrellisServerState, Option<crate::state::ObjectStoreConfig>) {
         let state = match self.signer {
-            Some(signer) => match self.source_content.as_ref() {
-                // `load` refused an operator file without the Source-content file naming it.
-                Some((source, _)) => {
-                    state.with_completion(Arc::new(signer), source.publisher.clone())
-                }
-                None => state,
-            },
+            Some((signer, publisher)) => state.with_completion(Arc::new(signer), publisher),
             None => state,
         };
         match self.source_content {
@@ -150,6 +151,14 @@ impl StartupCompletion {
             None => (state, None),
         }
     }
+}
+
+/// Selects the exact completion publisher independently of protected Source content.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OperatorConfiguration {
+    publisher: String,
+    operators: Vec<OperatorProfile>,
 }
 
 #[derive(Deserialize)]
@@ -246,7 +255,10 @@ mod tests {
         let row = json!({"authority":"test-operator", "authorityClass":"prior", "publicKey":public, "validFrom":[0,0], "validUntil":[20000,0], "coseKeyFile":"key.cose"});
         let source = source_file(directory.path());
         let loads = |rows: Value| {
-            private(&operator, &serde_json::to_vec(&rows).unwrap());
+            private(
+                &operator,
+                &serde_json::to_vec(&json!({"publisher":"wos-machine","operators":rows})).unwrap(),
+            );
             StartupCompletion::load(Some(&source), Some(&operator), &adapters())
         };
         assert!(loads(json!([row.clone()])).unwrap().signer.is_some());
@@ -258,9 +270,38 @@ mod tests {
         interval["validUntil"] = json!([0, 0]);
         assert!(loads(json!([interval])).is_err());
         assert!(loads(json!([])).is_err());
-        // The operator key signs whatever the caller selected: no publisher, no seal.
-        private(&operator, &serde_json::to_vec(&json!([row])).unwrap());
-        assert!(StartupCompletion::load(None, Some(&operator), &adapters()).is_err());
+        // Formal completion needs the explicit publisher, not a Source-content capability.
+        let selection = json!({"publisher":"wos-machine","operators":[row]});
+        private(&operator, &serde_json::to_vec(&selection).unwrap());
+        let loaded = StartupCompletion::load(None, Some(&operator), &adapters()).unwrap();
+        assert!(loaded.source_content.is_none());
+        let ledger_key =
+            crate::ServerSigningKey::from_cose_key_bytes(key, TrellisTimestamp::new(0, 0).unwrap())
+                .unwrap();
+        let (state, source_bucket) = loaded.apply(TrellisServerState::new(ledger_key, adapters()));
+        assert_eq!(state.completion.as_ref().unwrap().1, "wos-machine");
+        assert!(state.source_content.is_none());
+        assert!(source_bucket.is_none());
+
+        for invalid_publisher in [
+            json!(null),
+            json!(""),
+            json!("  "),
+            json!("foreign-machine"),
+        ] {
+            let mut changed = selection.clone();
+            changed["publisher"] = invalid_publisher;
+            private(&operator, &serde_json::to_vec(&changed).unwrap());
+            assert!(StartupCompletion::load(Some(&source), Some(&operator), &adapters()).is_err());
+        }
+        for changed in [
+            json!({"operators":selection["operators"]}),
+            json!({"publisher":"wos-machine","operators":selection["operators"],"unexpected":true}),
+            selection["operators"].clone(),
+        ] {
+            private(&operator, &serde_json::to_vec(&changed).unwrap());
+            assert!(StartupCompletion::load(None, Some(&operator), &adapters()).is_err());
+        }
     }
 
     #[test]
