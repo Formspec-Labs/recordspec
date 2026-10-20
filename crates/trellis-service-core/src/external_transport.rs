@@ -28,7 +28,7 @@ use trellis_server_ports::{
     AttachmentLimits, AuthorizedScope, ComputeContext, ComputeSensitivity, LedgerScope, ScopeAction,
 };
 use trellis_service_client::endpoints::ACCEPTED_ATTACHMENT;
-use trellis_service_client::{AppendActor, SubstrateAppendBody, SubstrateAppendResult};
+use trellis_service_client::{AcceptedAttachmentPrefixCondition, AppendActor, SubstrateAppendBody, SubstrateAppendResult};
 use trellis_types::StoredEvent;
 
 const ORIGINAL_CAP: usize = 1024 * 1024;
@@ -73,7 +73,16 @@ pub(crate) struct WireRequest {
     // strictly, so duplicate keys survive to rejection.
     descriptor: Box<serde_json::value::RawValue>,
     original_bytes: String,
+    #[serde(default, deserialize_with = "optional_prefix_condition")]
+    expected_prefix: Option<AcceptedAttachmentPrefixCondition>,
 }
+fn optional_prefix_condition<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<AcceptedAttachmentPrefixCondition>, D::Error> {
+    // The field default handles omission; a present null is not an admitted condition.
+    <AcceptedAttachmentPrefixCondition as serde::Deserialize>::deserialize(deserializer).map(Some)
+}
+
 pub(crate) struct AuthorizedExternal {
     scope: LedgerScope,
     request: WireRequest,
@@ -287,6 +296,9 @@ impl ExternalAttachmentFactory for Factory<'_> {
         let scope = self.authorized.scope.as_bytes();
         let key = self.authorized.request.idempotency_key.as_bytes();
         let original = &self.authorized.original;
+        if let Some(condition) = &self.authorized.request.expected_prefix {
+            require_prefix_condition(condition, scope, events, retained)?;
+        }
         let authored_at = crate::ledger::authored_at_after(events.last(), self.now)?;
         let digest: [u8; 32] = Sha256::digest(original).into();
         let (ciphertext, nonce, key_bag) = if let Some(retained) = retained {
@@ -410,4 +422,47 @@ impl ExternalAttachmentFactory for Factory<'_> {
             },
         })
     }
+}
+
+/// Checks a caller's selected prefix inside the repository's ledger transaction.
+fn require_prefix_condition(
+    condition: &AcceptedAttachmentPrefixCondition,
+    scope: &[u8],
+    events: &[StoredEvent],
+    retained: Option<&RetainedExternalAttachment>,
+) -> Result<(), StackError> {
+    let conflict = || StackError::conflict("accepted attachment selected prefix changed");
+    let before = if let Some(retained) = retained {
+        let index = usize::try_from(retained.event().sequence()).map_err(|_| conflict())?;
+        let event = events.get(index).ok_or_else(conflict)?;
+        if event.scope() != retained.event().scope()
+            || event.sequence() != retained.event().sequence()
+            || event.idempotency_key() != retained.event().idempotency_key()
+            || event.canonical_event() != retained.event().canonical_event()
+            || event.signed_event() != retained.event().signed_event()
+            || event.canonical_event_hash() != retained.event().canonical_event_hash()
+        {
+            return Err(conflict());
+        }
+        &events[..index]
+    } else {
+        events
+    };
+    let digest =
+        trellis_types::completion_selection::completion_selection_prefix_digest(scope, before)
+            .map_err(|_| conflict())?;
+    let head = before
+        .last()
+        .map(|event| {
+            event
+                .canonical_event_hash()
+                .map(|hash| format!("sha256:{}", hex::encode(hash)))
+                .ok_or_else(conflict)
+        })
+        .transpose()?
+        .ok_or_else(conflict)?;
+    if condition.digest != format!("sha256:{}", hex::encode(digest)) || condition.head != head {
+        return Err(conflict());
+    }
+    Ok(())
 }

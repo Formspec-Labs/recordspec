@@ -12,6 +12,10 @@
             "description": "Accepted Source descriptor object; serialized metadata is limited to 64 KiB and the server validates its closed domain schema.",
             "type": "object"
           },
+          "expectedPrefix": {
+            "$ref": "#/components/schemas/AcceptedAttachmentPrefixCondition",
+            "description": "Optional exact-prefix condition; explicit JSON null is invalid."
+          },
           "idempotencyKey": {
             "maxLength": 64,
             "minLength": 1,
@@ -30,6 +34,27 @@
           "actor",
           "descriptor",
           "originalBytes"
+        ],
+        "type": "object"
+      },
+      "AcceptedAttachmentPrefixCondition": {
+        "additionalProperties": false,
+        "description": "Requires an exact committed prefix before a new accepted attachment append.\n\nA committed same-key replay checks its original pre-event prefix, allowing a later suffix.",
+        "properties": {
+          "digest": {
+            "description": "Domain-separated digest of ordered canonical and signed prefix bytes.",
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "head": {
+            "description": "Required head of the selected nonempty prefix.",
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "digest",
+          "head"
         ],
         "type": "object"
       },

@@ -254,8 +254,9 @@ async fn raw_status(
         .await
         .unwrap();
     let path = scoped_uri(path);
+    let selector = crate::test_support::scope_selector(&path).expect("scoped test route");
     let request = format!(
-        "{method} {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nAuthorization: Bearer {token}\r\nidempotency-key: {key}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        "{method} {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nx-stack-scope-key: {selector}\r\nAuthorization: Bearer {token}\r\nidempotency-key: {key}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
         body.len()
     );
     stream.write_all(request.as_bytes()).await.unwrap();
@@ -378,6 +379,7 @@ async fn cross_process_native_transport_qualification() {
     let transport = client(&endpoint, "all", calls.clone());
     let (descriptor, _input, original) = super::external_attachment_tests::external_fixture_input();
     let body = AcceptedAttachmentAppendBody {
+        expected_prefix: None,
         idempotency_key: "transport-native-047".into(),
         actor: AppendActor::service("formspec-server"),
         descriptor: serde_json::to_value(descriptor).unwrap(),
@@ -386,10 +388,28 @@ async fn cross_process_native_transport_qualification() {
             &original,
         ),
     };
+    // Closed transport decoding runs before the native HTTP replay boundary.
+    for invalid in [serde_json::Value::Null, serde_json::json!({}),
+        serde_json::json!({"digest": format!("sha256:{}", "a".repeat(64))}),
+        serde_json::json!({"head": null}),
+        serde_json::json!({"digest": format!("sha256:{}", "a".repeat(64)), "head": null, "extra": true})] {
+        let mut wire = serde_json::to_value(&body).unwrap();
+        wire["expectedPrefix"] = invalid;
+        assert_eq!(raw_status(port, "POST", "/v1/scopes/case_123/accepted-attachments",
+            &wire.to_string(), "all", &body.idempotency_key).await, 400);
+    }
     let first = transport
         .append_accepted_attachment(&case("case_123"), &body)
         .await
         .unwrap();
+    let mut mixed = body.clone();
+    mixed.expected_prefix = Some(trellis_service_client::AcceptedAttachmentPrefixCondition {
+        digest: format!("sha256:{}", "a".repeat(64)),
+        head: format!("sha256:{}", "b".repeat(64)),
+    });
+    assert_eq!(raw_status(port, "POST", "/v1/scopes/case_123/accepted-attachments",
+        &serde_json::to_string(&mixed).unwrap(), "all", &mixed.idempotency_key).await, 409,
+        "adding a condition cannot rewrite an existing unconditioned request hash");
     let initial_row:(Vec<u8>,Vec<u8>,Vec<u8>,Vec<u8>)=sqlx::query_as("SELECT e.canonical_event,e.signed_event,a.ciphertext,a.nonce FROM trellis_events e JOIN trellis_external_attachments a ON a.scope=e.scope AND a.sequence=e.sequence WHERE e.scope=$1").bind(case("case_123").as_bytes().to_vec()).fetch_one(&pool).await.unwrap();
     let first_entropy = std::fs::read_to_string(root.join("random-count")).unwrap();
     assert!(first_entropy.parse::<usize>().unwrap() > 0);
@@ -702,6 +722,7 @@ async fn actual_source_png_jpeg_cross_process_protection() {
         );
         assert_eq!(transport_key.len(), 55);
         let body = AcceptedAttachmentAppendBody {
+            expected_prefix: None,
             idempotency_key: transport_key.clone(),
             actor: AppendActor::service("formspec-server"),
             descriptor: input["descriptor"].clone(),
@@ -785,4 +806,213 @@ async fn actual_source_png_jpeg_cross_process_protection() {
         drop(server.take());
 
     }
+}
+
+/// Reads only this neutral test ledger's exact persisted bytes for caller selection.
+async fn selected_prefix(
+    pool: &sqlx::PgPool,
+) -> trellis_service_client::AcceptedAttachmentPrefixCondition {
+    let ledger = case("case_123");
+    let rows: Vec<(i64, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> = sqlx::query_as(
+        "SELECT sequence,canonical_event,signed_event,idempotency_key,canonical_event_hash FROM trellis_events WHERE scope_key=$1 AND scope=$2 ORDER BY sequence",
+    ).bind(ledger.key().as_bytes().to_vec()).bind(ledger.as_bytes()).fetch_all(pool).await.unwrap();
+    let events = rows
+        .into_iter()
+        .map(|(sequence, canonical, signed, key, hash)| {
+            trellis_types::StoredEvent::with_idempotency_key(
+                ledger.as_bytes().to_vec(),
+                sequence.try_into().unwrap(),
+                canonical,
+                signed,
+                key,
+            )
+            .with_canonical_event_hash(Some(hash.try_into().unwrap()))
+        })
+        .collect::<Vec<_>>();
+    trellis_service_client::AcceptedAttachmentPrefixCondition {
+        digest: format!(
+            "sha256:{}",
+            hex::encode(
+                trellis_types::completion_selection::completion_selection_prefix_digest(
+                    ledger.as_bytes(),
+                    &events
+                )
+                .unwrap()
+            )
+        ),
+        head: events
+            .last()
+            .map(|event| {
+                format!(
+                    "sha256:{}",
+                    hex::encode(event.canonical_event_hash().unwrap())
+                )
+            })
+            .expect("selected prefix is nonempty"),
+    }
+}
+
+#[tokio::test]
+async fn conditioned_attachment_transport_refuses_prefix_race_and_recovers_exact_original_replay() {
+    let db = support::database(4).await;
+    let database = app_dsn(&db);
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    std::fs::write(root.join("policy"), "reader").unwrap();
+    std::fs::write(root.join("random-count"), "0").unwrap();
+    let reserve = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = reserve.local_addr().unwrap().port();
+    drop(reserve);
+    let mut server = Some(start_child(root, &database, port).await);
+    let transport = client(
+        &format!("http://127.0.0.1:{port}"),
+        "all",
+        Arc::new(AtomicUsize::new(0)),
+    );
+    let (descriptor, _, original) = super::external_attachment_tests::external_fixture_input();
+    let make = |key: &str, slot: &str, prefix| {
+        let mut descriptor = serde_json::to_value(&descriptor).unwrap();
+        descriptor["bindingAttachmentId"] = serde_json::json!(slot);
+        let mut body = AcceptedAttachmentAppendBody::from_original_bytes(
+            key.into(),
+            AppendActor::service("formspec-server"),
+            descriptor,
+            &original,
+        )
+        .unwrap();
+        body.expected_prefix = prefix;
+        body
+    };
+    let seed = make("prefix-seed", "slot-seed", None);
+    transport
+        .append_accepted_attachment(&case("case_123"), &seed)
+        .await
+        .unwrap();
+    let selected = selected_prefix(&db.owner).await;
+    let advance = make("prefix-advance", "slot-advance", None);
+    transport
+        .append_accepted_attachment(&case("case_123"), &advance)
+        .await
+        .unwrap();
+    let stale = make("prefix-race", "slot-next", Some(selected));
+    let counts = || async {
+        sqlx::query_as::<_, (i64, i64, i64)>("SELECT (SELECT count(*) FROM trellis_events),(SELECT count(*) FROM trellis_checkpoints),(SELECT count(*) FROM trellis_external_attachments)")
+            .fetch_one(&db.owner).await.unwrap()
+    };
+    let before = counts().await;
+    let entropy = std::fs::read_to_string(root.join("random-count")).unwrap();
+    assert_eq!(
+        raw_status(
+            port,
+            "POST",
+            "/v1/scopes/case_123/accepted-attachments",
+            &serde_json::to_string(&stale).unwrap(),
+            "all",
+            &stale.idempotency_key
+        )
+        .await,
+        409
+    );
+    assert_eq!(
+        counts().await,
+        before,
+        "stale selection adds no event, checkpoint or protected body"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("random-count")).unwrap(),
+        entropy,
+        "prefix admission precedes protection"
+    );
+    eprintln!("stale-prefix control: 409, unchanged event/checkpoint/body counts and protection entropy");
+    let exact = make(
+        "prefix-exact",
+        "slot-next",
+        Some(selected_prefix(&db.owner).await),
+    );
+    let ledger = case("case_123");
+    let (left, right) = tokio::join!(
+        transport.append_accepted_attachment(&ledger, &exact),
+        transport.append_accepted_attachment(&ledger, &exact)
+    );
+    let first = left.unwrap();
+    assert_eq!(
+        right.unwrap(),
+        first,
+        "simultaneous identical calls converge on the real receipt"
+    );
+    assert_eq!(counts().await, (3, 3, 3));
+    eprintln!("simultaneous exact-key control: one new event/checkpoint/body and identical receipts");
+    let lost = make(
+        "prefix-lost-response",
+        "slot-later",
+        Some(selected_prefix(&db.owner).await),
+    );
+    let body = serde_json::to_string(&lost).unwrap();
+    let path = scoped_uri("/v1/scopes/case_123/accepted-attachments");
+    let selector = crate::test_support::scope_selector(&path).expect("scoped test route");
+    let request = format!(
+        "POST {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nx-stack-scope-key: {selector}\r\nAuthorization: Bearer all\r\nidempotency-key: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        lost.idempotency_key,
+        body.len()
+    );
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    stream.write_all(request.as_bytes()).await.unwrap();
+    // Keep the request transport alive until the private database observes commit, but never
+    // read the response. Closing earlier can cancel dispatch rather than lose an acknowledgment.
+    let committed = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while counts().await != (4, 4, 4) {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    if committed.is_err() {
+        let mut response = Vec::new();
+        let read = tokio::time::timeout(std::time::Duration::from_secs(1), (&mut stream).take(64 * 1024).read_to_end(&mut response)).await;
+        panic!("response-loss setup did not commit: counts={:?}, read={read:?}, response={}", counts().await, String::from_utf8_lossy(&response));
+    }
+    drop(stream); // The consumer retains no response or synthetic acknowledgment.
+    eprintln!("response-loss control: database committed fourth event; consumer never read acknowledgment");
+    drop(server.take());
+    server = Some(start_child(root, &database, port).await);
+    let entropy = std::fs::read_to_string(root.join("random-count")).unwrap();
+    let recovered = transport
+        .append_accepted_attachment(&case("case_123"), &lost)
+        .await
+        .unwrap();
+    assert_eq!(
+        recovered.sequence, 3,
+        "lost-response recovery returns the existing real event"
+    );
+    assert_eq!(
+        transport
+            .append_accepted_attachment(&case("case_123"), &exact)
+            .await
+            .unwrap(),
+        first,
+        "a later valid suffix does not change the original pre-event condition"
+    );
+    assert_eq!(counts().await, (4, 4, 4));
+    assert_eq!(
+        std::fs::read_to_string(root.join("random-count")).unwrap(),
+        entropy
+    );
+    let mut changed = exact.clone();
+    changed.expected_prefix = Some(selected_prefix(&db.owner).await);
+    assert_eq!(
+        raw_status(
+            port,
+            "POST",
+            "/v1/scopes/case_123/accepted-attachments",
+            &serde_json::to_string(&changed).unwrap(),
+            "all",
+            &changed.idempotency_key
+        )
+        .await,
+        409
+    );
+    assert_eq!(counts().await, (4, 4, 4));
+    eprintln!("restart controls: lost acknowledgment recovered, later-suffix original replay exact, changed prefix refused");
+    drop(server);
 }

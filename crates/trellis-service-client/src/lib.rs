@@ -302,6 +302,65 @@ pub const ACCEPTED_ATTACHMENT_DESCRIPTOR_BYTES_LIMIT: usize = 64 * 1024;
 pub const ACCEPTED_ATTACHMENT_EVENT_TYPE_LITERAL: &str =
     "substrate.append.accepted_attachment_binding";
 
+/// Requires an exact committed prefix before a new accepted attachment append.
+///
+/// A committed same-key replay checks its original pre-event prefix, allowing a later suffix.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AcceptedAttachmentPrefixCondition {
+    /// Domain-separated digest of ordered canonical and signed prefix bytes.
+    #[schema(pattern = "^sha256:[0-9a-f]{64}$")]
+    pub digest: String,
+    /// Required head of the selected nonempty prefix.
+    #[schema(pattern = "^sha256:[0-9a-f]{64}$")]
+    pub head: String,
+}
+impl AcceptedAttachmentPrefixCondition {
+    /// Validates the exact hash spelling without granting prefix or signature authority.
+    ///
+    /// # Errors
+    /// Refuses malformed or noncanonical SHA-256 digest/head strings.
+    pub fn validate(&self) -> Result<(), StackError> {
+        fn hash(value: &str) -> bool {
+            value.strip_prefix("sha256:").is_some_and(|hex| {
+                hex.len() == 64
+                    && hex
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            })
+        }
+        if !hash(&self.digest) || !hash(&self.head) {
+            return Err(StackError::bad_request(
+                "invalid accepted attachment prefix condition",
+            ));
+        }
+        Ok(())
+    }
+}
+impl<'de> Deserialize<'de> for AcceptedAttachmentPrefixCondition {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            digest: String,
+            head: String,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        let condition = Self {
+            digest: wire.digest,
+            head: wire.head,
+        };
+        condition.validate().map_err(serde::de::Error::custom)?;
+        Ok(condition)
+    }
+}
+fn optional_attachment_prefix<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<AcceptedAttachmentPrefixCondition>, D::Error> {
+    // Only omission uses the field default. Explicit JSON null must decode as an object and fail.
+    AcceptedAttachmentPrefixCondition::deserialize(deserializer).map(Some)
+}
+
 /// Original attachment and accepted descriptor sent to the protected append route.
 ///
 /// The server selects protection, recipients and compute disclosure. The descriptor
@@ -320,6 +379,10 @@ pub struct AcceptedAttachmentAppendBody {
     /// Standard padded Base64 for one nonempty original, bounded to 1 MiB decoded.
     #[schema(min_length = 4, max_length = 1398104, format = Byte)]
     pub original_bytes: String,
+    /// Optional exact-prefix condition; explicit JSON null is invalid.
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "optional_attachment_prefix")]
+    #[schema(value_type = AcceptedAttachmentPrefixCondition, nullable = false)]
+    pub expected_prefix: Option<AcceptedAttachmentPrefixCondition>,
 }
 
 /// OpenAPI schema for the accepted-attachment descriptor object, shared with the server route.
@@ -376,6 +439,7 @@ impl AcceptedAttachmentAppendBody {
             actor,
             descriptor,
             original_bytes: STANDARD.encode(bytes),
+            expected_prefix: None,
         };
         body.validate()?;
         Ok(body)
@@ -386,6 +450,9 @@ impl AcceptedAttachmentAppendBody {
     /// Refuses an invalid idempotency key, nonservice actor, oversized or nonobject
     /// descriptor, and empty, oversized or noncanonical standard Base64 bytes.
     pub fn validate(&self) -> Result<(), StackError> {
+        if let Some(condition) = &self.expected_prefix {
+            condition.validate()?;
+        }
         validate_required("idempotency_key", &self.idempotency_key)?;
         if self.idempotency_key.len() > 64 || self.actor.kind != "service" {
             return Err(StackError::bad_request(
@@ -1217,6 +1284,7 @@ mod tests {
             actor: AppendActor::service("formspec-server"),
             descriptor: serde_json::json!({"sourceArtifactRef":"fixture"}),
             original_bytes: STANDARD.encode(b"original attachment"),
+            expected_prefix: None,
         }
     }
 
@@ -1295,12 +1363,91 @@ mod tests {
     }
 
     #[test]
+    fn attachment_prefix_condition_distinguishes_omission_from_invalid_or_changed_selection() {
+        let original = serde_json::to_value(attachment_body()).unwrap();
+        assert!(original.get("expectedPrefix").is_none());
+        assert!(
+            serde_json::from_value::<AcceptedAttachmentAppendBody>(original.clone())
+                .unwrap()
+                .expected_prefix
+                .is_none()
+        );
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let valid = serde_json::json!({"digest": digest, "head": digest});
+        let mut wire = original.clone();
+        wire["expectedPrefix"] = valid.clone();
+        let decoded: AcceptedAttachmentAppendBody = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), wire);
+        for invalid in [
+            serde_json::Value::Null,
+            serde_json::json!({}),
+            serde_json::json!({"digest": digest}),
+            serde_json::json!({"head": digest}),
+            serde_json::json!({"digest": digest, "head": null}),
+            serde_json::json!({"digest": digest, "head": ""}),
+            serde_json::json!({"digest": null, "head": null}),
+            serde_json::json!({"digest": digest, "head": null, "extra": true}),
+            serde_json::json!({"digest": "sha256:BAD", "head": null}),
+            serde_json::json!({"digest": digest, "head": "sha256:BAD"}),
+        ] {
+            let mut changed = original.clone();
+            changed["expectedPrefix"] = invalid;
+            assert!(serde_json::from_value::<AcceptedAttachmentAppendBody>(changed).is_err());
+        }
+        for raw in [
+            format!(r#"{{"digest":"{digest}","digest":"{digest}","head":"{digest}"}}"#),
+            format!(r#"{{"digest":"{digest}","head":"{digest}","head":"{digest}"}}"#),
+        ] {
+            assert!(serde_json::from_str::<AcceptedAttachmentPrefixCondition>(&raw).is_err());
+        }
+        let prefix = serde_json::to_value(
+            <AcceptedAttachmentPrefixCondition as utoipa::PartialSchema>::schema(),
+        )
+        .unwrap();
+        assert_eq!(prefix["required"], serde_json::json!(["digest", "head"]));
+        // Unknown fields are refused by the shared decoder; the emitted schema must agree.
+        assert_eq!(prefix["additionalProperties"], false);
+        assert_eq!(
+            prefix["properties"]["digest"]["pattern"],
+            "^sha256:[0-9a-f]{64}$"
+        );
+        assert_eq!(
+            prefix["properties"]["head"]["pattern"],
+            "^sha256:[0-9a-f]{64}$"
+        );
+        assert_eq!(prefix["properties"]["head"]["type"], "string");
+        assert_ne!(prefix["properties"]["head"]["nullable"], true);
+        let body_schema =
+            serde_json::to_value(<AcceptedAttachmentAppendBody as utoipa::PartialSchema>::schema())
+                .unwrap();
+        assert!(
+            !body_schema["required"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("expectedPrefix"))
+        );
+        let outer = &body_schema["properties"]["expectedPrefix"];
+        assert_ne!(outer["type"], "null");
+        assert!(
+            !outer["type"]
+                .as_array()
+                .is_some_and(|types| types.contains(&serde_json::json!("null")))
+        );
+        assert!(
+            !outer["anyOf"]
+                .as_array()
+                .is_some_and(|variants| variants.iter().any(|schema| schema["type"] == "null"))
+        );
+        assert_ne!(outer["nullable"], true);
+    }
+
+    #[test]
     fn attachment_openapi_schema_declares_closed_body_and_service_actor() {
         let schema =
             serde_json::to_value(<AcceptedAttachmentAppendBody as utoipa::PartialSchema>::schema())
                 .unwrap();
         assert_eq!(schema["additionalProperties"], false);
-        assert_eq!(schema["properties"].as_object().unwrap().len(), 4);
+        assert_eq!(schema["properties"].as_object().unwrap().len(), 5);
         assert_eq!(schema["properties"]["descriptor"]["type"], "object");
         let actor =
             serde_json::to_value(<ClosedAttachmentActor as utoipa::PartialSchema>::schema())
