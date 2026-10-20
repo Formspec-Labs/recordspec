@@ -137,23 +137,33 @@ fn trellis_admitted_event_type_openapi_schema() -> RefOr<Schema> {
         .into()
 }
 
-/// Maximum Trellis HTTP error response body bytes folded into [`StackError`] text.
-///
-/// Reverse proxies often return HTML pages; cap inclusion so logs and downstream copies stay bounded.
-const APPEND_HTTP_ERROR_BODY_PREVIEW_BYTES: usize = 8 * 1024;
+/// Maximum provider body bytes inspected for a closed diagnostic code.
+/// No provider title, detail, context, or raw body enters the returned error.
+const HTTP_ERROR_DIAGNOSTIC_BYTES: usize = 8 * 1024;
 
-#[must_use]
-fn truncate_utf8_body_for_error_preview(mut body: String, max_bytes: usize) -> String {
-    if body.len() <= max_bytes {
-        return body;
+/// Preserves the received status even when the diagnostic body is absent or invalid.
+async fn provider_http_error(
+    mut response: reqwest::Response,
+    label: &str,
+    source_selected: bool,
+) -> StackError {
+    let status = response.status();
+    let mut bytes = Vec::new();
+    while bytes.len() < HTTP_ERROR_DIAGNOSTIC_BYTES {
+        let Ok(Some(chunk)) = response.chunk().await else { break };
+        let remaining = HTTP_ERROR_DIAGNOSTIC_BYTES - bytes.len();
+        bytes.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
     }
-    let mut end = max_bytes;
-    while end > 0 && !body.is_char_boundary(end) {
-        end -= 1;
-    }
-    body.truncate(end);
-    body.push_str("… (truncated)");
-    body
+    let code = std::str::from_utf8(&bytes).map_or("other", source_diagnostics::public_code);
+    // Keep the existing diagnostic parser's shape with only closed, safe fields.
+    let problem = format!(r#"{{"error_code":"{code}"}}"#);
+    source_diagnostics::http_refusal(source_selected, status.as_u16(), &problem);
+    StackError::new(
+        stack_common_error::ErrorCode::new(format!("INFRA-{}0", status.as_u16()))
+            .expect("three-digit HTTP status produces a valid infrastructure code"),
+        status,
+        format!("trellis {label} returned HTTP {status}: {problem}"),
+    )
 }
 
 /// Actor block carried by the Trellis append wire body.
@@ -840,15 +850,7 @@ impl TrellisServiceClient {
         use source_diagnostics::{Outcome, Stage};
         source_diagnostics::mark(selected, Stage::Response, Outcome::Enter);
         if !response.status().is_success() {
-            let status = response.status();
-            let body = truncate_utf8_body_for_error_preview(
-                response.text().await.unwrap_or_default(),
-                APPEND_HTTP_ERROR_BODY_PREVIEW_BYTES,
-            );
-            source_diagnostics::http_refusal(selected, status.as_u16(), &body);
-            return Err(StackError::unavailable(format!(
-                "trellis append returned HTTP {status}: {body}"
-            )));
+            return Err(provider_http_error(response, "append", selected).await);
         }
         source_diagnostics::mark(selected, Stage::Response, Outcome::ReturnedOk);
         source_diagnostics::mark(selected, Stage::Decode, Outcome::Enter);
@@ -1168,10 +1170,7 @@ impl TrellisServiceClient {
                 StackError::unavailable(format!("trellis {label} fetch failed: {error}"))
             })?;
         if !response.status().is_success() {
-            return Err(StackError::unavailable(format!(
-                "trellis {label} returned HTTP {}",
-                response.status()
-            )));
+            return Err(provider_http_error(response, label, false).await);
         }
         if let Some(limit) = max_bytes {
             let mut types = response
@@ -1730,3 +1729,6 @@ mod tests {
         )
     }
 }
+
+#[cfg(test)]
+mod provider_error_tests;

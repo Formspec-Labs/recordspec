@@ -53,10 +53,11 @@ async fn source_diagnostics_non2xx_and_invalid2xx_consume_one_response_and_prese
         .append_event(sourced())
         .await
         .unwrap_err();
-    // Existing returned previews are deliberately preserved. Closed diagnostic
-    // output privacy is tested at its writer, without capturing global stderr.
+    // The returned error retains status and a closed reason without provider content.
     assert!(error.title().contains("HTTP 403"));
-    assert!(error.title().contains("PRIVATE_SENTINEL"));
+    assert_eq!(error.status().as_u16(), 403);
+    assert!(error.title().contains("INFRA-4030"));
+    assert!(!error.title().contains("PRIVATE_SENTINEL"));
     assert_eq!(requests.load(Ordering::SeqCst), 1);
     let requests = Arc::new(AtomicUsize::new(0));
     let count = requests.clone();
