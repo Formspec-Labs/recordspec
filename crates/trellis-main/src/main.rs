@@ -11,6 +11,9 @@
 //!   checks the schema is migrated and row-secured, opens the pool and buckets for its cell
 //!   (refusing another cell's, and a role that bypasses or owns row security), builds the
 //!   `Deployment` and serves it.
+//! - `trellis-server bootstrap` records the deployment's cell marker in Trellis's artifacts
+//!   bucket (`TRELLIS_ARTIFACT_BUCKET` / `TRELLIS_ARTIFACT_PREFIX`) and verifies it opens for that
+//!   cell, without writing to `source_content` (which Source owns).
 //! - `trellis-server config-check` reads the serving configuration, applies the posture rules
 //!   `serve` applies (the signing-purpose rule among them), and prints each scope's key, without
 //!   opening anything.
@@ -44,10 +47,12 @@ async fn main() -> ExitCode {
     let result = match command.as_deref() {
         None | Some("serve") => serve().await,
         Some("migrate") => migrate().await,
+        Some("bootstrap") => bootstrap().await,
         Some("config-check") => config_check(),
-        Some(other) => {
-            Err(format!("unknown command `{other}`; use serve, migrate or config-check").into())
-        }
+        Some(other) => Err(format!(
+            "unknown command `{other}`; use serve, migrate, bootstrap or config-check"
+        )
+        .into()),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -100,6 +105,22 @@ impl Store for Unopened {
     fn scoped(&self, scope: &Scope) -> Scope {
         scope.clone()
     }
+}
+
+/// Records the deployment's cell marker in Trellis's artifacts bucket (`TRELLIS_ARTIFACT_BUCKET` /
+/// `TRELLIS_ARTIFACT_PREFIX`), refusing a prefix recorded for another cell and verifying that the
+/// bucket opens for `cell`. Never writes to `source_content`, which Source owns.
+async fn bootstrap() -> Result<(), Box<dyn Error>> {
+    let startup = trellis_server::startup_from_env(composition::adapters())?;
+    let cell = Cell::parse(&startup.deployment.cell)?;
+    let _deployment = Deployment::new(&startup.deployment, Unopened)?;
+    if let Some(artifacts) = &startup.storage.artifacts {
+        let store = s3_store(artifacts)?;
+        stack_common_object_store::record_bucket_cell(store.as_ref(), &cell).await?;
+        let _opened = ScopedBucket::open(store, &cell).await?;
+    }
+    println!("trellis bootstrap ok for cell {cell}");
+    Ok(())
 }
 
 fn config_check() -> Result<(), Box<dyn Error>> {
@@ -156,9 +177,20 @@ async fn pool(url: &str, max_connections: u32) -> Result<PgPool, sqlx::Error> {
     pool
 }
 
-/// The configured bucket under its prefix, which provisioning recorded for `cell`
-/// (`object-store-init` in managed-single-cell), or an in-memory one, which this process
-/// provisions itself; opened for `cell` without writing.
+fn s3_store(config: &ObjectStoreConfig) -> Result<Arc<dyn ObjectStore + Send + Sync>, Box<dyn Error>> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the composition root builds the deployment's bucket clients (ADR 0168 §1.2)"
+    )]
+    let s3 = stack_common_object_store::build_s3_store(&config.s3)?;
+    Ok(match config.prefix.trim_matches('/') {
+        "" => Arc::new(s3),
+        prefix => Arc::new(PrefixStore::new(s3, prefix)),
+    })
+}
+
+/// The configured bucket under its prefix, which `bootstrap` (or provisioning) recorded for `cell`,
+/// or an in-memory one, which this process provisions itself; opened for `cell` without writing.
 async fn bucket(
     config: Option<&ObjectStoreConfig>,
     cell: &Cell,
@@ -169,17 +201,7 @@ async fn bucket(
             stack_common_object_store::record_bucket_cell(memory.as_ref(), cell).await?;
             memory
         }
-        Some(config) => {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "the composition root builds the deployment's bucket clients (ADR 0168 §1.2)"
-            )]
-            let s3 = stack_common_object_store::build_s3_store(&config.s3)?;
-            match config.prefix.trim_matches('/') {
-                "" => Arc::new(s3),
-                prefix => Arc::new(PrefixStore::new(s3, prefix)),
-            }
-        }
+        Some(config) => s3_store(config)?,
     };
     Ok(ScopedBucket::open(store, cell).await?)
 }

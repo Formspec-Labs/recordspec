@@ -188,3 +188,47 @@ fn migrate_needs_only_the_deployment_the_role_name_and_the_owner_url() {
         "{stderr}"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn bootstrap_validates_startup_and_records_the_cell_without_serving() {
+    let directory = tempfile::tempdir().unwrap();
+    let profile = directory.path().join("profile.json");
+    private(
+        &profile,
+        &serde_json::to_vec(&serde_json::json!({
+            "issuer":"https://issuer.example/realm", "audience":"trellis-api", "requiredScopes":["trellis.access"],
+            "allowedClients":["producer"], "profile":"keycloak", "introspectionEndpoint":"https://issuer.example/introspect",
+            "introspectionClientId":"introspection", "introspectionClientSecretFile":"secret", "grantsFile":"grants.json",
+            "identities":[{"issuer":"https://issuer.example/realm","subject":"producer","clientId":"producer","principal":"producer"}],
+            "actionScopes":{"read":"trellis.read","append":"trellis.append","administer":"trellis.administer"}
+        }))
+        .unwrap(),
+    );
+    private(
+        &directory.path().join("secret"),
+        b"private-test-only-secret",
+    );
+    private(&directory.path().join("grants.json"), br#"{"grants":[]}"#);
+    let key = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/vectors/_keys/issuer-001.cose_key"
+    );
+    let output = cli()
+        .arg("bootstrap")
+        .env("TRELLIS_OIDC_CONFIG_FILE", &profile)
+        .env("TRELLIS_SIGNING_KEY_COSE_PATH", key)
+        .env("TRELLIS_PROFILE", "development")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("trellis bootstrap ok for cell cell-a"),
+        "{stdout}"
+    );
+}
