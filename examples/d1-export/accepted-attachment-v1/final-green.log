@@ -1,0 +1,108 @@
+   Compiling crc32fast v1.5.0
+   Compiling integrity-bundle v0.1.0 (/Users/mikewolfd/Work/formspec-stack/integrity-stack/crates/integrity-bundle)
+   Compiling integrity-verify v0.1.0 (/Users/mikewolfd/Work/formspec-stack/integrity-stack/crates/integrity-verify)
+   Compiling trellis-admission-formspec v0.1.0 (/Users/mikewolfd/Work/formspec-stack/trellis/crates/trellis-admission-formspec)
+   Compiling trellis-verify-wos v0.1.0 (/Users/mikewolfd/Work/formspec-stack/trellis/crates/trellis-verify-wos)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.70s
+     Running unittests src/lib.rs (/tmp/formspec-exact-source-composition-target-20261009-v1/debug/deps/trellis_admission_formspec-33723812a371fe79)
+
+running 9 tests
+test tests::given_formspec_event_type_specs_when_registered_then_review_gate_accepts_all ... ok
+test tests::given_malformed_payload_when_admits_then_rejects ... ok
+test tests::given_payload_missing_aggregate_type_when_admits_then_rejects ... ok
+test tests::given_response_action_batch_missing_ledger_fields_when_admits_then_rejects ... ok
+test tests::given_response_action_batch_wrong_hash_when_admits_then_rejects ... ok
+test tests::given_response_action_batch_wrong_idempotency_when_admits_then_rejects ... ok
+test tests::given_response_action_session_batch_when_admits_then_returns_action_metadata ... ok
+test tests::given_well_formed_payload_when_admits_then_returns_formspec_metadata ... ok
+test tests::given_wrong_literal_when_admits_then_rejects_before_payload_parse ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/accepted_attachment.rs (/tmp/formspec-exact-source-composition-target-20261009-v1/debug/deps/accepted_attachment-feaa103441f15620)
+
+running 12 tests
+test accepts_closed_accepted_attachment_operation ... ok
+test actual_replacement_preserves_logical_slot_and_requires_prior_hash ... ok
+test binds_original_and_ciphertext_with_distinct_hashes ... ok
+test descriptor_change_conflicts_even_when_original_bytes_match ... ok
+test maintained_attachment_fixture_uses_canonical_ordering ... ok
+test ordinary_append_cannot_publish_attachment_with_null_extensions ... ok
+test refuses_fabricated_prior_and_foreign_prefix ... ok
+test refuses_malformed_same_slot_prior_binding ... ok
+test refuses_unsupported_version_missing_nullable_and_bad_media_type ... ok
+test rejects_changed_original_and_excessive_binary_inputs ... ok
+test rejects_unknown_accepted_descriptor_fields ... ok
+test selects_latest_binding_and_refuses_broken_link ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (/tmp/formspec-exact-source-composition-target-20261009-v1/debug/deps/trellis_verify_wos-de4c3cb0935a403e)
+
+running 63 tests
+test policy_closure::tests::policy_closure_absence_is_quiet_without_signature_affirmations ... ok
+test policy_closure::tests::policy_closure_cannot_claim_bundle_trust_roots_are_authoritative ... ok
+test policy_closure::tests::policy_closure_digest_mismatch_is_failure ... ok
+test policy_closure::tests::policy_closure_missing_for_signed_scope_is_advisory ... ok
+test policy_closure::tests::policy_closure_rejects_duplicate_nested_boundary_keys ... ok
+test policy_closure::tests::policy_closure_rejects_non_canonical_float_material ... ok
+test policy_closure::tests::policy_closure_rejects_non_canonical_root_map_order ... ok
+test policy_closure::tests::policy_closure_validates_when_boundary_and_artifacts_are_present ... ok
+test signature_encoder::tests::omits_absent_catalog_and_checks_input_count_and_output_bounds ... ok
+test signature_encoder::tests::preserves_nested_values_and_optional_absent_null_and_present_fields ... ok
+test signature_encoder::tests::refuses_content_digest_mismatch_even_with_actual_recomputed_event_hash ... ok
+test signature_encoder::tests::refuses_hash_foreign_scope_missing_hash_duplicate_and_sequence_gap ... ok
+test signature_encoder::tests::refuses_missing_act_malformed_field_and_unreadable_affirmation ... ok
+test signature_encoder::tests::retains_multiple_affirmations_across_nonaffirmation_continuation ... ok
+test signed_acts::tests::signed_acts_act_correlation_conflict_fails_validator_domain_path ... ok
+test signed_acts::tests::signed_acts_act_correlation_merges_compatible_source_refs ... ok
+test signed_acts::tests::signed_acts_act_correlation_rejects_duplicate_source_ref_across_act_ids ... ok
+test signed_acts::tests::signed_acts_act_correlation_rejects_incompatible_duplicate_act_id ... ok
+test signed_acts::tests::signed_acts_catalog_rule_mismatch_is_invalid_catalog ... ok
+test signed_acts::tests::signed_acts_derivation_merges_compatible_duplicate_act_ids ... ok
+test signed_acts::tests::signed_acts_duplicate_nested_payload_keys_fail_validator_domain_path ... ok
+test signed_acts::tests::signed_acts_invalid_catalog_cbor_is_failure ... ok
+test signed_acts::tests::signed_acts_manifest_empty_events_yields_empty_array ... ok
+test signed_acts::tests::signed_acts_manifest_encoding_is_input_order_invariant ... ok
+test signed_acts::tests::signed_acts_manifest_encoding_matches_canonical_cbor_layout ... ok
+test signed_acts::tests::signed_acts_manifest_extension_absent_and_member_absent_is_quiet ... ok
+test signed_acts::tests::signed_acts_manifest_extension_digest_mismatch_when_extension_digest_wrong ... ok
+test signed_acts::tests::signed_acts_manifest_extension_round_trips_through_rust_verifier ... ok
+test signed_acts::tests::signed_acts_manifest_member_unbound_when_member_present_without_extension ... ok
+test signed_acts::tests::signed_acts_manifest_mismatch_when_member_bytes_disagree_with_derivation ... ok
+test signed_acts::tests::signed_acts_manifest_missing_member_when_extension_declared_without_member ... ok
+test signed_acts::tests::signed_acts_manifest_mixed_events_sort_by_hash_then_event_type ... ok
+test signed_acts::tests::signed_acts_manifest_rejects_duplicate_tuples ... ok
+test signed_acts::tests::signed_acts_manifest_rejects_unrelated_event_types ... ok
+test signed_acts::tests::signed_acts_manifest_same_hash_sorts_by_event_type ... ok
+test signed_acts::tests::signed_acts_manifest_single_signature_admission_failed_is_included ... ok
+test signed_acts::tests::signed_acts_manifest_single_signature_affirmation_is_included ... ok
+test signed_acts::tests::signed_acts_projection_canonicalizes_nested_payload_maps ... ok
+test signed_acts::tests::signed_acts_projection_rejects_duplicate_nested_payload_keys ... ok
+test signed_acts::tests::signed_acts_projection_validates_when_catalog_matches_derivation ... ok
+test signed_acts::tests::signed_acts_render_drift_is_advisory ... ok
+test signed_acts::tests::signed_acts_unknown_derivation_rule_is_failure_without_rule_substitution ... ok
+test signed_acts::tests::signed_acts_v1_derivation_rule_is_registry_backed ... ok
+test signed_acts::tests::signed_acts_v1_derivation_rule_rejects_missing_signing_act_id ... ok
+test signed_acts::tests::signed_acts_v2_derivation_rule_derives_fallback_act_id ... ok
+test signed_acts::tests::signed_acts_v2_projection_validates_when_catalog_matches_derivation ... ok
+test signed_acts::tests::signed_acts_v2_treats_null_signing_act_id_as_absent ... ok
+test tests::given_distinct_k2_fields_when_parsed_then_signing_act_and_presentation_hash_preserved ... ok
+test tests::given_policy_closure_digest_mismatch_when_layered_report_then_domain_blocks_verdict ... ok
+test tests::given_signature_admission_failed_export_when_layered_report_then_rejected_projection_validates ... ok
+test tests::given_signature_affirmation_export_when_layered_report_then_signed_acts_projection_validates ... ok
+test tests::given_signed_acts_fallback_id_export_when_layered_report_then_projection_validates ... ok
+test tests::given_signed_acts_render_drift_when_layered_report_then_verdict_remains_valid_with_advisory ... ok
+test tests::given_tampered_signature_catalog_export_when_verify_export_zip_then_stranger_fails ... ok
+test tests::given_unsupported_signed_acts_rule_when_layered_report_then_projection_blocks_verdict ... ok
+test tests::given_verify_wos_substrate_event_bindings_when_compared_to_wos_events_registry_then_literals_match_substrate_slice_and_provenance_kinds ... ok
+test tests::given_wrong_presentation_hash_when_catalog_compared_then_entry_does_not_match ... ok
+test tests::validator_admits_wos_identity_attestation_event_type ... ok
+test tests::validator_allows_determination_after_reinstatement ... ok
+test tests::validator_ignores_clock_shaped_payload_on_non_clock_event_type ... ok
+test tests::validator_reports_clock_calendar_mismatch_as_wos_finding ... ok
+test tests::validator_reports_open_clock_overdue_as_advisory ... ok
+test tests::validator_reports_rescission_terminality_as_wos_finding ... ok
+
+test result: ok. 63 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
