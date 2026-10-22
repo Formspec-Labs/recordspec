@@ -290,6 +290,8 @@
         "wos.governance.determination_amended",
         "wos.governance.rescission_authorized",
         "wos.governance.determination_rescinded",
+        "wos.governance.counterfactual_recorded",
+        "wos.governance.reasoning_recorded",
         "wos.governance.reinstated",
         "wos.governance.authorization_attestation",
         "wos.governance.clock_started",

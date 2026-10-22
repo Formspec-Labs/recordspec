@@ -19,6 +19,7 @@ use crate::{event_hash, event_timestamp};
 /// Issues the checkpoint that follows a head.
 pub(crate) struct Checkpointer<'a> {
     pub(crate) signing_key: SigningKeyMaterial,
+    pub(crate) purpose: integrity_seam::Purpose,
     pub(crate) export_profile: &'a dyn ExportProfile,
 }
 
@@ -33,6 +34,11 @@ impl Checkpointer<'_> {
         head: Option<&StoredCheckpoint>,
         event: &StoredEvent,
     ) -> Result<(StoredEvent, StoredCheckpoint), StackError> {
+        if self.purpose != integrity_seam::Purpose::Ledger {
+            return Err(StackError::internal(
+                "Checkpointer must sign checkpoints with a Purpose::Ledger key",
+            ));
+        }
         let scope = event.scope();
         let hash = event_hash(scope, event)?;
         let event = event.clone().with_canonical_event_hash(Some(hash));

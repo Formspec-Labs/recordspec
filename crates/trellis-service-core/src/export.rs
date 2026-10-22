@@ -35,6 +35,16 @@ pub(crate) async fn assemble(
     ledger: &LedgerScope,
     rows: ExportRows,
 ) -> Result<Vec<u8>, StackError> {
+    if state.signing_key.purpose() != integrity_seam::Purpose::Ledger {
+        return Err(StackError::internal(
+            "ledger signing key must be bound to Purpose::Ledger",
+        ));
+    }
+    if state.manifest_key.purpose() != integrity_seam::Purpose::Manifest {
+        return Err(StackError::internal(
+            "manifest signing key must be bound to Purpose::Manifest",
+        ));
+    }
     let scope = ledger.as_bytes();
     let head = rows.head;
     let retained = external_repository::retained_by_hash(rows.attachments)?;

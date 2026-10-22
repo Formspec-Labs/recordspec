@@ -117,6 +117,10 @@ impl TrellisServerState {
     /// rotation, say) can serve one ledger store.
     #[must_use]
     pub fn new(signing_key: ServerSigningKey, adapters: ServerAdapters) -> Self {
+        let signing_key = signing_key.with_purpose(integrity_seam::Purpose::Ledger);
+        let manifest_key = signing_key
+            .clone()
+            .with_purpose(integrity_seam::Purpose::Manifest);
         Self {
             completion: None,
             external_attachment_recipients: None,
@@ -124,7 +128,7 @@ impl TrellisServerState {
             external_attachment_random: Arc::new(integrity_seam::OsSecureRandom),
             admission_policy: adapters.admission_policy,
             authorizer: Arc::new(AllowAllScopeAuthorizer),
-            manifest_key: signing_key.clone(),
+            manifest_key,
             signing_key,
             replay_store: Arc::new(InMemoryHttpReplayStore::new()),
             authentication: Authentication::Unconfigured,
@@ -141,8 +145,45 @@ impl TrellisServerState {
     /// Signs export manifests with `manifest_key`, its own purpose key (ADR 0169 §1.2).
     #[must_use]
     pub fn with_manifest_key(mut self, manifest_key: ServerSigningKey) -> Self {
-        self.manifest_key = manifest_key;
+        self.manifest_key = manifest_key.with_purpose(integrity_seam::Purpose::Manifest);
         self
+    }
+
+    /// Alias for [`Self::with_manifest_key`] binding the manifest signing key to
+    /// [`integrity_seam::Purpose::Manifest`].
+    #[must_use]
+    pub fn with_manifest_signing_key(self, manifest_signing_key: ServerSigningKey) -> Self {
+        self.with_manifest_key(manifest_signing_key)
+    }
+
+    /// Returns the Ledger signing key (`Purpose::Ledger`).
+    #[must_use]
+    pub const fn signing_key(&self) -> &ServerSigningKey {
+        &self.signing_key
+    }
+
+    /// Returns the Manifest signing key (`Purpose::Manifest`).
+    #[must_use]
+    pub const fn manifest_key(&self) -> &ServerSigningKey {
+        &self.manifest_key
+    }
+
+    /// Returns the Manifest signing key (`Purpose::Manifest`).
+    #[must_use]
+    pub const fn manifest_signing_key(&self) -> &ServerSigningKey {
+        &self.manifest_key
+    }
+
+    /// Returns the Ledger [`integrity_seam::PurposeSigner`] (`KeyFileSigner`).
+    #[must_use]
+    pub fn ledger_purpose_signer(&self) -> &Arc<dyn integrity_seam::PurposeSigner> {
+        self.signing_key.purpose_signer()
+    }
+
+    /// Returns the Manifest [`integrity_seam::PurposeSigner`] (`KeyFileSigner`).
+    #[must_use]
+    pub fn manifest_purpose_signer(&self) -> &Arc<dyn integrity_seam::PurposeSigner> {
+        self.manifest_key.purpose_signer()
     }
 
     /// Every registry row an export carries: the Ledger key's history, then the Manifest key's
@@ -296,8 +337,14 @@ impl TrellisServerState {
 
     /// Issues the checkpoint that follows a head with this server's signing key and export profile.
     pub(crate) fn checkpointer(&self) -> crate::ledger::Checkpointer<'_> {
+        assert_eq!(
+            self.signing_key.purpose(),
+            integrity_seam::Purpose::Ledger,
+            "checkpoint signing key must be bound to Purpose::Ledger"
+        );
         crate::ledger::Checkpointer {
             signing_key: self.signing_key.core_key(),
+            purpose: self.signing_key.purpose(),
             export_profile: self.export_profile.as_ref(),
         }
     }
@@ -436,16 +483,22 @@ pub fn startup_from_env(adapters: ServerAdapters) -> Result<Startup, StackError>
     let profile = crate::posture::profile_from_env()?;
     let signing_key = purpose_key_from_env(
         profile,
+        integrity_seam::Purpose::Ledger,
         "TRELLIS_SIGNING_KEY_COSE_PATH",
         "TRELLIS_SIGNING_KEY_HISTORY_PATH",
     )?
     .ok_or_else(|| StackError::bad_request("TRELLIS_SIGNING_KEY_COSE_PATH is required"))?;
     let manifest_key = purpose_key_from_env(
         profile,
+        integrity_seam::Purpose::Manifest,
         "TRELLIS_MANIFEST_SIGNING_KEY_COSE_PATH",
         "TRELLIS_MANIFEST_SIGNING_KEY_HISTORY_PATH",
     )?
-    .unwrap_or_else(|| signing_key.clone());
+    .unwrap_or_else(|| {
+        signing_key
+            .clone()
+            .with_purpose(integrity_seam::Purpose::Manifest)
+    });
     crate::posture::check(
         profile,
         trellis_storage_is_memory,
@@ -482,6 +535,7 @@ pub fn startup_from_env(adapters: ServerAdapters) -> Result<Startup, StackError>
 /// `history_variable` names applied when set.
 fn purpose_key_from_env(
     profile: stack_common_posture::Profile,
+    purpose: integrity_seam::Purpose,
     key_variable: &str,
     history_variable: &str,
 ) -> Result<Option<ServerSigningKey>, StackError> {
@@ -490,13 +544,16 @@ fn purpose_key_from_env(
     };
     let bytes = crate::posture::read_signing_key(profile, key_variable, &path)?;
     let key = ServerSigningKey::from_cose_key_bytes(bytes, TrellisTimestamp::new(0, 0)?)?;
-    let Some(history) = env_optional(history_variable) else {
-        return Ok(Some(key));
+    let key = match env_optional(history_variable) {
+        Some(history) => {
+            let history = fs::read(&history).map_err(|error| {
+                StackError::bad_request(format!("failed to read {history_variable}: {error}"))
+            })?;
+            key.with_history_json(&history)?
+        }
+        None => key,
     };
-    let history = fs::read(&history).map_err(|error| {
-        StackError::bad_request(format!("failed to read {history_variable}: {error}"))
-    })?;
-    key.with_history_json(&history).map(Some)
+    Ok(Some(key.with_purpose(purpose)))
 }
 
 /// Longest deployment file accepted, in bytes.

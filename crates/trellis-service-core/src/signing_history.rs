@@ -75,7 +75,7 @@ impl ServerSigningKey {
         self.export_key.valid_to = valid_to;
         self.valid_to = valid_to;
         self.history = history;
-        Ok(self)
+        Ok(self.sync_purpose_signer())
     }
 }
 

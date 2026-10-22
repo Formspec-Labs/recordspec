@@ -161,13 +161,44 @@ impl Claims for TrellisClaims {
 }
 
 /// Parsed signing material shared by append and export paths.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ServerSigningKey {
     cose_key: Vec<u8>,
     export_key: ExportSigningKey,
+    private_seed: [u8; 32],
+    previous_public_key: Option<[u8; 32]>,
+    purpose: integrity_seam::Purpose,
+    purpose_signer: std::sync::Arc<dyn integrity_seam::PurposeSigner>,
     valid_to: Option<TrellisTimestamp>,
     /// Retired predecessors of `export_key`, oldest first. Public material only.
     history: Vec<SigningKeyRegistryEntry>,
+}
+
+impl std::fmt::Debug for ServerSigningKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServerSigningKey")
+            .field("kid_hex", &self.kid_hex())
+            .field("purpose", &self.purpose)
+            .field("valid_to", &self.valid_to)
+            .field("previous_public_key", &self.previous_public_key())
+            .field("history_len", &self.history.len())
+            .finish_non_exhaustive()
+    }
+}
+
+fn build_key_file_purpose_signer(
+    purpose: integrity_seam::Purpose,
+    private_seed: [u8; 32],
+    previous_public_key: Option<[u8; 32]>,
+) -> Result<std::sync::Arc<dyn integrity_seam::PurposeSigner>, StackError> {
+    let mut key_bytes = Vec::with_capacity(if previous_public_key.is_some() { 64 } else { 32 });
+    key_bytes.extend_from_slice(&private_seed);
+    if let Some(previous) = previous_public_key {
+        key_bytes.extend_from_slice(&previous);
+    }
+    let signer = integrity_cose::KeyFileSigner::from_key_bytes([(purpose, key_bytes)])
+        .map_err(|error| StackError::bad_request(format!("invalid signing key: {error}")))?;
+    Ok(std::sync::Arc::new(signer))
 }
 
 impl ServerSigningKey {
@@ -182,6 +213,8 @@ impl ServerSigningKey {
     ) -> Result<Self, StackError> {
         let parsed = trellis_cddl::parse_ed25519_cose_key(&cose_key)
             .map_err(|error| StackError::bad_request(format!("invalid signing key: {error}")))?;
+        let purpose = integrity_seam::Purpose::Ledger;
+        let purpose_signer = build_key_file_purpose_signer(purpose, parsed.private_seed, None)?;
         Ok(Self {
             cose_key,
             export_key: ExportSigningKey {
@@ -190,9 +223,81 @@ impl ServerSigningKey {
                 valid_from,
                 valid_to: None,
             },
+            private_seed: parsed.private_seed,
+            previous_public_key: None,
+            purpose,
+            purpose_signer,
             valid_to: None,
             history: Vec::new(),
         })
+    }
+
+    /// Binds this signing key to `purpose` and rebuilds its [`integrity_seam::PurposeSigner`]
+    /// (`KeyFileSigner`) over the active seed and any immediate retired predecessor from history.
+    #[must_use]
+    pub fn with_purpose(mut self, purpose: integrity_seam::Purpose) -> Self {
+        self.purpose = purpose;
+        self.sync_purpose_signer()
+    }
+
+    /// Synchronizes `previous_public_key` and rebuilds `purpose_signer` from `history` and
+    /// `purpose`.
+    #[must_use]
+    pub(crate) fn sync_purpose_signer(mut self) -> Self {
+        let previous_public_key = self
+            .history
+            .last()
+            .map(|entry| entry.public_key)
+            .or(self.previous_public_key);
+        let purpose_signer =
+            build_key_file_purpose_signer(self.purpose, self.private_seed, previous_public_key)
+                .or_else(|_| build_key_file_purpose_signer(self.purpose, self.private_seed, None))
+                .expect("validated Ed25519 seed builds a KeyFileSigner");
+        self.previous_public_key = previous_public_key;
+        self.purpose_signer = purpose_signer;
+        self
+    }
+
+    /// Returns the [`integrity_seam::Purpose`] this signing key is bound to.
+    #[must_use]
+    pub const fn purpose(&self) -> integrity_seam::Purpose {
+        self.purpose
+    }
+
+    /// Returns the immediate retired predecessor's public key when a signing-key history is loaded.
+    #[must_use]
+    pub const fn previous_public_key(&self) -> Option<[u8; 32]> {
+        self.previous_public_key
+    }
+
+    /// Returns the [`integrity_seam::PurposeSigner`] (`KeyFileSigner`) bound to this key's purpose.
+    #[must_use]
+    pub fn purpose_signer(&self) -> &std::sync::Arc<dyn integrity_seam::PurposeSigner> {
+        &self.purpose_signer
+    }
+
+    /// Signs `payload` for `scope_key` under this key's bound [`integrity_seam::Purpose`].
+    ///
+    /// # Errors
+    /// Returns [`integrity_seam::SignError`] when the backing [`integrity_seam::PurposeSigner`] refuses.
+    pub async fn sign_scoped(
+        &self,
+        scope_key: &[u8; 32],
+        payload: &[u8],
+    ) -> Result<integrity_seam::Signed, integrity_seam::SignError> {
+        self.purpose_signer
+            .sign(scope_key, self.purpose, payload)
+            .await
+    }
+
+    /// Returns the current and previous public keys for this key's bound [`integrity_seam::Purpose`].
+    ///
+    /// # Errors
+    /// Returns [`integrity_seam::SignError`] when the backing [`integrity_seam::PurposeSigner`] refuses.
+    pub async fn purpose_keys(
+        &self,
+    ) -> Result<integrity_seam::PurposeKeys, integrity_seam::SignError> {
+        self.purpose_signer.keys(self.purpose).await
     }
 
     /// Lowercase hex of the 16-byte key id derived from the public key: the key's fingerprint.
@@ -2614,6 +2719,231 @@ mod tests {
                 .unwrap()
                 .is_empty(),
             "oversized062 aggregate must refuse before committing actual event"
+        );
+    }
+
+    fn fixture_signing_key_named(name: &str) -> ServerSigningKey {
+        let key_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/vectors/_keys")
+            .join(name);
+        let key = fs::read(key_path).expect("fixture key");
+        ServerSigningKey::from_cose_key_bytes(key, TrellisTimestamp::new(0, 0).unwrap())
+            .expect("signing key")
+    }
+
+    #[tokio::test]
+    async fn server_signing_keys_bind_ledger_and_manifest_purpose_signers_with_rotation_and_scoped_signing()
+     {
+        use integrity_seam::{Purpose, SignError};
+
+        let retired = fixture_signing_key_named("attestation-authority-cm-b-001.cose_key");
+        let ledger = fixture_signing_key_named("issuer-001.cose_key");
+        let manifest = fixture_signing_key_named("issuer-002.cose_key");
+        let history = serde_json::to_vec(&serde_json::json!([
+            {
+                "public_key": hex::encode(retired.export_key().public_key),
+                "valid_from_unix_secs": 0,
+                "valid_to_unix_secs": 10
+            },
+            {
+                "public_key": hex::encode(ledger.export_key().public_key),
+                "valid_from_unix_secs": 10
+            }
+        ]))
+        .unwrap();
+        let ledger_with_history = ledger.clone().with_history_json(&history).unwrap();
+        assert_eq!(
+            ledger_with_history
+                .purpose_signer()
+                .keys(Purpose::Ledger)
+                .await
+                .unwrap()
+                .previous
+                .as_ref()
+                .map(|info| info.public_key),
+            Some(retired.export_key().public_key),
+            "with_history_json must immediately synchronize purpose_signer"
+        );
+        let state = Fixture::new(
+            TrellisServerState::new(ledger_with_history, crate::test_adapters::adapters())
+                .with_manifest_signing_key(manifest.clone()),
+        );
+
+        assert_eq!(state.signing_key().purpose(), Purpose::Ledger);
+        assert_eq!(state.manifest_signing_key().purpose(), Purpose::Manifest);
+        assert_eq!(
+            state.signing_key().previous_public_key(),
+            Some(retired.export_key().public_key)
+        );
+        assert_eq!(state.manifest_signing_key().previous_public_key(), None);
+
+        let ledger_keys = state.signing_key().purpose_keys().await.unwrap();
+        assert_eq!(ledger_keys.current.kid, ledger.kid_hex());
+        assert_eq!(
+            ledger_keys.current.public_key,
+            ledger.export_key().public_key
+        );
+        assert_eq!(
+            ledger_keys.previous.as_ref().map(|info| info.kid.as_str()),
+            Some(retired.kid_hex().as_str())
+        );
+        assert_eq!(
+            ledger_keys.previous.as_ref().map(|info| info.public_key),
+            Some(retired.export_key().public_key)
+        );
+        assert_eq!(
+            state
+                .ledger_purpose_signer()
+                .keys(Purpose::Manifest)
+                .await
+                .unwrap_err(),
+            SignError::NoKey(Purpose::Manifest)
+        );
+
+        let manifest_keys = state.manifest_signing_key().purpose_keys().await.unwrap();
+        assert_eq!(manifest_keys.current.kid, manifest.kid_hex());
+        assert_eq!(
+            manifest_keys.current.public_key,
+            manifest.export_key().public_key
+        );
+        assert!(manifest_keys.previous.is_none());
+        assert_eq!(
+            state
+                .manifest_purpose_signer()
+                .keys(Purpose::Ledger)
+                .await
+                .unwrap_err(),
+            SignError::NoKey(Purpose::Ledger)
+        );
+
+        let scope_key = *crate::test_support::a().key().as_bytes();
+        let payload = b"trellis-purpose-signer-scope-bound-payload";
+        let ledger_sig = state
+            .signing_key()
+            .sign_scoped(&scope_key, payload)
+            .await
+            .unwrap();
+        assert_eq!(ledger_sig.kid, ledger.kid_hex());
+        assert!(integrity_cose::verify_ed25519_signature(
+            ledger_keys.current.public_key,
+            payload,
+            ledger_sig.signature,
+        ));
+        assert!(!integrity_cose::verify_ed25519_signature(
+            manifest_keys.current.public_key,
+            payload,
+            ledger_sig.signature,
+        ));
+
+        let manifest_sig = state
+            .manifest_signing_key()
+            .sign_scoped(&scope_key, payload)
+            .await
+            .unwrap();
+        assert_eq!(manifest_sig.kid, manifest.kid_hex());
+        assert!(integrity_cose::verify_ed25519_signature(
+            manifest_keys.current.public_key,
+            payload,
+            manifest_sig.signature,
+        ));
+        assert!(!integrity_cose::verify_ed25519_signature(
+            ledger_keys.current.public_key,
+            payload,
+            manifest_sig.signature,
+        ));
+    }
+
+    #[tokio::test]
+    async fn export_with_distinct_ledger_and_manifest_purpose_keys_signs_members_by_purpose_and_populates_registry()
+     {
+        use integrity_verify::trellis::pinned::{
+            PinnedExportRefusal, PinnedSigningKeys, PinnedTrellisKeys, check_pinned_signers,
+        };
+
+        let ledger = fixture_signing_key_named("issuer-001.cose_key");
+        let manifest = fixture_signing_key_named("issuer-002.cose_key");
+        let state = test_state().map(|state| state.with_manifest_signing_key(manifest.clone()));
+        assert_eq!(
+            state.signing_key().purpose(),
+            integrity_seam::Purpose::Ledger
+        );
+        assert_eq!(
+            state.manifest_signing_key().purpose(),
+            integrity_seam::Purpose::Manifest
+        );
+
+        let app = router(state.clone()).expect("router");
+        let receipt = post_append(
+            &app,
+            "/v1/scopes/case_distinct_purpose_export/events",
+            append_body("idem-distinct-purpose-export"),
+        )
+        .await;
+        let zip = pinned_zip(&app, "case_distinct_purpose_export", &receipt).await;
+        assert!(export_bundle_cryptographically_verified(&zip));
+
+        let entries = integrity_bundle::read_stored_zip(&zip).expect("read export zip");
+        let member = |suffix: &str| {
+            entries
+                .iter()
+                .find(|entry| entry.path().ends_with(suffix))
+                .unwrap_or_else(|| panic!("missing member {suffix}"))
+                .bytes()
+        };
+
+        let manifest_sign1 =
+            integrity_cose::decode_cose_sign1(member("000-manifest.cbor")).unwrap();
+        assert_eq!(
+            manifest_sign1.kid().map(hex::encode),
+            Some(manifest.kid_hex()),
+            "000-manifest.cbor must be signed by the Manifest key (issuer-002)"
+        );
+
+        for member_name in ["010-events.cbor", "040-checkpoints.cbor"] {
+            let items = integrity_cose::decode_cose_sign1_array(member(member_name)).unwrap();
+            assert!(!items.is_empty(), "{member_name} must not be empty");
+            for item in items {
+                assert_eq!(
+                    item.kid().map(hex::encode),
+                    Some(ledger.kid_hex()),
+                    "{member_name} must be signed by the Ledger key (issuer-001)"
+                );
+            }
+        }
+
+        let registry_cbor =
+            integrity_cbor::decode_cbor_value(member("030-signing-key-registry.cbor")).unwrap();
+        let registry_rows = registry_cbor.as_array().expect("registry array");
+        assert_eq!(registry_rows.len(), 2, "registry must contain both keys");
+        let registry_kids = registry_rows
+            .iter()
+            .map(|row| {
+                hex::encode(
+                    integrity_cbor::map_lookup_bytes(row.as_map().unwrap(), "kid").unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(registry_kids, vec![ledger.kid_hex(), manifest.kid_hex()]);
+
+        let ledger_pins = PinnedSigningKeys::from_public_keys([ledger.export_key().public_key]);
+        let manifest_pins =
+            PinnedSigningKeys::from_public_keys([manifest.export_key().public_key]);
+        assert!(
+            check_pinned_signers(
+                &zip,
+                &PinnedTrellisKeys::new(ledger_pins.clone(), manifest_pins.clone()),
+                Some(checkpoint_digest_of(&receipt)),
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            check_pinned_signers(
+                &zip,
+                &PinnedTrellisKeys::new(manifest_pins, ledger_pins),
+                Some(checkpoint_digest_of(&receipt)),
+            ),
+            Err(PinnedExportRefusal::UnpinnedSigner),
+            "swapped Ledger/Manifest pins must refuse the export"
         );
     }
 }
