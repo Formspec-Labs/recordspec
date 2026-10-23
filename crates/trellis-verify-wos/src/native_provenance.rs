@@ -167,7 +167,7 @@ mod tests {
 
     #[test]
     fn every_existing_canonical_kind_refuses_generic_bypass() {
-        assert_eq!(WOS_CANONICAL_EVENT_LITERALS.len(), 28);
+        assert_eq!(WOS_CANONICAL_EVENT_LITERALS.len(), 30);
         for literal in WOS_CANONICAL_EVENT_LITERALS {
             let kind = ProvenanceKind::from_canonical_event_literal(literal).unwrap();
             assert_invalid(encoded(&payload(kind)));
