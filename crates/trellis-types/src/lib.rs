@@ -10,6 +10,9 @@
 
 pub mod completion_selection;
 pub mod merkle;
+pub mod pin;
+
+pub use pin::*;
 
 pub use integrity_cbor::{
     CborHelperError, Value, canonicalize_cbor_value, decode_cbor_value, domain_separated_preimage,
