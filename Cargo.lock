@@ -3852,7 +3852,9 @@ name = "trellis-admission-formspec"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "integrity-canonical",
  "integrity-cbor",
+ "integrity-cose",
  "serde",
  "serde_json",
  "stack-common-error",

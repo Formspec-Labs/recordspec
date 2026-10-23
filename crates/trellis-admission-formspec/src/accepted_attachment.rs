@@ -379,20 +379,19 @@ fn validate_prior(
             _ => return Err(invalid("prior prefix hash chain differs")),
         }
         previous_hash = Some(hash);
-        if let Some(Value::Map(extensions)) = map_lookup_optional_value(map, "extensions") {
-            if let Some(binding) =
+        if let Some(Value::Map(extensions)) = map_lookup_optional_value(map, "extensions")
+            && let Some(binding) =
                 map_lookup_optional_value(extensions, ATTACHMENT_BINDING_EXTENSION)
-            {
-                let binding = binding
-                    .as_map()
-                    .ok_or_else(|| invalid("prior binding is not a map"))?;
-                if same_text(binding, "attachment_id", &descriptor.binding_attachment_id) {
-                    validate_prior_binding(binding, map)?;
-                    if !same_text(binding, "slot_path", &descriptor.field_path) {
-                        return Err(invalid("logical attachment slot changed"));
-                    }
-                    latest = Some(hash);
+        {
+            let binding = binding
+                .as_map()
+                .ok_or_else(|| invalid("prior binding is not a map"))?;
+            if same_text(binding, "attachment_id", &descriptor.binding_attachment_id) {
+                validate_prior_binding(binding, map)?;
+                if !same_text(binding, "slot_path", &descriptor.field_path) {
+                    return Err(invalid("logical attachment slot changed"));
                 }
+                latest = Some(hash);
             }
         }
     }
