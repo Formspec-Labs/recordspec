@@ -15,11 +15,71 @@
       "allOf": [
         {
           "if": {
-            "required": ["outcome"],
-            "properties": {"outcome": {"const": "expired"}}
+            "required": [
+              "outcome"
+            ],
+            "properties": {
+              "outcome": {
+                "const": "expired"
+              }
+            }
           },
           "then": {
-            "properties": {"recordKind": {"const": "taskFailed"}}
+            "properties": {
+              "recordKind": {
+                "const": "taskFailed"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "recordKind"
+            ],
+            "properties": {
+              "recordKind": {
+                "const": "reasoningTierRecorded"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "data"
+            ],
+            "properties": {
+              "auditLayer": {
+                "const": "reasoning"
+              },
+              "data": {
+                "$ref": "#/$defs/ReasoningEvidence"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "recordKind"
+            ],
+            "properties": {
+              "recordKind": {
+                "const": "counterfactualTierRecorded"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "data"
+            ],
+            "properties": {
+              "auditLayer": {
+                "const": "counterfactual"
+              },
+              "data": {
+                "$ref": "#/$defs/CounterfactualEvidence"
+              }
+            }
           }
         }
       ],
@@ -34,14 +94,10 @@
         "id": {
           "type": "string",
           "minLength": 1,
-          "description": "Record-family TypeID of the original provenance record this custody event carries; the original record id is retained verbatim.",
+          "description": "Original native provenance identifier retained unchanged for correlation with the processor record and custody admission: a record-family TypeID (`prov`, `gov`, `ai`, `assurance` or an `x-` vendor family) of the process tenant.",
           "examples": [
-            "sba-poc_prov_01jqrpd32jf8xtx9qxkkv3rqsd",
-            "default_prov_01hw7rm71vfay8vvw14d2pf2db"
+            "default_prov_01m5bkbfjke3r9p9589gy8zggh"
           ],
-          "x-wos": {
-            "openStringKind": "identifier"
-          },
           "pattern": "^[a-z][a-z0-9-]*_(prov|gov|ai|assurance|x-[a-z0-9-]+)_[0-7][0-9a-hjkmnp-tv-z]{25}$",
           "format": "wos-record-typeid"
         },
@@ -49,9 +105,9 @@
           "type": "string",
           "format": "date-time",
           "minLength": 1,
-          "description": "RFC 3339 instant at which the original provenance record was appended, retained verbatim from the record.",
+          "description": "Actual processor timestamp of the original native provenance record, retained as an RFC 3339 timestamp without reinterpretation.",
           "examples": [
-            "2026-04-09T14:00:00Z"
+            "2026-06-01T00:00:00Z"
           ],
           "x-wos": {
             "openStringKind": "timestamp"
@@ -60,10 +116,9 @@
         "actorId": {
           "type": "string",
           "minLength": 1,
-          "description": "Identifier of the actor attributed on the original provenance record, when the record names one.",
+          "description": "Actual admitted actor identifier recorded by the processor for this native provenance occurrence when an actor is known.",
           "examples": [
-            "actor:human:reviewer-17",
-            "actor:agent:eligibility-model"
+            "actor:human:determiner"
           ],
           "x-wos": {
             "openStringKind": "identifier"
@@ -72,10 +127,9 @@
         "fromState": {
           "type": "string",
           "minLength": 1,
-          "description": "Lifecycle state the process left, retained from the original record when it describes a transition.",
+          "description": "Original source lifecycle state identifier recorded for this occurrence when the native event concerns a state transition.",
           "examples": [
-            "intake",
-            "review"
+            "open"
           ],
           "x-wos": {
             "openStringKind": "identifier"
@@ -84,10 +138,9 @@
         "toState": {
           "type": "string",
           "minLength": 1,
-          "description": "Lifecycle state the process entered, retained from the original record when it describes a transition.",
+          "description": "Original target lifecycle state identifier recorded for this occurrence when the native event concerns a state transition.",
           "examples": [
-            "review",
-            "determination"
+            "pending"
           ],
           "x-wos": {
             "openStringKind": "identifier"
@@ -96,13 +149,12 @@
         "event": {
           "type": "string",
           "minLength": 1,
-          "description": "Name of the event that caused the original record, retained verbatim when the record carries one.",
+          "description": "Original native event label recorded for this provenance occurrence, preserved without remapping to an invented event family.",
           "examples": [
-            "submit",
-            "review.completed"
+            "decide"
           ],
           "x-wos": {
-            "openStringKind": "identifier"
+            "openStringKind": "tagLabel"
           }
         },
         "actorType": {
@@ -129,10 +181,9 @@
         "lifecycleState": {
           "type": "string",
           "minLength": 1,
-          "description": "Lifecycle state the process occupied when the original record was appended, retained verbatim.",
+          "description": "Actual lifecycle state identifier associated with this retained processor fact when no source and target transition pair applies.",
           "examples": [
-            "review",
-            "eligibility.income-check"
+            "open"
           ],
           "x-wos": {
             "openStringKind": "identifier"
@@ -141,10 +192,9 @@
         "definitionVersion": {
           "type": "string",
           "minLength": 1,
-          "description": "Version of the governing Kernel Document stamped on the original record at append time.",
+          "description": "Exact workflow definition version selected by the native processor when it recorded this original provenance occurrence.",
           "examples": [
-            "1.0.0",
-            "0.3.0"
+            "1.0.0"
           ],
           "x-wos": {
             "openStringKind": "identifier"
@@ -153,9 +203,9 @@
         "inputDigest": {
           "type": "string",
           "minLength": 1,
-          "description": "Digest of the input material the original record attests to, retained verbatim from the record.",
+          "description": "Original processor digest text for the admitted input, retained without changing its algorithm or reconstructing original bytes.",
           "examples": [
-            "9ad0556334071a0d40050c61ba4601506b87dbc4847d808fb3693b364af5090c"
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
           ],
           "x-wos": {
             "openStringKind": "hash"
@@ -164,9 +214,9 @@
         "outputDigest": {
           "type": "string",
           "minLength": 1,
-          "description": "Digest of the output material the original record attests to, retained verbatim from the record.",
+          "description": "Original processor digest text for the actual output, retained without changing its algorithm or reconstructing output bytes.",
           "examples": [
-            "9ad0556334071a0d40050c61ba4601506b87dbc4847d808fb3693b364af5090c"
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
           ],
           "x-wos": {
             "openStringKind": "hash"
@@ -183,8 +233,12 @@
         "outcome": {
           "description": "Preserves maintained native TaskFailed expiry facts. The expired literal is allowed only with TaskFailed; other outcomes retain the shared provenance outcome rules.",
           "anyOf": [
-            {"$ref": "#/$defs/ProvenanceOutcome"},
-            {"const": "expired"}
+            {
+              "$ref": "#/$defs/ProvenanceOutcome"
+            },
+            {
+              "const": "expired"
+            }
           ]
         },
         "recordKind": {
@@ -294,7 +348,9 @@
             "callbackPending",
             "arazzoStep",
             "toolInvoked",
-            "policyDecision"
+            "policyDecision",
+            "reasoningTierRecorded",
+            "counterfactualTierRecorded"
           ]
         },
         "auditLayer": {
@@ -448,6 +504,466 @@
       ],
       "x-wos": {
         "open-enum": true
+      }
+    },
+    "RuleReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Reference to an authoritative rule applied in a decision. Mirrors `wos-workflow.schema.json#/$defs/RuleReference` (governance S6.2). Inlined at the API layer so codegen does not need a cross-schema resolver; structurally aligned so the API projection is byte-compatible with the kernel definition.",
+      "x-wos": {
+        "mirror": {
+          "source": "wos-workflow.schema.json",
+          "path": "$defs/RuleReference"
+        }
+      },
+      "required": [
+        "ruleId"
+      ],
+      "properties": {
+        "ruleId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Rule identifier (statute section, regulation paragraph, policy ID).",
+          "examples": [
+            "42-cfr-435-916",
+            "snap-eligibility-rule-3.2"
+          ],
+          "x-wos": {
+            "openStringKind": "identifier"
+          }
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable summary of what this authoritative rule requires or prohibits.",
+          "examples": [
+            "Annual renewal of eligibility required for continued benefit receipt."
+          ],
+          "x-wos": {
+            "openStringKind": "prose"
+          }
+        },
+        "sourceAuthority": {
+          "$ref": "#/$defs/SourceAuthority",
+          "description": "Authority rank (statute > regulation > policy > guideline)."
+        },
+        "citation": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Formal citation to the authoritative source document in standard legal format.",
+          "examples": [
+            "42 CFR \u00a7 435.916"
+          ],
+          "x-wos": {
+            "openStringKind": "prose"
+          }
+        }
+      }
+    },
+    "SourceAuthority": {
+      "type": "string",
+      "enum": [
+        "statute",
+        "regulation",
+        "policy",
+        "guideline"
+      ],
+      "description": "Authority rank for an applied rule (governance S6.2). Closed taxonomy (ADR 0082 D-12). `type: string` matches the kernel `wos-workflow.schema.json#/$defs/RuleReference.properties.sourceAuthority` projection.",
+      "examples": [
+        "statute",
+        "regulation"
+      ]
+    },
+    "EvidenceReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Reference to a piece of evidence consulted in a Reasoning-tier record. Mirrors `wos-workflow.schema.json#/$defs/EvidenceReference` (governance S6.2). At least one of `caseFieldPath` or `uri` MUST be present so the evidence is locatable; the `anyOf` constraint is a load-bearing structural pin enforced by Gate 6 byte-parity (PLN-0403 path b).",
+      "x-wos": {
+        "mirror": {
+          "source": "wos-workflow.schema.json",
+          "path": "$defs/EvidenceReference"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "anyOf": [
+        {
+          "required": [
+            "caseFieldPath"
+          ]
+        },
+        {
+          "required": [
+            "uri"
+          ]
+        }
+      ],
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/EvidenceKind",
+          "description": "What this reference points to."
+        },
+        "caseFieldPath": {
+          "type": "string",
+          "minLength": 1,
+          "description": "JSON pointer / dotted path into the case file (when `kind` is `caseField`).",
+          "examples": [
+            "/medical/recentEvidence/2026-03-14"
+          ],
+          "x-wos": {
+            "openStringKind": "pathExpression"
+          }
+        },
+        "uri": {
+          "type": "string",
+          "format": "uri",
+          "minLength": 1,
+          "description": "URI of the external document or record (when `kind` is `document` or `externalRecord`).",
+          "examples": [
+            "https://agency.gov/cases/12345/attachments/MED-007.pdf"
+          ],
+          "x-wos": {
+            "openStringKind": "uri"
+          }
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Short human-readable description of what this evidence shows.",
+          "examples": [
+            "Updated medical assessment from treating physician dated 2026-03-14."
+          ],
+          "x-wos": {
+            "openStringKind": "prose"
+          }
+        }
+      }
+    },
+    "EvidenceKind": {
+      "type": "string",
+      "enum": [
+        "caseField",
+        "document",
+        "fact",
+        "externalRecord"
+      ],
+      "description": "Kind of evidence cited in a Reasoning-tier record (governance S6.2). Closed taxonomy. `type: string` matches the kernel `wos-workflow.schema.json#/$defs/EvidenceReference.properties.kind` projection.",
+      "examples": [
+        "caseField",
+        "document"
+      ]
+    },
+    "CriterionResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Single criterion check recorded in a Reasoning-tier record (governance S6.2).",
+      "required": [
+        "criterion",
+        "satisfied"
+      ],
+      "properties": {
+        "criterion": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identifier or short label for the criterion that was checked.",
+          "examples": [
+            "incomeUnderThreshold"
+          ],
+          "x-wos": {
+            "openStringKind": "identifier"
+          }
+        },
+        "satisfied": {
+          "type": "boolean",
+          "description": "True when the criterion was satisfied by the evaluated case facts.",
+          "examples": [
+            true,
+            false
+          ]
+        },
+        "detail": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional human-readable detail explaining the criterion evaluation result.",
+          "examples": [
+            "Reported income $17,500 below SNAP threshold $20,000."
+          ],
+          "x-wos": {
+            "openStringKind": "prose"
+          }
+        }
+      }
+    },
+    "Counterfactual": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Single counterfactual entry recorded in a Counterfactual-tier record (governance S6.4).",
+      "required": [
+        "polarity",
+        "factor",
+        "effect"
+      ],
+      "properties": {
+        "polarity": {
+          "$ref": "#/$defs/CounterfactualPolarity",
+          "description": "Whether this counterfactual is positive (would change outcome) or negative (did not affect outcome)."
+        },
+        "factor": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Short identifier or label for the evaluated counterfactual factor.",
+          "examples": [
+            "incomeReduction",
+            "applicantRace"
+          ],
+          "x-wos": {
+            "openStringKind": "identifier"
+          }
+        },
+        "effect": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable description of the counterfactual effect or non-effect.",
+          "examples": [
+            "If reported income were $1,500 lower, applicant would qualify.",
+            "Applicant race did not factor into the eligibility decision."
+          ],
+          "x-wos": {
+            "openStringKind": "prose"
+          }
+        }
+      }
+    },
+    "CounterfactualPolarity": {
+      "enum": [
+        "positive",
+        "negative"
+      ],
+      "description": "Counterfactual polarity (governance S6.4). `positive` records controllable factors that would change the outcome; `negative` records irrelevant factors that did not affect the outcome.",
+      "examples": [
+        "positive"
+      ]
+    },
+    "ReasoningEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Structured Reasoning-tier provenance payload linking a determination to its facts record, snapshot digest, rules, evidence, and criteria.",
+      "required": [
+        "factsRecordRef",
+        "snapshotSha256",
+        "sourceRef",
+        "reason",
+        "rulesApplied",
+        "evidenceConsulted",
+        "criteriaChecked"
+      ],
+      "properties": {
+        "factsRecordRef": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identifier of the Facts-tier determination provenance record this reasoning entry explains.",
+          "examples": [
+            "default_prov_01m5bkbfjke3r9p9589gy8zggh"
+          ],
+          "x-wos": {
+            "openStringKind": "identifier"
+          }
+        },
+        "snapshotSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "Lowercase SHA-256 hex digest of the canonical case-file snapshot captured on the determination.",
+          "examples": [
+            "b19f000c0cd497b52c4a78e50641651e4b1e96931a1b1558984d69e722f73f5e"
+          ]
+        },
+        "sourceRef": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Originating task artifact or timeout transition reference that supplied this reasoning evidence.",
+          "examples": [
+            "review_artifact_01"
+          ],
+          "x-wos": {
+            "openStringKind": "identifier"
+          }
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable narrative explanation of the determination grounded in the cited rules and facts.",
+          "examples": [
+            "Application denied because submitted evidence did not satisfy the identity criterion."
+          ],
+          "x-wos": {
+            "openStringKind": "prose"
+          }
+        },
+        "rulesApplied": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/RuleReference"
+          }
+        },
+        "evidenceConsulted": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/EvidenceReference"
+          }
+        },
+        "criteriaChecked": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/CriterionResult"
+          }
+        },
+        "adverseNotice": {
+          "$ref": "#/$defs/AdverseNoticeProposal"
+        }
+      }
+    },
+    "CounterfactualEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Structured Counterfactual-tier provenance payload recording positive and negative counterfactuals for a determination.",
+      "required": [
+        "factsRecordRef",
+        "snapshotSha256",
+        "sourceRef",
+        "positiveCounterfactuals",
+        "negativeCounterfactuals"
+      ],
+      "properties": {
+        "factsRecordRef": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identifier of the Facts-tier determination provenance record this counterfactual entry accompanies.",
+          "examples": [
+            "default_prov_01m5bkbfjke3r9p9589gy8zggh"
+          ],
+          "x-wos": {
+            "openStringKind": "identifier"
+          }
+        },
+        "snapshotSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "Lowercase SHA-256 hex digest of the canonical case-file snapshot captured on the determination.",
+          "examples": [
+            "b19f000c0cd497b52c4a78e50641651e4b1e96931a1b1558984d69e722f73f5e"
+          ]
+        },
+        "sourceRef": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Originating task artifact or timeout transition reference that supplied this counterfactual evidence.",
+          "examples": [
+            "review_artifact_01"
+          ],
+          "x-wos": {
+            "openStringKind": "identifier"
+          }
+        },
+        "positiveCounterfactuals": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/Counterfactual"
+          }
+        },
+        "negativeCounterfactuals": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/Counterfactual"
+          }
+        }
+      }
+    },
+    "AdverseNoticeProposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Immutable adverse-decision notice proposal bound to the determination facts record and rendered notice template.",
+      "required": [
+        "factsRecordRef",
+        "snapshotSha256",
+        "templateKey",
+        "templateSha256",
+        "machineReadable",
+        "humanReadable",
+        "contentSha256"
+      ],
+      "properties": {
+        "factsRecordRef": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identifier of the Facts-tier determination provenance record that produced this adverse notice proposal.",
+          "examples": [
+            "default_prov_01m5bkbfjke3r9p9589gy8zggh"
+          ],
+          "x-wos": {
+            "openStringKind": "identifier"
+          }
+        },
+        "snapshotSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "Lowercase SHA-256 hex digest of the canonical case-file snapshot captured on the determination.",
+          "examples": [
+            "b19f000c0cd497b52c4a78e50641651e4b1e96931a1b1558984d69e722f73f5e"
+          ]
+        },
+        "templateKey": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Declared notice template identifier used to render the adverse-decision notice proposal.",
+          "examples": [
+            "adverse-decision-notice"
+          ],
+          "x-wos": {
+            "openStringKind": "identifier"
+          }
+        },
+        "templateSha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "Prefixed SHA-256 digest of the canonical notice template definition used for this proposal.",
+          "examples": [
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+          ]
+        },
+        "machineReadable": {
+          "type": "object",
+          "description": "Structured machine-readable notice payload assembling reasons, rules, counterfactuals, and appeal instructions.",
+          "examples": [
+            {
+              "reason": "Application denied."
+            }
+          ]
+        },
+        "humanReadable": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Rendered human-readable notice text delivered to the recipient for this adverse determination.",
+          "examples": [
+            "Your application was denied because the identity criterion was not satisfied."
+          ],
+          "x-wos": {
+            "openStringKind": "prose"
+          }
+        },
+        "contentSha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "Prefixed SHA-256 digest committing to the canonical machine-readable and human-readable proposal content.",
+          "examples": [
+            "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          ]
+        }
       }
     }
   }
