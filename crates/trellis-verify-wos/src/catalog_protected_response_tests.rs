@@ -209,7 +209,7 @@ fn opened_fixture() -> (
         public_policy_hash: [6; 32],
         recipient_policy_hash: [7; 32],
     };
-    (locator, pins, record, opened)
+    (*locator, pins, record, opened)
 }
 
 #[test]

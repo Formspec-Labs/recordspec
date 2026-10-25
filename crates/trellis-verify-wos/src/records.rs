@@ -124,7 +124,8 @@ pub(crate) struct IntakeManifestEntry {
 #[derive(Clone, Debug)]
 pub(crate) enum IntakeResponseContent {
     Inline(Vec<u8>),
-    Protected(ProtectedResponseLocator),
+    /// Boxed: the locator is an order of magnitude larger than the inline variant.
+    Protected(Box<ProtectedResponseLocator>),
 }
 
 fn optional_protected_response(
@@ -143,9 +144,9 @@ fn intake_response_content(map: &[(Value, Value)]) -> Result<IntakeResponseConte
             map,
             "response_bytes",
         )?)),
-        (None, Some(value)) => Ok(IntakeResponseContent::Protected(
+        (None, Some(value)) => Ok(IntakeResponseContent::Protected(Box::new(
             protected_response::parse_protected_response(value)?,
-        )),
+        ))),
         _ => Err("intake catalog requires exactly one Response content form".into()),
     }
 }
@@ -566,7 +567,7 @@ pub(crate) fn hex_string(bytes: &[u8]) -> String {
 }
 
 fn hex_decode(value: &str) -> Result<Vec<u8>, ParseError> {
-    if value.len() % 2 != 0 {
+    if !value.len().is_multiple_of(2) {
         return Err("hex string must have even length".into());
     }
     let mut out = Vec::with_capacity(value.len() / 2);

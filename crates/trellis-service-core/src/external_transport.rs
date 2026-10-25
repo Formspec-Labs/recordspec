@@ -28,7 +28,9 @@ use trellis_server_ports::{
     AttachmentLimits, AuthorizedScope, ComputeContext, ComputeSensitivity, LedgerScope, ScopeAction,
 };
 use trellis_service_client::endpoints::ACCEPTED_ATTACHMENT;
-use trellis_service_client::{AcceptedAttachmentPrefixCondition, AppendActor, SubstrateAppendBody, SubstrateAppendResult};
+use trellis_service_client::{
+    AcceptedAttachmentPrefixCondition, AppendActor, SubstrateAppendBody, SubstrateAppendResult,
+};
 use trellis_types::StoredEvent;
 
 const ORIGINAL_CAP: usize = 1024 * 1024;
@@ -156,7 +158,7 @@ pub(crate) async fn admit(
         || wire.actor.subject.trim().is_empty()
         || wire.idempotency_key.is_empty()
         || wire.idempotency_key.len() > 64
-        || wire.original_bytes.len() > 4 * ((ORIGINAL_CAP + 2) / 3)
+        || wire.original_bytes.len() > 4 * ORIGINAL_CAP.div_ceil(3)
     {
         return Err(StackError::bad_request(
             "attachment metadata or byte bound invalid",

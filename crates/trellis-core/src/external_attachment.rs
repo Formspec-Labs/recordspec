@@ -390,21 +390,21 @@ pub fn append_external_attachment<S: ExternalAttachmentStore>(
         let fields = value
             .as_map()
             .ok_or_else(|| failure("prior event map invalid"))?;
-        if let Some(Value::Map(bag)) = map_lookup_optional_value(fields, "key_bag") {
-            if let Some(Value::Array(entries)) = map_lookup_optional_value(bag, "entries") {
-                for entry in entries {
-                    let fields = entry
-                        .as_map()
-                        .ok_or_else(|| failure("prior wrap map invalid"))?;
-                    let ephemeral = map_lookup_bytes(fields, "ephemeral_pubkey")
-                        .map_err(|e| failure(e.to_string()))?;
-                    if parsed
-                        .key_bag_entries
-                        .iter()
-                        .any(|next| next.ephemeral_pubkey.as_slice() == ephemeral)
-                    {
-                        return Err(failure("external attachment ephemeral key reused"));
-                    }
+        if let Some(Value::Map(bag)) = map_lookup_optional_value(fields, "key_bag")
+            && let Some(Value::Array(entries)) = map_lookup_optional_value(bag, "entries")
+        {
+            for entry in entries {
+                let fields = entry
+                    .as_map()
+                    .ok_or_else(|| failure("prior wrap map invalid"))?;
+                let ephemeral = map_lookup_bytes(fields, "ephemeral_pubkey")
+                    .map_err(|e| failure(e.to_string()))?;
+                if parsed
+                    .key_bag_entries
+                    .iter()
+                    .any(|next| next.ephemeral_pubkey.as_slice() == ephemeral)
+                {
+                    return Err(failure("external attachment ephemeral key reused"));
                 }
             }
         }

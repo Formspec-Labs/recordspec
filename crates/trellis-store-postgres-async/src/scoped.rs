@@ -220,6 +220,10 @@ struct PgLedgerTx {
 
 impl PgLedgerTx {
     /// An event or attachment row must belong to the ledger this unit of work locked.
+    #[expect(
+        clippy::result_large_err,
+        reason = "StackError is stack-common's shared error type; its size is owned there"
+    )]
     fn own(&self, scope: &[u8]) -> Result<(), StackError> {
         if scope == self.ledger.as_bytes() {
             Ok(())

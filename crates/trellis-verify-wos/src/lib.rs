@@ -24,6 +24,7 @@ mod policy_closure;
 mod records;
 #[doc(inline)]
 pub use records::ProtectedResponseOpeningV1;
+pub mod pin_semantics;
 mod rescission;
 mod signature_encoder;
 mod signed_acts;
@@ -31,7 +32,6 @@ mod source_formal;
 mod source_original;
 pub mod source_proof_package;
 mod source_signed_task;
-pub mod pin_semantics;
 pub use pin_semantics::*;
 mod validator;
 

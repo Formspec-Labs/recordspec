@@ -14,61 +14,61 @@ pub const WOS_MIGRATION_PIN_CHANGED_EVENT_TYPE: &str = "wos.kernel.migration_pin
 pub fn extract_pin(payload: &[u8]) -> Option<CaseOpenPin> {
     // Try JSON first
     if let Ok(v) = serde_json::from_slice::<serde_json::Value>(payload) {
-        if let Some(pin_val) = v.get("pin").or_else(|| v.get("caseOpenPin")) {
-            if let Ok(pin) = serde_json::from_value::<CaseOpenPin>(pin_val.clone()) {
-                return Some(pin);
-            }
+        if let Some(pin_val) = v.get("pin").or_else(|| v.get("caseOpenPin"))
+            && let Ok(pin) = serde_json::from_value::<CaseOpenPin>(pin_val.clone())
+        {
+            return Some(pin);
         }
-        if let Some(data) = v.get("data") {
-            if let Some(pin_val) = data.get("pin").or_else(|| data.get("caseOpenPin")) {
-                if let Ok(pin) = serde_json::from_value::<CaseOpenPin>(pin_val.clone()) {
-                    return Some(pin);
-                }
-            }
+        if let Some(data) = v.get("data")
+            && let Some(pin_val) = data.get("pin").or_else(|| data.get("caseOpenPin"))
+            && let Ok(pin) = serde_json::from_value::<CaseOpenPin>(pin_val.clone())
+        {
+            return Some(pin);
         }
     }
     // Try CBOR
-    if let Ok(cbor_val) = ciborium::from_reader::<ciborium::Value, _>(payload) {
-        if let Ok(json_val) = serde_json::to_value(&cbor_val) {
-            if let Some(pin_val) = json_val.get("pin").or_else(|| json_val.get("caseOpenPin")) {
-                if let Ok(pin) = serde_json::from_value::<CaseOpenPin>(pin_val.clone()) {
-                    return Some(pin);
-                }
-            }
-            if let Some(data) = json_val.get("data") {
-                if let Some(pin_val) = data.get("pin").or_else(|| data.get("caseOpenPin")) {
-                    if let Ok(pin) = serde_json::from_value::<CaseOpenPin>(pin_val.clone()) {
-                        return Some(pin);
-                    }
-                }
-            }
+    if let Ok(cbor_val) = ciborium::from_reader::<ciborium::Value, _>(payload)
+        && let Ok(json_val) = serde_json::to_value(&cbor_val)
+    {
+        if let Some(pin_val) = json_val.get("pin").or_else(|| json_val.get("caseOpenPin"))
+            && let Ok(pin) = serde_json::from_value::<CaseOpenPin>(pin_val.clone())
+        {
+            return Some(pin);
+        }
+        if let Some(data) = json_val.get("data")
+            && let Some(pin_val) = data.get("pin").or_else(|| data.get("caseOpenPin"))
+            && let Ok(pin) = serde_json::from_value::<CaseOpenPin>(pin_val.clone())
+        {
+            return Some(pin);
         }
     }
     None
 }
 
 /// Parses `MigrationPinChangedPayload` from a migration event payload.
-pub fn parse_migration_pin_changed(payload: &[u8]) -> Result<MigrationPinChangedPayload, &'static str> {
+pub fn parse_migration_pin_changed(
+    payload: &[u8],
+) -> Result<MigrationPinChangedPayload, &'static str> {
     if let Ok(v) = serde_json::from_slice::<serde_json::Value>(payload) {
         if let Ok(record) = serde_json::from_value::<MigrationPinChangedPayload>(v.clone()) {
             return Ok(record);
         }
-        if let Some(data) = v.get("data") {
-            if let Ok(record) = serde_json::from_value::<MigrationPinChangedPayload>(data.clone()) {
-                return Ok(record);
-            }
+        if let Some(data) = v.get("data")
+            && let Ok(record) = serde_json::from_value::<MigrationPinChangedPayload>(data.clone())
+        {
+            return Ok(record);
         }
     }
-    if let Ok(cbor_val) = ciborium::from_reader::<ciborium::Value, _>(payload) {
-        if let Ok(json_val) = serde_json::to_value(&cbor_val) {
-            if let Ok(record) = serde_json::from_value::<MigrationPinChangedPayload>(json_val.clone()) {
-                return Ok(record);
-            }
-            if let Some(data) = json_val.get("data") {
-                if let Ok(record) = serde_json::from_value::<MigrationPinChangedPayload>(data.clone()) {
-                    return Ok(record);
-                }
-            }
+    if let Ok(cbor_val) = ciborium::from_reader::<ciborium::Value, _>(payload)
+        && let Ok(json_val) = serde_json::to_value(&cbor_val)
+    {
+        if let Ok(record) = serde_json::from_value::<MigrationPinChangedPayload>(json_val.clone()) {
+            return Ok(record);
+        }
+        if let Some(data) = json_val.get("data")
+            && let Ok(record) = serde_json::from_value::<MigrationPinChangedPayload>(data.clone())
+        {
+            return Ok(record);
         }
     }
     Err("payload is not a valid MigrationPinChanged record")
@@ -87,15 +87,15 @@ pub(crate) fn validate_pin_semantics(events: &[DomainEvent]) -> Vec<DomainFindin
         if event.event_type == WOS_MIGRATION_PIN_CHANGED_EVENT_TYPE {
             match parse_migration_pin_changed(payload) {
                 Ok(record) => {
-                    if let Some(active) = &current_pin {
-                        if active != &record.prior_pin_set {
-                            findings.push(DomainFinding::new(
-                                PIN_TRANSITION_INVALID,
-                                Some(event.canonical_event_hash),
-                                Severity::Failure,
-                                "MigrationPinChanged priorPinSet does not match active case pin",
-                            ));
-                        }
+                    if let Some(active) = &current_pin
+                        && active != &record.prior_pin_set
+                    {
+                        findings.push(DomainFinding::new(
+                            PIN_TRANSITION_INVALID,
+                            Some(event.canonical_event_hash),
+                            Severity::Failure,
+                            "MigrationPinChanged priorPinSet does not match active case pin",
+                        ));
                     }
                     if let Err(err) = record.new_pin_set.validate() {
                         findings.push(DomainFinding::new(
@@ -198,7 +198,11 @@ mod tests {
         );
 
         let findings = validate_pin_semantics(&[open_event, subsequent_event]);
-        assert!(findings.is_empty(), "valid pin-set must have 0 findings: {:?}", findings);
+        assert!(
+            findings.is_empty(),
+            "valid pin-set must have 0 findings: {:?}",
+            findings
+        );
     }
 
     #[test]
@@ -274,7 +278,11 @@ mod tests {
         );
 
         let findings = validate_pin_semantics(&[open_event, migration_event, post_migration_event]);
-        assert!(findings.is_empty(), "valid pin transition must have 0 findings: {:?}", findings);
+        assert!(
+            findings.is_empty(),
+            "valid pin transition must have 0 findings: {:?}",
+            findings
+        );
     }
 
     #[test]

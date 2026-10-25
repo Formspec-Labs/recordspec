@@ -150,7 +150,9 @@ async fn provider_http_error(
     let status = response.status();
     let mut bytes = Vec::new();
     while bytes.len() < HTTP_ERROR_DIAGNOSTIC_BYTES {
-        let Ok(Some(chunk)) = response.chunk().await else { break };
+        let Ok(Some(chunk)) = response.chunk().await else {
+            break;
+        };
         let remaining = HTTP_ERROR_DIAGNOSTIC_BYTES - bytes.len();
         bytes.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
     }
@@ -390,7 +392,11 @@ pub struct AcceptedAttachmentAppendBody {
     #[schema(min_length = 4, max_length = 1398104, format = Byte)]
     pub original_bytes: String,
     /// Optional exact-prefix condition; explicit JSON null is invalid.
-    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "optional_attachment_prefix")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "optional_attachment_prefix"
+    )]
     #[schema(value_type = AcceptedAttachmentPrefixCondition, nullable = false)]
     pub expected_prefix: Option<AcceptedAttachmentPrefixCondition>,
 }
@@ -944,9 +950,8 @@ impl TrellisServiceClient {
         let outgoing = self
             .authorized(called, &request.scope)
             .await
-            .map_err(|error| {
+            .inspect_err(|_| {
                 source_diagnostics::mark(source_selected, Stage::Request, Outcome::Refused);
-                error
             })?;
         source_diagnostics::mark(source_selected, Stage::Request, Outcome::ReturnedOk);
         source_diagnostics::mark(source_selected, Stage::Send, Outcome::Enter);

@@ -114,17 +114,15 @@ impl SourceTaskContentProfileV1 {
             if let NativeSigningObligation::SourceContentAndFormalKernel {
                 affirmation_event_hashes,
             } = &r.obligation
-            {
-                if affirmation_event_hashes.is_empty()
+                && (affirmation_event_hashes.is_empty()
                     || affirmation_event_hashes.len() > MAX_ROWS
                     || affirmation_event_hashes
                         .iter()
                         .collect::<BTreeSet<_>>()
                         .len()
-                        != affirmation_event_hashes.len()
-                {
-                    return Err("invalid formal signing requirement".into());
-                }
+                        != affirmation_event_hashes.len())
+            {
+                return Err("invalid formal signing requirement".into());
             }
         }
         Ok(())
@@ -859,19 +857,18 @@ pub(crate) fn verified_profile_findings<V: SourceTaskContentVerifier>(
         if let NativeSigningObligation::SourceContentAndFormalKernel {
             affirmation_event_hashes,
         } = &requirement.obligation
-        {
-            if affirmation_event_hashes.iter().any(|h| {
+            && affirmation_event_hashes.iter().any(|h| {
                 !export.events.iter().any(|e| {
                     e.canonical_event_hash == *h
                         && e.event_type
                             == crate::event_types::wos_signature_affirmation_event_type()
                 })
-            }) {
-                // Actual certificate authority/shape/outcome checks run in the existing
-                // integrity verifier and final profile fold, never guessed member names.
-                findings.push(finding("source_task_formal_obligation_missing", Some(hash)));
-                continue;
-            }
+            })
+        {
+            // Actual certificate authority/shape/outcome checks run in the existing
+            // integrity verifier and final profile fold, never guessed member names.
+            findings.push(finding("source_task_formal_obligation_missing", Some(hash)));
+            continue;
         }
         let result = match verifier.verify(task, &native) {
             Ok(v) => v,

@@ -80,16 +80,14 @@ pub fn certificate_html_from_export(
         ] {
             if let Some(certificate) =
                 map_lookup_optional_value(extensions, literal).and_then(Value::as_map)
-            {
-                if map_lookup_text(certificate, "certificate_id").map_err(|e| e.to_string())?
+                && map_lookup_text(certificate, "certificate_id").map_err(|e| e.to_string())?
                     == certificate_id
-                {
-                    presentations.push(
-                        map_lookup_map(certificate, "presentation_artifact")
-                            .map_err(|e| e.to_string())?
-                            .to_vec(),
-                    );
-                }
+            {
+                presentations.push(
+                    map_lookup_map(certificate, "presentation_artifact")
+                        .map_err(|e| e.to_string())?
+                        .to_vec(),
+                );
             }
         }
         if let Some(binding) =

@@ -141,6 +141,13 @@ pub(crate) struct ResponseBindingPins {
 
 /// Holds structurally joined bytes; it grants no decryption or signature authority.
 pub(crate) struct CodecBoundResponse {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "production callers only check the binding; no caller consumes opened content yet"
+        )
+    )]
     pub(crate) response: integrity_canonical::ResponseJson,
 }
 

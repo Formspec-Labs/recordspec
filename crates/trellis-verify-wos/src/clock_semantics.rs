@@ -277,7 +277,7 @@ fn parse_hex_32(value: &str) -> Result<[u8; 32], String> {
 }
 
 fn hex_decode(value: &str) -> Result<Vec<u8>, String> {
-    if value.len() % 2 != 0 {
+    if !value.len().is_multiple_of(2) {
         return Err("hex string must have even length".to_string());
     }
     let mut out = Vec::with_capacity(value.len() / 2);

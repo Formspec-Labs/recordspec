@@ -369,8 +369,7 @@ impl<'a> AppendCoordinator<'a> {
     ) -> Result<(), StackError> {
         tx.insert(stored, checkpoint).await?;
         if let (Some(_), Some(binding)) = (protected, binding) {
-            tx.insert_source_content(stored.sequence(), &binding)
-                .await?;
+            tx.insert_source_content(stored.sequence(), binding).await?;
         }
         tx.commit().await
     }
@@ -409,9 +408,8 @@ impl<'a> AppendCoordinator<'a> {
         let class = composition
             .final_prefix_guard
             .classify(scope.as_bytes(), tail)
-            .map_err(|error| {
+            .inspect_err(|_| {
                 diag::mark(true, Stage::FinalGuard, Outcome::Refused);
-                error
             })?;
         if !matches!(class, crate::SourceContentPrefixClass::FinalCloseout { .. }) {
             diag::mark(true, Stage::FinalGuard, Outcome::Refused);

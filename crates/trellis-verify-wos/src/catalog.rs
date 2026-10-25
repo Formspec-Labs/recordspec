@@ -41,6 +41,13 @@ pub(crate) fn validate_source_content_publication_catalogs(
 ///
 /// This is a codec/native-binding gate, not decryption or Source signature verification.
 /// Protected content remains unavailable until those independent checks are composed.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "gate is tested but not yet composed into a verifier entry point"
+    )
+)]
 pub(crate) fn validate_required_response_catalogs(
     export: &DomainExport<'_>,
     required_intakes: &BTreeSet<[u8; 32]>,
@@ -737,8 +744,14 @@ fn intake_entry_matches_record(
         "publicIntake" => {
             record.case_intent == "requestGovernedCaseCreation"
                 && record.case_disposition == "createGovernedCase"
-                && record.definition_url.as_deref().is_some_and(|url| !url.is_empty())
-                && record.definition_version.as_deref().is_some_and(|v| !v.is_empty())
+                && record
+                    .definition_url
+                    .as_deref()
+                    .is_some_and(|url| !url.is_empty())
+                && record
+                    .definition_version
+                    .as_deref()
+                    .is_some_and(|v| !v.is_empty())
         }
         _ => false,
     }
@@ -825,7 +838,10 @@ pub(crate) fn validate_catalogs_with_all_source_content<
 #[cfg(test)]
 mod intake_definition_tests {
     use super::*;
-    use crate::records::{IntakeAcceptedRecordDetails, IntakeHandoffDetails, IntakeManifestEntry, IntakeResponseContent};
+    use crate::records::{
+        IntakeAcceptedRecordDetails, IntakeHandoffDetails, IntakeManifestEntry,
+        IntakeResponseContent,
+    };
 
     fn entry() -> IntakeManifestEntry {
         IntakeManifestEntry {
@@ -858,7 +874,10 @@ mod intake_definition_tests {
 
     #[test]
     fn governing_kernel_differing_from_the_form_definition_matches() {
-        assert!(intake_entry_matches_record(&entry(), &record(Some("urn:wos:demo:workflow"))));
+        assert!(intake_entry_matches_record(
+            &entry(),
+            &record(Some("urn:wos:demo:workflow"))
+        ));
     }
 
     #[test]

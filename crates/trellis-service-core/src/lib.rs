@@ -191,7 +191,11 @@ fn build_key_file_purpose_signer(
     private_seed: [u8; 32],
     previous_public_key: Option<[u8; 32]>,
 ) -> Result<std::sync::Arc<dyn integrity_seam::PurposeSigner>, StackError> {
-    let mut key_bytes = Vec::with_capacity(if previous_public_key.is_some() { 64 } else { 32 });
+    let mut key_bytes = Vec::with_capacity(if previous_public_key.is_some() {
+        64
+    } else {
+        32
+    });
     key_bytes.extend_from_slice(&private_seed);
     if let Some(previous) = previous_public_key {
         key_bytes.extend_from_slice(&previous);
@@ -2918,16 +2922,13 @@ mod tests {
         let registry_kids = registry_rows
             .iter()
             .map(|row| {
-                hex::encode(
-                    integrity_cbor::map_lookup_bytes(row.as_map().unwrap(), "kid").unwrap(),
-                )
+                hex::encode(integrity_cbor::map_lookup_bytes(row.as_map().unwrap(), "kid").unwrap())
             })
             .collect::<Vec<_>>();
         assert_eq!(registry_kids, vec![ledger.kid_hex(), manifest.kid_hex()]);
 
         let ledger_pins = PinnedSigningKeys::from_public_keys([ledger.export_key().public_key]);
-        let manifest_pins =
-            PinnedSigningKeys::from_public_keys([manifest.export_key().public_key]);
+        let manifest_pins = PinnedSigningKeys::from_public_keys([manifest.export_key().public_key]);
         assert!(
             check_pinned_signers(
                 &zip,
