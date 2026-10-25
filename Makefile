@@ -15,7 +15,7 @@ PYTHON ?= uv run --frozen --extra dev --project $(CURDIR)/$(TRELLIS_PY_DIR) pyth
 CARGO = cargo
 PYTEST = $(PYTHON) -m pytest
 
-.PHONY: all help build test test-rust test-python test-scripts test-postgres check-specs check-specs-strict check-verifier-isolation check-layering check-scope lint fmt clean
+.PHONY: all help build test test-rust test-python test-scripts test-postgres check-specs check-specs-strict check-verifier-isolation check-layering check-scope openapi emit-openapi lint fmt clean
 
 all: build test
 
@@ -34,6 +34,8 @@ help:
 	@echo "  make check-verifier-isolation  Assert integrity-verify stays HPKE-clean (Core §16)"
 	@echo "  make check-layering Assert the generic server cannot reach the domain adapters (deny.toml)"
 	@echo "  make check-scope    ADR 0168 fence: no library forges a scope, opens a pool or bucket, or mints ids"
+	@echo "  make openapi        Print the OpenAPI document built from the route declarations"
+	@echo "  make emit-openapi   Write that document to specs/trellis-server.openapi.json"
 	@echo "  make lint           Run Rust clippy"
 	@echo "  make fmt            Check Rust formatting"
 	@echo "  make clean          Clean build artifacts"
@@ -122,6 +124,19 @@ check-layering:
 # id minting in their owners (trellis-main carries the #[expect] for its builders).
 check-scope:
 	python3 ../stack-common/scripts/scope_fence.py --all-features
+
+# ADR 0165 §1.5: the one command that builds the router's route declarations into Trellis's OpenAPI
+# document, which it prints. scripts/check-http-api-schema.py compares `make -s openapi` with the committed
+# file; emit-openapi writes it through a sibling temp file moved into place only on success, so a failed
+# build cannot empty the committed document. The root `make contracts` runs emit-openapi.
+OPENAPI_DOCUMENT = specs/trellis-server.openapi.json
+openapi:
+	@$(CARGO) run -q --locked -p trellis-main --features emit-openapi --bin emit_openapi
+
+emit-openapi:
+	$(MAKE) -s --no-print-directory openapi > $(OPENAPI_DOCUMENT).tmp \
+		&& mv $(OPENAPI_DOCUMENT).tmp $(OPENAPI_DOCUMENT) \
+		|| { rm -f $(OPENAPI_DOCUMENT).tmp; exit 1; }
 
 # Clippy reads stack-common's shared clippy.toml, as check-scope does: without that one
 # disallowed-methods list, trellis-main's #[expect(clippy::disallowed_methods)] sites go unfulfilled.

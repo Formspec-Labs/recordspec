@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check the Trellis HTTP API schema against the live service wire.
 
-Uses ``cargo run`` to emit OpenAPI; in CI, reuse a warm ``target/`` (or sccache)
+Emits OpenAPI with ``make openapi`` (a ``cargo run``); in CI, reuse a warm ``target/`` (or sccache)
 so repeat runs do not pay full link cost on every invocation.
 """
 
@@ -360,7 +360,8 @@ def check_openapi_append_contract(errors: list[str]) -> None:
 
 def emit_openapi_document(errors: list[str]) -> dict | None:
     result = subprocess.run(
-        ["cargo", "run", "-p", "trellis-main", "--features", "emit-openapi", "--bin", "emit_openapi", "--quiet"],
+        # The Makefile's `openapi` target is the one emit command; `make emit-openapi` writes its output.
+        ["make", "-s", "--no-print-directory", "openapi"],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -368,7 +369,7 @@ def emit_openapi_document(errors: list[str]) -> dict | None:
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
-        errors.append(f"OpenAPI emit failed (run cargo run -p trellis-main --features emit-openapi --bin emit_openapi): {detail}")
+        errors.append(f"OpenAPI emit failed (run make openapi): {detail}")
         return None
     try:
         return json.loads(result.stdout)
@@ -426,7 +427,7 @@ def main() -> int:
             if read_json(OPENAPI_PATH) != openapi:
                 errors.append(
                     "specs/trellis-server.openapi.json differs from the emitted document; regenerate it: "
-                    "cargo run -q -p trellis-main --features emit-openapi --bin emit_openapi > specs/trellis-server.openapi.json"
+                    "make emit-openapi"
                 )
             check_openapi_operations(schema, openapi, errors)
             check_openapi_event_type_enum(openapi, server_source, client_source, errors)
