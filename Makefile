@@ -123,9 +123,11 @@ check-layering:
 check-scope:
 	python3 ../stack-common/scripts/scope_fence.py --all-features
 
+# Clippy reads stack-common's shared clippy.toml, as check-scope does: without that one
+# disallowed-methods list, trellis-main's #[expect(clippy::disallowed_methods)] sites go unfulfilled.
 lint:
 	@echo "Running Rust clippy..."
-	$(CARGO) clippy --workspace -- -D warnings
+	CLIPPY_CONF_DIR=$(CURDIR)/../stack-common $(CARGO) clippy --workspace -- -D warnings
 
 fmt:
 	@echo "Checking Rust formatting..."
