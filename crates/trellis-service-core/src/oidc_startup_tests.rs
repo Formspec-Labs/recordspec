@@ -855,3 +855,342 @@ async fn seal_refuses_a_caller_missing_the_append_or_the_read_grant() {
     }
     assert_eq!(signer.calls.load(Ordering::SeqCst), 0);
 }
+
+// The external provider is a signed-token fixture. Startup, identity mapping, CurrentGrants,
+// HTTP authorization, completion, and revocation below are the shipped implementations.
+struct GeneratedProvider {
+    profile: Value,
+    protocol: ProtocolHttp,
+}
+
+#[async_trait]
+impl AuthHttpClient for GeneratedProvider {
+    async fn send(
+        &self,
+        mut request: AuthHttpRequest,
+    ) -> Result<AuthHttpResponse, AccessTokenError> {
+        let issuer = self.profile["issuer"].as_str().unwrap();
+        request.url = if request.url == self.profile["introspectionEndpoint"].as_str().unwrap() {
+            format!("{ISSUER}/introspect")
+        } else {
+            request.url.replace(issuer, ISSUER)
+        };
+        let introspection = request.url.ends_with("/introspect");
+        let mut response = self.protocol.send(request).await?;
+        let text = String::from_utf8(response.body)
+            .unwrap()
+            .replace(ISSUER, issuer);
+        let mut value: Value = serde_json::from_str(&text).unwrap();
+        if introspection {
+            value["aud"] = json!([
+                self.profile["audience"],
+                self.profile["introspectionClientId"]
+            ]);
+        }
+        response.body = serde_json::to_vec(&value).unwrap();
+        Ok(response)
+    }
+}
+
+/// Consumes unchanged files from the maintained deployment producer.
+#[tokio::test]
+#[ignore = "requires FORMSPEC_GENERATED_DEPLOYMENT from deployment-tools/test/fixtures/generate-trellis-deployment.ts"]
+async fn generated_deployment_completion_grants_and_real_append_revocation() {
+    let root = PathBuf::from(
+        std::env::var_os("FORMSPEC_GENERATED_DEPLOYMENT").expect("generated deployment path"),
+    );
+    let profile_path = root.join("private/trellis/oidc.json");
+    let profile: Value = serde_json::from_slice(&fs::read(&profile_path).unwrap()).unwrap();
+    let deployment: stack_common_scope::DeploymentConfig =
+        serde_json::from_slice(&fs::read(root.join("config/trellis/deployment.json")).unwrap())
+            .unwrap();
+    let selected = &deployment.scopes[0];
+    let scope = stack_common_scope::Scope::fixture(
+        &selected.tenant,
+        &selected.workspace,
+        selected.environment.as_deref(),
+    );
+    let identity = profile["identities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|identity| identity["principal"] == "wos-server")
+        .unwrap();
+    let subject = identity["subject"].as_str().unwrap();
+    assert_ne!(
+        subject, "wos-server",
+        "external subject must differ from mapped publisher"
+    );
+    let mut token_claims = claims();
+    token_claims["iss"] = profile["issuer"].clone();
+    token_claims["sub"] = identity["subject"].clone();
+    token_claims["azp"] = identity["clientId"].clone();
+    token_claims["aud"] = json!([profile["audience"], profile["introspectionClientId"]]);
+    let token = sign(&token_claims);
+    let load = |path: &Path| {
+        StartupAuth::load(
+            path,
+            OidcDependencies {
+                http: Arc::new(GeneratedProvider {
+                    profile: profile.clone(),
+                    protocol: ProtocolHttp::new(),
+                }),
+                clock: Arc::new(Clock),
+            },
+            &deployment,
+        )
+        .unwrap()
+    };
+    let signer = Arc::new(super::completion_tests::Signer {
+        calls: AtomicUsize::new(0),
+        corrupt: false,
+    });
+    let state = test_state()
+        .serving(selected.clone())
+        .map(|state| load(&profile_path).apply(state))
+        .with_completion(signer.clone(), "wos-server");
+    let ledger_id = format!("{}_case_fstd6q", selected.tenant);
+    let ledger = trellis_server_ports::LedgerScope::of(&scope, &ledger_id).unwrap();
+    let path = format!("/v1/scopes/{ledger}/events");
+    let mut body: Value = serde_json::from_slice(&append_body("fstd6q-generated-append")).unwrap();
+    body["actor"] = json!({"kind":"service", "subject": subject});
+    body["payload"]["actorId"] = json!("system");
+    let body_bytes = serde_json::to_vec(&body).unwrap();
+    let app = router(state.clone()).unwrap();
+    for actor in [
+        json!({"kind":"service","subject":"foreign-actor"}),
+        json!({"kind":"human","subject":subject}),
+    ] {
+        let mut denied = body.clone();
+        denied["actor"] = actor;
+        assert_eq!(
+            answer(
+                &app,
+                post_request_bearer(&path, serde_json::to_vec(&denied).unwrap(), &token)
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+    }
+    let mut wrong_payload = body.clone();
+    wrong_payload["payload"]["actorId"] = json!("foreign-payload-actor");
+    assert_eq!(
+        answer(
+            &app,
+            post_request_bearer(&path, serde_json::to_vec(&wrong_payload).unwrap(), &token)
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    let mut no_append_scope = token_claims.clone();
+    no_append_scope["scope"] = json!("trellis.access trellis.read");
+    assert_eq!(
+        answer(
+            &app,
+            post_request_bearer(&path, body_bytes.clone(), &sign(&no_append_scope))
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    let mut wrong_scope = post_request_bearer(&path, body_bytes.clone(), &token);
+    wrong_scope.headers_mut().insert(
+        "x-stack-scope-key",
+        crate::test_support::a().key().to_string().parse().unwrap(),
+    );
+    assert_eq!(answer(&app, wrong_scope).await.0, StatusCode::NOT_FOUND);
+    let foreign_path = format!(
+        "/v1/scopes/{}/events",
+        trellis_server_ports::LedgerScope::of(&scope, "foreign_case").unwrap()
+    );
+    assert_eq!(
+        answer(
+            &app,
+            post_request_bearer(&foreign_path, body_bytes.clone(), &token)
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        answer(&app, post_request_bearer(&path, body_bytes.clone(), &token))
+            .await
+            .0,
+        StatusCode::CREATED
+    );
+    let mut exporter = body.clone();
+    exporter["actor"]["subject"] = json!("wos-native-exporter");
+    exporter["idempotencyKey"] = json!("fstd6q-exporter-preserved");
+    assert_eq!(
+        answer(
+            &app,
+            post_request_bearer(&path, serde_json::to_vec(&exporter).unwrap(), &token)
+        )
+        .await
+        .0,
+        StatusCode::CREATED
+    );
+
+    // Retained signing evidence is a fixture input; completion itself uses the real HTTP route.
+    let signing_body: SubstrateAppendBody = serde_json::from_slice(
+        &signature_affirmation_append_body("fstd6q-signing-evidence"),
+    )
+    .unwrap();
+    let scoped = state.scoped_for(&scope);
+    let outcome = state
+        .state
+        .append_coordinator(&scoped)
+        .append(crate::append::AppendCommand {
+            scope: ledger.clone(),
+            event_type: signing_body.event_type,
+            idempotency_key: signing_body.idempotency_key,
+            payload: signing_body.payload,
+            client_attestation: None,
+        })
+        .await
+        .unwrap();
+    let hash = *outcome.stored.canonical_event_hash().unwrap();
+    let completion = trellis_service_client::CompletionRequest {
+        idempotency_key: "fstd6q-completion".into(),
+        certificate_id: "urn:test:fstd6q:certificate".into(),
+        expected_head: hash,
+        signing_events: vec![hash],
+        selection: super::completion_tests::selection_for(&[hash], &outcome.stored),
+    };
+    let completion_path = format!("/v1/scopes/{ledger}/completion");
+    let completion_request = || {
+        post_request_bearer(
+            &completion_path,
+            serde_json::to_vec(&completion).unwrap(),
+            &token,
+        )
+    };
+    let wrong_publisher = router(
+        state
+            .clone()
+            .with_completion(signer.clone(), "different-publisher"),
+    )
+    .unwrap();
+    let refused = answer(&wrong_publisher, completion_request()).await;
+    assert_eq!(
+        (refused.0, refused.1.as_str()),
+        (
+            StatusCode::FORBIDDEN,
+            "completion seal requires the configured publisher"
+        )
+    );
+    assert_eq!(signer.calls.load(Ordering::SeqCst), 0);
+    let mut exporter_only_files = Files::new();
+    exporter_only_files.profile = profile.clone();
+    exporter_only_files.grants =
+        serde_json::from_slice(&fs::read(root.join("private/trellis/grants.json")).unwrap())
+            .unwrap();
+    for grant in exporter_only_files.grants["grants"].as_array_mut().unwrap() {
+        if grant["principal"] == "wos-server" && grant["action"] == "append" {
+            grant["actors"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|actor| actor["subject"] != subject);
+        }
+    }
+    exporter_only_files.save();
+    exporter_only_files.write(
+        "introspection.secret",
+        &fs::read(root.join("private/trellis/introspection.secret")).unwrap(),
+    );
+    let old_app = router(
+        state
+            .clone()
+            .map(|state| load(&exporter_only_files.root.join("profile.json")).apply(state)),
+    )
+    .unwrap();
+    assert_eq!(
+        answer(&old_app, completion_request()).await.0,
+        StatusCode::FORBIDDEN,
+        "old exporter-only grant refuses completion before signing"
+    );
+    assert_eq!(signer.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        answer(&app, completion_request()).await.0,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        signer.calls.load(Ordering::SeqCst),
+        1,
+        "wrong publisher and old grant reserved nothing"
+    );
+
+    // Revoke an effective permission in a new private file, preserving identity, read grant,
+    // OAuth token and its append scope. Reload startup exactly as a grant-file restart does.
+    let mut revoked_files = Files::new();
+    revoked_files.profile = profile.clone();
+    revoked_files.grants =
+        serde_json::from_slice(&fs::read(root.join("private/trellis/grants.json")).unwrap())
+            .unwrap();
+    revoked_files.grants["grants"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|grant| !(grant["principal"] == "wos-server" && grant["action"] == "append"));
+    revoked_files.save();
+    revoked_files.write(
+        "introspection.secret",
+        &fs::read(root.join("private/trellis/introspection.secret")).unwrap(),
+    );
+    fs::write(
+        root.join("control-exporter-only-grants.json"),
+        serde_json::to_vec_pretty(&exporter_only_files.grants).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        root.join("control-revoked-grants.json"),
+        serde_json::to_vec_pretty(&revoked_files.grants).unwrap(),
+    )
+    .unwrap();
+    let restarted = router(
+        state
+            .clone()
+            .map(|state| load(&revoked_files.root.join("profile.json")).apply(state)),
+    )
+    .unwrap();
+    let read_path = format!("/v1/scopes/{ledger}/bundles/head");
+    let read = crate::test_support::scoped_request("GET", &read_path)
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        answer(&restarted, read).await.0,
+        StatusCode::OK,
+        "same identity retains read authority"
+    );
+    assert_eq!(
+        answer(
+            &restarted,
+            post_request_bearer(&path, body_bytes.clone(), &token)
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN,
+        "same append body and token lose only the removed permission"
+    );
+    assert_eq!(
+        answer(&restarted, completion_request()).await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        signer.calls.load(Ordering::SeqCst),
+        1,
+        "revoked grant signs nothing further"
+    );
+    assert_eq!(
+        answer(&app, post_request_bearer(&path, body_bytes, &token))
+            .await
+            .0,
+        StatusCode::CREATED,
+        "the existing startup retains its old grant until restart"
+    );
+    eprintln!(
+        "fstd6q generated native: correct append201, exporter201, wrong actor403, kind403, payload403, OAuthscope403, tenant404, ledger403, publisher403/sign0, completion201/sign1, revoked read200/append403/completion403/sign1"
+    );
+}
