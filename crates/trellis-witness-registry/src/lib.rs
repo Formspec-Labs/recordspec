@@ -131,15 +131,9 @@ impl WitnessKeyRegistry {
     /// # Errors
     /// Returns an error if bytes do not decode as a registry.
     pub fn from_cbor(bytes: &[u8]) -> Result<Self, WitnessRegistryError> {
-        let mut reader = bytes;
-        let value = ciborium::from_reader(&mut reader).map_err(|error| {
+        let value = integrity_cbor::decode_cbor_value(bytes).map_err(|error| {
             WitnessRegistryError::Decode(format!("failed to decode witness registry: {error}"))
         })?;
-        if !reader.is_empty() {
-            return Err(WitnessRegistryError::Decode(
-                "trailing bytes after witness registry CBOR".to_string(),
-            ));
-        }
         Self::from_value(&value)
     }
 
@@ -387,6 +381,39 @@ fn lookup_u64(map: &[(Value, Value)], key_name: &str) -> Result<u64, WitnessRegi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registry_refuses_duplicate_known_and_nested_unknown_keys() {
+        let registry = WitnessKeyRegistry::new(Vec::new());
+        let bytes = registry.to_cbor().unwrap();
+        assert_eq!(WitnessKeyRegistry::from_cbor(&bytes).unwrap(), registry);
+        let original: Value = ciborium::from_reader(bytes.as_slice()).unwrap();
+        for nested in [false, true] {
+            let mut value = original.clone();
+            let Value::Map(fields) = &mut value else {
+                panic!("map")
+            };
+            if nested {
+                fields.push((
+                    Value::Text("unknown".into()),
+                    Value::Map(vec![
+                        (Value::Text("key".into()), Value::Null),
+                        (Value::Text("key".into()), Value::Null),
+                    ]),
+                ));
+            } else {
+                fields.push(fields[0].clone());
+            }
+            let mut bytes = Vec::new();
+            ciborium::into_writer(&value, &mut bytes).unwrap();
+            assert!(
+                WitnessKeyRegistry::from_cbor(&bytes)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("duplicate")
+            );
+        }
+    }
 
     #[test]
     fn trellis_timestamp_rejects_excess_subsec_nanos() {

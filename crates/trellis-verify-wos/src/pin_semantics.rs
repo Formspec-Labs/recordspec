@@ -27,7 +27,7 @@ pub fn extract_pin(payload: &[u8]) -> Option<CaseOpenPin> {
         }
     }
     // Try CBOR
-    if let Ok(cbor_val) = ciborium::from_reader::<ciborium::Value, _>(payload)
+    if let Ok(cbor_val) = integrity_cbor::decode_cbor_value(payload)
         && let Ok(json_val) = serde_json::to_value(&cbor_val)
     {
         if let Some(pin_val) = json_val.get("pin").or_else(|| json_val.get("caseOpenPin"))
@@ -59,7 +59,7 @@ pub fn parse_migration_pin_changed(
             return Ok(record);
         }
     }
-    if let Ok(cbor_val) = ciborium::from_reader::<ciborium::Value, _>(payload)
+    if let Ok(cbor_val) = integrity_cbor::decode_cbor_value(payload)
         && let Ok(json_val) = serde_json::to_value(&cbor_val)
     {
         if let Ok(record) = serde_json::from_value::<MigrationPinChangedPayload>(json_val.clone()) {
@@ -174,6 +174,54 @@ mod tests {
 
     fn sample_pin(def_ver: &str) -> CaseOpenPin {
         CaseOpenPin::new(def_ver, "1.0.0", "phase-1", "complete")
+    }
+
+    #[test]
+    fn pin_cbor_boundaries_refuse_duplicate_keys_and_trailing_bytes() {
+        let pin = sample_pin("1.0.0");
+        let fixtures = [
+            serde_json::json!({"pin": pin}),
+            serde_json::json!({
+                "caseId": "case-001", "priorPinSet": pin, "newPinSet": sample_pin("2.0.0"),
+                "migrationPolicyRef": "urn:agency:policy:migrate-v2", "authorizingActorId": "actor:director",
+                "migrationRationale": "Routine definition upgrade", "timestamp": "2026-10-23T00:00:00Z"
+            }),
+        ];
+        for (index, fixture) in fixtures.iter().enumerate() {
+            let accepted = |bytes: &[u8]| {
+                if index == 0 {
+                    extract_pin(bytes).is_some()
+                } else {
+                    parse_migration_pin_changed(bytes).is_ok()
+                }
+            };
+            let mut bytes = Vec::new();
+            ciborium::into_writer(fixture, &mut bytes).unwrap();
+            assert!(accepted(&bytes));
+            let value = integrity_cbor::decode_cbor_value(&bytes).unwrap();
+            bytes.push(0);
+            assert!(!accepted(&bytes));
+            for nested in [false, true] {
+                let mut changed = value.clone();
+                let ciborium::Value::Map(fields) = &mut changed else {
+                    panic!("map")
+                };
+                if nested {
+                    fields.push((
+                        ciborium::Value::Text("unknown".into()),
+                        ciborium::Value::Map(vec![
+                            (ciborium::Value::Text("key".into()), ciborium::Value::Null),
+                            (ciborium::Value::Text("key".into()), ciborium::Value::Null),
+                        ]),
+                    ));
+                } else {
+                    fields.push(fields[0].clone());
+                }
+                let mut bytes = Vec::new();
+                ciborium::into_writer(&changed, &mut bytes).unwrap();
+                assert!(!accepted(&bytes));
+            }
+        }
     }
 
     #[test]

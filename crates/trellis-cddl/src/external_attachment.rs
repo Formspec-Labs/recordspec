@@ -85,28 +85,6 @@ fn closed(map: &Map, keys: &[&str]) -> Result<(), CddlError> {
     }
     Ok(())
 }
-fn unique_keys(value: &Value) -> Result<(), CddlError> {
-    match value {
-        Value::Map(entries) => {
-            let mut seen = std::collections::BTreeSet::new();
-            for (k, v) in entries {
-                if !seen.insert(encode_canonical_cbor_value(k)?) {
-                    return Err(CddlError::new("duplicate CBOR map key"));
-                }
-                unique_keys(k)?;
-                unique_keys(v)?;
-            }
-        }
-        Value::Array(items) => {
-            for item in items {
-                unique_keys(item)?;
-            }
-        }
-        Value::Tag(_, item) => unique_keys(item)?,
-        _ => {}
-    }
-    Ok(())
-}
 fn sha(value: &Value) -> Result<[u8; 32], CddlError> {
     let s = text(value)?;
     let h = s
@@ -243,9 +221,8 @@ fn native_header(event: &Map) -> Result<(), CddlError> {
 pub fn parse_external_attachment_profile(
     bytes_in: &[u8],
 ) -> Result<Option<ParsedExternalAttachment>, CddlError> {
-    let value: Value = ciborium::from_reader(bytes_in)
+    let value: Value = trellis_types::decode_cbor_value(bytes_in)
         .map_err(|e| CddlError::new(format!("invalid external attachment CBOR: {e}")))?;
-    unique_keys(&value)?;
     if encode_canonical_cbor_value(&value)? != bytes_in {
         return Err(CddlError::new("noncanonical external attachment CBOR"));
     }
@@ -465,6 +442,50 @@ mod tests {
     fn parse(value: &Value) -> Result<Option<ParsedExternalAttachment>, CddlError> {
         parse_external_attachment_profile(&encode_canonical_cbor_value(value).unwrap())
     }
+
+    #[test]
+    fn profile_decoder_retains_single_value_and_canonical_checks() {
+        let canonical = encode_canonical_cbor_value(&event()).unwrap();
+        let mut trailing = canonical.clone();
+        trailing.push(0);
+        assert!(
+            parse_external_attachment_profile(&trailing)
+                .unwrap_err()
+                .to_string()
+                .contains("trailing bytes")
+        );
+        for nested in [false, true] {
+            let mut changed = event();
+            let target = if nested {
+                child(&mut changed, "extensions")
+            } else {
+                &mut changed
+            };
+            let Value::Map(fields) = target else {
+                panic!("map")
+            };
+            fields.push(fields[0].clone());
+            let mut bytes = Vec::new();
+            ciborium::into_writer(&changed, &mut bytes).unwrap();
+            assert!(
+                parse_external_attachment_profile(&bytes)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("duplicate")
+            );
+        }
+        // An indefinite-length map is semantically unchanged, but fails byte equality.
+        let mut noncanonical = canonical;
+        noncanonical[0] = 0xbf;
+        noncanonical.push(0xff);
+        assert!(
+            parse_external_attachment_profile(&noncanonical)
+                .unwrap_err()
+                .to_string()
+                .contains("noncanonical")
+        );
+    }
+
     #[test]
     fn accepts_profile_and_preserves_decoding_inputs() {
         let parsed = parse(&event()).unwrap().unwrap();

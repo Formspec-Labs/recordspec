@@ -61,8 +61,6 @@
 
 #![forbid(unsafe_code)]
 
-use std::io::Cursor;
-
 use ciborium::Value;
 use thiserror::Error;
 use trellis_types::{CONTENT_DOMAIN, domain_separated_sha256, map_lookup_optional_value};
@@ -263,7 +261,7 @@ fn encode_tstr_key(s: &str) -> Vec<u8> {
 /// [`AdapterError::AssertionFieldLength`] if the structural shape
 /// disagrees with the assertion CDDL.
 pub fn extract_trellis_assertion(c2pa_bytes: &[u8]) -> Result<TrellisAssertion, AdapterError> {
-    let value: Value = ciborium::de::from_reader(Cursor::new(c2pa_bytes))
+    let value: Value = trellis_types::decode_cbor_value(c2pa_bytes)
         .map_err(|error| AdapterError::CborDecode(error.to_string()))?;
     let map = match value {
         Value::Map(entries) => entries,
@@ -389,6 +387,7 @@ fn lookup_fixed_bytes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
 
     fn sample_inputs() -> ([u8; 32], [u8; 32], [u8; 16], [u8; 32]) {
         let canonical_event_hash = [0x11_u8; 32];
@@ -401,6 +400,49 @@ mod tests {
             kid,
             cose_sign1_ref,
         )
+    }
+
+    #[test]
+    fn assertion_refuses_duplicate_keys_and_trailing_bytes() {
+        let (event, presentation, kid, sign1) = sample_inputs();
+        let original =
+            emit_c2pa_manifest_for_certificate("cert-001", &event, &presentation, &kid, &sign1)
+                .unwrap();
+        extract_trellis_assertion(&original).unwrap();
+        let mut trailing = original.clone();
+        trailing.push(0);
+        assert!(
+            extract_trellis_assertion(&trailing)
+                .unwrap_err()
+                .to_string()
+                .contains("trailing bytes")
+        );
+        let value: Value = ciborium::from_reader(original.as_slice()).unwrap();
+        for nested in [false, true] {
+            let mut value = value.clone();
+            let Value::Map(fields) = &mut value else {
+                panic!("map")
+            };
+            if nested {
+                fields.push((
+                    Value::Text("unknown".into()),
+                    Value::Map(vec![
+                        (Value::Text("key".into()), Value::Null),
+                        (Value::Text("key".into()), Value::Null),
+                    ]),
+                ));
+            } else {
+                fields.push(fields[0].clone());
+            }
+            let mut bytes = Vec::new();
+            ciborium::into_writer(&value, &mut bytes).unwrap();
+            assert!(
+                extract_trellis_assertion(&bytes)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("duplicate")
+            );
+        }
     }
 
     #[test]

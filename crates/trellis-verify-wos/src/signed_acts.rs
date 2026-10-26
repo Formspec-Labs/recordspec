@@ -973,7 +973,7 @@ fn uint(value: u64) -> Value {
 }
 
 fn decode_value(bytes: &[u8]) -> Result<Value, String> {
-    ciborium::from_reader(bytes).map_err(|error| error.to_string())
+    integrity_cbor::decode_cbor_value(bytes).map_err(|error| error.to_string())
 }
 
 fn encode_value(value: &Value) -> Result<Vec<u8>, String> {
@@ -1004,6 +1004,60 @@ mod tests {
 
     use super::*;
     use crate::validator::WosRecordValidator;
+
+    #[test]
+    fn signed_catalog_decoder_refuses_ambiguous_or_trailing_cbor() {
+        let catalog = derive_signed_acts_catalog_v1(&[signature_event()]).unwrap();
+        let value = decode_value(&catalog).unwrap();
+        let check = |bytes: &[u8], expected: Option<&str>| {
+            let members = BTreeMap::from([(SIGNED_ACTS_MEMBER.to_string(), bytes.to_vec())]);
+            let manifest_extensions = BTreeMap::from([(
+                SIGNED_ACTS_EXPORT_EXTENSION.to_string(),
+                extension_for(bytes),
+            )]);
+            let findings = validate_signed_acts_projection(&DomainExport {
+                events: &[signature_event()],
+                members: &members,
+                manifest_extensions: &manifest_extensions,
+            });
+            if let Some(message) = expected {
+                assert!(
+                    findings
+                        .iter()
+                        .any(|f| f.kind == "signed_acts_catalog_invalid"
+                            && f.severity == Severity::Failure
+                            && f.message.contains(message)),
+                    "{findings:?}"
+                );
+            } else {
+                assert!(findings.is_empty(), "{findings:?}");
+            }
+        };
+        check(&catalog, None);
+        let mut trailing = catalog.clone();
+        trailing.push(0);
+        check(&trailing, Some("trailing bytes"));
+        for nested in [false, true] {
+            let mut changed = value.clone();
+            let Value::Map(fields) = &mut changed else {
+                panic!("map")
+            };
+            if nested {
+                fields.push((
+                    Value::Text("unknown".into()),
+                    Value::Map(vec![
+                        (Value::Text("key".into()), Value::Null),
+                        (Value::Text("key".into()), Value::Null),
+                    ]),
+                ));
+            } else {
+                fields.push(fields[0].clone());
+            }
+            let mut bytes = Vec::new();
+            ciborium::into_writer(&changed, &mut bytes).unwrap();
+            check(&bytes, Some("duplicate"));
+        }
+    }
 
     #[test]
     fn signed_acts_projection_validates_when_catalog_matches_derivation() {

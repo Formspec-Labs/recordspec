@@ -193,7 +193,7 @@ impl CddlError {
 /// Returns an error when the CBOR document cannot be decoded or does not
 /// contain the expected `ledger_scope` and `sequence` fields.
 pub fn parse_authored_event(bytes: &[u8]) -> Result<ParsedAuthoredEvent, CddlError> {
-    let value: Value = ciborium::from_reader(bytes).map_err(|error| {
+    let value: Value = trellis_types::decode_cbor_value(bytes).map_err(|error| {
         CddlError::new(format!("failed to decode authored event CBOR: {error}"))
     })?;
     let map = value
@@ -217,7 +217,7 @@ pub fn parse_authored_event(bytes: &[u8]) -> Result<ParsedAuthoredEvent, CddlErr
 /// Returns an error when the key does not decode or does not contain labels
 /// `-2` and `-4` with 32-byte byte strings.
 pub fn parse_ed25519_cose_key(bytes: &[u8]) -> Result<ParsedEd25519Key, CddlError> {
-    let value: Value = ciborium::from_reader(bytes)
+    let value: Value = trellis_types::decode_cbor_value(bytes)
         .map_err(|error| CddlError::new(format!("failed to decode COSE_Key CBOR: {error}")))?;
     let map = value
         .as_map()
@@ -239,7 +239,7 @@ pub fn parse_ed25519_cose_key(bytes: &[u8]) -> Result<ParsedEd25519Key, CddlErro
 /// contain the expected `ledger_scope`, `sequence`, and `author_event_hash`
 /// fields.
 pub fn parse_canonical_event(bytes: &[u8]) -> Result<ParsedCanonicalEvent, CddlError> {
-    let value: Value = ciborium::from_reader(bytes).map_err(|error| {
+    let value: Value = trellis_types::decode_cbor_value(bytes).map_err(|error| {
         CddlError::new(format!("failed to decode canonical event CBOR: {error}"))
     })?;
     let map = value
@@ -383,6 +383,69 @@ mod tests {
         assert_eq!(rebuilt, expected);
         assert_eq!(parsed.sequence, 0);
         assert_eq!(parsed.ledger_scope, b"test-response-ledger".to_vec());
+    }
+
+    #[test]
+    fn public_parsers_refuse_duplicate_keys_and_trailing_bytes() {
+        use super::{parse_authored_event, parse_ed25519_cose_key};
+        use trellis_types::Value;
+        let root = fixture_root();
+        let fixtures = [
+            fs::read(root.join("input-author-event-hash-preimage.cbor")).unwrap(),
+            fs::read(root.join("expected-event-payload.cbor")).unwrap(),
+            // The key parser requires only the public key and seed labels.
+            {
+                let key = Value::Map(vec![
+                    (Value::Integer((-2).into()), Value::Bytes(vec![1; 32])),
+                    (Value::Integer((-4).into()), Value::Bytes(vec![2; 32])),
+                ]);
+                let mut bytes = Vec::new();
+                ciborium::into_writer(&key, &mut bytes).unwrap();
+                bytes
+            },
+        ];
+        for (index, original) in fixtures.iter().enumerate() {
+            let parse = |bytes: &[u8]| match index {
+                0 => parse_authored_event(bytes).map(|_| ()),
+                1 => parse_canonical_event(bytes).map(|_| ()),
+                _ => parse_ed25519_cose_key(bytes).map(|_| ()),
+            };
+            parse(original).unwrap();
+            let mut trailing = original.clone();
+            trailing.push(0);
+            assert!(
+                parse(&trailing)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("trailing bytes")
+            );
+            let value: Value = ciborium::from_reader(original.as_slice()).unwrap();
+            let fields = value.as_map().unwrap();
+            for nested in [false, true] {
+                let mut changed = fields.clone();
+                if nested {
+                    changed.push((
+                        Value::Text("unknown".into()),
+                        Value::Array(vec![Value::Map(vec![
+                            (Value::Integer(0.into()), Value::Null),
+                            (Value::Integer(0.into()), Value::Null),
+                        ])]),
+                    ));
+                } else {
+                    changed.push(fields[0].clone());
+                }
+                let mut bytes = Vec::new();
+                ciborium::into_writer(&Value::Map(changed), &mut bytes).unwrap();
+                assert!(parse(&bytes).unwrap_err().to_string().contains("duplicate"));
+            }
+            // Equal integer keys encoded with different widths still repeat a key.
+            let mut bytes = original.clone();
+            bytes[0] += 1;
+            bytes.extend_from_slice(&[
+                0x67, b'u', b'n', b'k', b'n', b'o', b'w', b'n', 0xa2, 0, 0, 0x18, 0, 0,
+            ]);
+            assert!(parse(&bytes).unwrap_err().to_string().contains("duplicate"));
+        }
     }
 
     proptest! {

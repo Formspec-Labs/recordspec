@@ -196,7 +196,7 @@ fn optional_text(map: &[(Value, Value)], key: &str) -> Result<Option<String>, St
 }
 
 fn decode_value(bytes: &[u8]) -> Result<Value, String> {
-    ciborium::from_reader(bytes).map_err(|error| error.to_string())
+    integrity_cbor::decode_cbor_value(bytes).map_err(|error| error.to_string())
 }
 
 fn parse_open_clocks_catalog(bytes: &[u8]) -> Result<OpenClockCatalog, String> {
@@ -305,4 +305,51 @@ fn hex_string(bytes: &[u8]) -> String {
         let _ = write!(text, "{byte:02x}");
     }
     text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clock_record_refuses_duplicate_keys_and_trailing_bytes() {
+        let event_type = wos_governance_clock_started_event_type();
+        let original = serde_json::json!({"event": event_type, "data": {"clockId": "clock", "clockKind": "statutory"}});
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&original, &mut bytes).unwrap();
+        assert!(parse_clock_record(&bytes, event_type).is_ok());
+        let value = decode_value(&bytes).unwrap();
+        bytes.push(0);
+        assert!(
+            parse_clock_record(&bytes, event_type)
+                .err()
+                .unwrap()
+                .contains("trailing bytes")
+        );
+        for nested in [false, true] {
+            let mut changed = value.clone();
+            let Value::Map(fields) = &mut changed else {
+                panic!("map")
+            };
+            if nested {
+                fields.push((
+                    Value::Text("unknown".into()),
+                    Value::Map(vec![
+                        (Value::Text("key".into()), Value::Null),
+                        (Value::Text("key".into()), Value::Null),
+                    ]),
+                ));
+            } else {
+                fields.push(fields[0].clone());
+            }
+            let mut bytes = Vec::new();
+            ciborium::into_writer(&changed, &mut bytes).unwrap();
+            assert!(
+                parse_clock_record(&bytes, event_type)
+                    .err()
+                    .unwrap()
+                    .contains("duplicate")
+            );
+        }
+    }
 }
