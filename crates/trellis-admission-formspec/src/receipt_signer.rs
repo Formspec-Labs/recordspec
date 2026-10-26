@@ -50,7 +50,7 @@ pub struct DeploymentReceiptSignerConfig {
     /// Receipt-signing method URI.
     pub method_uri: String,
     /// COSE algorithm identifier (e.g. -8 for Ed25519 / EdDSA).
-    pub alg: i32,
+    pub alg: i64,
 }
 
 impl DeploymentReceiptSignerConfig {
@@ -63,7 +63,7 @@ impl DeploymentReceiptSignerConfig {
         key_role: KeyClassRole,
         key_id: Vec<u8>,
         method_uri: impl Into<String>,
-        alg: i32,
+        alg: i64,
     ) -> Result<Self, StackError> {
         let uri = method_uri.into();
         if key_role != KeyClassRole::ReceiptSigningKey {
@@ -112,7 +112,7 @@ pub fn canonical_receipt_payload_bytes(receipt: &Value) -> Result<Vec<u8>, Stack
 /// - Label `4` => `kid`
 /// - Label `-65540` => `method_uri`
 #[must_use]
-pub fn build_receipt_protected_header(alg: i32, kid: &[u8], method_uri: &str) -> Vec<u8> {
+pub fn build_receipt_protected_header(alg: i64, kid: &[u8], method_uri: &str) -> Vec<u8> {
     detached_signature_protected_header(alg, kid, method_uri)
 }
 

@@ -7,7 +7,7 @@ use std::backtrace::Backtrace;
 use std::fmt::{Display, Formatter};
 
 use integrity_cose::{
-    SUITE_ID_PHASE_1, derive_kid, sig_structure_bytes, sign_ed25519, sign1_bytes,
+    COSE_ALG_EDDSA, SUITE_ID_PHASE_1, derive_kid, sig_structure_bytes, sign_ed25519, sign1_bytes,
     substrate_protected_header,
 };
 use trellis_cddl::{
@@ -18,9 +18,6 @@ use trellis_types::{
     AUTHOR_EVENT_DOMAIN, AppendArtifacts, AppendHead, ArtifactType, EVENT_DOMAIN, StoredEvent,
     domain_separated_sha256,
 };
-
-/// COSE EdDSA algorithm identifier used by Trellis Phase 1.
-const ALG_EDDSA: i32 = -8;
 
 /// Store seam for the append scaffold.
 pub trait LedgerStore {
@@ -124,7 +121,7 @@ pub fn append_event<S: LedgerStore>(
 
     let kid = derive_kid(1, parsed_key.public_key);
     let protected_header = substrate_protected_header(
-        ALG_EDDSA,
+        COSE_ALG_EDDSA,
         &kid,
         SUITE_ID_PHASE_1,
         ArtifactType::Event.cose_value(),

@@ -91,7 +91,7 @@ fn cross_adapter_byte_equivalence_vectors() {
 
     // Verify round-trip decoding via integrity-cose
     let decoded = decode_protected_header(&header_bytes).expect("decode protected header");
-    assert_eq!(decoded.alg, alg as i128);
+    assert_eq!(decoded.alg, alg);
     assert_eq!(decoded.kid.as_deref(), Some(kid.as_slice()));
     assert_eq!(decoded.method_uri.as_deref(), Some(method_uri));
 }

@@ -7,7 +7,7 @@
 //! nothing re-signs a prefix.
 
 use integrity_cose::{
-    SUITE_ID_PHASE_1, derive_kid, sig_structure_bytes, sign_ed25519, sign1_bytes,
+    COSE_ALG_EDDSA, SUITE_ID_PHASE_1, derive_kid, sig_structure_bytes, sign_ed25519, sign1_bytes,
     substrate_protected_header,
 };
 use trellis_cddl::parse_ed25519_cose_key;
@@ -15,9 +15,6 @@ use trellis_types::merkle::{Frontier, MerkleHasher, TrellisHasher};
 use trellis_types::{ArtifactType, CheckpointPayload, StoredCheckpoint, checkpoint_digest};
 
 use crate::{AppendError, SigningKeyMaterial};
-
-/// COSE EdDSA algorithm identifier used by Trellis Phase 1.
-const ALG_EDDSA: i32 = -8;
 
 /// What the next checkpoint continues from.
 #[derive(Clone, Copy, Debug)]
@@ -88,7 +85,7 @@ pub fn issue_checkpoint(
     .encode()
     .map_err(|error| AppendError::new(error.to_string()))?;
     let protected_header = substrate_protected_header(
-        ALG_EDDSA,
+        COSE_ALG_EDDSA,
         &derive_kid(SUITE_ID_PHASE_1, key.public_key),
         SUITE_ID_PHASE_1,
         ArtifactType::Checkpoint.cose_value(),

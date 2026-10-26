@@ -23,7 +23,8 @@ use integrity_cbor::{
     sha256_bytes,
 };
 use integrity_cose::{
-    derive_kid, sig_structure_bytes, sign_ed25519, sign1_bytes, substrate_protected_header,
+    COSE_ALG_EDDSA, derive_kid, sig_structure_bytes, sign_ed25519, sign1_bytes,
+    substrate_protected_header,
 };
 pub use integrity_hpke::{HPKE_SUITE1_AAD, HPKE_SUITE1_INFO};
 use stack_common_error::StackError;
@@ -1741,16 +1742,13 @@ fn root_dir(scope: &[u8], tree_size: usize, tree_head_hash: [u8; 32]) -> String 
     format!("trellis-export-{scope}-{tree_size}-{}", &head_hex[..8])
 }
 
-/// COSE EdDSA algorithm identifier used by Trellis Phase 1.
-const ALG_EDDSA: i32 = -8;
-
 fn sign_cose(
     signing_key: &SigningKeyMaterial,
     artifact_type: ArtifactType,
     payload: &[u8],
 ) -> Vec<u8> {
     let protected_header = substrate_protected_header(
-        ALG_EDDSA,
+        COSE_ALG_EDDSA,
         &signing_key.kid(),
         SUITE_ID_PHASE_1,
         artifact_type.cose_value(),
