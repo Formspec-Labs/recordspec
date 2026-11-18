@@ -117,6 +117,22 @@ class TestCheckHttpApiSchema(unittest.TestCase):
             msg=errors,
         )
 
+    def test_inventory_includes_every_declared_operation(self) -> None:
+        openapi = self.module.read_json(self.module.OPENAPI_PATH)
+        errors: list[str] = []
+        self.module.check_openapi_operations(self.schema, openapi, errors)
+        self.assertEqual(errors, [])
+
+    def test_inventory_detects_an_omitted_declared_operation(self) -> None:
+        openapi = self.module.read_json(self.module.OPENAPI_PATH)
+        inventory = self.schema["x-trellis-http-api"]["operations"]
+        self.schema["x-trellis-http-api"]["operations"] = [
+            op for op in inventory if op["operationId"] != "seal_completion"
+        ]
+        errors: list[str] = []
+        self.module.check_openapi_operations(self.schema, openapi, errors)
+        self.assertTrue(any("HTTP inventory missing seal_completion" in error for error in errors))
+
     def test_given_openapi_operation_id_drift_when_check_openapi_operations_then_error_emitted(
         self,
     ) -> None:

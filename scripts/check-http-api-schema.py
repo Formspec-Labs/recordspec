@@ -36,14 +36,7 @@ WOS_EVENTS_KIND_PATH = _WOS_PACKAGE / "src" / "provenance" / "kind.rs"
 WOS_EVENTS_NATIVE_PATH = _WOS_PACKAGE / "src" / "native_provenance.rs"
 WOS_NATIVE_SCHEMA_PATH = _WOS_PACKAGE.parents[1] / "schemas" / "wos-native-provenance-event.schema.json"
 
-EXPECTED_OPERATIONS = {
-    "reconcileEvent": ("POST", "/v1/scopes/{scope}/events/reconcile"),
-    "appendEvent": ("POST", "/v1/scopes/{scope}/events"),
-    "getHeadBundle": ("GET", "/v1/scopes/{scope}/bundles/head"),
-    "getBundleByCheckpointDigest": ("GET", "/v1/scopes/{scope}/bundles/{checkpointDigest}"),
-    "getSigningKeyRegistry": ("GET", "/v1/scopes/{scope}/registries/signing-keys"),
-    "getEventTypeRegistry": ("GET", "/v1/scopes/{scope}/registries/event-types"),
-}
+HTTP_METHODS = {"get", "post", "put", "patch", "delete", "head", "options", "trace"}
 
 # The scope selector header is stack-common-scope's constant, resolved through the client's own
 # path dependency so the check reads the source the client compiles against.
@@ -154,10 +147,6 @@ def parse_wos_event_types(_server_source: str) -> list[str]:
     return canonical + [generic]
 
 
-def normalize_openapi_path(path: str) -> str:
-    return path.replace("{checkpoint_digest}", "{checkpointDigest}")
-
-
 def require_defs(schema: dict, errors: list[str], names: list[str]) -> dict:
     defs = schema.get("$defs")
     if not isinstance(defs, dict):
@@ -185,24 +174,10 @@ def check_operations(schema: dict, errors: list[str]) -> None:
         errors.append("x-trellis-http-api.operations must be a list")
         return
 
-    by_id = {operation.get("operationId"): operation for operation in operations}
-    if set(by_id) != set(EXPECTED_OPERATIONS):
-        errors.append(
-            "operationId set mismatch: "
-            f"expected {sorted(EXPECTED_OPERATIONS)}, got {sorted(by_id)}"
-        )
+    append = next((op for op in operations if op.get("operationId") == "appendEvent"), None)
+    if append is None:
+        errors.append("x-trellis-http-api.operations must describe appendEvent")
         return
-
-    for operation_id, (method, path) in EXPECTED_OPERATIONS.items():
-        operation = by_id[operation_id]
-        if operation.get("method") != method:
-            errors.append(f"{operation_id}: method must be {method}")
-        if operation.get("path") != path:
-            errors.append(f"{operation_id}: path must be {path}")
-        if operation.get("scopeKeyed") is not True:
-            errors.append(f"{operation_id}: scopeKeyed must be true")
-
-    append = by_id["appendEvent"]
     if append.get("idempotencyHeaderMustEqualBodyField") != "idempotencyKey":
         errors.append("appendEvent must bind idempotency-key header to body idempotencyKey")
     if "idempotency-key" not in append.get("requiredHeaders", []):
@@ -390,28 +365,44 @@ def check_openapi_operations(schema: dict, openapi: dict, errors: list[str]) -> 
         errors.append("cannot compare OpenAPI operations: OpenAPI document is missing paths")
         return
 
-    for operation in operations:
+    declared = {
+        (method.upper(), path): operation
+        for path, item in paths.items()
+        for method, operation in item.items()
+        if method in HTTP_METHODS
+    }
+    inventory = {(entry.get("method"), entry.get("path")): entry for entry in operations}
+    if len(inventory) != len(operations):
+        errors.append("HTTP inventory contains duplicate routes")
+
+    for (method, path), operation in declared.items():
+        entry = inventory.get((method, path))
+        if entry is None:
+            errors.append(f"HTTP inventory missing {operation['operationId']} for {method} {path}")
+            continue
         operation_id = operation.get("operationId")
-        method = operation.get("method")
-        path = operation.get("path")
-        if not isinstance(operation_id, str) or not isinstance(method, str) or not isinstance(path, str):
-            errors.append("cannot compare OpenAPI operations: invalid operation entry in schema metadata")
-            continue
-        method_key = method.lower()
-        path_item = paths.get(path) or paths.get(normalize_openapi_path(path))
-        if not isinstance(path_item, dict):
-            errors.append(f"OpenAPI missing operation for {method} {path}")
-            continue
-        operation_doc = path_item.get(method_key)
-        if not isinstance(operation_doc, dict):
-            errors.append(f"OpenAPI missing method entry for {method} {path}")
-            continue
-        openapi_operation_id = operation_doc.get("operationId")
-        if openapi_operation_id != operation_id:
+        if entry.get("operationId") != operation_id:
             errors.append(
                 f"OpenAPI operationId mismatch for {method} {path}: "
-                f"expected {operation_id}, got {openapi_operation_id}"
+                f"expected {entry.get('operationId')}, got {operation_id}"
             )
+        scoped = operation.get("x-access", {}).get("kind") == "scope"
+        if entry.get("scopeKeyed") != scoped:
+            errors.append(f"{operation_id}: scopeKeyed must match the route declaration")
+        for response in entry.get("responses", []):
+            if response.get("contentType") != "application/json":
+                continue
+            schema_ref = response.get("schemaRef")
+            if not schema_ref:
+                errors.append(f"{operation_id}: JSON success response requires schemaRef")
+            elif schema_ref.startswith(f"{OPENAPI_PATH.name}#"):
+                actual = operation.get("responses", {}).get(str(response["status"]), {})
+                derived = actual.get("content", {}).get("application/json", {}).get("schema", {}).get("$ref")
+                if derived is None or schema_ref != OPENAPI_PATH.name + derived:
+                    errors.append(f"{operation_id}: success schemaRef must match the route declaration")
+
+    for method, path in inventory.keys() - declared.keys():
+        errors.append(f"OpenAPI missing operation for {method} {path}")
 
 
 def main() -> int:

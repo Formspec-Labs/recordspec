@@ -179,6 +179,62 @@
             "schemaRef": "#/$defs/ProblemJson"
           }
         ]
+      },
+      {
+        "operationId": "append",
+        "method": "POST",
+        "path": "/v1/scopes/{scope}/accepted-attachments",
+        "scopeKeyed": true,
+        "requiredHeaders": [
+          "idempotency-key"
+        ],
+        "optionalHeaders": [
+          "authorization"
+        ],
+        "request": {
+          "contentType": "application/json",
+          "schemaRef": "trellis-server.openapi.json#/components/schemas/AcceptedAttachmentAppendBody"
+        },
+        "responses": [
+          {
+            "status": 201,
+            "contentType": "application/json",
+            "schemaRef": "#/$defs/SubstrateAppendResult"
+          },
+          {
+            "status": "4xx/5xx",
+            "contentType": "application/problem+json",
+            "schemaRef": "#/$defs/ProblemJson"
+          }
+        ]
+      },
+      {
+        "operationId": "seal_completion",
+        "method": "POST",
+        "path": "/v1/scopes/{scope}/completion",
+        "scopeKeyed": true,
+        "requiredHeaders": [
+          "idempotency-key"
+        ],
+        "optionalHeaders": [
+          "authorization"
+        ],
+        "request": {
+          "contentType": "application/json",
+          "schemaRef": "trellis-server.openapi.json#/components/schemas/CompletionRequest"
+        },
+        "responses": [
+          {
+            "status": 201,
+            "contentType": "application/json",
+            "schemaRef": "#/$defs/SubstrateAppendResult"
+          },
+          {
+            "status": "4xx/5xx",
+            "contentType": "application/problem+json",
+            "schemaRef": "#/$defs/ProblemJson"
+          }
+        ]
       }
     ]
   },
@@ -354,16 +410,6 @@
       "minLength": 1,
       "maxLength": 64,
       "pattern": "^[A-Za-z0-9._:-]+$"
-    },
-    "OperationId": {
-      "type": "string",
-      "enum": [
-        "appendEvent",
-        "getHeadBundle",
-        "getBundleByCheckpointDigest",
-        "getSigningKeyRegistry",
-        "getEventTypeRegistry"
-      ]
     },
     "ProblemJson": {
       "type": "object",
