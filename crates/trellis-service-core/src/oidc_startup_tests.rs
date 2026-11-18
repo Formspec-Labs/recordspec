@@ -1253,23 +1253,52 @@ async fn t1_authority_grants_bind_the_service_and_allow_unlisted_payload_princip
                 .unwrap();
             assert_eq!(app.clone().oneshot(read).await.unwrap().status(), StatusCode::OK);
         }
-
-        // Genesis grant uses canonical genesis `service:<digest>` payload actor alongside each server's own outer AppendActor.
-        let genesis = &cases[4];
-        let mut body = super::ledger_read_tests::body_for(genesis, &format!("oidc-genesis-{server}"));
-        body["actor"] = json!({"kind": "service", "subject": server});
-        assert_eq!(
-            app.clone()
-                .oneshot(post_request_bearer(
-                    "/v1/scopes/authority/events",
-                    serde_json::to_vec(&body).unwrap(),
-                    token
-                ))
-                .await
-                .unwrap()
-                .status(),
-            StatusCode::CREATED,
-            "genesis grant by {server}"
-        );
     }
+
+    // Shared-key same-payload genesis grant across both service principals converges on one receipt and one retained row.
+    let genesis = &cases[4];
+    let mut receipts = Vec::new();
+    for (server, token) in [
+        ("wos-server", &wos_token),
+        ("formspec-server", &formspec_token),
+    ] {
+        let mut body = super::ledger_read_tests::body_for(genesis, "oidc-genesis-shared");
+        body["actor"] = json!({"kind": "service", "subject": server});
+        body["expectedTreeSize"] = json!(2);
+        let response = app
+            .clone()
+            .oneshot(post_request_bearer(
+                "/v1/scopes/authority/events",
+                serde_json::to_vec(&body).unwrap(),
+                token,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED, "genesis grant by {server}");
+        let receipt: trellis_service_client::SubstrateAppendResult =
+            serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+        receipts.push(receipt);
+    }
+    assert_eq!(receipts[0], receipts[1]);
+    let ordered = crate::test_support::scoped_request(
+        "GET",
+        "/v1/scopes/authority/events/ordered?after=0&limit=32",
+    )
+    .header("authorization", format!("Bearer {wos_token}"))
+    .body(Body::empty())
+    .unwrap();
+    let ordered_response = app.clone().oneshot(ordered).await.unwrap();
+    assert_eq!(ordered_response.status(), StatusCode::OK);
+    let page: Value =
+        serde_json::from_slice(&to_bytes(ordered_response.into_body(), 64 * 1024).await.unwrap())
+            .unwrap();
+    let events = page["events"].as_array().unwrap();
+    assert_eq!(events.len(), 3);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event["payload"]["contract"] == "genesis")
+            .count(),
+        1
+    );
 }

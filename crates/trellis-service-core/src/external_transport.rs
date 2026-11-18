@@ -86,12 +86,36 @@ fn optional_prefix_condition<'de, D: serde::Deserializer<'de>>(
 }
 
 pub(crate) struct AuthorizedExternal {
+    event_type: &'static str,
     scope: LedgerScope,
     request: WireRequest,
     payload: serde_json::Value,
     original: Vec<u8>,
     compute: ComputeContext,
     recipients: Vec<ExternalAttachmentRecipient>,
+}
+
+/// Validates that the accepted-attachment route, adapter, catalog, and ledger policy agree on
+/// one non-contract event-type literal.
+pub(crate) fn validated_event_type(state: &TrellisServerState) -> Result<&'static str, StackError> {
+    let expected = trellis_service_client::ACCEPTED_ATTACHMENT_EVENT_TYPE_LITERAL;
+    let declared = state.external_attachment_admission.event_type();
+    if declared != expected {
+        return Err(StackError::internal(format!(
+            "accepted-attachment adapter event type `{declared}` does not match closed route literal `{expected}`"
+        )));
+    }
+    if state.admission_policy.is_contract_event(expected) {
+        return Err(StackError::internal(format!(
+            "accepted-attachment route literal `{expected}` cannot be reserved for a contract ledger"
+        )));
+    }
+    if state.event_type_catalog.get(expected).is_none() {
+        return Err(StackError::internal(format!(
+            "accepted-attachment route literal `{expected}` is missing from event-type catalog"
+        )));
+    }
+    Ok(expected)
 }
 
 fn selected_custody(
@@ -139,10 +163,10 @@ pub(crate) async fn admit(
     scope: LedgerScope,
     request: &mut Request,
 ) -> Result<String, StackError> {
-    state.admission_policy.check_ledger_event(
-        scope.as_bytes(),
-        trellis_service_client::ACCEPTED_ATTACHMENT_EVENT_TYPE_LITERAL,
-    )?;
+    let event_type = validated_event_type(state)?;
+    state
+        .admission_policy
+        .check_ledger_event(scope.as_bytes(), event_type)?;
     let raw = to_bytes(
         std::mem::replace(request.body_mut(), Body::empty()),
         RAW_CAP,
@@ -184,7 +208,7 @@ pub(crate) async fn admit(
         ));
     }
     let authorization = SubstrateAppendBody {
-        event_type: admission.event_type().into(),
+        event_type: event_type.into(),
         idempotency_key: wire.idempotency_key.clone(),
         actor: AppendActor::service(&wire.actor.subject),
         payload: payload.clone(),
@@ -239,6 +263,7 @@ pub(crate) async fn admit(
     request
         .extensions_mut()
         .insert(Arc::new(AuthorizedExternal {
+            event_type,
             scope,
             request: wire,
             payload,
@@ -403,7 +428,7 @@ impl ExternalAttachmentFactory for Factory<'_> {
             .map_err(|_| StackError::internal("prepared attachment extensions invalid"))?;
         let preparation_identity = binding.replay_digest;
         let expected_head = binding.expected_head;
-        let event_type = self.admission.event_type().to_owned();
+        let event_type = self.authorized.event_type.to_owned();
         Ok(ExternalAttachmentAppend {
             scope: scope.to_vec(),
             idempotency_key: key.to_vec(),

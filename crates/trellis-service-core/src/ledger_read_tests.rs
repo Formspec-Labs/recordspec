@@ -263,29 +263,58 @@ async fn t1_activation_admits_a_realistic_package_and_refuses_oversize() {
 
 #[tokio::test]
 async fn t1_conditional_append_refuses_moved_heads_and_uses_canonical_replay() {
-    let app = router(test_state()).unwrap();
-    let path = "/v1/scopes/authority/events";
-    let grant = authority_cases().remove(0);
-    let mut first = body_for(&grant, "first-conditional");
-    first["expectedTreeSize"] = 0.into();
-    let receipt = post_append(&app, path, serde_json::to_vec(&first).unwrap()).await;
-    let mut second = body_for(&grant, "second-conditional");
-    second["expectedTreeSize"] = 0.into();
-    let response = app.clone().oneshot(post_request(path, serde_json::to_vec(&second).unwrap())).await.unwrap();
-    assert_eq!(response.status(), StatusCode::CONFLICT);
-    let problem: serde_json::Value = serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
-    assert_eq!(problem["error_code"], "INFRA-4094");
-    second["expectedTreeSize"] = 1.into();
-    assert_eq!(post_append(&app, path, serde_json::to_vec(&second).unwrap()).await.sequence, 1);
+    let cases = authority_cases();
+    for (ledger, first_case, second_case, change_field) in [
+        ("authority", &cases[0], &cases[2], "reason"),
+        ("authority-decisions", &cases[3], &cases[3], "point"),
+    ] {
+        let app = router(test_state()).unwrap();
+        let path = format!("/v1/scopes/{ledger}/events");
+        let mut first = body_for(first_case, &format!("first-conditional-{ledger}"));
+        first["expectedTreeSize"] = 0.into();
+        let receipt = post_append(&app, &path, serde_json::to_vec(&first).unwrap()).await;
+        let mut second = body_for(second_case, &format!("second-conditional-{ledger}"));
+        second["expectedTreeSize"] = 0.into();
+        let response = app
+            .clone()
+            .oneshot(post_request(&path, serde_json::to_vec(&second).unwrap()))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT, "{ledger}");
+        let problem: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+        assert_eq!(problem["error_code"], "INFRA-4094", "{ledger}");
+        second["expectedTreeSize"] = 1.into();
+        assert_eq!(
+            post_append(&app, &path, serde_json::to_vec(&second).unwrap())
+                .await
+                .sequence,
+            1,
+            "{ledger}: same key must commit once expectedTreeSize is corrected"
+        );
 
-    first["expectedTreeSize"] = 1.into();
-    assert_eq!(post_append(&app, path, serde_json::to_vec(&first).unwrap()).await, receipt);
-    first["payload"]["reason"] = "different content".into();
-    let response = app.clone().oneshot(post_request(path, serde_json::to_vec(&first).unwrap())).await.unwrap();
-    assert_eq!(response.status(), StatusCode::CONFLICT);
-    let problem: serde_json::Value = serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
-    assert_ne!(problem["error_code"], "INFRA-4094");
-    assert_eq!(get(&app, "/v1/scopes/authority/head").await.1["head"]["treeSize"], 2);
+        first["expectedTreeSize"] = 1.into();
+        assert_eq!(
+            post_append(&app, &path, serde_json::to_vec(&first).unwrap()).await,
+            receipt,
+            "{ledger}: committed replay accepts stale expectedTreeSize"
+        );
+        first["payload"][change_field] = "person:changed".into();
+        let response = app
+            .clone()
+            .oneshot(post_request(&path, serde_json::to_vec(&first).unwrap()))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT, "{ledger}");
+        let problem: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+        assert_ne!(problem["error_code"], "INFRA-4094", "{ledger}");
+        assert_eq!(
+            get(&app, &format!("/v1/scopes/{ledger}/head")).await.1["head"]["treeSize"],
+            2,
+            "{ledger}"
+        );
+    }
 }
 
 async fn concurrent_conditionals(fixture: Fixture) {
@@ -530,8 +559,7 @@ async fn t1_budget_review_matches_fields_disclosed_by_each_authority_payload() {
     }
 }
 
-#[tokio::test]
-async fn t1_ordered_page_keeps_non_json_event_and_the_next_readable_event() {
+async fn seed_non_json_row(fixture: &Fixture, ledger_name: &str, event_type: &str) {
     use crate::append::{AuthoredEventInput, EventContent, build_authored_event};
     use integrity_cbor::{Value, domain_separated_sha256};
     use trellis_types::CONTENT_DOMAIN;
@@ -546,15 +574,14 @@ async fn t1_ordered_page_keeps_non_json_event_and_the_next_readable_event() {
         }
     }
 
-    let fixture = test_state();
-    let ledger = crate::test_support::ledger("case_123");
+    let ledger = crate::test_support::ledger(ledger_name);
     let key = b"non-json";
     let payload_bytes = crate::encode_value(&Value::Map(vec![(crate::uint(1), Value::Null)])).unwrap();
     let authored = build_authored_event(AuthoredEventInput {
         scope: ledger.as_bytes(),
         sequence: 0,
         prev_hash: None,
-        event_type: crate::test_adapters::FORMSPEC_RESPONSE_SUBMITTED,
+        event_type,
         idempotency_key: key,
         authored_at: TrellisTimestamp::new(1, 0).unwrap(),
         content: EventContent {
@@ -572,6 +599,17 @@ async fn t1_ordered_page_keeps_non_json_event_and_the_next_readable_event() {
     let mut tx = ledgers.begin(&ledger).await.unwrap();
     tx.insert(&event, &checkpoint).await.unwrap();
     tx.commit().await.unwrap();
+}
+
+#[tokio::test]
+async fn t1_ordered_page_keeps_non_json_event_and_the_next_readable_event() {
+    let fixture = test_state();
+    seed_non_json_row(
+        &fixture,
+        "case_123",
+        crate::test_adapters::FORMSPEC_RESPONSE_SUBMITTED,
+    )
+    .await;
 
     let app = router(fixture).unwrap();
     let mut body = body_for(&authority_cases()[0], "next-json");
@@ -587,6 +625,29 @@ async fn t1_ordered_page_keeps_non_json_event_and_the_next_readable_event() {
     assert_eq!(rows[1]["sequence"], 1);
     assert_eq!(rows[1]["payload"], body["payload"]);
     assert_eq!(rows[1]["priorEventHash"], rows[0]["canonicalEventHash"]);
+}
+
+#[tokio::test]
+async fn t1_ordered_page_refuses_unreadable_authority_rows() {
+    for (ledger_name, event_type) in [
+        ("authority", "trellis.authority.grant.v1"),
+        ("authority-decisions", "trellis.authority.decision.v1"),
+    ] {
+        let fixture = test_state();
+        seed_non_json_row(&fixture, ledger_name, event_type).await;
+        let app = router(fixture).unwrap();
+        let path = format!("/v1/scopes/{ledger_name}/events/ordered?after=0");
+        let response = app.oneshot(get_request(&path)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR, "{ledger_name}");
+        let problem: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+        assert_eq!(problem["error_code"], "INFRA-5000", "{ledger_name}");
+        assert_eq!(
+            problem["title"],
+            "stored authority payload is not readable JSON",
+            "{ledger_name}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -696,6 +757,18 @@ async fn t1_shared_ledgers_admit_multiple_contracts_and_genesis_and_refuse_cross
         serde_json::from_slice(&to_bytes(stale_response.into_body(), 4096).await.unwrap())
             .unwrap();
     assert_eq!(problem["error_code"], "INFRA-4094");
+    stale_decision["expectedTreeSize"] = 2.into();
+    let retried_decision = post_append(
+        &app,
+        "/v1/scopes/authority-decisions/events",
+        serde_json::to_vec(&stale_decision).unwrap(),
+    )
+    .await;
+    assert_eq!(retried_decision.sequence, 2);
+    assert_eq!(
+        get(&app, "/v1/scopes/authority-decisions/head").await.1["head"]["treeSize"],
+        3
+    );
 
     // Cross-ledger and cross-family writes are refused.
     let decision_body = body_for(&cases[3], "cross-decision-on-authority");
@@ -752,4 +825,247 @@ async fn t1_shared_ledgers_admit_multiple_contracts_and_genesis_and_refuse_cross
             StatusCode::BAD_REQUEST
         );
     }
+}
+
+#[tokio::test]
+async fn t1_attachment_route_rejects_mismatched_adapter_and_uses_single_validated_literal() {
+    use base64::Engine as _;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use trellis_admission_formspec::accepted_attachment::FormspecAttachmentAdmission;
+    use trellis_server_ports::{
+        AdmittedDescriptor, AttachmentBinding, AttachmentLimits, AuthorizedScope,
+        ExternalAttachmentAdmission, ScopeAuthorization, ScopeAuthorizer,
+    };
+    use trellis_service_client::{
+        ACCEPTED_ATTACHMENT_EVENT_TYPE_LITERAL, AcceptedAttachmentAppendBody, AppendActor,
+    };
+
+    struct SwitchingAttachmentAdmission {
+        inner: FormspecAttachmentAdmission,
+        mismatch: &'static str,
+        use_mismatch: Arc<AtomicBool>,
+    }
+
+    impl ExternalAttachmentAdmission for SwitchingAttachmentAdmission {
+        fn event_type(&self) -> &'static str {
+            if self.use_mismatch.load(Ordering::SeqCst) {
+                self.mismatch
+            } else {
+                ACCEPTED_ATTACHMENT_EVENT_TYPE_LITERAL
+            }
+        }
+
+        fn admit(&self, descriptor_json: &str) -> Result<AdmittedDescriptor, StackError> {
+            self.inner.admit(descriptor_json)
+        }
+
+        fn bind(
+            &self,
+            payload: &serde_json::Value,
+            scope: &[u8],
+            original: &[u8],
+            ciphertext: &[u8],
+            prior: &[StoredEvent],
+            limits: AttachmentLimits,
+        ) -> Result<AttachmentBinding, StackError> {
+            self.inner
+                .bind(payload, scope, original, ciphertext, prior, limits)
+        }
+    }
+
+    struct RecordingAuthorizer {
+        recorded: Arc<Mutex<Vec<String>>>,
+        flip_after_authorize: Option<Arc<AtomicBool>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ScopeAuthorizer for RecordingAuthorizer {
+        type Error = StackError;
+
+        fn bound_scopes(
+            &self,
+            _identity: Option<&stack_common_auth::VerifiedAccessIdentity>,
+        ) -> Result<Option<Vec<stack_common_scope::ScopeKey>>, StackError> {
+            Ok(None)
+        }
+
+        async fn authorize(
+            &self,
+            request: &ScopeAuthorization<'_>,
+        ) -> Result<AuthorizedScope, StackError> {
+            if let Some(body) = request.append_body {
+                self.recorded
+                    .lock()
+                    .unwrap()
+                    .push(body.event_type.clone());
+                if let Some(flag) = &self.flip_after_authorize {
+                    flag.store(true, Ordering::SeqCst);
+                }
+            }
+            Ok(AuthorizedScope {
+                principal: "attachment-test-producer".into(),
+                scope: request.scope.clone(),
+                action: request.action,
+            })
+        }
+    }
+
+    struct TestRecipients;
+
+    #[async_trait::async_trait]
+    impl crate::ExternalAttachmentRecipientSelector for TestRecipients {
+        async fn select(
+            &self,
+            _permit: &AuthorizedScope,
+            _descriptor: &serde_json::Value,
+        ) -> Result<Vec<crate::ExternalAttachmentRecipient>, StackError> {
+            let public_key: [u8; 32] =
+                hex::decode("7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13")
+                    .unwrap()
+                    .try_into()
+                    .unwrap();
+            Ok(vec![crate::ExternalAttachmentRecipient {
+                id: b"fixture-reader".to_vec(),
+                public_key,
+                operator_held: false,
+            }])
+        }
+    }
+
+    let attachment_body = |key: &str| {
+        let (descriptor, _, original) = super::external_attachment_tests::external_fixture_input();
+        let body = AcceptedAttachmentAppendBody {
+            expected_prefix: None,
+            idempotency_key: key.into(),
+            actor: AppendActor::service("formspec-server"),
+            descriptor: serde_json::to_value(descriptor).unwrap(),
+            original_bytes: base64::engine::general_purpose::STANDARD.encode(original),
+        };
+        serde_json::to_vec(&body).unwrap()
+    };
+
+    // Static mismatch is refused at router, OpenAPI documents, and direct admission.
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let mut mismatch_fixture = test_state();
+    mismatch_fixture.state.external_attachment_admission = Arc::new(SwitchingAttachmentAdmission {
+        inner: FormspecAttachmentAdmission,
+        mismatch: "trellis.authority.grant.v1",
+        use_mismatch: Arc::new(AtomicBool::new(true)),
+    });
+    mismatch_fixture.state.external_attachment_recipients = Some(Arc::new(TestRecipients));
+    mismatch_fixture.state.authorizer = Arc::new(RecordingAuthorizer {
+        recorded: recorded.clone(),
+        flip_after_authorize: None,
+    });
+    assert!(router(mismatch_fixture.clone()).is_err());
+    assert!(crate::test_support::documents(&mismatch_fixture).is_err());
+    let mut direct_req = post_request("/v1/scopes/case_123/accepted-attachments", attachment_body("direct-mismatch"));
+    assert!(
+        crate::external_transport::admit(
+            &mismatch_fixture.state,
+            &crate::state::AuthenticatedRequest::Anonymous,
+            crate::test_support::ledger("case_123"),
+            &mut direct_req,
+        )
+        .await
+        .is_err()
+    );
+    assert!(recorded.lock().unwrap().is_empty());
+
+    // AdmissionRouter cannot reserve the closed attachment literal onto a contract ledger.
+    let mut reserved_fixture = test_state();
+    reserved_fixture.state.admission_policy = reserved_fixture
+        .state
+        .admission_policy
+        .clone()
+        .reserve_ledger(
+            "authority",
+            Arc::new(trellis_admission_authority::AuthorityAdmissionPolicy),
+            [ACCEPTED_ATTACHMENT_EVENT_TYPE_LITERAL],
+        );
+    assert!(router(reserved_fixture.clone()).is_err());
+    assert!(crate::test_support::documents(&reserved_fixture).is_err());
+
+    // Adapter flipping after startup is rejected on HTTP admission without authorizing or appending.
+    let use_mismatch = Arc::new(AtomicBool::new(false));
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let mut post_startup_fixture = test_state();
+    post_startup_fixture.state.external_attachment_admission =
+        Arc::new(SwitchingAttachmentAdmission {
+            inner: FormspecAttachmentAdmission,
+            mismatch: "trellis.authority.grant.v1",
+            use_mismatch: use_mismatch.clone(),
+        });
+    post_startup_fixture.state.external_attachment_recipients = Some(Arc::new(TestRecipients));
+    post_startup_fixture.state.authorizer = Arc::new(RecordingAuthorizer {
+        recorded: recorded.clone(),
+        flip_after_authorize: None,
+    });
+    let app = router(post_startup_fixture).unwrap();
+    use_mismatch.store(true, Ordering::SeqCst);
+    let response = app
+        .clone()
+        .oneshot(post_request(
+            "/v1/scopes/case_123/accepted-attachments",
+            attachment_body("flip-before-admit"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(recorded.lock().unwrap().is_empty());
+    assert_eq!(get(&app, "/v1/scopes/case_123/head").await.1["head"], serde_json::Value::Null);
+
+    // Adapter flipping after authorize cannot relabel the signed canonical header.
+    let flip_after = Arc::new(AtomicBool::new(false));
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let mut mid_request_fixture = test_state();
+    mid_request_fixture.state.external_attachment_admission =
+        Arc::new(SwitchingAttachmentAdmission {
+            inner: FormspecAttachmentAdmission,
+            mismatch: "trellis.authority.grant.v1",
+            use_mismatch: flip_after.clone(),
+        });
+    mid_request_fixture.state.external_attachment_recipients = Some(Arc::new(TestRecipients));
+    mid_request_fixture.state.authorizer = Arc::new(RecordingAuthorizer {
+        recorded: recorded.clone(),
+        flip_after_authorize: Some(flip_after),
+    });
+    let app = router(mid_request_fixture).unwrap();
+    // Targetting a reserved authority ledger is refused before admission or authorization.
+    let authority_response = app
+        .clone()
+        .oneshot(post_request(
+            "/v1/scopes/authority/accepted-attachments",
+            attachment_body("authority-attachment-refused"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(authority_response.status(), StatusCode::BAD_REQUEST);
+    assert!(recorded.lock().unwrap().is_empty());
+    assert_eq!(get(&app, "/v1/scopes/authority/head").await.1["head"], serde_json::Value::Null);
+
+    let ok_response = app
+        .clone()
+        .oneshot(post_request(
+            "/v1/scopes/case_123/accepted-attachments",
+            attachment_body("single-validated-literal"),
+        ))
+        .await
+        .unwrap();
+    let ok_status = ok_response.status();
+    let ok_bytes = to_bytes(ok_response.into_body(), 4096).await.unwrap();
+    assert_eq!(ok_status, StatusCode::CREATED, "{}", String::from_utf8_lossy(&ok_bytes));
+    assert_eq!(
+        recorded.lock().unwrap().as_slice(),
+        &[ACCEPTED_ATTACHMENT_EVENT_TYPE_LITERAL]
+    );
+    let (status, page) = get(&app, "/v1/scopes/case_123/events/ordered?after=0").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(page["events"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        page["events"][0]["eventType"],
+        ACCEPTED_ATTACHMENT_EVENT_TYPE_LITERAL,
+        "signed header event_type must remain the single validated route literal"
+    );
 }

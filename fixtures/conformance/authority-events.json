@@ -87,6 +87,7 @@
   {
     "eventType": "trellis.authority.grant.v1",
     "ledger": "authority",
+    "_note": "Structural schema fixture only: the all-zero service:<digest> actor and space:sample object do not establish Unit S's canonical genesis derivation.",
     "payload": {
       "tuple": {
         "subject": "person:admin",

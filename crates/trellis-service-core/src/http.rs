@@ -103,6 +103,7 @@ pub fn documents(
     state: TrellisServerState,
     deployment: Arc<Deployment<TrellisStore>>,
 ) -> Result<Documents, StackError> {
+    crate::external_transport::validated_event_type(&state)?;
     routes(TrellisHost::new(state, deployment), HealthRouter::new())
         .build()
         .map(|built| built.documents().clone())
@@ -123,6 +124,7 @@ pub fn router(
     health: HealthRouter,
 ) -> Result<Built<()>, StackError> {
     state.ensure_serving_posture_twref022()?;
+    crate::external_transport::validated_event_type(&state)?;
     let http_layer = stack_common_http::MiddlewareBuilder::new()
         .with_request_id()
         .with_tracing()
