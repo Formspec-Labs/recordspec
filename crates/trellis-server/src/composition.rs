@@ -387,7 +387,7 @@ mod authority_tests {
         let cases = cases();
         let long_valid = "a1234567890123456789012345678901";
         let long_invalid = "a12345678901234567890123456789012";
-        for case in &cases {
+        for (index, case) in cases.iter().enumerate() {
             let event_type = case["eventType"].as_str().unwrap();
             let ledger = case["ledger"].as_str().unwrap();
             let other_ledger = if ledger == "authority" {
@@ -399,7 +399,6 @@ mod authority_tests {
             for contract in [
                 "wos",
                 "formspec",
-                "genesis",
                 "decisions",
                 "decisions-9",
                 "decisionsx",
@@ -426,6 +425,22 @@ mod authority_tests {
                         .await
                         .is_err(),
                     "{event_type} unexpectedly admitted on authority-decisions-sample"
+                );
+            }
+            if index == 4 {
+                admit(event_type, ledger, &case["payload"])
+                    .await
+                    .expect("canonical genesis grant admitted on authority");
+                assert!(
+                    admit(event_type, other_ledger, &case["payload"])
+                        .await
+                        .is_err()
+                );
+            } else {
+                payload["contract"] = "genesis".into();
+                assert!(
+                    admit(event_type, ledger, &payload).await.is_err(),
+                    "non-genesis case {index} unexpectedly admitted with contract genesis"
                 );
             }
             for invalid in ["", "Sample", "0sample", "bad_id", long_invalid] {

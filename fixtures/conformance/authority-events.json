@@ -87,14 +87,14 @@
   {
     "eventType": "trellis.authority.grant.v1",
     "ledger": "authority",
-    "_note": "Structural schema fixture only: the all-zero service:<digest> actor and space:sample object do not establish Unit S's canonical genesis derivation.",
+    "_note": "Uses the canonical genesis service:<digest> actor derived from domain tag stack-authz-genesis-operator-v1; space:sample is a structural scope placeholder.",
     "payload": {
       "tuple": {
         "subject": "person:admin",
         "relation": "authority_admin",
         "object": "space:sample"
       },
-      "actor": "service:0000000000000000000000000000000000000000000000000000000000000000",
+      "actor": "service:6e70406f0eaa4a6dd1f83c93ae711b6fbc28c19dac996c381b31ca49150564e7",
       "reason": "Genesis authority administrator",
       "command": "genesis-sample",
       "contract": "genesis"

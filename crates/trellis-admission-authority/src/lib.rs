@@ -28,6 +28,18 @@ pub const DECISIONS_LEDGER_ID: &str = "authority-decisions";
 const TUPLE_CHANGE: &str = "tupleChange";
 const ACTIVATION: &str = "activation";
 const DECISION: &str = "decision";
+const GENESIS_CONTRACT: &str = "genesis";
+const GENESIS_GRANT_EVENT_TYPE: &str = "trellis.authority.grant.v1";
+const GENESIS_RELATION: &str = "authority_admin";
+const GENESIS_OPERATOR_DOMAIN_TAG: &str = "stack-authz-genesis-operator-v1";
+const GENESIS_OBJECT_PREFIX: &str = "space:";
+
+/// Deterministic canonical genesis `actor` (`service:<digest>`).
+#[must_use]
+pub fn canonical_genesis_actor() -> String {
+    let digest = integrity_cbor::domain_separated_sha256(GENESIS_OPERATOR_DOMAIN_TAG, b"");
+    format!("service:{}", hex::encode(digest))
+}
 
 struct Event {
     literal: &'static str,
@@ -157,6 +169,7 @@ impl EventAdmissionPolicy for AuthorityAdmissionPolicy {
                 error.instance_path()
             ))
         })?;
+        verify_genesis_grant(spec.literal, &payload)?;
         if spec.definition == ACTIVATION {
             verify_artifacts(&payload)?;
         }
@@ -169,6 +182,37 @@ impl EventAdmissionPolicy for AuthorityAdmissionPolicy {
             max_scope_events: None,
         })
     }
+}
+
+fn verify_genesis_grant(event_type: &str, payload: &serde_json::Value) -> Result<(), StackError> {
+    if payload["contract"].as_str() != Some(GENESIS_CONTRACT) {
+        return Ok(());
+    }
+    if event_type != GENESIS_GRANT_EVENT_TYPE {
+        return Err(StackError::bad_request(
+            "contract \"genesis\" is only valid for trellis.authority.grant.v1",
+        ));
+    }
+    if payload["tuple"]["relation"].as_str() != Some(GENESIS_RELATION) {
+        return Err(StackError::bad_request(
+            "genesis authority grants require relation \"authority_admin\"",
+        ));
+    }
+    if !payload["tuple"]["object"]
+        .as_str()
+        .is_some_and(|object| object.starts_with(GENESIS_OBJECT_PREFIX))
+    {
+        return Err(StackError::bad_request(
+            "genesis authority grants require a \"space:\" object",
+        ));
+    }
+    let expected_actor = canonical_genesis_actor();
+    if payload["actor"].as_str() != Some(expected_actor.as_str()) {
+        return Err(StackError::bad_request(
+            "genesis authority grants require the canonical genesis actor",
+        ));
+    }
+    Ok(())
 }
 
 // The activation schema has already checked each artifact's shape.
@@ -229,17 +273,17 @@ mod tests {
     }
 
     #[test]
-    fn admits_multi_contract_genesis_and_decisions_contract_ids() {
+    fn admits_multi_contract_decisions_and_strict_genesis_contract_ids() {
         let cases: Vec<serde_json::Value> = serde_json::from_str(include_str!(
             "../../../fixtures/conformance/authority-events.json"
         ))
         .expect("conformance fixture");
         let policy = AuthorityAdmissionPolicy;
-        for case in cases {
+        for (index, case) in cases.iter().enumerate() {
             let event_type = case["eventType"].as_str().unwrap();
             let scope = format!("{}.{}", "a".repeat(64), case["ledger"].as_str().unwrap());
             let mut payload = case["payload"].clone();
-            for contract in ["wos", "formspec", "genesis", "decisions", "decisions-9"] {
+            for contract in ["wos", "formspec", "decisions", "decisions-9"] {
                 payload["contract"] = contract.into();
                 block_on(policy.admit(&AdmissionEvent {
                     scope: scope.as_bytes(),
@@ -247,6 +291,25 @@ mod tests {
                     payload: &serde_json::to_vec(&payload).unwrap(),
                 }))
                 .unwrap_or_else(|err| panic!("{event_type} {contract}: {err}"));
+            }
+            if index == 4 {
+                block_on(policy.admit(&AdmissionEvent {
+                    scope: scope.as_bytes(),
+                    event_type,
+                    payload: &serde_json::to_vec(&case["payload"]).unwrap(),
+                }))
+                .expect("canonical genesis fixture grant must be admitted");
+            } else {
+                payload["contract"] = "genesis".into();
+                assert!(
+                    block_on(policy.admit(&AdmissionEvent {
+                        scope: scope.as_bytes(),
+                        event_type,
+                        payload: &serde_json::to_vec(&payload).unwrap(),
+                    }))
+                    .is_err(),
+                    "non-genesis fixture case {index} ({event_type}) must refuse contract \"genesis\""
+                );
             }
             for invalid in ["", "Sample", "0sample", "bad_id"] {
                 payload["contract"] = invalid.into();
@@ -261,6 +324,71 @@ mod tests {
                     "{event_type} {invalid}: {err}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn strict_genesis_admission_rejects_non_grant_and_non_canonical_fields() {
+        let cases: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../../../fixtures/conformance/authority-events.json"
+        ))
+        .expect("conformance fixture");
+        let policy = AuthorityAdmissionPolicy;
+        let auth_scope = format!("{}.authority", "a".repeat(64));
+        let dec_scope = format!("{}.authority-decisions", "a".repeat(64));
+        let canonical = cases[4]["payload"].clone();
+        assert_eq!(
+            canonical["actor"].as_str().unwrap(),
+            "service:6e70406f0eaa4a6dd1f83c93ae711b6fbc28c19dac996c381b31ca49150564e7"
+        );
+
+        // Revocation, activation, and decision with contract "genesis" must all refuse (400).
+        for (event_type, scope, base) in [
+            (
+                "trellis.authority.revocation.v1",
+                &auth_scope,
+                canonical.clone(),
+            ),
+            (
+                "trellis.authority.activation.v1",
+                &auth_scope,
+                cases[2]["payload"].clone(),
+            ),
+            (
+                "trellis.authority.decision.v1",
+                &dec_scope,
+                cases[3]["payload"].clone(),
+            ),
+        ] {
+            let mut payload = base;
+            payload["contract"] = "genesis".into();
+            let err = block_on(policy.admit(&AdmissionEvent {
+                scope: scope.as_bytes(),
+                event_type,
+                payload: &serde_json::to_vec(&payload).unwrap(),
+            }))
+            .unwrap_err();
+            assert_eq!(err.status().as_u16(), 400);
+        }
+
+        // Grant with wrong actor, wrong relation, or non-"space:" object must refuse.
+        let mut bad_actor = canonical.clone();
+        bad_actor["actor"] =
+            "service:0000000000000000000000000000000000000000000000000000000000000000".into();
+        let mut caller_actor = canonical.clone();
+        caller_actor["actor"] = "service:wos-server".into();
+        let mut bad_relation = canonical.clone();
+        bad_relation["tuple"]["relation"] = "viewer".into();
+        let mut bad_object = canonical;
+        bad_object["tuple"]["object"] = "record:sample".into();
+        for bad in [bad_actor, caller_actor, bad_relation, bad_object] {
+            let err = block_on(policy.admit(&AdmissionEvent {
+                scope: auth_scope.as_bytes(),
+                event_type: "trellis.authority.grant.v1",
+                payload: &serde_json::to_vec(&bad).unwrap(),
+            }))
+            .unwrap_err();
+            assert_eq!(err.status().as_u16(), 400);
         }
     }
 }
