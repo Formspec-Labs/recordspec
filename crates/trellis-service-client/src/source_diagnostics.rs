@@ -61,9 +61,8 @@ fn send_class(timeout: bool, connect: bool, decode: bool) -> SendClass {
         SendClass::Other
     }
 }
-#[cfg(any(feature = "test-diagnostics", test))]
+#[cfg(feature = "test-diagnostics")]
 impl SendClass {
-    #[cfg(any(feature = "test-diagnostics", test))]
     fn label(&self) -> &'static str {
         match self {
             Self::Timeout => "timeout",
