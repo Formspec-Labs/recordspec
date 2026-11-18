@@ -624,26 +624,38 @@ async fn authorized_append_replay_hashes_original_body_bytes() {
 
 #[tokio::test]
 async fn authorized_append_replay_preserves_json_rejections_without_append() {
+    use futures::stream;
+    use std::convert::Infallible;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     let (state, _) = external_state();
     let repository = state.repository.clone();
     let app = router(state).unwrap();
     let valid = append_body("parse-rejections");
-    for (content_type, bytes, expected) in [
+    for (content_type, bytes, expected, expected_code) in [
         (
             "text/plain",
             valid.clone(),
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "INFRA-4150",
         ),
-        ("application/json", b"{".to_vec(), StatusCode::BAD_REQUEST),
+        (
+            "application/json",
+            b"{".to_vec(),
+            StatusCode::BAD_REQUEST,
+            "INFRA-4000",
+        ),
         (
             "application/json",
             b"{}".to_vec(),
             StatusCode::UNPROCESSABLE_ENTITY,
+            "INFRA-4220",
         ),
         (
             "application/json",
             vec![b' '; 2 * 1024 * 1024 + 1],
             StatusCode::PAYLOAD_TOO_LARGE,
+            "INFRA-4130",
         ),
     ] {
         let mut malformed = request(valid.clone());
@@ -661,6 +673,51 @@ async fn authorized_append_replay_preserves_json_rejections_without_append() {
         let problem: serde_json::Value =
             serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
         assert_eq!(problem["status"], expected.as_u16());
+        assert_eq!(problem["error_code"], expected_code, "{problem}");
     }
+
+    // Chunked/un-headered stream > 2 MiB and declared Content-Length > 2 MiB return identical 413 Problem JSON.
+    let chunked_chunks = vec![
+        Ok::<axum::body::Bytes, Infallible>(axum::body::Bytes::from(vec![b' '; 1024 * 1024])),
+        Ok(axum::body::Bytes::from(vec![b' '; 1024 * 1024 + 1])),
+    ];
+    let mut chunked_req = request(valid.clone());
+    *chunked_req.body_mut() = Body::from_stream(stream::iter(chunked_chunks));
+    let chunked_resp = app.clone().oneshot(chunked_req).await.unwrap();
+    assert_eq!(chunked_resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(
+        chunked_resp.headers()["content-type"],
+        "application/problem+json"
+    );
+    let chunked_problem: serde_json::Value =
+        serde_json::from_slice(&to_bytes(chunked_resp.into_body(), 4096).await.unwrap()).unwrap();
+    assert_eq!(chunked_problem["error_code"], "INFRA-4130");
+
+    let polled_bytes = Arc::new(AtomicUsize::new(0));
+    let polled_clone = polled_bytes.clone();
+    let probe_stream = stream::once(async move {
+        polled_clone.fetch_add(16, Ordering::SeqCst);
+        Ok::<axum::body::Bytes, Infallible>(axum::body::Bytes::from_static(b"0123456789abcdef"))
+    });
+    let mut declared_req = request(valid);
+    declared_req.headers_mut().insert(
+        "content-length",
+        (2 * 1024 * 1024 + 1).to_string().parse().unwrap(),
+    );
+    *declared_req.body_mut() = Body::from_stream(probe_stream);
+    let declared_resp = app.oneshot(declared_req).await.unwrap();
+    assert_eq!(declared_resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(
+        declared_resp.headers()["content-type"],
+        "application/problem+json"
+    );
+    let declared_problem: serde_json::Value =
+        serde_json::from_slice(&to_bytes(declared_resp.into_body(), 4096).await.unwrap()).unwrap();
+    assert_eq!(declared_problem, chunked_problem);
+    assert_eq!(
+        polled_bytes.load(Ordering::SeqCst),
+        0,
+        "declared Content-Length > 2 MiB must reject without polling/allocating body"
+    );
     assert!(repository.list_scope(b"case_123").await.unwrap().is_empty());
 }

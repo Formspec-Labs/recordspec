@@ -1537,6 +1537,36 @@
             },
             "description": "Idempotency or sequence conflict, or INFRA-4094 when the expected authority tree size differs."
           },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Append request body exceeds the 2 MiB limit."
+          },
+          "415": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Append request Content-Type is not application/json."
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "JSON body is syntactically valid but fails SubstrateAppendBody deserialization."
+          },
           "503": {
             "content": {
               "application/problem+json": {

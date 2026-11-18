@@ -831,7 +831,7 @@ async fn t1_shared_ledgers_admit_multiple_contracts_and_genesis_and_refuse_cross
 async fn t1_attachment_route_rejects_mismatched_adapter_and_uses_single_validated_literal() {
     use base64::Engine as _;
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use trellis_admission_formspec::accepted_attachment::FormspecAttachmentAdmission;
     use trellis_server_ports::{
         AdmittedDescriptor, AttachmentBinding, AttachmentLimits, AuthorizedScope,
@@ -845,10 +845,12 @@ async fn t1_attachment_route_rejects_mismatched_adapter_and_uses_single_validate
         inner: FormspecAttachmentAdmission,
         mismatch: &'static str,
         use_mismatch: Arc<AtomicBool>,
+        lookups: Arc<AtomicUsize>,
     }
 
     impl ExternalAttachmentAdmission for SwitchingAttachmentAdmission {
         fn event_type(&self) -> &'static str {
+            self.lookups.fetch_add(1, Ordering::SeqCst);
             if self.use_mismatch.load(Ordering::SeqCst) {
                 self.mismatch
             } else {
@@ -952,6 +954,7 @@ async fn t1_attachment_route_rejects_mismatched_adapter_and_uses_single_validate
         inner: FormspecAttachmentAdmission,
         mismatch: "trellis.authority.grant.v1",
         use_mismatch: Arc::new(AtomicBool::new(true)),
+        lookups: Arc::new(AtomicUsize::new(0)),
     });
     mismatch_fixture.state.external_attachment_recipients = Some(Arc::new(TestRecipients));
     mismatch_fixture.state.authorizer = Arc::new(RecordingAuthorizer {
@@ -996,6 +999,7 @@ async fn t1_attachment_route_rejects_mismatched_adapter_and_uses_single_validate
             inner: FormspecAttachmentAdmission,
             mismatch: "trellis.authority.grant.v1",
             use_mismatch: use_mismatch.clone(),
+            lookups: Arc::new(AtomicUsize::new(0)),
         });
     post_startup_fixture.state.external_attachment_recipients = Some(Arc::new(TestRecipients));
     post_startup_fixture.state.authorizer = Arc::new(RecordingAuthorizer {
@@ -1018,6 +1022,7 @@ async fn t1_attachment_route_rejects_mismatched_adapter_and_uses_single_validate
 
     // Adapter flipping after authorize cannot relabel the signed canonical header.
     let flip_after = Arc::new(AtomicBool::new(false));
+    let lookups = Arc::new(AtomicUsize::new(0));
     let recorded = Arc::new(Mutex::new(Vec::new()));
     let mut mid_request_fixture = test_state();
     mid_request_fixture.state.external_attachment_admission =
@@ -1025,6 +1030,7 @@ async fn t1_attachment_route_rejects_mismatched_adapter_and_uses_single_validate
             inner: FormspecAttachmentAdmission,
             mismatch: "trellis.authority.grant.v1",
             use_mismatch: flip_after.clone(),
+            lookups: lookups.clone(),
         });
     mid_request_fixture.state.external_attachment_recipients = Some(Arc::new(TestRecipients));
     mid_request_fixture.state.authorizer = Arc::new(RecordingAuthorizer {
@@ -1032,6 +1038,7 @@ async fn t1_attachment_route_rejects_mismatched_adapter_and_uses_single_validate
         flip_after_authorize: Some(flip_after),
     });
     let app = router(mid_request_fixture).unwrap();
+    lookups.store(0, Ordering::SeqCst);
     // Targetting a reserved authority ledger is refused before admission or authorization.
     let authority_response = app
         .clone()
@@ -1043,8 +1050,10 @@ async fn t1_attachment_route_rejects_mismatched_adapter_and_uses_single_validate
         .unwrap();
     assert_eq!(authority_response.status(), StatusCode::BAD_REQUEST);
     assert!(recorded.lock().unwrap().is_empty());
+    assert_eq!(lookups.load(Ordering::SeqCst), 1);
     assert_eq!(get(&app, "/v1/scopes/authority/head").await.1["head"], serde_json::Value::Null);
 
+    lookups.store(0, Ordering::SeqCst);
     let ok_response = app
         .clone()
         .oneshot(post_request(
@@ -1056,6 +1065,11 @@ async fn t1_attachment_route_rejects_mismatched_adapter_and_uses_single_validate
     let ok_status = ok_response.status();
     let ok_bytes = to_bytes(ok_response.into_body(), 4096).await.unwrap();
     assert_eq!(ok_status, StatusCode::CREATED, "{}", String::from_utf8_lossy(&ok_bytes));
+    assert_eq!(
+        lookups.load(Ordering::SeqCst),
+        1,
+        "accepted-attachment route must validate adapter event_type once per request"
+    );
     assert_eq!(
         recorded.lock().unwrap().as_slice(),
         &[ACCEPTED_ATTACHMENT_EVENT_TYPE_LITERAL]

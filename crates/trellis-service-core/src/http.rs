@@ -134,7 +134,12 @@ pub fn router(
     let built = routes(TrellisHost::new(state.clone(), deployment), health)
         .build()
         .map_err(|error| StackError::internal(error.to_string()))?;
-    Ok(built.with_state(state).layer(http_layer))
+    Ok(built
+        .with_state(state)
+        .layer(axum::middleware::from_fn(
+            crate::auth::normalize_payload_too_large,
+        ))
+        .layer(http_layer))
 }
 
 /// Looks up append identity with current read authority and no publication effects.
@@ -190,6 +195,9 @@ pub(crate) async fn seal_completion(
         (status = 401, description = "Service token rejected.", body = ProblemJson, content_type = "application/problem+json"),
         (status = 403, description = "Scope action forbidden.", body = ProblemJson, content_type = "application/problem+json"),
         (status = 409, description = "Idempotency or sequence conflict, or INFRA-4094 when the expected authority tree size differs.", body = ProblemJson, content_type = "application/problem+json"),
+        (status = 413, description = "Append request body exceeds the 2 MiB limit.", body = ProblemJson, content_type = "application/problem+json"),
+        (status = 415, description = "Append request Content-Type is not application/json.", body = ProblemJson, content_type = "application/problem+json"),
+        (status = 422, description = "JSON body is syntactically valid but fails SubstrateAppendBody deserialization.", body = ProblemJson, content_type = "application/problem+json"),
         (status = 503, description = "Substrate dependency unavailable.", body = ProblemJson, content_type = "application/problem+json")
     ),
     tag = "events",

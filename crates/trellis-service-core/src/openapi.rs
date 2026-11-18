@@ -154,4 +154,23 @@ mod tests {
         }
         assert!(schemas.get("VerificationReceipt").is_none());
     }
+
+    #[test]
+    fn openapi_append_route_declares_problem_json_error_responses() {
+        let doc = serde_json::to_value(crate::tests::documents_of_test_state().stack).unwrap();
+        let responses = doc["paths"]["/v1/scopes/{scope}/events"]["post"]["responses"]
+            .as_object()
+            .expect("appendEvent responses");
+        assert!(responses.contains_key("201"));
+        for status in ["400", "401", "403", "409", "413", "415", "422", "503"] {
+            let entry = responses
+                .get(status)
+                .unwrap_or_else(|| panic!("appendEvent missing status {status} in OpenAPI"));
+            assert_eq!(
+                entry["content"]["application/problem+json"]["schema"]["$ref"],
+                "#/components/schemas/Problem",
+                "appendEvent status {status} must reference Problem JSON"
+            );
+        }
+    }
 }

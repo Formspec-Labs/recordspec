@@ -12,8 +12,9 @@ use async_trait::async_trait;
 use axum::{
     Json,
     body::{Body, to_bytes},
-    extract::{FromRequest, FromRequestParts, RawPathParams, Request},
-    http::StatusCode,
+    extract::{FromRequest, FromRequestParts, RawPathParams, Request, rejection::JsonRejection},
+    http::{StatusCode, header},
+    middleware::Next,
     response::{IntoResponse, Response},
 };
 use stack_common_error::{ErrorCode, ProblemJson, StackError};
@@ -201,6 +202,56 @@ async fn ledger_in_path(
     LedgerScope::within(scoped.scope(), &extracted?).map_err(IntoResponse::into_response)
 }
 
+pub(crate) fn payload_too_large_problem() -> Response {
+    ProblemJson::new(
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "request_body_too_large",
+        "request body exceeds route size limit",
+    )
+    .into_response()
+}
+
+/// Converts outer route-limit `413` responses (such as declared `Content-Length` rejections)
+/// into canonical `application/problem+json` `INFRA-4130` while preserving cache headers.
+pub(crate) async fn normalize_payload_too_large(request: Request, next: Next) -> Response {
+    let response = next.run(request).await;
+    if response.status() == StatusCode::PAYLOAD_TOO_LARGE
+        && response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_none_or(|value| !value.starts_with("application/problem+json"))
+    {
+        let mut normalized = payload_too_large_problem();
+        for (name, value) in response.headers() {
+            if *name != header::CONTENT_TYPE && *name != header::CONTENT_LENGTH {
+                normalized.headers_mut().append(name, value.clone());
+            }
+        }
+        return normalized;
+    }
+    response
+}
+
+fn json_rejection_response(error: JsonRejection) -> Response {
+    let status = error.status();
+    if status == StatusCode::PAYLOAD_TOO_LARGE {
+        return payload_too_large_problem();
+    }
+    let (code, title) = match status {
+        StatusCode::UNSUPPORTED_MEDIA_TYPE => ("INFRA-4150", "unsupported_media_type"),
+        StatusCode::UNPROCESSABLE_ENTITY => ("INFRA-4220", "invalid_request_body"),
+        _ => ("INFRA-4000", "invalid_request_body"),
+    };
+    StackError::new(
+        ErrorCode::new(code).expect("static error code is valid"),
+        status,
+        title,
+    )
+    .with_detail(error.body_text())
+    .into_response()
+}
+
 async fn admit_append(
     state: &TrellisServerState,
     scoped: &TrellisScoped,
@@ -221,12 +272,7 @@ async fn admit_append(
     .await
     .map_err(|_| {
         diag::mark(selected, Stage::BodyAdmission, Outcome::Refused);
-        ProblemJson::new(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "request_body_too_large",
-            "append body exceeds JSON limit",
-        )
-        .into_response()
+        payload_too_large_problem()
     })?;
     let mut parse_request = Request::new(Body::from(bytes.clone()));
     *parse_request.headers_mut() = request.headers().clone();
@@ -234,7 +280,7 @@ async fn admit_append(
         .await
         .map_err(|error| {
             diag::mark(selected, Stage::BodyAdmission, Outcome::Refused);
-            ProblemJson::from(error).into_response()
+            json_rejection_response(error)
         })?;
     selected = body.source_content.is_some();
     body.validate().map_err(|error| {
