@@ -31,9 +31,7 @@ use trellis_server_ports::{AuthorizedScope, LedgerScope, ScopeAction, ScopeAutho
 use trellis_service_client::SubstrateAppendBody;
 
 use crate::source_diagnostics::{self as diag, Outcome, Stage};
-use crate::state::{
-    AuthenticatedRequest, NativeReplayScope, TrellisServerState, native_replay_call,
-};
+use crate::state::{AuthenticatedRequest, NativeReplayScope, TrellisServerState};
 use crate::store::{TrellisScoped, TrellisStore};
 
 /// Parsed append admitted by the current authorization boundary.
@@ -69,6 +67,9 @@ impl Authority for Admission {
         names.iter().map(|name| (*name).to_owned()).collect()
     }
 }
+
+const AUTHORITY_APPEND: &str = "authority-append";
+pub(crate) const ATTACHMENT_APPEND: &str = "accepted-attachment";
 
 /// The router's host: the server state for verification and the deployment that admits scopes.
 #[derive(Clone)]
@@ -211,9 +212,14 @@ async fn admit_append(
     // The claim rides in the body, so the diagnostic flag is known only once it is parsed.
     let mut selected = false;
     diag::mark(selected, Stage::BodyAdmission, Outcome::Enter);
-    // Match Axum's existing default JSON limit; replay still hashes original bytes.
+    // Replay hashes the original bytes under the declared append route limit.
     let raw_body = std::mem::replace(request.body_mut(), Body::empty());
-    let bytes = to_bytes(raw_body, 2 * 1024 * 1024).await.map_err(|_| {
+    let bytes = to_bytes(
+        raw_body,
+        trellis_service_client::endpoints::APPEND_EVENT.max_request_bytes(),
+    )
+    .await
+    .map_err(|_| {
         diag::mark(selected, Stage::BodyAdmission, Outcome::Refused);
         (
             axum::http::StatusCode::PAYLOAD_TOO_LARGE,
@@ -256,6 +262,21 @@ async fn admit_append(
         authorize_action(state, identity, scope, ScopeAction::Append, Some(&body)).await,
     )
     .map_err(IntoResponse::into_response)?;
+    let authority_append = state
+        .admission_policy
+        .uses_canonical_append_replay(scope.as_bytes());
+    if !authority_append && body.expected_tree_size.is_some() {
+        return Err(StackError::bad_request(
+            "expectedTreeSize is only supported on authority ledgers",
+        )
+        .into_response());
+    }
+    if authority_append && (body.actor.kind != "service" || body.source_content.is_some()) {
+        return Err(StackError::bad_request(
+            "authority append requires a service actor and takes no Source content",
+        )
+        .into_response());
+    }
     // Source admission runs before the HTTP replay decision (ADR 0163 5.4), so every
     // refusal below is current and never recorded. No credential enters replay state.
     let admitted = match (&body.source_content, &state.source_content) {
@@ -329,7 +350,9 @@ async fn admit_append(
     // JSON encodes the tuple without delimiter ambiguity; the gate prefixes the scope key. The
     // claim is in the body the replay fingerprint already covers; the route tag keeps Source
     // appends in their own cache.
-    let route = if admitted.is_some() {
+    let route = if authority_append {
+        AUTHORITY_APPEND
+    } else if admitted.is_some() {
         "source-content-only"
     } else {
         "append"
@@ -375,8 +398,8 @@ pub(crate) async fn authorize_action(
 
 /// HTTP replay: the gate partitions every admitted request by `(scope key, principal)`.
 ///
-/// Accepted attachments keep their response-replaying store row (`native_replay_call`); every
-/// other idempotent route replays through the stored-response check.
+/// Authority appends resolve replay under the ledger lock. A changed expected tree size is
+/// allowed on the same key, and a refused precondition does not reserve the key.
 #[async_trait]
 impl HttpIdempotencyState for TrellisHost {
     type Error = StackError;
@@ -386,7 +409,10 @@ impl HttpIdempotencyState for TrellisHost {
         call: &IdempotencyCall,
     ) -> Result<IdempotencyDecision, IdempotencyDriverError<Self::Error>> {
         let store = &self.state.replay_store;
-        if native_replay_call(call) {
+        if replay_route_is(call, AUTHORITY_APPEND) {
+            return Ok(IdempotencyDecision::Fresh);
+        }
+        if replay_route_is(call, ATTACHMENT_APPEND) {
             return match store
                 .check_or_record(
                     &NativeReplayScope(replay_scope(call)),
@@ -427,7 +453,10 @@ impl HttpIdempotencyState for TrellisHost {
         response: StoredResponse,
     ) -> Result<(), IdempotencyDriverError<Self::Error>> {
         let store = &self.state.replay_store;
-        if native_replay_call(call) {
+        if replay_route_is(call, AUTHORITY_APPEND) {
+            return Ok(());
+        }
+        if replay_route_is(call, ATTACHMENT_APPEND) {
             return store
                 .record_response(
                     &NativeReplayScope(replay_scope(call)),
@@ -473,6 +502,15 @@ impl HttpIdempotencyState for TrellisHost {
     ) -> Response {
         problem_response(error)
     }
+}
+
+/// Checks the route tag in the gate's trusted `{scope key}:{principal}` partition.
+fn replay_route_is(call: &IdempotencyCall, route: &str) -> bool {
+    call.replay_partition
+        .as_deref()
+        .and_then(|value| value.split_once(':'))
+        .and_then(|(_, principal)| serde_json::from_str::<serde_json::Value>(principal).ok())
+        .is_some_and(|partition| partition[2] == route)
 }
 
 /// The replay partition the gate minted, length-prefixed so arbitrary principal or route text

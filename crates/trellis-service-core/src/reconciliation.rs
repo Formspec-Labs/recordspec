@@ -3,7 +3,7 @@
 
 use integrity_cbor::{Value, domain_separated_sha256};
 use stack_common_error::StackError;
-use trellis_cddl::canonical_event_hash_preimage;
+use trellis_cddl::{ParsedCanonicalEvent, canonical_event_hash_preimage};
 use trellis_service_client::{
     AppendReconciliation, AppendReconciliationRequest, ReconciliationUnknown,
 };
@@ -18,6 +18,27 @@ fn unknown(reason: ReconciliationUnknown) -> AppendReconciliation {
     AppendReconciliation::Unknown { reason }
 }
 
+/// Checks the canonical bytes against their stored ledger position and hash.
+pub(crate) fn checked_canonical_event(
+    scope: &[u8],
+    index: u64,
+    bytes: &[u8],
+    cached_hash: Option<&[u8; 32]>,
+) -> Result<(ParsedCanonicalEvent, [u8; 32]), StackError> {
+    let parsed = trellis_cddl::parse_canonical_event(bytes)
+        .map_err(|_| StackError::unavailable("stored canonical event invalid"))?;
+    if parsed.ledger_scope != scope || parsed.sequence != index {
+        return Err(StackError::unavailable("stored event position differs"));
+    }
+    let hash = domain_separated_sha256(EVENT_DOMAIN, &canonical_event_hash_preimage(scope, bytes));
+    if cached_hash.is_some_and(|cached| *cached != hash) {
+        return Err(StackError::unavailable(
+            "stored canonical event hash differs",
+        ));
+    }
+    Ok((parsed, hash))
+}
+
 /// Validates stored identity and recomputes the hash instead of trusting the materialised value.
 ///
 /// # Errors
@@ -27,12 +48,14 @@ pub(crate) fn checked_event(
     index: u64,
     event: StoredEvent,
 ) -> Result<StoredEvent, StackError> {
-    let parsed = trellis_cddl::parse_canonical_event(event.canonical_event())
-        .map_err(|_| StackError::unavailable("reconciliation canonical event invalid"))?;
+    let (parsed, hash) = checked_canonical_event(
+        scope,
+        index,
+        event.canonical_event(),
+        event.canonical_event_hash(),
+    )?;
     if event.scope() != scope
         || event.sequence() != index
-        || parsed.ledger_scope != scope
-        || parsed.sequence != event.sequence()
         || Some(parsed.idempotency_key.as_slice()) != event.idempotency_key()
     {
         return Err(StackError::unavailable(
@@ -55,18 +78,6 @@ pub(crate) fn checked_event(
     {
         return Err(StackError::unavailable(
             "reconciliation signed payload differs",
-        ));
-    }
-    let hash = domain_separated_sha256(
-        EVENT_DOMAIN,
-        &canonical_event_hash_preimage(scope, event.canonical_event()),
-    );
-    if event
-        .canonical_event_hash()
-        .is_some_and(|cached| *cached != hash)
-    {
-        return Err(StackError::unavailable(
-            "reconciliation materialized hash differs",
         ));
     }
     Ok(event.with_canonical_event_hash(Some(hash)))

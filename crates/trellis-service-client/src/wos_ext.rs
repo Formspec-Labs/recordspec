@@ -17,8 +17,10 @@
 
 use async_trait::async_trait;
 use stack_common_error::StackError;
+#[cfg(test)]
+use wos_events::WOS_CANONICAL_EVENT_LITERALS;
+use wos_events::WOS_NATIVE_PROVENANCE_EVENT_LITERAL;
 use wos_events::{NativeProvenanceEvent, ProvenanceRecord};
-pub use wos_events::{WOS_CANONICAL_EVENT_LITERALS, WOS_NATIVE_PROVENANCE_EVENT_LITERAL};
 
 use crate::{
     AppendActor, ComputeContext, LedgerScope, SubstrateAppendRequest, SubstrateAppendResult,

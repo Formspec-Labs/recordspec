@@ -19,6 +19,7 @@ use trellis_export_writer::PostureDeclaration as ExportPostureDeclaration;
 use trellis_export_writer::TrellisTimestamp;
 use trellis_server_ports::{
     AdmissionEvent, CloseoutSource, ComputeContext, ComputeSensitivity, DirectSubmitPolicy,
+    EventAdmissionPolicy,
 };
 use trellis_service_client::{ClientAttestation, SubstrateAppendResult};
 use trellis_types::StoredEvent;
@@ -37,6 +38,8 @@ pub struct AppendCommand {
     pub scope: LedgerScope,
     pub event_type: String,
     pub idempotency_key: String,
+    /// Expected size of the locked ledger before a new append.
+    pub expected_tree_size: Option<u64>,
     pub payload: serde_json::Value,
     /// Optional COSE_Sign1 attestation supplied by a direct-client submission.
     /// The coordinator rejects this when the admitted event family is
@@ -149,11 +152,6 @@ impl<'a> AppendCoordinator<'a> {
     ) -> Result<AppendOutcome, StackError> {
         let selected = source.is_some();
         diag::mark(selected, Stage::Policy, Outcome::Enter);
-        if !self.state.signing_key.is_active_at(now_timestamp()?) {
-            return Err(StackError::bad_request(
-                "signing key inactive at append time",
-            ));
-        }
         let payload_json = serde_json::to_vec(&command.payload).map_err(|error| {
             StackError::bad_request(format!("payload JSON encode failed: {error}"))
         })?;
@@ -229,11 +227,6 @@ impl<'a> AppendCoordinator<'a> {
             Stage::Prefix,
             self.scoped.ledgers().begin(&command.scope).await,
         )?;
-        let head = diag::observed(selected, Stage::Prefix, tx.head().await)?;
-        let last = match head {
-            Some(_) => diag::observed(selected, Stage::Prefix, tx.last_event().await)?,
-            None => None,
-        };
         let existing = diag::observed(
             selected,
             Stage::Prefix,
@@ -278,9 +271,28 @@ impl<'a> AppendCoordinator<'a> {
         }
 
         diag::mark(selected, Stage::Replay, Outcome::ReturnedOk);
+        if !self.state.signing_key.is_active_at(now_timestamp()?) {
+            return Err(StackError::bad_request(
+                "signing key inactive at append time",
+            ));
+        }
+        let head = diag::observed(selected, Stage::Prefix, tx.head().await)?;
+        let last = match head {
+            Some(_) => diag::observed(selected, Stage::Prefix, tx.last_event().await)?,
+            None => None,
+        };
         // Under the scope lock, after replay, so a retry of the append that filled the ledger
         // replays and a concurrent caller cannot pass a stale count.
         let tree_size = head.as_ref().map_or(0, |head| head.tree_size);
+        if command
+            .expected_tree_size
+            .is_some_and(|expected| expected != tree_size)
+        {
+            return Err(StackError::conflict_with_code(
+                trellis_service_client::AUTHORITY_HEAD_MOVED_CODE,
+                "authority ledger tree size changed",
+            ));
+        }
         if let Some(max) = admitted.max_scope_events
             && tree_size >= max
         {
@@ -543,6 +555,8 @@ pub(crate) struct AuthoredEventInput<'a> {
     pub(crate) extensions: Value,
 }
 
+pub(crate) const PUBLIC_METADATA_CLASSIFICATION: &[u8] = b"x-trellis-service/public-metadata";
+
 pub(crate) fn build_authored_event(
     input: AuthoredEventInput<'_>,
 ) -> Result<AuthoredEvent, StackError> {
@@ -555,7 +569,7 @@ pub(crate) fn build_authored_event(
         ("retention_tier", crate::uint(0)),
         (
             "classification",
-            Value::Bytes(b"x-trellis-service/public-metadata".to_vec()),
+            Value::Bytes(PUBLIC_METADATA_CLASSIFICATION.to_vec()),
         ),
         ("outcome_commitment", Value::Null),
         ("subject_ref_commitment", Value::Null),

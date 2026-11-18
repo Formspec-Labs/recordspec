@@ -195,6 +195,9 @@ pub async fn seal_completion(
     request: &CompletionRequest,
     signer: &dyn CompletionSigner,
 ) -> Result<SubstrateAppendResult, StackError> {
+    state
+        .admission_policy
+        .check_ledger_event(ledger.as_bytes(), COMPLETION_EVENT)?;
     let scope = ledger.as_str();
     request.validate()?;
     let selected = SelectedCompletion::try_from(&request.selection)?;
@@ -481,6 +484,7 @@ async fn authorize(
         compute_context: crate::append::default_public_compute_context(),
         client_attestation: None,
         source_content: None,
+        expected_tree_size: None,
     };
     body.validate()?;
     let append_permit =

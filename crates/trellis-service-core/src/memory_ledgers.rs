@@ -1,10 +1,9 @@
 // Rust guideline compliant 2026-02-21
 //! In-memory [`Ledgers`] for tests and explicitly requested local runs.
 //!
-//! One mutex guards the whole state and a unit of work holds it from `begin` to its end, which is
-//! the in-memory form of the Postgres advisory lock. Writes buffer until `commit`, so dropping a
-//! unit of work discards them just as a rollback does. Ledgers are keyed by `(scope key, ledger
-//! scope)`, as Postgres keys them, and a scope's handle refuses another scope's ledger.
+//! A writer mutex serializes transactions from `begin` to commit or rollback. The data mutex
+//! only guards access to committed rows, so readers can see the current prefix while a writer
+//! prepares the next append. Ledgers use the same `(scope key, ledger scope)` key as Postgres.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -14,9 +13,9 @@ use stack_common_error::StackError;
 use stack_common_scope::{Scope, ScopeKey};
 use tokio::sync::{Mutex, OwnedMutexGuard};
 use trellis_server_ports::{
-    AttachmentRow, ExportAt, ExportRows, LedgerScope, LedgerTx, Ledgers,
-    MAX_ATTACHMENT_EXPORT_EVENTS, MAX_EXPORT_ATTACHMENT_BYTES, ScopedLedgers, SourceContentBinding,
-    foreign_ledger,
+    AttachmentRow, CheckpointedEvent, CheckpointedPage, ExportAt, ExportRows, LedgerHeadRow,
+    LedgerScope, LedgerTx, Ledgers, MAX_ATTACHMENT_EXPORT_EVENTS, MAX_EXPORT_ATTACHMENT_BYTES,
+    ScopedLedgers, SourceContentBinding, foreign_ledger,
 };
 use trellis_types::{StoredCheckpoint, StoredEvent};
 
@@ -41,6 +40,7 @@ struct State {
 #[derive(Clone, Default)]
 pub struct MemoryLedgers {
     state: Arc<Mutex<State>>,
+    writer: Arc<Mutex<()>>,
 }
 
 impl MemoryLedgers {
@@ -54,6 +54,7 @@ impl Ledgers for MemoryLedgers {
     fn scoped(&self, scope: &Scope) -> Arc<dyn ScopedLedgers> {
         Arc::new(MemoryScopedLedgers {
             state: Arc::clone(&self.state),
+            writer: Arc::clone(&self.writer),
             scope: scope.clone(),
         })
     }
@@ -62,6 +63,7 @@ impl Ledgers for MemoryLedgers {
 /// One scope's in-memory ledgers.
 struct MemoryScopedLedgers {
     state: Arc<Mutex<State>>,
+    writer: Arc<Mutex<()>>,
     scope: Scope,
 }
 
@@ -80,8 +82,16 @@ impl MemoryScopedLedgers {
         read: impl FnOnce(&Ledger) -> T,
     ) -> Result<Option<T>, StackError> {
         let key = self.key(ledger)?;
-        Ok(self.state.lock().await.ledgers.get(&key).map(read))
+        Ok(read_ledger(&self.state, &key, read).await)
     }
+}
+
+async fn read_ledger<T>(
+    state: &Mutex<State>,
+    key: &LedgerKey,
+    read: impl FnOnce(&Ledger) -> T,
+) -> Option<T> {
+    state.lock().await.ledgers.get(key).map(read)
 }
 
 #[derive(Default)]
@@ -92,14 +102,15 @@ struct Pending {
 }
 
 struct MemoryTx {
-    guard: OwnedMutexGuard<State>,
+    _writer_guard: OwnedMutexGuard<()>,
+    state: Arc<Mutex<State>>,
     key: LedgerKey,
     pending: Pending,
 }
 
 impl MemoryTx {
-    fn ledger(&self) -> Option<&Ledger> {
-        self.guard.ledgers.get(&self.key)
+    async fn read<T>(&self, read: impl FnOnce(&Ledger) -> T) -> Option<T> {
+        read_ledger(&self.state, &self.key, read).await
     }
 
     /// A row must belong to the ledger this unit of work locked.
@@ -123,44 +134,51 @@ fn lost_race(what: &str) -> StackError {
 #[async_trait]
 impl LedgerTx for MemoryTx {
     async fn head(&mut self) -> Result<Option<StoredCheckpoint>, StackError> {
-        Ok(self.ledger().and_then(|l| l.checkpoints.last().cloned()))
+        Ok(self.read(|l| l.checkpoints.last().cloned()).await.flatten())
     }
 
     async fn last_event(&mut self) -> Result<Option<StoredEvent>, StackError> {
-        Ok(self.ledger().and_then(|l| l.events.last().cloned()))
+        Ok(self.read(|l| l.events.last().cloned()).await.flatten())
     }
 
     async fn event_by_key(&mut self, key: &[u8]) -> Result<Option<StoredEvent>, StackError> {
         Ok(self
-            .ledger()
-            .and_then(|l| l.by_key.get(key).map(|index| l.events[*index].clone())))
+            .read(|l| l.by_key.get(key).map(|index| l.events[*index].clone()))
+            .await
+            .flatten())
     }
 
     async fn checkpoint_at(
         &mut self,
         tree_size: u64,
     ) -> Result<Option<StoredCheckpoint>, StackError> {
-        Ok(self.ledger().and_then(|l| {
-            let index = usize::try_from(tree_size.checked_sub(1)?).ok()?;
-            l.checkpoints.get(index).cloned()
-        }))
+        Ok(self
+            .read(|l| {
+                let index = usize::try_from(tree_size.checked_sub(1)?).ok()?;
+                l.checkpoints.get(index).cloned()
+            })
+            .await
+            .flatten())
     }
 
     async fn prefix(&mut self, limit: u64) -> Result<Vec<StoredEvent>, StackError> {
         let limit = usize::try_from(limit).unwrap_or(usize::MAX);
         Ok(self
-            .ledger()
-            .map(|l| l.events.iter().take(limit).cloned().collect())
+            .read(|l| l.events.iter().take(limit).cloned().collect())
+            .await
             .unwrap_or_default())
     }
 
     async fn attachment_by_key(&mut self, key: &[u8]) -> Result<Option<AttachmentRow>, StackError> {
-        Ok(self.ledger().and_then(|l| {
-            l.attachments
-                .iter()
-                .find(|a| a.idempotency_key == key)
-                .cloned()
-        }))
+        Ok(self
+            .read(|l| {
+                l.attachments
+                    .iter()
+                    .find(|a| a.idempotency_key == key)
+                    .cloned()
+            })
+            .await
+            .flatten())
     }
 
     async fn insert(
@@ -169,14 +187,21 @@ impl LedgerTx for MemoryTx {
         checkpoint: &StoredCheckpoint,
     ) -> Result<(), StackError> {
         self.own(event.scope())?;
-        let len = self.ledger().map_or(0, |l| l.events.len() as u64);
+        let (len, key_taken) = self
+            .read(|ledger| {
+                (
+                    ledger.events.len() as u64,
+                    event
+                        .idempotency_key()
+                        .is_some_and(|key| ledger.by_key.contains_key(key)),
+                )
+            })
+            .await
+            .unwrap_or_default();
         if event.sequence() != len || checkpoint.tree_size != len + 1 {
             return Err(lost_race("(scope, sequence)"));
         }
-        if event
-            .idempotency_key()
-            .is_some_and(|key| self.ledger().is_some_and(|l| l.by_key.contains_key(key)))
-        {
+        if key_taken {
             return Err(lost_race("the idempotency key"));
         }
         if event.canonical_event_hash().is_none()
@@ -192,11 +217,15 @@ impl LedgerTx for MemoryTx {
 
     async fn insert_attachment(&mut self, row: &AttachmentRow) -> Result<(), StackError> {
         self.own(row.event.scope())?;
-        if self.ledger().is_some_and(|l| {
-            l.attachments
-                .iter()
-                .any(|a| a.idempotency_key == row.idempotency_key)
-        }) {
+        if self
+            .read(|l| {
+                l.attachments
+                    .iter()
+                    .any(|a| a.idempotency_key == row.idempotency_key)
+            })
+            .await
+            .unwrap_or(false)
+        {
             return Err(lost_race("the attachment key"));
         }
         self.pending.attachment = Some(row.clone());
@@ -215,7 +244,8 @@ impl LedgerTx for MemoryTx {
     async fn commit(mut self: Box<Self>) -> Result<(), StackError> {
         let key = self.key.clone();
         let pending = std::mem::take(&mut self.pending);
-        let ledger = self.guard.ledgers.entry(key).or_default();
+        let mut committed = self.state.lock().await;
+        let ledger = committed.ledgers.entry(key).or_default();
         if let Some((event, checkpoint)) = pending.write {
             if let Some(key) = event.idempotency_key() {
                 ledger.by_key.insert(key.to_vec(), ledger.events.len());
@@ -229,6 +259,13 @@ impl LedgerTx for MemoryTx {
         }
         Ok(())
     }
+}
+
+fn stored_hash(event: &StoredEvent) -> Result<[u8; 32], StackError> {
+    event
+        .canonical_event_hash()
+        .copied()
+        .ok_or_else(|| StackError::internal("committed event has no canonical hash"))
 }
 
 /// The attachments below `tree_size` up to and including the one whose body first crosses the
@@ -254,10 +291,78 @@ impl ScopedLedgers for MemoryScopedLedgers {
     async fn begin(&self, ledger: &LedgerScope) -> Result<Box<dyn LedgerTx>, StackError> {
         let key = self.key(ledger)?;
         Ok(Box::new(MemoryTx {
-            guard: Arc::clone(&self.state).lock_owned().await,
+            _writer_guard: Arc::clone(&self.writer).lock_owned().await,
+            state: Arc::clone(&self.state),
             key,
             pending: Pending::default(),
         }))
+    }
+
+    async fn ledger_head(&self, ledger: &LedgerScope) -> Result<Option<LedgerHeadRow>, StackError> {
+        self.read(ledger, |ledger| {
+            ledger
+                .events
+                .last()
+                .map(|event| {
+                    let checkpoint = ledger
+                        .checkpoints
+                        .last()
+                        .ok_or_else(|| StackError::internal("committed event has no checkpoint"))?;
+                    Ok(LedgerHeadRow {
+                        checkpoint: checkpoint.into(),
+                        last_event_hash: stored_hash(event)?,
+                    })
+                })
+                .transpose()
+        })
+        .await?
+        .transpose()
+        .map(Option::flatten)
+    }
+
+    async fn events_after(
+        &self,
+        ledger: &LedgerScope,
+        after: u64,
+        limit: u32,
+    ) -> Result<Option<CheckpointedPage>, StackError> {
+        self.read(ledger, |ledger| {
+            let index = usize::try_from(after).unwrap_or(usize::MAX);
+            let Some(events) = ledger.events.get(index..) else {
+                return Ok(None);
+            };
+            let start = if index == 0 {
+                None
+            } else {
+                Some(
+                    ledger
+                        .checkpoints
+                        .get(index - 1)
+                        .ok_or_else(|| StackError::internal("committed prefix has no checkpoint"))?
+                        .into(),
+                )
+            };
+            let events = events
+                .iter()
+                .take(limit as usize)
+                .enumerate()
+                .map(|(offset, event)| {
+                    let checkpoint = ledger
+                        .checkpoints
+                        .get(index + offset)
+                        .ok_or_else(|| StackError::internal("committed event has no checkpoint"))?;
+                    Ok(CheckpointedEvent {
+                        sequence: event.sequence(),
+                        canonical_event: event.canonical_event().to_vec(),
+                        canonical_event_hash: stored_hash(event)?,
+                        checkpoint: checkpoint.into(),
+                    })
+                })
+                .collect::<Result<_, StackError>>()?;
+            Ok(Some(CheckpointedPage { start, events }))
+        })
+        .await?
+        .unwrap_or_else(|| Ok((after == 0).then(CheckpointedPage::default)))
     }
 
     async fn head_checkpoint(

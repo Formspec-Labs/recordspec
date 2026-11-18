@@ -19,7 +19,7 @@
 //! Ordinary event producers post through [`SubstrateClient::append_event`]
 //! (`POST /v1/scopes/{scope}/events`). The Trellis admission composition root
 //! (`trellis-server::composition::default_admission_policy`) routes the request
-//! to one of two adapters before append commits:
+//! to a registered adapter before append commits:
 //!
 //! - **WOS provenance** — construct via [`wos_provenance_append_request`]
 //!   (or the [`SubstrateClientExt::append_wos_provenance`] helper). The JSON
@@ -117,26 +117,6 @@ pub const FORMSPEC_APPEND_EVENT_TYPE_LITERAL: &str = "substrate.append.response_
 pub const FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH_EVENT_TYPE_LITERAL: &str =
     "substrate.append.response_action_session_op_batch";
 
-#[must_use]
-fn trellis_admitted_event_type_openapi_schema() -> RefOr<Schema> {
-    let mut values: Vec<String> = wos_ext::WOS_CANONICAL_EVENT_LITERALS
-        .iter()
-        .copied()
-        .map(str::to_string)
-        .collect();
-    values.push(wos_ext::WOS_NATIVE_PROVENANCE_EVENT_LITERAL.to_string());
-    values.push(FORMSPEC_APPEND_EVENT_TYPE_LITERAL.to_string());
-    values.push(FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH_EVENT_TYPE_LITERAL.to_string());
-    values.sort();
-    ObjectBuilder::new()
-        .schema_type(SchemaType::new(Type::String))
-        .enum_values(Some(values))
-        .description(Some(
-            "Admitted Trellis append literals: `wos-events` substrate registry plus Formspec appends.",
-        ))
-        .into()
-}
-
 /// Maximum provider body bytes inspected for a closed diagnostic code.
 /// No provider title, detail, context, or raw body enters the returned error.
 const HTTP_ERROR_DIAGNOSTIC_BYTES: usize = 8 * 1024;
@@ -157,6 +137,15 @@ async fn provider_http_error(
         bytes.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
     }
     let code = std::str::from_utf8(&bytes).map_or("other", source_diagnostics::public_code);
+    if label == "append"
+        && status == reqwest::StatusCode::CONFLICT
+        && code == AUTHORITY_HEAD_MOVED_CODE
+    {
+        return StackError::conflict_with_code(
+            AUTHORITY_HEAD_MOVED_CODE,
+            "authority ledger tree size changed",
+        );
+    }
     // Keep the existing diagnostic parser's shape with only closed, safe fields.
     let problem = format!(r#"{{"error_code":"{code}"}}"#);
     source_diagnostics::http_refusal(source_selected, status.as_u16(), &problem);
@@ -289,7 +278,6 @@ pub struct SubstrateAppendRequest {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SubstrateAppendBody {
-    #[schema(schema_with = trellis_admitted_event_type_openapi_schema)]
     pub event_type: String,
     pub idempotency_key: String,
     pub actor: AppendActor,
@@ -304,7 +292,24 @@ pub struct SubstrateAppendBody {
     /// so no address or credential travels. The reconcile lookup identity ignores it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_content: Option<source_content::SourceContentClaim>,
+    /// Required current tree size for a new authority append.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_tree_size"
+    )]
+    #[schema(value_type = u64)]
+    pub expected_tree_size: Option<u64>,
 }
+
+fn present_tree_size<'de, D: serde::Deserializer<'de>>(
+    decoder: D,
+) -> Result<Option<u64>, D::Error> {
+    u64::deserialize(decoder).map(Some)
+}
+
+/// Problem code for an authority append refused because the ledger advanced.
+pub const AUTHORITY_HEAD_MOVED_CODE: &str = "INFRA-4094";
 
 /// Maximum original bytes accepted by the protected attachment HTTP route.
 pub const ACCEPTED_ATTACHMENT_ORIGINAL_BYTES_LIMIT: usize = 1024 * 1024;
@@ -556,6 +561,7 @@ impl SubstrateAppendRequest {
             compute_context: self.compute_context.clone(),
             client_attestation: self.client_attestation.clone(),
             source_content: self.source_content.clone(),
+            expected_tree_size: None,
         }
     }
 
@@ -754,6 +760,13 @@ impl fmt::Debug for TrellisServiceClient {
     }
 }
 
+// A head contains one counter and three digests. An ordered row can carry a
+// complete append payload (including activation artifacts). Allow for JSON number
+// expansion when compact exponent notation is reserialized, plus row metadata.
+const LEDGER_HEAD_RESPONSE_BYTES: usize = 4 * 1024;
+const ORDERED_EVENT_RESPONSE_BYTES: usize =
+    4 * endpoints::APPEND_EVENT.max_request_bytes() + 4 * 1024;
+
 impl TrellisServiceClient {
     /// Creates a concrete Trellis service client.
     ///
@@ -774,6 +787,82 @@ impl TrellisServiceClient {
             http,
             token_provider: None,
         })
+    }
+
+    /// Reads the current ledger head. An empty ledger returns `None`.
+    ///
+    /// # Errors
+    /// Returns an error if the provider refuses the read or the response is invalid.
+    pub async fn ledger_head(
+        &self,
+        scope: &LedgerScope,
+    ) -> Result<Option<endpoints::LedgerHead>, StackError> {
+        let called = self.target().call(
+            endpoints::LEDGER_HEAD,
+            &endpoints::ScopePath {
+                scope: scope.to_string(),
+            },
+            &Absent,
+            &Absent,
+            None,
+        );
+        let bytes = self
+            .bytes_get_inner(
+                called,
+                scope,
+                "ledger head",
+                Some(("application/json", LEDGER_HEAD_RESPONSE_BYTES)),
+            )
+            .await?;
+        let view: endpoints::LedgerHeadView = serde_json::from_slice(&bytes)
+            .map_err(|_| StackError::unavailable("ledger head response invalid"))?;
+        Ok(view.head)
+    }
+
+    /// Reads the next committed events after a tree size.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid page size, a refused read, or an invalid response.
+    pub async fn events_after(
+        &self,
+        scope: &LedgerScope,
+        after: u64,
+        limit: u32,
+    ) -> Result<endpoints::OrderedEventsPage, StackError> {
+        let query = endpoints::OrderedEventsQuery { after, limit };
+        query.validate()?;
+        let called = self.target().call(
+            endpoints::ORDERED_EVENTS,
+            &endpoints::ScopePath {
+                scope: scope.to_string(),
+            },
+            &query,
+            &Absent,
+            None,
+        );
+        let max_bytes = LEDGER_HEAD_RESPONSE_BYTES + limit as usize * ORDERED_EVENT_RESPONSE_BYTES;
+        let bytes = self
+            .bytes_get_inner(
+                called,
+                scope,
+                "ordered events",
+                Some(("application/json", max_bytes)),
+            )
+            .await?;
+        let page: endpoints::OrderedEventsPage = serde_json::from_slice(&bytes)
+            .map_err(|_| StackError::unavailable("ordered events response invalid"))?;
+        if page.events.len() > limit as usize
+            || page
+                .events
+                .iter()
+                .enumerate()
+                .any(|(offset, event)| after.checked_add(offset as u64) != Some(event.sequence))
+        {
+            return Err(StackError::unavailable(
+                "ordered events response is not a contiguous page",
+            ));
+        }
+        Ok(page)
     }
 
     /// Sends original attachment bytes through the server's selected protection path.
@@ -929,22 +1018,43 @@ impl TrellisServiceClient {
 }
 
 impl TrellisServiceClient {
+    /// Appends an authority event only if the ledger still has the expected tree size.
+    ///
+    /// A committed replay returns its original receipt even if the ledger has advanced.
+    ///
+    /// # Errors
+    /// Returns a conflict with [`AUTHORITY_HEAD_MOVED_CODE`] when the ledger has moved.
+    /// Transport, admission, and changed-content conflicts retain their usual errors.
+    pub async fn append_event_if_tree_size(
+        &self,
+        request: SubstrateAppendRequest,
+        expected_tree_size: u64,
+    ) -> Result<SubstrateAppendResult, StackError> {
+        self.send_event_append(request, Some(expected_tree_size))
+            .await
+    }
+
     async fn send_event_append(
         &self,
         request: SubstrateAppendRequest,
+        expected_tree_size: Option<u64>,
     ) -> Result<SubstrateAppendResult, StackError> {
         use source_diagnostics::{Outcome, Stage};
         let source_selected = request.source_content.is_some();
         source_diagnostics::mark(source_selected, Stage::Input, Outcome::Enter);
         source_diagnostics::observed(source_selected, Stage::Input, request.validate())?;
         source_diagnostics::mark(source_selected, Stage::Request, Outcome::Enter);
+        let body = SubstrateAppendBody {
+            expected_tree_size,
+            ..request.body()
+        };
         let called = self.target().call(
             endpoints::APPEND_EVENT,
             &endpoints::ScopePath {
                 scope: request.scope.to_string(),
             },
             &Absent,
-            &request.body(),
+            &body,
             Some(&request.idempotency_key),
         );
         let outgoing = self
@@ -1021,7 +1131,7 @@ impl SubstrateClient for TrellisServiceClient {
         &self,
         request: SubstrateAppendRequest,
     ) -> Result<SubstrateAppendResult, StackError> {
-        self.send_event_append(request).await
+        self.send_event_append(request, None).await
     }
 
     async fn head_bundle(&self, scope: &LedgerScope) -> Result<Vec<u8>, StackError> {
@@ -1146,8 +1256,13 @@ impl TrellisServiceClient {
             &Absent,
             None,
         );
-        self.bytes_get_inner(called, scope, "pinned bundle", Some(max_bytes))
-            .await
+        self.bytes_get_inner(
+            called,
+            scope,
+            "pinned bundle",
+            Some(("application/zip", max_bytes)),
+        )
+        .await
     }
 
     async fn bytes_get(
@@ -1164,7 +1279,7 @@ impl TrellisServiceClient {
         called: Result<reqwest::RequestBuilder, CallError>,
         scope: &LedgerScope,
         label: &str,
-        max_bytes: Option<usize>,
+        bound: Option<(&str, usize)>,
     ) -> Result<Vec<u8>, StackError> {
         let mut response = self
             .authorized(called, scope)
@@ -1177,7 +1292,7 @@ impl TrellisServiceClient {
         if !response.status().is_success() {
             return Err(provider_http_error(response, label, false).await);
         }
-        if let Some(limit) = max_bytes {
+        if let Some((expected_type, limit)) = bound {
             let mut types = response
                 .headers()
                 .get_all(reqwest::header::CONTENT_TYPE)
@@ -1190,12 +1305,15 @@ impl TrellisServiceClient {
                         .next()
                         .unwrap_or_default()
                         .trim()
-                        .eq_ignore_ascii_case("application/zip")
+                        .eq_ignore_ascii_case(expected_type)
                 })
             {
-                return Err(StackError::unavailable("trellis bundle media type refused"));
+                return Err(StackError::unavailable(format!(
+                    "trellis {label} media type refused"
+                )));
             }
-            let refused = || StackError::unavailable("trellis bundle byte limit exceeded");
+            let refused =
+                || StackError::unavailable(format!("trellis {label} byte limit exceeded"));
             if response
                 .content_length()
                 .is_some_and(|length| length > limit as u64)
@@ -1203,17 +1321,15 @@ impl TrellisServiceClient {
                 return Err(refused());
             }
             let mut bytes = Vec::new();
-            while let Some(chunk) = response
-                .chunk()
-                .await
-                .map_err(|_| StackError::unavailable("trellis bundle response read failed"))?
-            {
+            while let Some(chunk) = response.chunk().await.map_err(|_| {
+                StackError::unavailable(format!("trellis {label} response read failed"))
+            })? {
                 if chunk.len() > limit - bytes.len() {
                     return Err(refused());
                 }
-                bytes
-                    .try_reserve_exact(chunk.len())
-                    .map_err(|_| StackError::unavailable("trellis bundle allocation refused"))?;
+                bytes.try_reserve_exact(chunk.len()).map_err(|_| {
+                    StackError::unavailable(format!("trellis {label} allocation refused"))
+                })?;
                 bytes.extend_from_slice(&chunk);
             }
             return Ok(bytes);
@@ -1507,6 +1623,137 @@ mod tests {
 
         assert_eq!(result.event_id, "evt_1");
         assert_eq!(result.sequence, 7);
+    }
+
+    #[tokio::test]
+    async fn ledger_reads_use_declared_paths_and_page_cursor() {
+        let endpoint = test_server(|request| {
+            assert!(request.starts_with(&format!(
+                "GET /v1/scopes/{}/head ",
+                crate::test_ledger("authority-sample")
+            )));
+            response("application/json", r#"{"head":null}"#)
+        });
+        let ledger = crate::test_ledger("authority-sample");
+        let client = TrellisServiceClient::new(TrellisServiceClientConfig::new(endpoint)).unwrap();
+        assert_eq!(client.ledger_head(&ledger).await.unwrap(), None);
+
+        let endpoint = test_server(|request| {
+            assert!(request.starts_with(&format!(
+                "GET /v1/scopes/{}/events/ordered?after=7&limit=2 ",
+                crate::test_ledger("authority-sample")
+            )));
+            response(
+                "application/json",
+                r#"{"startTreeHeadHash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","events":[]}"#,
+            )
+        });
+        let client = TrellisServiceClient::new(TrellisServiceClientConfig::new(endpoint)).unwrap();
+        let page = client.events_after(&ledger, 7, 2).await.unwrap();
+        assert_eq!(
+            page.start_tree_head_hash,
+            format!("sha256:{}", "a".repeat(64))
+        );
+        assert!(page.events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn ledger_reads_require_explicit_nullable_members() {
+        let ledger = crate::test_ledger("authority-sample");
+        for (body, valid) in [(r#"{"head":null}"#, true), ("{}", false)] {
+            let endpoint = test_server(move |_| response("application/json", body));
+            let client =
+                TrellisServiceClient::new(TrellisServiceClientConfig::new(endpoint)).unwrap();
+            assert_eq!(
+                client.ledger_head(&ledger).await.ok(),
+                valid.then_some(None),
+                "{body}"
+            );
+        }
+
+        let row = serde_json::json!({
+            "sequence": 0, "eventType": "example", "payload": null,
+            "canonicalEventHash": "sha256:example", "priorEventHash": null,
+            "checkpointRef": "example", "treeHeadHash": "sha256:example"
+        });
+        for missing in [None, Some("payload"), Some("priorEventHash")] {
+            let mut row = row.clone();
+            if let Some(field) = missing {
+                row.as_object_mut().unwrap().remove(field);
+            }
+            let body = serde_json::json!({"startTreeHeadHash":"sha256:example","events":[row]});
+            let endpoint = test_server(move |_| response("application/json", &body.to_string()));
+            let client =
+                TrellisServiceClient::new(TrellisServiceClientConfig::new(endpoint)).unwrap();
+            let result = client.events_after(&ledger, 0, 1).await;
+            if missing.is_none() {
+                let event = &result.unwrap().events[0];
+                assert_eq!(
+                    (event.payload.clone(), event.prior_event_hash.clone()),
+                    (None, None)
+                );
+            } else {
+                assert!(result.is_err(), "accepted missing {missing:?}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn head_refuses_an_oversized_chunked_body_before_its_unfinished_tail() {
+        let ledger = crate::test_ledger("authority-sample");
+        let endpoint = test_server(|_| {
+            // A chunk crosses the head bound. Without a streaming bound the unfinished tail fails
+            // as a transport error instead.
+            let chunk = " ".repeat(8192);
+            format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ntransfer-encoding: chunked\r\n\r\n{:x}\r\n{chunk}\r\n",
+                chunk.len()
+            )
+        });
+        let client = TrellisServiceClient::new(TrellisServiceClientConfig::new(endpoint)).unwrap();
+        let error = client.ledger_head(&ledger).await.unwrap_err();
+        assert!(error.title().contains("byte limit"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn ordered_page_refuses_an_oversized_body_before_reading_it() {
+        let ledger = crate::test_ledger("authority-sample");
+        let endpoint = test_server(|_| {
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 1073741824\r\n\r\n".into()
+        });
+        let client = TrellisServiceClient::new(TrellisServiceClientConfig::new(endpoint)).unwrap();
+        let error = client.events_after(&ledger, 0, 32).await.unwrap_err();
+        assert!(error.title().contains("byte limit"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn conditional_append_sends_tree_size_and_preserves_the_typed_refusal() {
+        let endpoint = test_server(|request| {
+            let body: serde_json::Value = serde_json::from_str(request_body(&request)).unwrap();
+            assert_eq!(body["expectedTreeSize"], 7);
+            let problem = r#"{"error_code":"INFRA-4094","title":"provider-private-detail"}"#;
+            format!(
+                "HTTP/1.1 409 Conflict\r\ncontent-type: application/problem+json\r\ncontent-length: {}\r\n\r\n{problem}",
+                problem.len(),
+            )
+        });
+        let client = TrellisServiceClient::new(TrellisServiceClientConfig::new(endpoint)).unwrap();
+        let request = SubstrateAppendRequest::new_json(
+            crate::test_ledger("authority-sample"),
+            "trellis.authority.grant.v1",
+            "conditional-key",
+            AppendActor::service("producer"),
+            serde_json::json!({}),
+            ComputeContext::no_delegated_compute("producer"),
+        )
+        .unwrap();
+        let error = client
+            .append_event_if_tree_size(request, 7)
+            .await
+            .unwrap_err();
+        assert_eq!(error.status(), reqwest::StatusCode::CONFLICT);
+        assert_eq!(error.code().as_str(), AUTHORITY_HEAD_MOVED_CODE);
+        assert!(!error.title().contains("provider-private-detail"));
     }
 
     #[tokio::test]

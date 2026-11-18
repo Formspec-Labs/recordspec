@@ -131,7 +131,7 @@ Normative Phase 2+ operator obligations. Custody models, posture-transition audi
 | **Part IV — Sidecars** | |
 | 23. Respondent History Sidecar | Stable paths, item keys, amendment cycles, migration outcomes. |
 | 24. Workflow Governance Sidecar | Operational workflow state vs canonical facts; WOS `custodyHook` path. |
-| 25. Grants and Revocations as Canonical Facts | Evaluators are derived; grants/revocations are ledger events. |
+| 25. Grants and Revocations as Canonical Facts | Per-contract authority and decision ledgers, conditional append, ordered reads with starting hashes, and erasure. |
 | **Part V — Witnessing and Monitoring (Phase 4 Preview)** | |
 | 26. Monitoring and Witnessing Seams | STH publication cadence; equivocation-detection primitives; implementation deferred. |
 | **Part VI — Assurance** | |

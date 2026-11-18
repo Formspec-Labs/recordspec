@@ -139,6 +139,10 @@ pub(crate) async fn admit(
     scope: LedgerScope,
     request: &mut Request,
 ) -> Result<String, StackError> {
+    state.admission_policy.check_ledger_event(
+        scope.as_bytes(),
+        trellis_service_client::ACCEPTED_ATTACHMENT_EVENT_TYPE_LITERAL,
+    )?;
     let raw = to_bytes(
         std::mem::replace(request.body_mut(), Body::empty()),
         RAW_CAP,
@@ -187,6 +191,7 @@ pub(crate) async fn admit(
         compute_context: ComputeContext::no_delegated_compute(&wire.actor.subject),
         client_attestation: None,
         source_content: None,
+        expected_tree_size: None,
     };
     authorization.validate()?;
     let permit = crate::auth::authorize_action(
@@ -222,11 +227,11 @@ pub(crate) async fn admit(
         "trellis-server",
         sensitivity,
     );
-    // The gate prefixes the scope key; `native_replay_call` reads the route at index 2.
+    // The gate prefixes the scope key; the replay driver reads the route at index 2.
     let partition = serde_json::to_string(&(
         permit.principal,
         scope.as_str(),
-        "accepted-attachment",
+        crate::auth::ATTACHMENT_APPEND,
         policy_fingerprint,
     ))
     .map_err(|_| StackError::internal("attachment replay partition encoding failed"))?;

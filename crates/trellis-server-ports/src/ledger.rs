@@ -20,6 +20,48 @@ use stack_common_scope::Scope;
 pub use trellis_service_client::{LedgerScope, validate_ledger_id};
 use trellis_types::{StoredCheckpoint, StoredEvent};
 
+/// The signed checkpoint and digest for one committed ledger size.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LedgerCheckpoint {
+    pub tree_size: u64,
+    pub digest: [u8; 32],
+    pub signed: Vec<u8>,
+}
+
+impl From<&StoredCheckpoint> for LedgerCheckpoint {
+    fn from(checkpoint: &StoredCheckpoint) -> Self {
+        Self {
+            tree_size: checkpoint.tree_size,
+            digest: checkpoint.digest,
+            signed: checkpoint.checkpoint.clone(),
+        }
+    }
+}
+
+/// A ledger head and the hash of the event that produced it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LedgerHeadRow {
+    pub checkpoint: LedgerCheckpoint,
+    pub last_event_hash: [u8; 32],
+}
+
+/// The retained event payload and its checkpoint, from one committed read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CheckpointedEvent {
+    pub sequence: u64,
+    pub canonical_event: Vec<u8>,
+    pub canonical_event_hash: [u8; 32],
+    pub checkpoint: LedgerCheckpoint,
+}
+
+/// A committed starting checkpoint and the next contiguous events.
+#[derive(Clone, Debug, Default)]
+pub struct CheckpointedPage {
+    /// Absent for the empty prefix at tree size zero.
+    pub start: Option<LedgerCheckpoint>,
+    pub events: Vec<CheckpointedEvent>,
+}
+
 /// The checkpoint an export ends at.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExportAt {
@@ -131,6 +173,20 @@ pub trait ScopedLedgers: Send + Sync {
     /// # Errors
     /// [`StackError::unavailable`] when the store cannot open the unit of work.
     async fn begin(&self, ledger: &LedgerScope) -> Result<Box<dyn LedgerTx>, StackError>;
+
+    /// Reads the head and its event hash together. An absent or empty ledger returns `None`.
+    async fn ledger_head(&self, ledger: &LedgerScope) -> Result<Option<LedgerHeadRow>, StackError>;
+
+    /// Reads the starting checkpoint and next committed events without the append lock.
+    ///
+    /// The tree size `after` is also the first unread sequence. A missing nonzero prefix
+    /// returns `None`. The empty prefix at zero always exists.
+    async fn events_after(
+        &self,
+        ledger: &LedgerScope,
+        after: u64,
+        limit: u32,
+    ) -> Result<Option<CheckpointedPage>, StackError>;
 
     /// The head checkpoint of `ledger`, if it has events. One row.
     async fn head_checkpoint(

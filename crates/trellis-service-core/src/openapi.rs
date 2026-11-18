@@ -1,6 +1,65 @@
 use utoipa::openapi::tag::TagBuilder;
 use utoipa::openapi::{InfoBuilder, LicenseBuilder, OpenApi, OpenApiBuilder, ServerBuilder};
 
+use serde_json::json;
+use trellis_service_client::{
+    ACCEPTED_ATTACHMENT_EVENT_TYPE_LITERAL, COMPLETION_EVENT, SubstrateAppendBody,
+};
+use utoipa::PartialSchema;
+
+use crate::adapters::{AdmissionRouter, EventTypeCatalog};
+
+/// Adds the append vocabulary from the registered event specifications.
+pub(crate) fn append_schema(
+    catalog: &EventTypeCatalog,
+    admission: &AdmissionRouter,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut schema =
+        serde_json::to_value(SubstrateAppendBody::schema()).expect("append body schema serializes");
+    let literals: Vec<_> = catalog
+        .entries()
+        .filter(|entry| {
+            !matches!(
+                entry.event_type.as_str(),
+                COMPLETION_EVENT | ACCEPTED_ATTACHMENT_EVENT_TYPE_LITERAL
+            )
+        })
+        .map(|entry| entry.event_type.as_str())
+        .collect();
+    schema["properties"]["eventType"]["enum"] = serde_json::json!(literals);
+    let mut schemas = serde_json::Map::new();
+    let contract_events: Vec<_> = catalog
+        .entries()
+        .filter(|entry| admission.is_contract_event(&entry.event_type))
+        .collect();
+    if !contract_events.is_empty() {
+        let event_types: Vec<_> = contract_events
+            .iter()
+            .map(|entry| &entry.event_type)
+            .collect();
+        let mut constraints = vec![json!({
+            "if": { "required": ["expectedTreeSize"] },
+            "then": { "properties": { "eventType": { "enum": event_types } } }
+        })];
+        constraints.extend(contract_events.into_iter().map(|entry| {
+            json!({
+                "if": {
+                    "properties": { "eventType": { "const": entry.event_type } },
+                    "required": ["eventType"]
+                },
+                "then": { "properties": { "payload": { "$ref": entry.schema_ref.as_str() } } }
+            })
+        }));
+        schema["allOf"] = json!([{ "$ref": "#/components/schemas/ContractAppendConstraints" }]);
+        schemas.insert(
+            "ContractAppendConstraints".to_owned(),
+            json!({ "allOf": constraints }),
+        );
+    }
+    schemas.insert("SubstrateAppendBody".to_owned(), schema);
+    schemas
+}
+
 /// The document skeleton every route declaration is added to.
 pub(crate) fn base_document() -> OpenApi {
     OpenApiBuilder::new()
@@ -27,12 +86,6 @@ pub(crate) fn base_document() -> OpenApi {
 #[cfg(test)]
 mod tests {
     use std::fs;
-
-    use wos_events::{WOS_CANONICAL_EVENT_LITERALS, WOS_NATIVE_PROVENANCE_EVENT_LITERAL};
-
-    use crate::test_adapters::{
-        FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH, FORMSPEC_RESPONSE_SUBMITTED,
-    };
 
     #[test]
     fn openapi_append_contract_matches_json_schema() {
@@ -72,16 +125,6 @@ mod tests {
             openapi_sorted, schema_sorted,
             "OpenAPI eventType enum must match trellis-http-api.schema.json EventType"
         );
-        for event_type in schema_events {
-            let literal = event_type.as_str().expect("event type literal");
-            assert!(
-                WOS_CANONICAL_EVENT_LITERALS.contains(&literal)
-                    || literal == WOS_NATIVE_PROVENANCE_EVENT_LITERAL
-                    || literal == FORMSPEC_RESPONSE_SUBMITTED
-                    || literal == FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH,
-                "schema EventType enum must only list admitted server literals"
-            );
-        }
     }
 
     #[test]

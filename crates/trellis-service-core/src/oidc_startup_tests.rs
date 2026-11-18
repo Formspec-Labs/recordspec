@@ -1046,6 +1046,7 @@ async fn generated_deployment_completion_grants_and_real_append_revocation() {
             scope: ledger.clone(),
             event_type: signing_body.event_type,
             idempotency_key: signing_body.idempotency_key,
+            expected_tree_size: None,
             payload: signing_body.payload,
             client_attestation: None,
         })
@@ -1193,4 +1194,43 @@ async fn generated_deployment_completion_grants_and_real_append_revocation() {
     eprintln!(
         "fstd6q generated native: correct append201, exporter201, wrong actor403, kind403, payload403, OAuthscope403, tenant404, ledger403, publisher403/sign0, completion201/sign1, revoked read200/append403/completion403/sign1"
     );
+}
+
+#[tokio::test]
+async fn t1_authority_grants_bind_the_service_and_allow_unlisted_payload_principals() {
+    let mut files = Files::new();
+    files.grants["grants"] = json!([
+        {"principal":"internal-producer","scope":scope_a(),"ledger":"authority-sample","action":"append",
+          "actors":[{"kind":"service","subject":"authority-producer"}]},
+        {"principal":"internal-producer","scope":scope_a(),"ledger":"authority-sample","action":"read"},
+        {"principal":"internal-producer","scope":scope_a(),"ledger":"authority-decisions-sample","action":"append",
+          "actors":[{"kind":"service","subject":"authority-producer"}]},
+        {"principal":"internal-producer","scope":scope_a(),"ledger":"authority-decisions-sample","action":"read"}
+    ]);
+    files.save();
+    let app = files.app(Arc::new(ProtocolHttp::new()));
+    let token = sign(&claims());
+    let cases = super::ledger_read_tests::authority_cases();
+    for (index, field) in [(0, "actor"), (3, "principal")] {
+        let case = &cases[index];
+        let path = format!("/v1/scopes/{}/events", case["ledger"].as_str().unwrap());
+        let mut body = super::ledger_read_tests::body_for(case, &format!("oidc-authority-{index}"));
+        body["payload"][field] = json!("person:another-human");
+        let send = |body: &Value| post_request_bearer(&path, serde_json::to_vec(body).unwrap(), &token);
+        assert_eq!(
+            app.clone().oneshot(send(&body)).await.unwrap().status(),
+            StatusCode::CREATED,
+        );
+        body["actor"]["subject"] = json!("different-service");
+        assert_eq!(
+            app.clone().oneshot(send(&body)).await.unwrap().status(),
+            StatusCode::FORBIDDEN,
+        );
+        let head = format!("/v1/scopes/{}/head", case["ledger"].as_str().unwrap());
+        let read = crate::test_support::scoped_request("GET", &head)
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(app.clone().oneshot(read).await.unwrap().status(), StatusCode::OK);
+    }
 }

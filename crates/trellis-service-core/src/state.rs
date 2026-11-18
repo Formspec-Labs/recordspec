@@ -16,7 +16,6 @@ use axum::http::{HeaderMap, StatusCode};
 use stack_common_auth::JwtVerifier;
 use stack_common_auth::{AccessTokenVerifier, VerifiedAccessIdentity};
 use stack_common_error::{ErrorCode, StackError};
-use stack_common_http::idempotency::IdempotencyCall;
 use stack_common_idempotency::{HttpReplayScope, InMemoryHttpReplayStore, ScopedHttpReplayStore};
 use stack_common_object_store::S3ObjectConfig;
 use stack_common_scope::{DeploymentConfig, ScopeKey};
@@ -84,7 +83,7 @@ pub struct TrellisServerState {
     pub(crate) external_attachment_admission:
         Arc<dyn trellis_server_ports::ExternalAttachmentAdmission>,
     pub(crate) external_attachment_random: Arc<dyn integrity_seam::SecureRandom>,
-    pub(crate) admission_policy: Arc<dyn EventAdmissionPolicy<Error = StackError>>,
+    pub(crate) admission_policy: crate::AdmissionRouter,
     pub(crate) authorizer: Arc<dyn ScopeAuthorizer<Error = StackError>>,
     /// The Ledger purpose key: signs events and checkpoints.
     pub(crate) signing_key: ServerSigningKey,
@@ -291,7 +290,8 @@ impl TrellisServerState {
         mut self,
         admission_policy: Arc<dyn EventAdmissionPolicy<Error = StackError>>,
     ) -> Self {
-        self.admission_policy = admission_policy;
+        self.admission_policy
+            .replace_payload_policy(admission_policy);
         self
     }
 
@@ -619,26 +619,6 @@ fn env_optional(name: &str) -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-}
-
-/// Whether the trusted partition names the accepted-attachment route.
-///
-/// The gate mints the partition as `{scope key}:{principal}` (never from a request header), and
-/// the accepted-attachment admission's principal is the JSON tuple
-/// `(principal, ledger scope, "accepted-attachment", policy fingerprint)`.
-pub(crate) fn native_replay_call(call: &IdempotencyCall) -> bool {
-    call.replay_partition
-        .as_deref()
-        .and_then(|value| value.split_once(':'))
-        .and_then(|(_, principal)| serde_json::from_str::<serde_json::Value>(principal).ok())
-        .and_then(|value| {
-            value
-                .as_array()
-                .and_then(|values| values.get(2))
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-        })
-        .is_some_and(|route| route == "accepted-attachment")
 }
 
 pub(crate) struct NativeReplayScope(pub(crate) String);

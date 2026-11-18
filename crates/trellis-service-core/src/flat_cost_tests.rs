@@ -23,6 +23,7 @@ fn append_command(scope: &str, key: &str) -> append::AppendCommand {
         scope: ledger(scope),
         event_type: body.event_type,
         idempotency_key: body.idempotency_key,
+        expected_tree_size: None,
         payload: body.payload,
         client_attestation: body.client_attestation,
     }

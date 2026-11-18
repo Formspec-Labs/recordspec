@@ -133,6 +133,14 @@ class TestCheckHttpApiSchema(unittest.TestCase):
         self.module.check_openapi_operations(self.schema, openapi, errors)
         self.assertTrue(any("HTTP inventory missing seal_completion" in error for error in errors))
 
+    def test_ledger_success_schemas_are_declared_in_the_normative_document(self) -> None:
+        inventory = self.schema["x-trellis-http-api"]["operations"]
+        root_refs = {variant["$ref"] for variant in self.schema["oneOf"]}
+        for operation_id in ("getLedgerHead", "getOrderedEvents"):
+            operation = next(op for op in inventory if op["operationId"] == operation_id)
+            success = next(response for response in operation["responses"] if response["status"] == 200)
+            self.assertIn(success.get("schemaRef"), root_refs, operation_id)
+
     def test_given_openapi_operation_id_drift_when_check_openapi_operations_then_error_emitted(
         self,
     ) -> None:

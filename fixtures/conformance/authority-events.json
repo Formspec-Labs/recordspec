@@ -1,0 +1,87 @@
+[
+  {
+    "eventType": "trellis.authority.grant.v1",
+    "ledger": "authority-sample",
+    "payload": {
+      "tuple": {
+        "subject": "group:reviewers#member",
+        "relation": "viewer",
+        "object": "record:sample"
+      },
+      "actor": "person:operator",
+      "reason": "Synthetic fixture",
+      "command": "cmd-sample",
+      "contract": "sample"
+    }
+  },
+  {
+    "eventType": "trellis.authority.revocation.v1",
+    "ledger": "authority-sample",
+    "payload": {
+      "tuple": {
+        "subject": "group:reviewers#member",
+        "relation": "viewer",
+        "object": "record:sample"
+      },
+      "actor": "person:operator",
+      "reason": "Synthetic fixture",
+      "command": "cmd-sample",
+      "contract": "sample"
+    }
+  },
+  {
+    "eventType": "trellis.authority.activation.v1",
+    "ledger": "authority-sample",
+    "payload": {
+      "contract": "sample",
+      "policy": {
+        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "profileSet": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": 1
+      },
+      "builtAt": {
+        "treeSize": 0,
+        "treeHeadHash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "actor": "service:operator",
+      "artifacts": [
+        {
+          "path": "policy.txt",
+          "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "content": ""
+        }
+      ],
+      "configuration": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  {
+    "eventType": "trellis.authority.decision.v1",
+    "ledger": "authority-decisions-sample",
+    "payload": {
+      "contract": "sample",
+      "operation": "record.read",
+      "effect": "release",
+      "point": "download",
+      "principal": "person:reader",
+      "resource": "record:sample",
+      "policy": {
+        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "profileSet": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": 1
+      },
+      "entitlement": {
+        "source": "relationship",
+        "relation": "viewer"
+      },
+      "disclosure": [],
+      "observedAt": "2026-11-18T12:00:00Z",
+      "detailSchema": "https://example.invalid/decision.json",
+      "detail": {},
+      "attempt": "attempt-1",
+      "authorityPrefix": {
+        "treeSize": 0,
+        "treeHeadHash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    }
+  }
+]

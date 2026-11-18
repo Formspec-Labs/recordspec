@@ -22,6 +22,14 @@ use trellis_store_postgres_async::statements::READS;
 
 /// The index each read must walk.
 const INDEXES: &[(&str, &[&str])] = &[
+    (
+        "ledger head",
+        &["trellis_events_pkey", "trellis_checkpoints_pkey"],
+    ),
+    (
+        "events after",
+        &["trellis_events_pkey", "trellis_checkpoints_pkey"],
+    ),
     ("head checkpoint", &["trellis_checkpoints_pkey"]),
     ("checkpoint at", &["trellis_checkpoints_pkey"]),
     ("checkpoint by digest", &["trellis_checkpoints_digest_key"]),
@@ -107,7 +115,8 @@ async fn custom(db: &support::Database, name: &str, sql: &str) -> String {
         "checkpoint by digest" => query.bind(digest().to_vec()),
         // Row `g = 0`: ledger 0's event 0, which carries an attachment.
         "event by key" | "attachment by key" => query.bind(b"key-0".as_slice()),
-        "head checkpoint" | "last event" => query,
+        "events after" => query.bind(30_i64).bind(100_i64),
+        "ledger head" | "head checkpoint" | "last event" => query,
         other => panic!("no values for read `{other}`"),
     };
     let lines: Vec<String> = query.fetch_all(tx.conn()).await.unwrap();

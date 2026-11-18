@@ -8,6 +8,10 @@
 use std::sync::Arc;
 
 use stack_common_error::StackError;
+use trellis_admission_authority::{
+    AUTHORITY_LEDGER_PREFIX, AuthorityAdmissionPolicy, DECISIONS_LEDGER_PREFIX,
+    authority_event_type_specs, authority_literals, valid_contract_id,
+};
 use trellis_admission_formspec::accepted_attachment::{
     FormspecAttachmentAdmission, accepted_attachment_event_type_spec,
 };
@@ -50,31 +54,46 @@ pub(crate) use trellis_admission_formspec::{
 };
 
 pub(crate) fn admission_policy() -> Arc<dyn EventAdmissionPolicy<Error = StackError>> {
+    Arc::new(admission_router())
+}
+
+fn admission_router() -> AdmissionRouter {
     let literals = |specs: Vec<trellis_server_ports::EventTypeSpec>| {
         specs
             .into_iter()
             .map(|spec| spec.event_type)
             .collect::<Vec<_>>()
     };
-    Arc::new(
-        AdmissionRouter::new()
-            .register_for_literals(
-                Arc::new(WosEventAdmissionPolicy::new()),
-                literals(wos_event_type_specs()),
-            )
-            .register_for_literals(
-                Arc::new(FormspecAppendAdmissionPolicy::new()),
-                literals(formspec_event_type_specs()),
-            ),
-    )
+    AdmissionRouter::new()
+        .reserve_contract_ledgers(
+            AUTHORITY_LEDGER_PREFIX,
+            Arc::new(AuthorityAdmissionPolicy),
+            authority_literals(AUTHORITY_LEDGER_PREFIX),
+            valid_contract_id,
+        )
+        .reserve_contract_ledgers(
+            DECISIONS_LEDGER_PREFIX,
+            Arc::new(AuthorityAdmissionPolicy),
+            authority_literals(DECISIONS_LEDGER_PREFIX),
+            valid_contract_id,
+        )
+        .register_for_literals(
+            Arc::new(WosEventAdmissionPolicy::new()),
+            literals(wos_event_type_specs()),
+        )
+        .register_for_literals(
+            Arc::new(FormspecAppendAdmissionPolicy::new()),
+            literals(formspec_event_type_specs()),
+        )
 }
 
 pub(crate) fn adapters() -> ServerAdapters {
     let mut event_type_specs = wos_event_type_specs();
     event_type_specs.extend(formspec_event_type_specs());
+    event_type_specs.extend(authority_event_type_specs());
     event_type_specs.push(accepted_attachment_event_type_spec());
     ServerAdapters {
-        admission_policy: admission_policy(),
+        admission_policy: admission_router(),
         event_type_specs,
         external_attachment_admission: Arc::new(FormspecAttachmentAdmission),
         export_profile: Arc::new(WosExportProfile),

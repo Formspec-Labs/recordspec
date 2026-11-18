@@ -51,6 +51,7 @@ mod export;
 #[cfg(test)]
 mod export_vector;
 mod ledger;
+mod ledger_read;
 mod reconciliation;
 #[cfg(test)]
 mod repository_probes;
@@ -459,6 +460,9 @@ pub(crate) fn event_type_registry_cbor(catalog: &EventTypeCatalog) -> Result<Vec
 #[cfg(test)]
 mod tests {
     use stack_common_typeid::testing::fixture_minter;
+    mod ledger_read_tests {
+        include!("ledger_read_tests.rs");
+    }
     mod flat_cost_tests {
         include!("flat_cost_tests.rs");
     }
@@ -645,6 +649,7 @@ mod tests {
             scope: crate::test_support::ledger("case_123"),
             event_type: body.event_type.clone(),
             idempotency_key: body.idempotency_key.clone(),
+            expected_tree_size: None,
             payload: body.payload.clone(),
             client_attestation: body.client_attestation.clone(),
         };
@@ -689,6 +694,7 @@ mod tests {
             scope: crate::test_support::ledger("case_prior_hash"),
             event_type: first_body.event_type.clone(),
             idempotency_key: first_body.idempotency_key.clone(),
+            expected_tree_size: None,
             payload: first_body.payload.clone(),
             client_attestation: first_body.client_attestation.clone(),
         };
@@ -704,6 +710,7 @@ mod tests {
             scope: crate::test_support::ledger("case_prior_hash"),
             event_type: second_body.event_type.clone(),
             idempotency_key: second_body.idempotency_key.clone(),
+            expected_tree_size: None,
             payload: second_body.payload.clone(),
             client_attestation: second_body.client_attestation.clone(),
         };
@@ -1245,6 +1252,7 @@ mod tests {
             scope: crate::test_support::ledger("case_123"),
             event_type: body.event_type.clone(),
             idempotency_key: body.idempotency_key.clone(),
+            expected_tree_size: None,
             payload: body.payload.clone(),
             client_attestation: body.client_attestation.clone(),
         };
@@ -2209,6 +2217,7 @@ mod tests {
             ),
             client_attestation: None,
             source_content: None,
+            expected_tree_size: None,
         };
         serde_json::to_vec(&body).unwrap()
     }
@@ -2234,6 +2243,7 @@ mod tests {
             ),
             client_attestation: None,
             source_content: None,
+            expected_tree_size: None,
         };
         serde_json::to_vec(&body).unwrap()
     }
@@ -2312,6 +2322,7 @@ mod tests {
             ),
             client_attestation: None,
             source_content: None,
+            expected_tree_size: None,
         };
         serde_json::to_vec(&body).unwrap()
     }
@@ -2364,6 +2375,7 @@ mod tests {
             ),
             client_attestation: None,
             source_content: None,
+            expected_tree_size: None,
         };
         serde_json::to_vec(&body).unwrap()
     }
@@ -2418,6 +2430,7 @@ mod tests {
                 scope: crate::test_support::ledger("case_cap"),
                 event_type: body.event_type.clone(),
                 idempotency_key: body.idempotency_key.clone(),
+                expected_tree_size: None,
                 payload: body.payload.clone(),
                 client_attestation: body.client_attestation.clone(),
             }

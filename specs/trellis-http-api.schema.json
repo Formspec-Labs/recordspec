@@ -21,6 +21,12 @@
     },
     {
       "$ref": "#/$defs/AppendReconciliation"
+    },
+    {
+      "$ref": "trellis-server.openapi.json#/components/schemas/LedgerHeadView"
+    },
+    {
+      "$ref": "trellis-server.openapi.json#/components/schemas/OrderedEventsPage"
     }
   ],
   "x-trellis-http-api": {
@@ -172,6 +178,48 @@
             "status": 200,
             "contentType": "application/json",
             "schemaRef": "#/$defs/AppendReconciliation"
+          },
+          {
+            "status": "4xx/5xx",
+            "contentType": "application/problem+json",
+            "schemaRef": "#/$defs/ProblemJson"
+          }
+        ]
+      },
+      {
+        "operationId": "getLedgerHead",
+        "method": "GET",
+        "path": "/v1/scopes/{scope}/head",
+        "scopeKeyed": true,
+        "optionalHeaders": [
+          "authorization"
+        ],
+        "responses": [
+          {
+            "status": 200,
+            "contentType": "application/json",
+            "schemaRef": "trellis-server.openapi.json#/components/schemas/LedgerHeadView"
+          },
+          {
+            "status": "4xx/5xx",
+            "contentType": "application/problem+json",
+            "schemaRef": "#/$defs/ProblemJson"
+          }
+        ]
+      },
+      {
+        "operationId": "getOrderedEvents",
+        "method": "GET",
+        "path": "/v1/scopes/{scope}/events/ordered",
+        "scopeKeyed": true,
+        "optionalHeaders": [
+          "authorization"
+        ],
+        "responses": [
+          {
+            "status": 200,
+            "contentType": "application/json",
+            "schemaRef": "trellis-server.openapi.json#/components/schemas/OrderedEventsPage"
           },
           {
             "status": "4xx/5xx",
@@ -361,7 +409,11 @@
         "wos.kernel.migration_pin_changed",
         "substrate.append.response_submitted",
         "substrate.append.response_action_session_op_batch",
-        "wos.provenance.recorded"
+        "wos.provenance.recorded",
+        "trellis.authority.grant.v1",
+        "trellis.authority.revocation.v1",
+        "trellis.authority.activation.v1",
+        "trellis.authority.decision.v1"
       ]
     },
     "EventTypeRegistry": {
@@ -395,11 +447,11 @@
       ],
       "properties": {
         "eventType": {
-          "$ref": "#/$defs/EventType"
+          "type": "string"
         },
         "schemaRef": {
           "type": "string",
-          "pattern": "^wos-events://wos\\.[a-z0-9_.]+$"
+          "format": "uri"
         }
       },
       "additionalProperties": false
@@ -506,10 +558,19 @@
         },
         "sourceContent": {
           "$ref": "#/$defs/SourceContentClaim"
+        },
+        "expectedTreeSize": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "description": "If present, a new authority append requires this tree size under the ledger's append lock."
         }
       },
       "additionalProperties": false,
       "allOf": [
+        {
+          "$ref": "trellis-server.openapi.json#/components/schemas/ContractAppendConstraints"
+        },
         {
           "if": {
             "properties": {

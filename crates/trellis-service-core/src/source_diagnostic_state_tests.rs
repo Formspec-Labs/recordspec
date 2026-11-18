@@ -7,6 +7,7 @@ fn synthetic_command(key: &str) -> append::AppendCommand {
         scope: crate::test_support::ledger("synthetic-diagnostic-scope"),
         event_type: body.event_type,
         idempotency_key: body.idempotency_key,
+        expected_tree_size: None,
         payload: body.payload,
         client_attestation: None,
     }

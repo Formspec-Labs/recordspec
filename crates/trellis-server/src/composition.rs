@@ -6,14 +6,17 @@
 
 use std::sync::Arc;
 
-use stack_common_error::StackError;
+use trellis_admission_authority::{
+    AUTHORITY_LEDGER_PREFIX, AuthorityAdmissionPolicy, DECISIONS_LEDGER_PREFIX,
+    authority_event_type_specs, authority_literals, valid_contract_id,
+};
 use trellis_admission_formspec::accepted_attachment::{
     FormspecAttachmentAdmission, accepted_attachment_event_type_spec,
 };
 use trellis_admission_formspec::{FormspecAppendAdmissionPolicy, formspec_event_type_specs};
 use trellis_admission_wos::{WosEventAdmissionPolicy, WosNativeCloseout, wos_event_type_specs};
 use trellis_export_profile_wos::WosExportProfile;
-use trellis_server_ports::{EventAdmissionPolicy, EventTypeSpec, NativeCloseout};
+use trellis_server_ports::{EventTypeSpec, NativeCloseout};
 use trellis_service_core::{AdmissionRouter, ServerAdapters};
 
 use crate::source_content::source_content_parts;
@@ -39,24 +42,34 @@ pub fn native_closeout() -> Arc<dyn NativeCloseout> {
 
 /// Registers every shipped adapter against the literals it owns.
 #[must_use]
-pub fn default_admission_policy() -> Arc<dyn EventAdmissionPolicy<Error = StackError>> {
+pub fn default_admission_policy() -> AdmissionRouter {
     let literals = |specs: Vec<EventTypeSpec>| {
         specs
             .into_iter()
             .map(|spec| spec.event_type)
             .collect::<Vec<_>>()
     };
-    Arc::new(
-        AdmissionRouter::new()
-            .register_for_literals(
-                Arc::new(WosEventAdmissionPolicy::new()),
-                literals(wos_event_type_specs()),
-            )
-            .register_for_literals(
-                Arc::new(FormspecAppendAdmissionPolicy::new()),
-                literals(formspec_event_type_specs()),
-            ),
-    )
+    AdmissionRouter::new()
+        .reserve_contract_ledgers(
+            AUTHORITY_LEDGER_PREFIX,
+            Arc::new(AuthorityAdmissionPolicy),
+            authority_literals(AUTHORITY_LEDGER_PREFIX),
+            valid_contract_id,
+        )
+        .reserve_contract_ledgers(
+            DECISIONS_LEDGER_PREFIX,
+            Arc::new(AuthorityAdmissionPolicy),
+            authority_literals(DECISIONS_LEDGER_PREFIX),
+            valid_contract_id,
+        )
+        .register_for_literals(
+            Arc::new(WosEventAdmissionPolicy::new()),
+            literals(wos_event_type_specs()),
+        )
+        .register_for_literals(
+            Arc::new(FormspecAppendAdmissionPolicy::new()),
+            literals(formspec_event_type_specs()),
+        )
 }
 
 /// The event-type vocabulary the shipped adapters declare.
@@ -64,6 +77,7 @@ pub fn default_admission_policy() -> Arc<dyn EventAdmissionPolicy<Error = StackE
 pub fn default_event_type_specs() -> Vec<EventTypeSpec> {
     let mut specs = wos_event_type_specs();
     specs.extend(formspec_event_type_specs());
+    specs.extend(authority_event_type_specs());
     specs.push(accepted_attachment_event_type_spec());
     specs
 }
@@ -75,7 +89,7 @@ mod tests {
     use trellis_admission_formspec::{
         FORMSPEC_RESPONSE_ACTION_SESSION_OP_BATCH, FORMSPEC_RESPONSE_SUBMITTED,
     };
-    use trellis_server_ports::AdmissionEvent;
+    use trellis_server_ports::{AdmissionEvent, EventAdmissionPolicy};
     use wos_events::WOS_NATIVE_PROVENANCE_EVENT_LITERAL;
 
     #[tokio::test]
@@ -235,5 +249,222 @@ mod tests {
                 .iter()
                 .any(|spec| spec.event_type == WOS_NATIVE_PROVENANCE_EVENT_LITERAL)
         );
+    }
+}
+
+#[cfg(test)]
+mod authority_tests {
+    use super::*;
+    use trellis_server_ports::{AdmissionEvent, EventAdmissionPolicy};
+
+    #[tokio::test]
+    async fn t1_authority_payloads_and_ledger_binding() {
+        let policy = default_admission_policy();
+        for case in cases() {
+            let event_type = case["eventType"].as_str().unwrap();
+            let ledger = case["ledger"].as_str().unwrap();
+            let bytes = serde_json::to_vec(&case["payload"]).unwrap();
+            for id in [
+                "authority",
+                "authority-decisions",
+                "authority-sample",
+                "authority-decisions-sample",
+                "authority-other",
+                "authority-decisions-other",
+                "authority-Sample",
+                "authority-0sample",
+                "authority-abcdefghijklmnopqrstuvwxyz0123456",
+                "case_123",
+                "other.authority",
+            ] {
+                let scope = format!("{}.{id}", "a".repeat(64));
+                let result = policy
+                    .admit(&AdmissionEvent {
+                        scope: scope.as_bytes(),
+                        event_type,
+                        payload: &bytes,
+                    })
+                    .await;
+                assert_eq!(
+                    result.is_ok(),
+                    id == ledger,
+                    "{id} {event_type}: {result:?}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn t1_authority_rejects_closed_shape_and_bad_tuple_grammar() {
+        let policy = default_admission_policy();
+        for case in cases() {
+            let event_type = case["eventType"].as_str().unwrap();
+            let scope = format!("{}.{}", "a".repeat(64), case["ledger"].as_str().unwrap());
+            let mut invalid = Vec::new();
+            let mut extra = case["payload"].clone();
+            extra["extra"] = true.into();
+            invalid.push(extra);
+            if case["payload"].get("tuple").is_some() {
+                for (field, value) in [
+                    ("subject", "person:*"),
+                    ("subject", "person:a#"),
+                    ("object", "bad type:a"),
+                    ("relation", "can@read"),
+                ] {
+                    let mut bad = case["payload"].clone();
+                    bad["tuple"][field] = value.into();
+                    invalid.push(bad);
+                }
+            }
+            for payload in invalid {
+                let result = policy
+                    .admit(&AdmissionEvent {
+                        scope: scope.as_bytes(),
+                        event_type,
+                        payload: &serde_json::to_vec(&payload).unwrap(),
+                    })
+                    .await;
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("authority payload"),
+                    "{payload:?}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn t1_formspec_event_cannot_enter_either_authority_ledger() {
+        for ledger in ["authority-sample", "authority-decisions-sample"] {
+            let scope = format!("{}.{ledger}", "a".repeat(64));
+            let error = default_admission_policy()
+                .admit(&AdmissionEvent {
+                    scope: scope.as_bytes(),
+                    event_type: trellis_admission_formspec::FORMSPEC_RESPONSE_SUBMITTED,
+                    payload: br#"{"aggregateType":"t","aggregateId":"i","payload":{}}"#,
+                })
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("ledger"));
+        }
+    }
+
+    async fn admit(
+        event_type: &str,
+        ledger: &str,
+        payload: &serde_json::Value,
+    ) -> Result<(), stack_common_error::StackError> {
+        let scope = format!("{}.{ledger}", "a".repeat(64));
+        default_admission_policy()
+            .admit(&AdmissionEvent {
+                scope: scope.as_bytes(),
+                event_type,
+                payload: &serde_json::to_vec(payload).unwrap(),
+            })
+            .await
+            .map(|_| ())
+    }
+
+    fn cases() -> Vec<serde_json::Value> {
+        serde_json::from_str(include_str!(
+            "../../../fixtures/conformance/authority-events.json"
+        ))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn t1_binds_contract_and_disambiguates_the_ledger_prefixes() {
+        let cases = cases();
+        for case in &cases {
+            let event_type = case["eventType"].as_str().unwrap();
+            let prefix = case["ledger"]
+                .as_str()
+                .unwrap()
+                .strip_suffix("sample")
+                .unwrap();
+            let mut payload = case["payload"].clone();
+            for contract in ["decisions", "decisions-9"] {
+                payload["contract"] = contract.into();
+                assert!(
+                    admit(event_type, &format!("{prefix}{contract}"), &payload)
+                        .await
+                        .is_err(),
+                    "{event_type} accepted reserved contract {contract}"
+                );
+            }
+            for contract in ["decisionsx", "a1234567890123456789012345678901"] {
+                payload["contract"] = contract.into();
+                admit(event_type, &format!("{prefix}{contract}"), &payload)
+                    .await
+                    .unwrap();
+            }
+        }
+        for case in cases {
+            let mut payload = case["payload"].clone();
+            payload["contract"] = "another".into();
+            let error = admit(
+                case["eventType"].as_str().unwrap(),
+                case["ledger"].as_str().unwrap(),
+                &payload,
+            )
+            .await
+            .unwrap_err();
+            assert!(error.to_string().contains("contract"), "{error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn t1_checks_activation_artifact_digests_and_unique_paths() {
+        let mut activation = cases().remove(2);
+        let event_type = activation["eventType"].as_str().unwrap().to_owned();
+        let ledger = activation["ledger"].as_str().unwrap().to_owned();
+        let payload = &mut activation["payload"];
+        payload["artifacts"][0]["content"] = "wrong bytes".into();
+        let error = admit(&event_type, &ledger, payload).await.unwrap_err();
+        assert!(error.to_string().contains("digest"), "{error}");
+        payload["artifacts"][0]["content"] = "".into();
+        let duplicate = payload["artifacts"][0].clone();
+        payload["artifacts"].as_array_mut().unwrap().push(duplicate);
+        let error = admit(&event_type, &ledger, payload).await.unwrap_err();
+        assert!(error.to_string().contains("path"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn t1_validates_each_revised_fragment() {
+        let cases = cases();
+        for (index, field) in [
+            (0, "contract"),
+            (1, "contract"),
+            (2, "configuration"),
+            (3, "attempt"),
+            (3, "authorityPrefix"),
+        ] {
+            let case = &cases[index];
+            let mut payload = case["payload"].clone();
+            payload.as_object_mut().unwrap().remove(field);
+            let error = admit(
+                case["eventType"].as_str().unwrap(),
+                case["ledger"].as_str().unwrap(),
+                &payload,
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("authority payload"),
+                "{field}: {error}"
+            );
+        }
+        let case = &cases[3];
+        let event_type = case["eventType"].as_str().unwrap();
+        let ledger = case["ledger"].as_str().unwrap();
+        let mut payload = case["payload"].clone();
+        payload["entitlement"] = serde_json::json!({"source":"native","rule":"operator"});
+        admit(event_type, ledger, &payload).await.unwrap();
+        payload["entitlement"]["relation"] = "viewer".into();
+        assert!(admit(event_type, ledger, &payload).await.is_err());
+        payload["entitlement"] = serde_json::json!({"source":"relationship","rule":"operator"});
+        assert!(admit(event_type, ledger, &payload).await.is_err());
     }
 }

@@ -17,6 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = ROOT / "specs" / "trellis-http-api.schema.json"
+AUTHORITY_ADAPTER = ROOT / 'crates/trellis-admission-authority/src/lib.rs'
 OPENAPI_PATH = ROOT / "specs" / "trellis-server.openapi.json"
 SERVER_PATH = ROOT / "crates" / "trellis-service-core" / "src" / "lib.rs"
 APPEND_PATH = ROOT / "crates" / "trellis-service-core" / "src" / "append.rs"
@@ -91,10 +92,12 @@ def parse_formspec_admitted_event_literals(client_source: str) -> list[str]:
 
 
 def expected_admitted_event_types(server_source: str, client_source: str) -> list[str]:
-    """Sorted comparison uses these lists; order here follows server macro + Formspec suffix."""
-    return parse_wos_event_types(server_source) + parse_formspec_admitted_event_literals(
-        client_source
-    )
+    """Read the append literals from their owning sources."""
+    authority = re.findall(r'literal: "(trellis\.authority\.[a-z]+\.v1)"', AUTHORITY_ADAPTER.read_text(encoding="utf-8"))
+    if not authority:
+        raise ValueError("could not find authority adapter literals")
+    return (parse_wos_event_types(server_source)
+            + parse_formspec_admitted_event_literals(client_source) + authority)
 
 
 def parse_substrate_event_literals_from_kind_rs(kind_source: str) -> list[str]:
@@ -305,7 +308,7 @@ def check_openapi_event_type_enum(
     if sorted(openapi_vals) != sorted(expected):
         errors.append(
             "OpenAPI SubstrateAppendBody.eventType enum drifted from admitted literals "
-            "(wos-events substrate registry + Formspec append literals from trellis-service-client): "
+            ""
             f"expected {sorted(expected)}, got {sorted(openapi_vals)}"
         )
     if len(openapi_vals) != len(set(openapi_vals)):

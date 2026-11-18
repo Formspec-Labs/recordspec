@@ -23,7 +23,7 @@ use crate::source_content::SourceContentFactory;
 #[derive(Clone)]
 pub struct ServerAdapters {
     /// Decides which event types are admitted and how they are classified.
-    pub admission_policy: Arc<dyn EventAdmissionPolicy<Error = StackError>>,
+    pub admission_policy: AdmissionRouter,
     /// Event-type vocabulary projected by the registry route and export registry.
     pub event_type_specs: Vec<EventTypeSpec>,
     /// Protected-attachment descriptor admission.
@@ -45,6 +45,14 @@ pub struct ServerAdapters {
 #[derive(Default, Clone)]
 pub struct AdmissionRouter {
     by_literal: HashMap<EventType, Arc<dyn EventAdmissionPolicy<Error = StackError>>>,
+    contract_ledgers: HashMap<&'static str, ContractLedger>,
+    payload_policy: Option<Arc<dyn EventAdmissionPolicy<Error = StackError>>>,
+}
+
+#[derive(Clone)]
+struct ContractLedger {
+    literals: Vec<&'static str>,
+    valid_contract_id: fn(&str) -> bool,
 }
 
 impl std::fmt::Debug for AdmissionRouter {
@@ -83,10 +91,89 @@ impl AdmissionRouter {
         self
     }
 
+    /// Reserves a prefix for ledgers that accept only the listed literals.
+    ///
+    /// When several prefixes match, the longest match with a valid contract suffix wins.
+    #[must_use]
+    pub fn reserve_contract_ledgers(
+        mut self,
+        prefix: &'static str,
+        adapter: Arc<dyn EventAdmissionPolicy<Error = StackError>>,
+        literals: impl IntoIterator<Item = &'static str>,
+        valid_contract_id: fn(&str) -> bool,
+    ) -> Self {
+        let literals: Vec<_> = literals.into_iter().collect();
+        self.contract_ledgers.insert(
+            prefix,
+            ContractLedger {
+                literals: literals.clone(),
+                valid_contract_id,
+            },
+        );
+        self.register_for_literals(adapter, literals)
+    }
+
+    fn contract_ledger<'a>(&self, scope: &'a [u8]) -> Option<(&[&'static str], &'a str)> {
+        let (key, id) = std::str::from_utf8(scope).ok()?.split_once('.')?;
+        if key.len() != 64
+            || !key
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        {
+            return None;
+        }
+        self.contract_ledgers
+            .iter()
+            .filter_map(|(&prefix, reservation)| {
+                let contract = id.strip_prefix(prefix)?;
+                (reservation.valid_contract_id)(contract).then_some((
+                    prefix.len(),
+                    reservation.literals.as_slice(),
+                    contract,
+                ))
+            })
+            .max_by_key(|(length, _, _)| *length)
+            .map(|(_, literals, contract)| (literals, contract))
+    }
+
+    pub(crate) fn is_contract_event(&self, event_type: &str) -> bool {
+        self.contract_ledgers
+            .values()
+            .any(|reservation| reservation.literals.contains(&event_type))
+    }
+
+    pub(crate) fn replace_payload_policy(
+        &mut self,
+        policy: Arc<dyn EventAdmissionPolicy<Error = StackError>>,
+    ) {
+        self.payload_policy = Some(policy);
+    }
+
     /// Returns true when a literal is registered.
     #[must_use]
     pub fn handles(&self, event_type: &str) -> bool {
         self.by_literal.contains_key(event_type)
+    }
+
+    pub(crate) fn check_ledger_event(
+        &self,
+        scope: &[u8],
+        event_type: &str,
+    ) -> Result<(), StackError> {
+        let allowed = match self.contract_ledger(scope) {
+            Some((literals, _)) => literals.contains(&event_type),
+            None => !self.is_contract_event(event_type),
+        };
+        if !allowed {
+            return Err(StackError::bad_request(
+                "event type is not allowed on this ledger",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn uses_canonical_append_replay(&self, scope: &[u8]) -> bool {
+        self.contract_ledger(scope).is_some()
     }
 }
 
@@ -95,13 +182,41 @@ impl EventAdmissionPolicy for AdmissionRouter {
     type Error = StackError;
 
     async fn admit(&self, event: &AdmissionEvent<'_>) -> Result<AdmittedEvent, Self::Error> {
-        let Some(adapter) = self.by_literal.get(event.event_type) else {
+        self.check_ledger_event(event.scope, event.event_type)?;
+        let Some(adapter) = self
+            .payload_policy
+            .as_ref()
+            .or_else(|| self.by_literal.get(event.event_type))
+        else {
             return Err(StackError::bad_request(format!(
                 "event type `{}` is not registered for admission",
                 event.event_type
             )));
         };
-        adapter.admit(event).await
+        let admitted = adapter.admit(event).await?;
+        if admitted.event_type != event.event_type {
+            return Err(StackError::internal(
+                "admission policy changed the event type",
+            ));
+        }
+        if let Some((_, expected)) = self.contract_ledger(event.scope) {
+            #[derive(serde::Deserialize)]
+            struct PayloadContract<'a> {
+                #[serde(borrow)]
+                contract: std::borrow::Cow<'a, str>,
+            }
+
+            let payload: PayloadContract<'_> =
+                serde_json::from_slice(event.payload).map_err(|_| {
+                    StackError::bad_request("authority payload contract is missing or invalid")
+                })?;
+            if payload.contract != expected {
+                return Err(StackError::bad_request(
+                    "authority payload contract does not match its ledger",
+                ));
+            }
+        }
+        Ok(admitted)
     }
 }
 

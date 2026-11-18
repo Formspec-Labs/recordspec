@@ -39,6 +39,30 @@ macro_rules! attachments {
     };
 }
 
+/// The last event's hash and signed checkpoint from one statement snapshot.
+pub const LEDGER_HEAD: &str = "
+    SELECT e.sequence, e.canonical_event_hash, c.digest, c.checkpoint
+    FROM (
+        SELECT sequence, canonical_event_hash FROM trellis_events
+        WHERE scope_key = $1 AND scope = $2 ORDER BY sequence DESC LIMIT 1
+    ) e
+    LEFT JOIN LATERAL (
+        SELECT digest, checkpoint FROM trellis_checkpoints
+        WHERE scope_key = $1 AND scope = $2 AND tree_size = e.sequence + 1 LIMIT 1
+    ) c ON TRUE";
+/// An indexed page plus each event's checkpoint, using one statement snapshot.
+pub const EVENTS_AFTER: &str = "
+    SELECT e.sequence, e.canonical_event, e.canonical_event_hash, c.digest, c.checkpoint
+    FROM (
+        SELECT sequence, canonical_event, canonical_event_hash FROM trellis_events
+        WHERE scope_key = $1 AND scope = $2 AND sequence >= $3 ORDER BY sequence LIMIT $4
+    ) e
+    LEFT JOIN LATERAL (
+        SELECT digest, checkpoint FROM trellis_checkpoints
+        WHERE scope_key = $1 AND scope = $2 AND tree_size = e.sequence + 1 LIMIT 1
+    ) c ON TRUE
+    ORDER BY e.sequence";
+
 /// The head checkpoint: a backward walk of the primary key. `$2` ledger.
 pub const HEAD_CHECKPOINT: &str =
     checkpoints!("WHERE scope_key = $1 AND scope = $2 ORDER BY tree_size DESC LIMIT 1");
@@ -79,6 +103,8 @@ pub const SOURCE_CONTENT: &str = "SELECT batch_hash, size, artifact_ref FROM \
 
 /// Every read, named, for the EXPLAIN acceptance test.
 pub const READS: &[(&str, &str)] = &[
+    ("ledger head", LEDGER_HEAD),
+    ("events after", EVENTS_AFTER),
     ("head checkpoint", HEAD_CHECKPOINT),
     ("checkpoint at", CHECKPOINT_AT),
     ("checkpoint by digest", CHECKPOINT_BY_DIGEST),

@@ -111,10 +111,10 @@ impl ScopeAuthorizer for ExactGrants {
     }
 }
 
-struct Controls {
+pub(super) struct Controls {
     verifier: Arc<AtomicU8>,
     verification_calls: Arc<AtomicUsize>,
-    grants: Arc<AtomicBool>,
+    pub(super) grants: Arc<AtomicBool>,
     administer: Arc<AtomicBool>,
     invalid_permit: Arc<AtomicU8>,
     grant_calls: Arc<AtomicUsize>,
@@ -122,7 +122,7 @@ struct Controls {
     delegation: Arc<AtomicBool>,
 }
 
-fn external_state() -> (Fixture, Controls) {
+pub(super) fn external_state() -> (Fixture, Controls) {
     let controls = Controls {
         verifier: Arc::new(AtomicU8::new(0)),
         verification_calls: Arc::new(AtomicUsize::new(0)),

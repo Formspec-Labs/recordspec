@@ -17,7 +17,7 @@ Read the top-level documents first:
 
 `trellis-core.md` and `trellis-operational-companion.md` are the normative prose specifications for Trellis itself. `wos-trellis-verification.md` is normative only for WOS deployments that compose Trellis Core verification with WOS record semantics.
 
-`trellis-http-api.schema.json` is the normative machine-readable contract for the `trellis-service-client` / `trellis-server` HTTP substrate boundary. It defines the product-edge JSON append envelope, append response, event-type registry JSON shape, error body, route set, scope selector (the `x-stack-scope-key` header and the `<scope key>.<ledger id>` ledger scope, ADR 0168), and binary media responses. It does not redefine the proof artifact; export bundle bytes remain governed by Trellis Core.
+`trellis-http-api.schema.json` is the normative machine-readable contract for the `trellis-service-client` / `trellis-server` HTTP substrate boundary. It defines the product-edge JSON append envelope, append response, event-type registry JSON shape, error body, route set, scope selector (the `x-stack-scope-key` header and the `<scope key>.<ledger id>` ledger scope, ADR 0168), and binary media responses. The ledger read response types and authority append constraints reference the paired [generated OpenAPI document](trellis-server.openapi.json). Offline validation loads both documents and their referenced payload schemas. It does not redefine the proof artifact; export bundle bytes remain governed by Trellis Core.
 
 `trellis-agreement.md` is a sign-off gate for scope and invariants. It does not impose implementor conformance obligations.
 

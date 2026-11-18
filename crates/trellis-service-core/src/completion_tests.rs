@@ -104,6 +104,7 @@ pub(super) async fn fixture_on(state: Fixture) -> (
             scope: crate::test_support::ledger("case_completion"),
             event_type: body.event_type,
             idempotency_key: body.idempotency_key,
+            expected_tree_size: None,
             payload: body.payload,
             client_attestation: None,
         })
@@ -392,6 +393,7 @@ async fn completion_binds_two_distinct_signed_responses_in_one_certificate() {
             scope: crate::test_support::ledger("case_completion"),
             event_type: body.event_type,
             idempotency_key: body.idempotency_key,
+            expected_tree_size: None,
             payload: body.payload,
             client_attestation: None,
         })
@@ -662,6 +664,7 @@ impl crate::repository_probes::PutHook for ForeignEventOnCertificateWrite {
                     scope: crate::test_support::ledger("case_completion"),
                     event_type: body.event_type,
                     idempotency_key: body.idempotency_key,
+                    expected_tree_size: None,
                     payload: body.payload,
                     client_attestation: None,
                 })
@@ -1173,6 +1176,7 @@ async fn seal_refuses_signing_events_that_are_not_this_ledgers_signatures() {
             scope: crate::test_support::ledger("case_completion"),
             event_type: body.event_type,
             idempotency_key: body.idempotency_key,
+            expected_tree_size: None,
             payload: body.payload,
             client_attestation: None,
         })
@@ -1266,4 +1270,39 @@ async fn seal_is_a_conflict_when_append_and_read_admit_different_principals() {
         (StatusCode::CONFLICT, "completion permissions admit different principals")
     );
     assert_eq!(signer.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn t1_specialized_appends_refuse_both_authority_ledgers() {
+    use tower::ServiceExt;
+    let (state, _, _, request) = fixture().await;
+    struct ForwardingPolicy(Arc<dyn trellis_server_ports::EventAdmissionPolicy<Error = StackError>>);
+    #[async_trait::async_trait]
+    impl trellis_server_ports::EventAdmissionPolicy for ForwardingPolicy {
+        type Error = StackError;
+
+        async fn admit(
+            &self,
+            event: &trellis_server_ports::AdmissionEvent<'_>,
+        ) -> Result<trellis_server_ports::AdmittedEvent, StackError> {
+            self.0.admit(event).await
+        }
+    }
+    let state = state.with_admission_policy(Arc::new(ForwardingPolicy(crate::test_adapters::admission_policy())));
+    let app = router(state).unwrap();
+    for ledger in ["authority-sample", "authority-decisions-sample"] {
+        let path = format!("/v1/scopes/{ledger}/completion");
+        let response = app.clone().oneshot(post_request(&path, serde_json::to_vec(&request).unwrap())).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let bytes = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        assert!(String::from_utf8_lossy(&bytes).contains("event type is not allowed on this ledger"));
+
+        let path = format!("/v1/scopes/{ledger}/accepted-attachments");
+        let response = app.clone().oneshot(
+            crate::test_support::scoped_request("POST", &path).body(axum::body::Body::empty()).unwrap()
+        ).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let bytes = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        assert!(String::from_utf8_lossy(&bytes).contains("event type is not allowed on this ledger"));
+    }
 }

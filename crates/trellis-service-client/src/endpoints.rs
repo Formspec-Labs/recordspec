@@ -144,3 +144,109 @@ pub const SIGNING_KEY_REGISTRY: Endpoint<ScopePath, Absent, Absent, Cbor> =
 /// The event-type registry projection.
 pub const EVENT_TYPE_REGISTRY: Endpoint<ScopePath, Absent, Absent, EventTypeRegistryView> =
     Endpoint::get("/v1/scopes/{scope}/registries/event-types");
+
+/// The largest page of committed events returned by the ordered read.
+pub const MAX_ORDERED_EVENTS: u32 = 32;
+
+/// Position and final event of a nonempty ledger.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LedgerHead {
+    pub tree_size: u64,
+    pub tree_head_hash: String,
+    pub checkpoint_digest: String,
+    pub last_event_hash: String,
+}
+
+/// The current head, or null when the ledger has no events.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LedgerHeadView {
+    #[schema(required = true)]
+    #[serde(deserialize_with = "required_nullable")]
+    pub head: Option<LedgerHead>,
+}
+
+// Asking Serde to invoke a deserializer makes the member required. Option still accepts null.
+fn required_nullable<'de, T: Deserialize<'de>, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error> {
+    Option::deserialize(deserializer)
+}
+
+/// Cursor and requested size of a committed-event page.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, IntoParams, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OrderedEventsQuery {
+    /// Tree size of the prefix the caller has consumed. Use zero to start.
+    pub after: u64,
+    /// Maximum number of events in this page.
+    #[param(schema_with = ordered_events_limit_schema)]
+    #[serde(default = "default_ordered_events_limit")]
+    pub limit: u32,
+}
+
+const fn default_ordered_events_limit() -> u32 {
+    MAX_ORDERED_EVENTS
+}
+
+fn ordered_events_limit_schema() -> utoipa::openapi::RefOr<utoipa::openapi::Schema> {
+    ObjectBuilder::new()
+        .schema_type(Type::Integer)
+        .minimum(Some(1))
+        .maximum(Some(MAX_ORDERED_EVENTS))
+        .default(Some(serde_json::json!(MAX_ORDERED_EVENTS)))
+        .description(Some("Maximum number of events in this page."))
+        .build()
+        .into()
+}
+
+impl OrderedEventsQuery {
+    /// Checks the requested page size.
+    ///
+    /// # Errors
+    /// Returns a bad-request error if the page size is outside the endpoint's bounds.
+    pub fn validate(&self) -> Result<(), stack_common_error::StackError> {
+        if !(1..=MAX_ORDERED_EVENTS).contains(&self.limit) {
+            return Err(stack_common_error::StackError::bad_request(format!(
+                "ordered event limit must be between 1 and {MAX_ORDERED_EVENTS}",
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// A committed event and the checkpoint issued when it was appended.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OrderedEvent {
+    pub sequence: u64,
+    pub event_type: String,
+    /// Readable JSON payload. Protected or non-JSON payloads remain available through export.
+    #[schema(required = true)]
+    #[serde(deserialize_with = "required_nullable")]
+    pub payload: Option<serde_json::Value>,
+    pub canonical_event_hash: String,
+    #[schema(required = true)]
+    #[serde(deserialize_with = "required_nullable")]
+    pub prior_event_hash: Option<String>,
+    pub checkpoint_ref: String,
+    pub tree_head_hash: String,
+}
+
+/// The next committed events, in ascending sequence order.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OrderedEventsPage {
+    /// Tree head hash at the requested starting tree size.
+    pub start_tree_head_hash: String,
+    pub events: Vec<OrderedEvent>,
+}
+
+/// The current ledger head with the hash of its last event.
+pub const LEDGER_HEAD: Endpoint<ScopePath, Absent, Absent, LedgerHeadView> =
+    Endpoint::get("/v1/scopes/{scope}/head");
+
+/// A page of committed events following a given tree size, up to [`MAX_ORDERED_EVENTS`].
+pub const ORDERED_EVENTS: Endpoint<ScopePath, OrderedEventsQuery, Absent, OrderedEventsPage> =
+    Endpoint::get("/v1/scopes/{scope}/events/ordered");

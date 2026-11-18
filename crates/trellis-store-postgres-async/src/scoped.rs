@@ -13,9 +13,9 @@ use stack_common_error::StackError;
 use stack_common_postgres::{ScopedPool, ScopedTx};
 use stack_common_scope::Scope;
 use trellis_server_ports::{
-    AttachmentRow, ExportAt, ExportRows, LedgerScope, LedgerTx, Ledgers,
-    MAX_ATTACHMENT_EXPORT_EVENTS, MAX_EXPORT_ATTACHMENT_BYTES, ScopedLedgers, SourceContentBinding,
-    foreign_ledger,
+    AttachmentRow, CheckpointedPage, ExportAt, ExportRows, LedgerHeadRow, LedgerScope, LedgerTx,
+    Ledgers, MAX_ATTACHMENT_EXPORT_EVENTS, MAX_EXPORT_ATTACHMENT_BYTES, ScopedLedgers,
+    SourceContentBinding, foreign_ledger,
 };
 use trellis_types::{StoredCheckpoint, StoredEvent};
 
@@ -104,6 +104,27 @@ impl ScopedLedgers for PgScopedLedgers {
             tx,
             ledger: ledger.clone(),
         }))
+    }
+
+    async fn ledger_head(&self, ledger: &LedgerScope) -> Result<Option<LedgerHeadRow>, StackError> {
+        read_once!(self, ledger, |tx| ledger::ledger_head(
+            &mut tx,
+            ledger.as_bytes()
+        ))
+    }
+
+    async fn events_after(
+        &self,
+        ledger: &LedgerScope,
+        after: u64,
+        limit: u32,
+    ) -> Result<Option<CheckpointedPage>, StackError> {
+        read_once!(self, ledger, |tx| ledger::events_after(
+            &mut tx,
+            ledger.as_bytes(),
+            after,
+            limit
+        ))
     }
 
     async fn head_checkpoint(

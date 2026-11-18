@@ -1,0 +1,326 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://formspec.org/schemas/trellis/authority-events.schema.json",
+  "title": "RecordsSpec authority event payloads",
+  "description": "Payload envelopes for the four trellis.authority.* event types (Operational Companion §25). Engine-neutral: nothing here names an evaluator. Evaluator-specific material travels only in a decision's `detail`, whose schema the producing contract owns. RecordsSpec's admission binds each event type to its fragment here and to its ledger. Authored once in trellis/specs; other repositories vendor this file byte-identical.",
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "contractId": {
+      "description": "A server contract id. The decisions namespace is reserved for decision ledgers.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,31}$",
+      "not": {
+        "anyOf": [
+          { "const": "decisions" },
+          { "pattern": "^decisions-" }
+        ]
+      }
+    },
+    "objectRef": {
+      "description": "A typed object: `<type>:<id>`. The bounds are structural; an evaluator's own limits are enforced by the server that admits the command.",
+      "type": "string",
+      "pattern": "^[^:#@\\s]{1,254}:[^#:\\s]{1,256}$"
+    },
+    "subjectRef": {
+      "description": "A typed object, or a set of subjects related to one: `<type>:<id>#<relation>`. A wildcard subject is not admitted in an authority fact.",
+      "type": "string",
+      "pattern": "^[^:#@*\\s]{1,254}:[^#:*\\s]{1,256}(#[^:#@\\s]{1,50})?$"
+    },
+    "relation": {
+      "type": "string",
+      "pattern": "^[^:#@\\s]{1,50}$"
+    },
+    "tuple": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "subject",
+        "relation",
+        "object"
+      ],
+      "properties": {
+        "subject": {
+          "$ref": "#/$defs/subjectRef"
+        },
+        "relation": {
+          "$ref": "#/$defs/relation"
+        },
+        "object": {
+          "$ref": "#/$defs/objectRef"
+        }
+      }
+    },
+    "position": {
+      "description": "A ledger prefix: its tree size and tree head hash.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "treeSize",
+        "treeHeadHash"
+      ],
+      "properties": {
+        "treeSize": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "treeHeadHash": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "tupleChange": {
+      "description": "Payload of trellis.authority.grant.v1 and trellis.authority.revocation.v1. A pure function of the command that produced it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract",
+        "tuple",
+        "actor",
+        "reason",
+        "command"
+      ],
+      "properties": {
+        "tuple": {
+          "$ref": "#/$defs/tuple"
+        },
+        "actor": {
+          "description": "The principal who issued the command.",
+          "$ref": "#/$defs/objectRef"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "command": {
+          "description": "The command's own idempotency key.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "contract": {
+          "description": "The server contract that admitted the command.",
+          "$ref": "#/$defs/contractId"
+        }
+      }
+    },
+    "artifact": {
+      "description": "One policy artifact, carried whole so the ledger's export is self-sufficient.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "content"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "content": {
+          "description": "The artifact's bytes as UTF-8 text.",
+          "type": "string"
+        }
+      }
+    },
+    "activation": {
+      "description": "Payload of trellis.authority.activation.v1: a contract's policy became the governing configuration for the scope.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract",
+        "policy",
+        "builtAt",
+        "actor",
+        "configuration",
+        "artifacts"
+      ],
+      "properties": {
+        "contract": {
+          "$ref": "#/$defs/contractId"
+        },
+        "policy": {
+          "$ref": "#/$defs/policyRef"
+        },
+        "builtAt": {
+          "description": "The ledger prefix the evaluator was reconciled to before this fact was appended.",
+          "$ref": "#/$defs/position"
+        },
+        "actor": {
+          "description": "The service principal that performed the activation.",
+          "$ref": "#/$defs/objectRef"
+        },
+        "configuration": {
+          "description": "Digest of the operator configuration that selected this policy.",
+          "$ref": "#/$defs/sha256"
+        },
+        "artifacts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/artifact"
+          },
+          "description": "Every policy artifact the policy digest pins, each exactly once. Admission verifies each digest against its content and that paths are unique; the producer verifies the set is complete."
+        }
+      }
+    },
+    "decision": {
+      "description": "Payload of trellis.authority.decision.v1: an effect that was authorized and attempted. It does not establish delivery.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract",
+        "operation",
+        "effect",
+        "point",
+        "attempt",
+        "principal",
+        "resource",
+        "policy",
+        "authorityPrefix",
+        "entitlement",
+        "disclosure",
+        "observedAt",
+        "detailSchema",
+        "detail"
+      ],
+      "properties": {
+        "contract": {
+          "$ref": "#/$defs/contractId"
+        },
+        "operation": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$"
+        },
+        "effect": {
+          "enum": [
+            "command",
+            "release"
+          ]
+        },
+        "point": {
+          "description": "The authorization point within the effect's protocol.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "principal": {
+          "$ref": "#/$defs/objectRef"
+        },
+        "representedParty": {
+          "$ref": "#/$defs/objectRef"
+        },
+        "resource": {
+          "$ref": "#/$defs/objectRef"
+        },
+        "policy": {
+          "$ref": "#/$defs/policyRef"
+        },
+        "entitlement": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "source",
+                "relation"
+              ],
+              "properties": {
+                "source": {
+                  "const": "relationship"
+                },
+                "relation": {
+                  "$ref": "#/$defs/relation"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "source",
+                "rule"
+              ],
+              "properties": {
+                "source": {
+                  "const": "native"
+                },
+                "rule": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                }
+              }
+            }
+          ]
+        },
+        "disclosure": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "maxLength": 64
+          }
+        },
+        "observedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "detailSchema": {
+          "description": "URI of the schema that governs `detail`.",
+          "type": "string",
+          "format": "uri"
+        },
+        "detail": {
+          "description": "Producer-owned evaluation detail. Opaque to RecordsSpec; bound by the event's own hash.",
+          "type": "object"
+        },
+        "attempt": {
+          "description": "The identity of this attempt at the effect (for a release, one download attempt). One record per attempt; a retry of the same append resends the same bytes.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "instance": {
+          "description": "The effect instance the attempt belongs to (for example a job id).",
+          "type": "string",
+          "maxLength": 255
+        },
+        "authorityPrefix": {
+          "description": "The authority-ledger prefix every relationship in this decision was evaluated at.",
+          "$ref": "#/$defs/position"
+        }
+      }
+    },
+    "policyRef": {
+      "description": "The policy in force: its digest, the profile-set digest it was validated against, and the operator's revision.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "digest",
+        "profileSet",
+        "revision"
+      ],
+      "properties": {
+        "digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "profileSet": {
+          "$ref": "#/$defs/sha256"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}

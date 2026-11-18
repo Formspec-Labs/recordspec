@@ -101,6 +101,52 @@ administer use separate rows; head publication requires both. A principal with
 no grant in any served scope, and a ledger in another scope, answer 404; a
 principal granted in this scope but not for this ledger or action answers 403.
 
+### Authority ledger grants
+
+Apply these four rows per served scope and server contract. This example uses
+the contract `sample`. The `principal` is the grant file's stable mapping for
+the calling server. The append actor subject is what the server sends in the
+request's outer `actor`. Omit `payloadActors`: the producing server authorizes
+the human principal and includes it in the payload as evidence.
+
+```json
+{
+  "grants": [
+    {
+      "principal": "records-producer",
+      "scope": {"tenant": "tenant-a", "workspace": "workspace-a", "environment": "prod"},
+      "ledger": "authority-sample",
+      "action": "append",
+      "actors": [{"kind": "service", "subject": "producer-actor"}]
+    },
+    {
+      "principal": "records-producer",
+      "scope": {"tenant": "tenant-a", "workspace": "workspace-a", "environment": "prod"},
+      "ledger": "authority-sample",
+      "action": "read"
+    },
+    {
+      "principal": "records-producer",
+      "scope": {"tenant": "tenant-a", "workspace": "workspace-a", "environment": "prod"},
+      "ledger": "authority-decisions-sample",
+      "action": "append",
+      "actors": [{"kind": "service", "subject": "producer-actor"}]
+    },
+    {
+      "principal": "records-producer",
+      "scope": {"tenant": "tenant-a", "workspace": "workspace-a", "environment": "prod"},
+      "ledger": "authority-decisions-sample",
+      "action": "read"
+    }
+  ]
+}
+```
+
+Use exact `ledger` entries. The authority ledger prefixes end in a hyphen,
+while `ledgerPrefix` requires a dot or underscore. The two read grants cover
+head, ordered events, and append reconciliation. Give the producer's token
+the configured append and read OAuth scopes.
+
 Storage records the cell on first open and refuses another; rows carry their scope
 key, and row security keeps each transaction to the scope it was opened for.
 The grant file is operator authority for this deployment, not proof of canonical

@@ -15,6 +15,7 @@
 use stack_common_postgres::ScopedTx;
 
 use crate::statements;
+use trellis_server_ports::{CheckpointedEvent, CheckpointedPage, LedgerCheckpoint, LedgerHeadRow};
 use trellis_types::{
     StoredCheckpoint, StoredEvent, domain_separated_sha256, idempotency_key_length_in_bound,
 };
@@ -123,6 +124,101 @@ fn checkpoint_from_row(
 
 fn bigint(value: u64, what: &'static str) -> Result<i64, ReadError> {
     i64::try_from(value).map_err(|_| ReadError::Malformed(what))
+}
+
+fn read_position(
+    sequence: i64,
+    hash: Vec<u8>,
+    digest: Option<Vec<u8>>,
+    signed: Option<Vec<u8>>,
+) -> Result<(u64, [u8; 32], LedgerCheckpoint), ReadError> {
+    let sequence =
+        u64::try_from(sequence).map_err(|_| ReadError::Malformed("negative sequence"))?;
+    let digest = digest.ok_or(ReadError::Malformed("committed event has no checkpoint"))?;
+    let checkpoint = LedgerCheckpoint {
+        tree_size: sequence + 1,
+        digest: digest
+            .try_into()
+            .map_err(|_| ReadError::Malformed("invalid checkpoint digest"))?,
+        signed: signed.ok_or(ReadError::Malformed(
+            "committed event has no signed checkpoint",
+        ))?,
+    };
+    let hash = hash
+        .try_into()
+        .map_err(|_| ReadError::Malformed("invalid event hash"))?;
+    Ok((sequence, hash, checkpoint))
+}
+
+type HeadRow = (i64, Vec<u8>, Option<Vec<u8>>, Option<Vec<u8>>);
+type OrderedRow = (i64, Vec<u8>, Vec<u8>, Option<Vec<u8>>, Option<Vec<u8>>);
+
+/// Reads the last event hash and checkpoint in one statement.
+///
+/// # Errors
+/// Returns an error for SQL failure or a malformed or missing checkpoint row.
+pub async fn ledger_head(
+    tx: &mut ScopedTx,
+    ledger: &[u8],
+) -> Result<Option<LedgerHeadRow>, ReadError> {
+    let query = tx.query_as::<HeadRow>(statements::LEDGER_HEAD);
+    query
+        .bind(ledger)
+        .fetch_optional(tx.conn())
+        .await?
+        .map(|(sequence, hash, digest, signed)| {
+            let (_, last_event_hash, checkpoint) = read_position(sequence, hash, digest, signed)?;
+            Ok(LedgerHeadRow {
+                checkpoint,
+                last_event_hash,
+            })
+        })
+        .transpose()
+}
+
+/// Reads a committed prefix and the next bounded page in the same transaction.
+///
+/// # Errors
+/// Returns an error for SQL failure or a malformed or missing checkpoint row.
+pub async fn events_after(
+    tx: &mut ScopedTx,
+    ledger: &[u8],
+    after: u64,
+    limit: u32,
+) -> Result<Option<CheckpointedPage>, ReadError> {
+    let Ok(sequence) = i64::try_from(after) else {
+        return Ok(None);
+    };
+    // Check the cursor first. Appends can advance the page snapshot, but they cannot
+    // change the committed checkpoint the page starts from.
+    let start = if after == 0 {
+        None
+    } else {
+        let Some(checkpoint) = checkpoint_at(tx, ledger, after).await? else {
+            return Ok(None);
+        };
+        Some(LedgerCheckpoint::from(&checkpoint))
+    };
+    let query = tx.query_as::<OrderedRow>(statements::EVENTS_AFTER);
+    let events = query
+        .bind(ledger)
+        .bind(sequence)
+        .bind(i64::from(limit))
+        .fetch_all(tx.conn())
+        .await?
+        .into_iter()
+        .map(|(sequence, canonical_event, hash, digest, signed)| {
+            let (sequence, canonical_event_hash, checkpoint) =
+                read_position(sequence, hash, digest, signed)?;
+            Ok(CheckpointedEvent {
+                sequence,
+                canonical_event,
+                canonical_event_hash,
+                checkpoint,
+            })
+        })
+        .collect::<Result<_, ReadError>>()?;
+    Ok(Some(CheckpointedPage { start, events }))
 }
 
 /// The ledger's head checkpoint: the row with the highest `tree_size`. One index row.

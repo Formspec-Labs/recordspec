@@ -17,6 +17,7 @@ serde_json = "1"
 stack-common-error = { path = "../../../stack-common/crates/stack-common-error" }
 stack-common-object-store = { path = "../../../stack-common/crates/stack-common-object-store" }
 stack-common-scope = { path = "../../../stack-common/crates/stack-common-scope" }
+trellis-admission-authority = { path = "../trellis-admission-authority" }
 trellis-admission-formspec = { path = "../trellis-admission-formspec" }
 trellis-admission-wos = { path = "../trellis-admission-wos" }
 trellis-export-profile-wos = { path = "../trellis-export-profile-wos" }

@@ -6,7 +6,8 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::rejection::QueryRejection;
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
@@ -18,7 +19,9 @@ use stack_common_scope::{Deployment, ScopeBound};
 use trellis_server_ports::{ComputeSensitivity, ExportAt, LedgerScope, ScopeAction};
 use trellis_service_client::endpoints::{
     ACCEPTED_ATTACHMENT, APPEND_EVENT, BundlePath, EVENT_TYPE_REGISTRY, EventTypeRegistryView,
-    HEAD_BUNDLE, PINNED_BUNDLE, RECONCILE_EVENT, SEAL_COMPLETION, SIGNING_KEY_REGISTRY, ScopePath,
+    HEAD_BUNDLE, LEDGER_HEAD, LedgerHeadView, ORDERED_EVENTS, OrderedEventsPage,
+    OrderedEventsQuery, PINNED_BUNDLE, RECONCILE_EVENT, SEAL_COMPLETION, SIGNING_KEY_REGISTRY,
+    ScopePath,
 };
 use trellis_service_client::{SubstrateAppendBody, SubstrateAppendResult};
 
@@ -34,7 +37,10 @@ fn routes(
     host: TrellisHost,
     health: HealthRouter,
 ) -> Routes<TrellisServerState, Admission, TrellisHost> {
+    let schemas =
+        crate::openapi::append_schema(&host.state.event_type_catalog, &host.state.admission_policy);
     Routes::new(base_document(), host)
+        .embed_schemas(schemas)
         .endpoint(
             APPEND_EVENT,
             utoipa_axum::routes!(append_event),
@@ -54,6 +60,16 @@ fn routes(
             ACCEPTED_ATTACHMENT,
             utoipa_axum::routes!(crate::external_transport::append),
             Access::scope(Admission::AcceptedAttachment),
+        )
+        .endpoint(
+            LEDGER_HEAD,
+            utoipa_axum::routes!(ledger_head),
+            Access::scope(Admission::Read),
+        )
+        .endpoint(
+            ORDERED_EVENTS,
+            utoipa_axum::routes!(ordered_events),
+            Access::scope(Admission::Read),
         )
         .endpoint(
             HEAD_BUNDLE,
@@ -171,7 +187,7 @@ pub(crate) async fn seal_completion(
         (status = 400, description = "Invalid append request.", body = ProblemJson, content_type = "application/problem+json"),
         (status = 401, description = "Service token rejected.", body = ProblemJson, content_type = "application/problem+json"),
         (status = 403, description = "Scope action forbidden.", body = ProblemJson, content_type = "application/problem+json"),
-        (status = 409, description = "Idempotency key or sequence conflict.", body = ProblemJson, content_type = "application/problem+json"),
+        (status = 409, description = "Idempotency or sequence conflict, or INFRA-4094 when the expected authority tree size differs.", body = ProblemJson, content_type = "application/problem+json"),
         (status = 503, description = "Substrate dependency unavailable.", body = ProblemJson, content_type = "application/problem+json")
     ),
     tag = "events",
@@ -189,6 +205,7 @@ pub(crate) async fn append_event(
         scope: LedgerScope::within(scoped.scope(), &scope)?,
         event_type: body.event_type.clone(),
         idempotency_key: body.idempotency_key.clone(),
+        expected_tree_size: body.expected_tree_size,
         payload: body.payload.clone(),
         client_attestation: body.client_attestation.clone(),
     };
@@ -330,6 +347,96 @@ pub(crate) async fn event_type_registry(
     Ok(Json(event_type_registry_view(
         state.event_type_catalog.as_ref(),
     )))
+}
+
+#[utoipa::path(
+    get, path = LEDGER_HEAD.path(), tag = "events", operation_id = "getLedgerHead",
+    responses(
+        (status = 200, description = "The current committed ledger head, or null for an empty ledger.", body = LedgerHeadView),
+        (status = 401, description = "Current authentication refused.", body = ProblemJson, content_type = "application/problem+json"),
+        (status = 403, description = "Current scope read permission refused.", body = ProblemJson, content_type = "application/problem+json"),
+        (status = 404, description = "Ledger outside the caller's scope.", body = ProblemJson, content_type = "application/problem+json"),
+        (status = 500, description = "Committed ledger data is inconsistent.", body = ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Current permission or committed ledger data could not be established.", body = ProblemJson, content_type = "application/problem+json")
+    )
+)]
+pub(crate) async fn ledger_head(
+    State(state): State<TrellisServerState>,
+    Scoped(scoped): Scoped<TrellisScoped>,
+    Path(ScopePath { scope }): Path<ScopePath>,
+    headers: HeaderMap,
+) -> Result<Json<LedgerHeadView>, StackError> {
+    let (scope, permit) = read_authorized(&state, &scoped, &scope, &headers).await?;
+    let head = scoped
+        .ledgers()
+        .ledger_head(&scope)
+        .await?
+        .map(|row| crate::ledger_read::head(&scope, row))
+        .transpose()?;
+    let (_, after) = read_authorized(&state, &scoped, scope.as_str(), &headers).await?;
+    if permit != after {
+        return Err(StackError::unavailable(
+            "ledger head read authority changed",
+        ));
+    }
+    Ok(Json(LedgerHeadView { head }))
+}
+
+#[utoipa::path(
+    get, path = ORDERED_EVENTS.path(), tag = "events", operation_id = "getOrderedEvents",
+    responses(
+        (status = 200, description = "A contiguous page from the committed ledger, in sequence order.", body = OrderedEventsPage),
+        (status = 400, description = "Invalid tree size or page limit.", body = ProblemJson, content_type = "application/problem+json"),
+        (status = 401, description = "Current authentication refused.", body = ProblemJson, content_type = "application/problem+json"),
+        (status = 403, description = "Current scope read permission refused.", body = ProblemJson, content_type = "application/problem+json"),
+        (status = 404, description = "Ledger outside the caller's scope or no committed prefix at the requested tree size.", body = ProblemJson, content_type = "application/problem+json"),
+        (status = 500, description = "Committed ledger data is inconsistent.", body = ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Current permission or committed ledger data could not be established.", body = ProblemJson, content_type = "application/problem+json")
+    )
+)]
+pub(crate) async fn ordered_events(
+    State(state): State<TrellisServerState>,
+    Scoped(scoped): Scoped<TrellisScoped>,
+    Path(ScopePath { scope }): Path<ScopePath>,
+    headers: HeaderMap,
+    query: Result<Query<OrderedEventsQuery>, QueryRejection>,
+) -> Result<Json<OrderedEventsPage>, StackError> {
+    let (scope, permit) = read_authorized(&state, &scoped, &scope, &headers).await?;
+    let Query(query) =
+        query.map_err(|_| StackError::bad_request("invalid ordered event cursor or page limit"))?;
+    query.validate()?;
+    let page = scoped
+        .ledgers()
+        .events_after(&scope, query.after, query.limit)
+        .await?
+        .ok_or_else(|| {
+            StackError::not_found("ledger has no committed prefix at the requested tree size")
+        })?;
+    let start_tree_head_hash =
+        crate::ledger_read::start_tree_head_hash(&scope, page.start.as_ref(), query.after)?;
+    let mut events = Vec::with_capacity(page.events.len());
+    for (offset, row) in page.events.into_iter().enumerate() {
+        if query.after.checked_add(offset as u64) != Some(row.sequence) {
+            return Err(StackError::internal(
+                "committed event page has a sequence gap",
+            ));
+        }
+        events.push(crate::ledger_read::event(
+            &scope,
+            row,
+            &state.admission_policy,
+        )?);
+    }
+    let (_, after) = read_authorized(&state, &scoped, scope.as_str(), &headers).await?;
+    if permit != after {
+        return Err(StackError::unavailable(
+            "ordered event read authority changed",
+        ));
+    }
+    Ok(Json(OrderedEventsPage {
+        start_tree_head_hash,
+        events,
+    }))
 }
 
 /// The ledger the path names under the admitted scope, and the current Read permit on it.

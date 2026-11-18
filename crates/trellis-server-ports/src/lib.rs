@@ -14,7 +14,7 @@
 //! traits here.
 #![forbid(unsafe_code)]
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::convert::Infallible;
 
 use async_trait::async_trait;
@@ -22,7 +22,7 @@ pub use stack_common_error::StackError;
 use stack_common_scope::ScopeKey;
 pub use trellis_core::LedgerStore;
 pub use trellis_service_client::{ComputeContext, ComputeSensitivity};
-use trellis_types::{ArtifactType, StoredEvent};
+use trellis_types::ArtifactType;
 
 mod attachment;
 pub use attachment::{
@@ -35,9 +35,10 @@ mod native_closeout;
 pub use native_closeout::{CloseoutRule, CloseoutSource, NativeCloseout};
 mod ledger;
 pub use ledger::{
-    AttachmentRow, ExportAt, ExportRows, LedgerScope, LedgerTx, Ledgers,
-    MAX_ATTACHMENT_EXPORT_EVENTS, MAX_EXPORT_ATTACHMENT_BYTES, ScopedLedgers, SourceContentBinding,
-    foreign_ledger, validate_ledger_id,
+    AttachmentRow, CheckpointedEvent, CheckpointedPage, ExportAt, ExportRows, LedgerCheckpoint,
+    LedgerHeadRow, LedgerScope, LedgerTx, Ledgers, MAX_ATTACHMENT_EXPORT_EVENTS,
+    MAX_EXPORT_ATTACHMENT_BYTES, ScopedLedgers, SourceContentBinding, foreign_ledger,
+    validate_ledger_id,
 };
 mod source_content_object;
 pub use source_content_object::source_content_object_name;
@@ -296,7 +297,7 @@ pub struct AdmissionEvent<'a> {
 /// Admitted event metadata returned by [`EventAdmissionPolicy`].
 ///
 /// Carries the wire literal alongside neutral catalog metadata so receipts,
-/// projection runtimes, and dispatch can consult a single source of truth
+/// registry views, and dispatch can consult a single source of truth
 /// without re-parsing event-type prefixes in generic service code.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AdmittedEvent {
@@ -455,114 +456,6 @@ impl ComputeDisclosure for NoopComputeDisclosure {
             actor: actor.to_string(),
             sensitivity,
         })
-    }
-}
-
-/// Projection registration.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProjectionRegistration {
-    pub projection_id: String,
-    pub description: String,
-}
-
-/// Projection watermark emitted after derived state is updated.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProjectionWatermark {
-    pub projection_id: String,
-    pub scope: ScopeId,
-    pub sequence: u64,
-}
-
-/// Projection runtime port for derived-state consumers.
-#[async_trait]
-pub trait ProjectionRuntime: Send + Sync {
-    type Error: std::error::Error + Send + Sync + 'static;
-
-    async fn register(&mut self, registration: ProjectionRegistration) -> Result<(), Self::Error>;
-
-    async fn watermark(
-        &mut self,
-        projection_id: &str,
-        scope: &[u8],
-        sequence: u64,
-    ) -> Result<ProjectionWatermark, Self::Error>;
-
-    async fn replay_from(
-        &self,
-        projection_id: &str,
-        scope: &[u8],
-        from_sequence: u64,
-    ) -> Result<Vec<StoredEvent>, Self::Error>;
-}
-
-/// In-memory projection runtime for tests and local composition.
-#[derive(Default, Debug)]
-pub struct InMemoryProjectionRuntime {
-    registrations: BTreeSet<String>,
-    watermarks: BTreeMap<(String, ScopeId), u64>,
-    events: Vec<StoredEvent>,
-}
-
-impl InMemoryProjectionRuntime {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn record_event(&mut self, event: StoredEvent) {
-        self.events.push(event);
-    }
-}
-
-#[async_trait]
-impl ProjectionRuntime for InMemoryProjectionRuntime {
-    type Error = StackError;
-
-    async fn register(&mut self, registration: ProjectionRegistration) -> Result<(), Self::Error> {
-        self.registrations.insert(registration.projection_id);
-        Ok(())
-    }
-
-    async fn watermark(
-        &mut self,
-        projection_id: &str,
-        scope: &[u8],
-        sequence: u64,
-    ) -> Result<ProjectionWatermark, Self::Error> {
-        if !self.registrations.contains(projection_id) {
-            return Err(StackError::bad_request(format!(
-                "projection `{projection_id}` is not registered"
-            )));
-        }
-        let watermark = ProjectionWatermark {
-            projection_id: projection_id.to_string(),
-            scope: scope.to_vec(),
-            sequence,
-        };
-        self.watermarks.insert(
-            (watermark.projection_id.clone(), watermark.scope.clone()),
-            sequence,
-        );
-        Ok(watermark)
-    }
-
-    async fn replay_from(
-        &self,
-        projection_id: &str,
-        scope: &[u8],
-        from_sequence: u64,
-    ) -> Result<Vec<StoredEvent>, Self::Error> {
-        if !self.registrations.contains(projection_id) {
-            return Err(StackError::bad_request(format!(
-                "projection `{projection_id}` is not registered"
-            )));
-        }
-        Ok(self
-            .events
-            .iter()
-            .filter(|event| event.scope() == scope && event.sequence() >= from_sequence)
-            .cloned()
-            .collect())
     }
 }
 
@@ -864,53 +757,12 @@ mod tests {
     use super::*;
     use trellis_service_client as trellis_client;
 
-    fn event(scope: &[u8], sequence: u64) -> StoredEvent {
-        StoredEvent::new(scope.to_vec(), sequence, vec![sequence as u8], vec![0xaa])
-    }
-
     #[test]
     fn given_compute_types_reexported_when_used_then_match_trellis_service_client() {
         fn assert_client(_: trellis_client::ComputeContext) {}
 
         let ctx = ComputeContext::no_delegated_compute("actor");
         assert_client(ctx);
-    }
-
-    #[tokio::test]
-    async fn projection_runtime_requires_registration_and_replays_from_watermark() {
-        let mut runtime = InMemoryProjectionRuntime::new();
-        runtime.record_event(event(b"case-1", 0));
-        runtime.record_event(event(b"case-1", 1));
-        runtime.record_event(event(b"case-2", 0));
-
-        assert!(
-            runtime
-                .watermark("case-view", b"case-1", 0)
-                .await
-                .expect_err("unregistered projection")
-                .to_string()
-                .contains("not registered")
-        );
-
-        runtime
-            .register(ProjectionRegistration {
-                projection_id: "case-view".to_string(),
-                description: "case projection".to_string(),
-            })
-            .await
-            .expect("register");
-        let watermark = runtime
-            .watermark("case-view", b"case-1", 1)
-            .await
-            .expect("watermark");
-        assert_eq!(watermark.sequence, 1);
-
-        let replay = runtime
-            .replay_from("case-view", b"case-1", 1)
-            .await
-            .expect("replay");
-        assert_eq!(replay.len(), 1);
-        assert_eq!(replay[0].sequence(), 1);
     }
 
     #[tokio::test]

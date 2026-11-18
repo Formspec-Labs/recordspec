@@ -478,7 +478,8 @@ fn native_authorization(
             trellis_service_client::ComputeSensitivity::ReaderHeld,
         ),
         client_attestation: None,
-            source_content: None,
+        source_content: None,
+        expected_tree_size: None,
     }
 }
 

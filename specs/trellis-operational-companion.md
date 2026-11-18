@@ -521,14 +521,7 @@ Trellis Core reserves **redaction-aware commitment slots** in the envelope heade
 
 Traceability: TR-OP-001 and TR-OP-002.
 
-The watermark MUST include at minimum:
-
-1. `canonical_checkpoint_id` — the Core §11 (Checkpoint Format) checkpoint identifier the artifact references,
-2. `tree_size` — the canonical append height or sequence position at build time,
-3. `tree_head_hash` — the append-head reference (Core §11 (Checkpoint Format)),
-4. `build_timestamp` — the time at which the artifact was built,
-5. `projection_schema_id` — the schema and version identifier under which the artifact was produced,
-6. `rebuild_path` — sufficient declared configuration history to rebuild the artifact from canonical records at the referenced checkpoint.
+Use the `Watermark` structure in Core §15 (Snapshot and Watermark Discipline). Its fields identify the ledger (`scope`), checkpoint digest (`checkpoint_ref`), canonical append height (`tree_size`), tree head hash (`tree_head_hash`), build time (`built_at`), and configuration history needed for rebuild (`rebuild_path`). Projections also carry `projection_schema_id`.
 
 ### 14.2 No Second Canonical Truth
 
@@ -567,7 +560,7 @@ Both categories carry the watermark obligations of §14.1. Consumer-Facing Proje
 
 ### 15.2 Watermark Display
 
-**OC-38 (MUST).** Consumer-Facing Projections MUST display or otherwise make available to the consumer the watermark fields required for that consumer to assess freshness. An implementation MAY elide fields that are not meaningful to the consumer (for example, `projection_schema_id` on a respondent-scoped view), but MUST NOT elide the `canonical_checkpoint_id` or `tree_head_hash`.
+**OC-38 (MUST).** Consumer-Facing Projections MUST display or otherwise make available to the consumer the watermark fields required for that consumer to assess freshness. An implementation MAY elide fields that are not meaningful to the consumer (for example, `projection_schema_id` on a respondent-scoped view), but MUST NOT elide the `checkpoint_ref` or `tree_head_hash`.
 
 Traceability: TR-OP-001 and TR-OP-002.
 
@@ -1181,6 +1174,25 @@ The Trellis posture-transition event MUST be admitted AFTER its authorizing `wos
 
 This rule is load-bearing: if a grant is not canonical, authorization decisions premised on it are not independently verifiable. Every rights-impacting decision needs a canonical record to point to.
 
+For the reference HTTP binding, [`authority-events.schema.json`](authority-events.schema.json) defines the authority payloads. Each ledger scope consists of the 64-character lowercase hexadecimal scope key, a dot, and the ledger id. A server contract id MUST conform to the schema’s `contractId` definition. It matches `^[a-z][a-z0-9-]{0,31}$`, excluding `decisions` and any id that starts with `decisions-`.
+
+| Ledger id | Event type | Payload definition |
+|---|---|---|
+| `authority-<contract>` | `trellis.authority.grant.v1` | `tupleChange` |
+| `authority-<contract>` | `trellis.authority.revocation.v1` | `tupleChange` |
+| `authority-<contract>` | `trellis.authority.activation.v1` | `activation` |
+| `authority-decisions-<contract>` | `trellis.authority.decision.v1` | `decision` |
+
+The binding MUST apply this rule at common admission for every append path. Each ledger MUST admit only its listed types, and each listed type MUST be refused on every other ledger. The reserved contract ids keep the two kinds of ledger names disjoint. Each payload MUST conform to its named definition and its `contract` MUST equal the ledger's contract suffix.
+
+The append actor MUST be a service actor. The server's exact ledger grants bind the caller and its outer `actor`. The producing server authorizes the payload principal and records it as `actor` for tuple changes or `principal` for decisions. See the [caller grants documentation](../crates/trellis-service-core/OIDC_STARTUP.md).
+
+Authority payloads carry identifiers and authorization evidence. Producers MUST keep protected record content and secrets out of them, including producer-owned decision detail and policy artifacts. Activations carry policy artifacts as UTF-8 text. Admission MUST verify each artifact's `sha256` against the UTF-8 bytes of its `content` and require unique artifact paths. The producer verifies that the set of artifacts is complete. The HTTP append body limit is 2 MiB, and the compact JSON activation payload within it MUST be at most 1,792 KiB.
+
+An authority append MAY include an unsigned 64-bit `expectedTreeSize`. With the ledger's append lock held, the binding MUST first resolve a committed idempotency key. The binding MUST check the caller’s current authorization on each request. An authorized request with the same event type and payload returns the original receipt without requiring an active signer or a matching expectation. Reusing a key for different content returns the existing idempotency conflict. For a new key, the binding MUST compare the expectation with the current tree size in that same transaction. A mismatch returns HTTP 409 with Problem JSON `error_code: "INFRA-4094"` and commits nothing. The caller can submit the same key and payload with an updated expectation after reauthorizing at the new head.
+
+Traceability is in TR-OP-134 and TR-OP-137.
+
 ### 25.2 Delegation Facts
 
 **OC-116 (MUST).** If delegation affects authorization, legal authority, or access posture, delegation grants and revocations MUST be canonical facts. Delegated-compute grants (§19) are a specific case of this rule.
@@ -1208,6 +1220,15 @@ This rule is load-bearing: if a grant is not canonical, authorization decisions 
 3. the procedure by which a rebuild is initiated, completed, and verified,
 4. the expected relationship between a rebuilt evaluator and canonical records at the rebuild checkpoint (typically strict equivalence on grant and revocation outcomes).
 
+The reference HTTP binding provides the following reads to rebuild and catch up from the canonical sequence. Both MUST require a current ledger Read grant and enforce the caller's scope.
+
+- `GET /v1/scopes/{scope}/head` MUST read the tree size, tree head hash, checkpoint digest, and last event hash at one committed read point, with work bounded independently of the number of events. It answers `200` with `head: null` for an empty or absent ledger within the caller's grant.
+- `GET /v1/scopes/{scope}/events/ordered?after={treeSize}&limit={limit}` MUST return `startTreeHeadHash` at tree size `after` and the next contiguous committed events in ascending sequence order without taking the append lock. At zero, the starting hash is the empty-tree hash (Core §11 (Checkpoint Format) §11.3). A nonzero size with no committed checkpoint answers 404. The first unread sequence equals `after`. The limit is 1 to 32 inclusive and defaults to 32. Each event carries its sequence, event type, payload, canonical event hash, prior event hash, checkpoint reference, and tree head hash from the checkpoint committed at sequence plus one. At the current head the page includes the starting hash and an empty event list. The binding MUST check each retained event’s scope, sequence and canonical hash, and each checkpoint digest against its signed payload. Authority events return their JSON payload from the retained canonical event. The binding MUST refuse the page if an authority payload is unreadable. Other event types with non-JSON or protected payloads return null for the payload.
+
+To rebuild, capture the head and read from zero or from a verified snapshot's tree size. Compare the page's starting hash with the reader's position before applying events. Verify the event chain through the captured checkpoint and use the last consumed sequence plus one as the next cursor. A subsequent head identifies the suffix still to apply.
+
+Traceability is in TR-OP-135.
+
 ### 25.6 Behavior Under Stale, Missing, Inconsistent, or Unavailable State
 
 **OC-121 (MUST).** An Authorization Evaluator MUST define its behavior when evaluator state is:
@@ -1233,6 +1254,12 @@ For each of these conditions, the implementation MUST declare — in advance, as
 ### 25.8 Cryptographic-Erasure Interaction
 
 **OC-124 (MUST).** Cryptographic-erasure events recorded as canonical lifecycle facts (§20) invalidate any evaluator state that depends on cryptographically destroyed material. Such invalidation cascades into evaluator state exactly as it cascades into other derived artifacts (§20.5).
+
+Where authority-fact erasure is supported, the binding MUST admit it only if replaying the ledger while omitting the facts to erase yields the same authority state as the current replay. Erasing a revocation while an earlier grant of the same tuple survives fails this check. Once erased, a fact contributes nothing when replayed. The operator MUST invalidate snapshots and stores derived from the affected ledger and rebuild them before reuse.
+
+Verification that needs erased material MUST report the omitted checks and cite the canonical erasure evidence using §20.6. The report MUST disclose that payload readability could not be verified for that material (Core §16 (Verification Independence Contract) §16.4 and Core §19 (Verification Algorithm)).
+
+Traceability is in TR-OP-136.
 
 ---
 

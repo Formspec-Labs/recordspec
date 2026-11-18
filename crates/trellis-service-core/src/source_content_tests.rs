@@ -108,6 +108,7 @@ fn command(body: &[u8]) -> append::AppendCommand {
         scope: crate::test_support::ledger("case_123"),
         event_type: body.event_type,
         idempotency_key: body.idempotency_key,
+        expected_tree_size: None,
         payload: body.payload,
         client_attestation: None,
     }
@@ -199,7 +200,8 @@ fn neutral_native_body(key: &str, event: &str) -> SubstrateAppendBody {
         payload: native.payload().clone(),
         compute_context: trellis_service_client::ComputeContext::no_delegated_compute("wos-server"),
         client_attestation: None,
-            source_content: None,
+        source_content: None,
+        expected_tree_size: None,
     }
 }
 fn real_guard() -> ConfiguredNativeCloseoutGuard {

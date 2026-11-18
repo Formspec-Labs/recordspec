@@ -995,6 +995,7 @@ checkpoint_digest = SHA-256(
 
 The tree is RFC-6962-compatible with domain-separated leaf and interior hashes:
 
+- **Empty tree:** SHA-256 of zero bytes.
 - **Leaf hash:** `SHA-256("trellis-merkle-leaf-v1" domain-separated per §9.1 over canonical_event_hash)`.
 - **Interior hash:** `SHA-256("trellis-merkle-interior-v1" domain-separated per §9.1 over (left_hash || right_hash))`.
 - **Odd-node promotion:** when a level has an odd number of nodes, the final node is carried up to the next level unchanged (RFC 6962 §2.1 semantics).

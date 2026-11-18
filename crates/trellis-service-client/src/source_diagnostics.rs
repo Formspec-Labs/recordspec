@@ -88,6 +88,7 @@ pub fn public_code(preview: &str) -> &'static str {
         Some("INFRA-4030") => "INFRA-4030",
         Some("INFRA-4040") => "INFRA-4040",
         Some("INFRA-4090") => "INFRA-4090",
+        Some(crate::AUTHORITY_HEAD_MOVED_CODE) => crate::AUTHORITY_HEAD_MOVED_CODE,
         Some("INFRA-5000") => "INFRA-5000",
         Some("INFRA-5030") => "INFRA-5030",
         _ => "other",

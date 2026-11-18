@@ -173,6 +173,22 @@ impl ScopedLedgers for CountingScoped {
         self.inner.export(ledger, at).await
     }
 
+    async fn ledger_head(
+        &self,
+        ledger: &LedgerScope,
+    ) -> Result<Option<trellis_server_ports::LedgerHeadRow>, StackError> {
+        self.inner.ledger_head(ledger).await
+    }
+
+    async fn events_after(
+        &self,
+        ledger: &LedgerScope,
+        after: u64,
+        limit: u32,
+    ) -> Result<Option<trellis_server_ports::CheckpointedPage>, StackError> {
+        self.inner.events_after(ledger, after, limit).await
+    }
+
     async fn head_checkpoint(
         &self,
         ledger: &LedgerScope,
@@ -220,6 +236,8 @@ pub(crate) enum Fault {
     HideCheckpoints,
     /// Runs the hook after every export read, as a change of authority mid-request would.
     AfterExportRows(Box<dyn Fn() + Send + Sync>),
+    /// Runs the hook after a head or ordered page comes back from storage.
+    AfterLedgerRead(Box<dyn Fn() + Send + Sync>),
 }
 
 /// Fails units of work as configured, then delegates.
@@ -337,6 +355,30 @@ impl ScopedLedgers for FaultyScoped {
         Ok(rows)
     }
 
+    async fn ledger_head(
+        &self,
+        ledger: &LedgerScope,
+    ) -> Result<Option<trellis_server_ports::LedgerHeadRow>, StackError> {
+        let result = self.inner.ledger_head(ledger).await?;
+        if let Fault::AfterLedgerRead(hook) = &*self.fault {
+            hook();
+        }
+        Ok(result)
+    }
+
+    async fn events_after(
+        &self,
+        ledger: &LedgerScope,
+        after: u64,
+        limit: u32,
+    ) -> Result<Option<trellis_server_ports::CheckpointedPage>, StackError> {
+        let result = self.inner.events_after(ledger, after, limit).await?;
+        if let Fault::AfterLedgerRead(hook) = &*self.fault {
+            hook();
+        }
+        Ok(result)
+    }
+
     async fn head_checkpoint(
         &self,
         ledger: &LedgerScope,
@@ -391,6 +433,22 @@ impl ScopedLedgers for UnreachableLedgers {
     async fn begin(&self, _: &LedgerScope) -> Result<Box<dyn LedgerTx>, StackError> {
         Err(unreachable_store())
     }
+    async fn ledger_head(
+        &self,
+        _: &LedgerScope,
+    ) -> Result<Option<trellis_server_ports::LedgerHeadRow>, StackError> {
+        Err(unreachable_store())
+    }
+
+    async fn events_after(
+        &self,
+        _: &LedgerScope,
+        _: u64,
+        _: u32,
+    ) -> Result<Option<trellis_server_ports::CheckpointedPage>, StackError> {
+        Err(unreachable_store())
+    }
+
     async fn head_checkpoint(
         &self,
         _: &LedgerScope,

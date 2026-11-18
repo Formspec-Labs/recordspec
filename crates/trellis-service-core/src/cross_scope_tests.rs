@@ -287,6 +287,7 @@ async fn build_world(row_security: bool, control: Control, pair: Pair) -> Trelli
                     scope: ledger.clone(),
                     event_type: "wos.kernel.case_created".into(),
                     idempotency_key: key.into(),
+                    expected_tree_size: None,
                     payload: serde_json::to_value(record).unwrap(),
                     client_attestation: None,
                 })
@@ -312,6 +313,7 @@ async fn build_world(row_security: bool, control: Control, pair: Pair) -> Trelli
                     scope: LedgerScope::of(&b, B_LEDGER).unwrap(),
                     event_type: "wos.kernel.case_created".into(),
                     idempotency_key: "b-seed".into(),
+                    expected_tree_size: None,
                     payload: serde_json::to_value(record).unwrap(),
                     client_attestation: None,
                 })
@@ -422,6 +424,8 @@ impl World for TrellisWorld {
             }
         };
         match name {
+            "after" => Some(0.into()),
+            "limit" => Some(2.into()),
             "checkpointDigest" => Some(self.a_head_digest.clone().into()),
             "body" => Some(if operation.path.ends_with("/reconcile") {
                 body("reconcile")

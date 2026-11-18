@@ -33,6 +33,7 @@ deny = [
     # Domain adapters: only the adapter assembly (trellis-server) may name them,
     # so trellis-service-core, trellis-server-ports, trellis-core and trellis-export-writer
     # stay producer-neutral and the adapters cannot depend on each other.
+    { name = "trellis-admission-authority", wrappers = ["trellis-server"] },
     { name = "trellis-admission-wos", wrappers = ["trellis-server"] },
     { name = "trellis-admission-formspec", wrappers = ["trellis-server"] },
     { name = "trellis-export-profile-wos", wrappers = ["trellis-server"] },

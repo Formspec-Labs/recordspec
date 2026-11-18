@@ -381,6 +381,105 @@
         ],
         "type": "string"
       },
+      "ContractAppendConstraints": {
+        "allOf": [
+          {
+            "if": {
+              "required": [
+                "expectedTreeSize"
+              ]
+            },
+            "then": {
+              "properties": {
+                "eventType": {
+                  "enum": [
+                    "trellis.authority.activation.v1",
+                    "trellis.authority.decision.v1",
+                    "trellis.authority.grant.v1",
+                    "trellis.authority.revocation.v1"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "eventType": {
+                  "const": "trellis.authority.activation.v1"
+                }
+              },
+              "required": [
+                "eventType"
+              ]
+            },
+            "then": {
+              "properties": {
+                "payload": {
+                  "$ref": "https://formspec.org/schemas/trellis/authority-events.schema.json#/$defs/activation"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "eventType": {
+                  "const": "trellis.authority.decision.v1"
+                }
+              },
+              "required": [
+                "eventType"
+              ]
+            },
+            "then": {
+              "properties": {
+                "payload": {
+                  "$ref": "https://formspec.org/schemas/trellis/authority-events.schema.json#/$defs/decision"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "eventType": {
+                  "const": "trellis.authority.grant.v1"
+                }
+              },
+              "required": [
+                "eventType"
+              ]
+            },
+            "then": {
+              "properties": {
+                "payload": {
+                  "$ref": "https://formspec.org/schemas/trellis/authority-events.schema.json#/$defs/tupleChange"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "eventType": {
+                  "const": "trellis.authority.revocation.v1"
+                }
+              },
+              "required": [
+                "eventType"
+              ]
+            },
+            "then": {
+              "properties": {
+                "payload": {
+                  "$ref": "https://formspec.org/schemas/trellis/authority-events.schema.json#/$defs/tupleChange"
+                }
+              }
+            }
+          }
+        ]
+      },
       "ErrorCode": {
         "description": "Stable machine-readable stack error code: a prefix from the closed set ADR 0092a governs, then four digits. Adding a prefix amends ADR 0092a and this pattern together.\n\n <details><summary>JSON schema</summary>\n\n ```json\n{\n  \"description\": \"Stable machine-readable stack error code: a prefix from the closed set ADR 0092a governs, then four digits. Adding a prefix amends ADR 0092a and this pattern together.\",\n  \"examples\": [\n    \"WOS-1404\",\n    \"FORMSPEC-4001\",\n    \"STUDIO-4091\",\n    \"INFRA-5000\"\n  ],\n  \"type\": \"string\",\n  \"pattern\": \"^(FORMSPEC|WOS|STUDIO|INFRA)-\\\\d{4}$\"\n}\n ```\n </details>",
         "type": "string"
@@ -424,11 +523,117 @@
         ],
         "type": "object"
       },
+      "LedgerHead": {
+        "description": "Position and final event of a nonempty ledger.",
+        "properties": {
+          "checkpointDigest": {
+            "type": "string"
+          },
+          "lastEventHash": {
+            "type": "string"
+          },
+          "treeHeadHash": {
+            "type": "string"
+          },
+          "treeSize": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "treeSize",
+          "treeHeadHash",
+          "checkpointDigest",
+          "lastEventHash"
+        ],
+        "type": "object"
+      },
+      "LedgerHeadView": {
+        "description": "The current head, or null when the ledger has no events.",
+        "properties": {
+          "head": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LedgerHead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "head"
+        ],
+        "type": "object"
+      },
       "LedgerScope": {
         "description": "Ledger scope: the scope key (64 lowercase hex), `.`, and a ledger id of 1-256 printable ASCII characters other than `/` and `:`, not `.` or `..`.",
         "pattern": "^[0-9a-f]{64}\\.(?!\\.?$)[!-.0-9;-~]{1,256}$",
         "type": "string",
         "x-stack-id": "trellis-ledger"
+      },
+      "OrderedEvent": {
+        "description": "A committed event and the checkpoint issued when it was appended.",
+        "properties": {
+          "canonicalEventHash": {
+            "type": "string"
+          },
+          "checkpointRef": {
+            "type": "string"
+          },
+          "eventType": {
+            "type": "string"
+          },
+          "payload": {
+            "description": "Readable JSON payload. Protected or non-JSON payloads remain available through export."
+          },
+          "priorEventHash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sequence": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "treeHeadHash": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sequence",
+          "eventType",
+          "payload",
+          "canonicalEventHash",
+          "priorEventHash",
+          "checkpointRef",
+          "treeHeadHash"
+        ],
+        "type": "object"
+      },
+      "OrderedEventsPage": {
+        "description": "The next committed events, in ascending sequence order.",
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/OrderedEvent"
+            },
+            "type": "array"
+          },
+          "startTreeHeadHash": {
+            "description": "Tree head hash at the requested starting tree size.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "startTreeHeadHash",
+          "events"
+        ],
+        "type": "object"
       },
       "Problem": {
         "additionalProperties": false,
@@ -768,6 +973,11 @@
         "type": "object"
       },
       "SubstrateAppendBody": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ContractAppendConstraints"
+          }
+        ],
         "description": "JSON body for `POST /v1/scopes/{scope}/events`.",
         "properties": {
           "actor": {
@@ -788,10 +998,13 @@
             "$ref": "#/components/schemas/ComputeContext"
           },
           "eventType": {
-            "description": "Admitted Trellis append literals: `wos-events` substrate registry plus Formspec appends.",
             "enum": [
               "substrate.append.response_action_session_op_batch",
               "substrate.append.response_submitted",
+              "trellis.authority.activation.v1",
+              "trellis.authority.decision.v1",
+              "trellis.authority.grant.v1",
+              "trellis.authority.revocation.v1",
               "wos.ai.capability_invocation",
               "wos.assurance.identity_attestation",
               "wos.assurance.key_rebind",
@@ -825,6 +1038,12 @@
               "wos.provenance.recorded"
             ],
             "type": "string"
+          },
+          "expectedTreeSize": {
+            "description": "Required current tree size for a new authority append.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
           },
           "idempotencyKey": {
             "type": "string"
@@ -1316,7 +1535,7 @@
                 }
               }
             },
-            "description": "Idempotency key or sequence conflict."
+            "description": "Idempotency or sequence conflict, or INFRA-4094 when the expected authority tree size differs."
           },
           "503": {
             "content": {
@@ -1346,6 +1565,133 @@
           "kind": "scope"
         },
         "x-max-request-bytes": 2097152
+      }
+    },
+    "/v1/scopes/{scope}/events/ordered": {
+      "get": {
+        "operationId": "getOrderedEvents",
+        "parameters": [
+          {
+            "description": "Trellis ledger scope.",
+            "in": "path",
+            "name": "scope",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/LedgerScope"
+            }
+          },
+          {
+            "description": "Tree size of the prefix the caller has consumed. Use zero to start.",
+            "in": "query",
+            "name": "after",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 32,
+              "description": "Maximum number of events in this page.",
+              "maximum": 32,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderedEventsPage"
+                }
+              }
+            },
+            "description": "A contiguous page from the committed ledger, in sequence order."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Invalid tree size or page limit."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Current authentication refused."
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Current scope read permission refused."
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Ledger outside the caller's scope or no committed prefix at the requested tree size."
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Committed ledger data is inconsistent."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Current permission or committed ledger data could not be established."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": [
+              "trellis.read"
+            ]
+          }
+        ],
+        "tags": [
+          "events"
+        ],
+        "x-access": {
+          "detail": [
+            "trellis.read"
+          ],
+          "kind": "scope"
+        }
       }
     },
     "/v1/scopes/{scope}/events/reconcile": {
@@ -1411,6 +1757,100 @@
           "kind": "scope"
         },
         "x-max-request-bytes": 4096
+      }
+    },
+    "/v1/scopes/{scope}/head": {
+      "get": {
+        "operationId": "getLedgerHead",
+        "parameters": [
+          {
+            "description": "Trellis ledger scope.",
+            "in": "path",
+            "name": "scope",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/LedgerScope"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LedgerHeadView"
+                }
+              }
+            },
+            "description": "The current committed ledger head, or null for an empty ledger."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Current authentication refused."
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Current scope read permission refused."
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Ledger outside the caller's scope."
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Committed ledger data is inconsistent."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Current permission or committed ledger data could not be established."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": [
+              "trellis.read"
+            ]
+          }
+        ],
+        "tags": [
+          "events"
+        ],
+        "x-access": {
+          "detail": [
+            "trellis.read"
+          ],
+          "kind": "scope"
+        }
       }
     },
     "/v1/scopes/{scope}/registries/event-types": {
