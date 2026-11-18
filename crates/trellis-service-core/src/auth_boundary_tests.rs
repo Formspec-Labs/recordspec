@@ -651,10 +651,16 @@ async fn authorized_append_replay_preserves_json_rejections_without_append() {
             .headers_mut()
             .insert("content-type", content_type.parse().unwrap());
         *malformed.body_mut() = Body::from(bytes);
+        let response = app.clone().oneshot(malformed).await.unwrap();
+        assert_eq!(response.status(), expected);
         assert_eq!(
-            app.clone().oneshot(malformed).await.unwrap().status(),
-            expected
+            response.headers()["content-type"],
+            "application/problem+json",
+            "{expected}"
         );
+        let problem: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+        assert_eq!(problem["status"], expected.as_u16());
     }
     assert!(repository.list_scope(b"case_123").await.unwrap().is_empty());
 }

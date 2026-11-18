@@ -16,7 +16,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use stack_common_error::{ErrorCode, StackError};
+use stack_common_error::{ErrorCode, ProblemJson, StackError};
 use stack_common_http::idempotency::{
     HttpIdempotencyState, IdempotencyCall, IdempotencyDecision, IdempotencyDriverError,
     IdempotencyFailure, IdempotencyOperation,
@@ -221,11 +221,12 @@ async fn admit_append(
     .await
     .map_err(|_| {
         diag::mark(selected, Stage::BodyAdmission, Outcome::Refused);
-        (
-            axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+        ProblemJson::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "request_body_too_large",
             "append body exceeds JSON limit",
         )
-            .into_response()
+        .into_response()
     })?;
     let mut parse_request = Request::new(Body::from(bytes.clone()));
     *parse_request.headers_mut() = request.headers().clone();
@@ -233,7 +234,7 @@ async fn admit_append(
         .await
         .map_err(|error| {
             diag::mark(selected, Stage::BodyAdmission, Outcome::Refused);
-            error.into_response()
+            ProblemJson::from(error).into_response()
         })?;
     selected = body.source_content.is_some();
     body.validate().map_err(|error| {
