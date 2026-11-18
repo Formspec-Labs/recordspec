@@ -1174,18 +1174,18 @@ The Trellis posture-transition event MUST be admitted AFTER its authorizing `wos
 
 This rule is load-bearing: if a grant is not canonical, authorization decisions premised on it are not independently verifiable. Every rights-impacting decision needs a canonical record to point to.
 
-For the reference HTTP binding, [`authority-events.schema.json`](authority-events.schema.json) defines the authority payloads. Each ledger scope consists of the 64-character lowercase hexadecimal scope key, a dot, and the ledger id. A server contract id MUST conform to the schema’s `contractId` definition. It matches `^[a-z][a-z0-9-]{0,31}$`, excluding `decisions` and any id that starts with `decisions-`.
+For the reference HTTP binding, [`authority-events.schema.json`](authority-events.schema.json) defines the authority payloads. Each scope has the two shared authority ledgers `authority` and `authority-decisions`, so each ledger scope consists of the 64-character lowercase hexadecimal scope key, a dot, and the exact ledger id (`authority` or `authority-decisions`). A payload's `contract` member MUST conform to the schema’s `contractId` definition (`^[a-z][a-z0-9-]{0,31}$`). The contract id `"genesis"` is reserved for genesis tuple-change grants and MUST be rejected by server contract loaders.
 
 | Ledger id | Event type | Payload definition |
 |---|---|---|
-| `authority-<contract>` | `trellis.authority.grant.v1` | `tupleChange` |
-| `authority-<contract>` | `trellis.authority.revocation.v1` | `tupleChange` |
-| `authority-<contract>` | `trellis.authority.activation.v1` | `activation` |
-| `authority-decisions-<contract>` | `trellis.authority.decision.v1` | `decision` |
+| `authority` | `trellis.authority.grant.v1` | `tupleChange` |
+| `authority` | `trellis.authority.revocation.v1` | `tupleChange` |
+| `authority` | `trellis.authority.activation.v1` | `activation` |
+| `authority-decisions` | `trellis.authority.decision.v1` | `decision` |
 
-The binding MUST apply this rule at common admission for every append path. Each ledger MUST admit only its listed types, and each listed type MUST be refused on every other ledger. The reserved contract ids keep the two kinds of ledger names disjoint. Each payload MUST conform to its named definition and its `contract` MUST equal the ledger's contract suffix.
+The binding MUST apply this rule at common admission for every append path. Each shared ledger MUST admit only its listed types, and each listed type MUST be refused on every other ledger. Each payload MUST conform to its named definition; because the two ledgers are shared per scope across contracts, any valid `contractId` (including `"genesis"` for genesis grants) is admitted without matching a ledger suffix.
 
-The append actor MUST be a service actor. The server's exact ledger grants bind the caller and its outer `actor`. The producing server authorizes the payload principal and records it as `actor` for tuple changes or `principal` for decisions. See the [caller grants documentation](../crates/trellis-service-core/OIDC_STARTUP.md).
+The append actor MUST be a service actor. Each calling server's exact ledger grants bind the caller and its outer `actor` on the two shared ledgers `authority` and `authority-decisions`. The producing server authorizes the payload principal and records it as `actor` for tuple changes (or the deterministic canonical genesis service actor for genesis grants) or `principal` for decisions. See the [caller grants documentation](../crates/trellis-service-core/OIDC_STARTUP.md).
 
 Authority payloads carry identifiers and authorization evidence. Producers MUST keep protected record content and secrets out of them, including producer-owned decision detail and policy artifacts. Activations carry policy artifacts as UTF-8 text. Admission MUST verify each artifact's `sha256` against the UTF-8 bytes of its `content` and require unique artifact paths. The producer verifies that the set of artifacts is complete. The HTTP append body limit is 2 MiB, and the compact JSON activation payload within it MUST be at most 1,792 KiB.
 
@@ -1255,7 +1255,7 @@ For each of these conditions, the implementation MUST declare — in advance, as
 
 **OC-124 (MUST).** Cryptographic-erasure events recorded as canonical lifecycle facts (§20) invalidate any evaluator state that depends on cryptographically destroyed material. Such invalidation cascades into evaluator state exactly as it cascades into other derived artifacts (§20.5).
 
-Where authority-fact erasure is supported, the binding MUST admit it only if replaying the ledger while omitting the facts to erase yields the same authority state as the current replay. Erasing a revocation while an earlier grant of the same tuple survives fails this check. Once erased, a fact contributes nothing when replayed. The operator MUST invalidate snapshots and stores derived from the affected ledger and rebuild them before reuse.
+Where authority-fact erasure is supported, authority erasure MUST apply only to `trellis.authority.grant.v1` and `trellis.authority.revocation.v1` facts and MUST NOT erase any contract's active `trellis.authority.activation.v1` fact (any historical erased activation encountered during rebuild or verification is skipped when resolving the governing activation). The binding MUST admit erasure only if replaying the ledger while omitting the facts to erase yields the same authority state as the current replay; erasing a revocation while an earlier grant of the same tuple survives fails this check. Erasure MUST preserve `idempotency_key` and `content_hash` on erased entries (clearing only `payload`) so `reconcile` still returns `Committed` after erasure and never permits a revoked or erased command or genesis grant to be re-appended. Once erased, a fact contributes nothing when replayed. The operator MUST invalidate snapshots and stores derived from the affected ledger and rebuild them before reuse.
 
 Verification that needs erased material MUST report the omitted checks and cite the canonical erasure evidence using §20.6. The report MUST disclose that payload readability could not be verified for that material (Core §16 (Verification Independence Contract) §16.4 and Core §19 (Verification Algorithm)).
 

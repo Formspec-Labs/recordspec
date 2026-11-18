@@ -1199,38 +1199,77 @@ async fn generated_deployment_completion_grants_and_real_append_revocation() {
 #[tokio::test]
 async fn t1_authority_grants_bind_the_service_and_allow_unlisted_payload_principals() {
     let mut files = Files::new();
+    files.profile["identities"] = json!([
+        {"issuer":ISSUER,"subject":"wos-service-sub","clientId":"trellis-producer","principal":"wos-server"},
+        {"issuer":ISSUER,"subject":"formspec-service-sub","clientId":"trellis-producer","principal":"formspec-server"}
+    ]);
     files.grants["grants"] = json!([
-        {"principal":"internal-producer","scope":scope_a(),"ledger":"authority-sample","action":"append",
-          "actors":[{"kind":"service","subject":"authority-producer"}]},
-        {"principal":"internal-producer","scope":scope_a(),"ledger":"authority-sample","action":"read"},
-        {"principal":"internal-producer","scope":scope_a(),"ledger":"authority-decisions-sample","action":"append",
-          "actors":[{"kind":"service","subject":"authority-producer"}]},
-        {"principal":"internal-producer","scope":scope_a(),"ledger":"authority-decisions-sample","action":"read"}
+        {"principal":"wos-server","scope":scope_a(),"ledger":"authority","action":"append",
+          "actors":[{"kind":"service","subject":"wos-server"}]},
+        {"principal":"wos-server","scope":scope_a(),"ledger":"authority","action":"read"},
+        {"principal":"wos-server","scope":scope_a(),"ledger":"authority-decisions","action":"append",
+          "actors":[{"kind":"service","subject":"wos-server"}]},
+        {"principal":"wos-server","scope":scope_a(),"ledger":"authority-decisions","action":"read"},
+        {"principal":"formspec-server","scope":scope_a(),"ledger":"authority","action":"append",
+          "actors":[{"kind":"service","subject":"formspec-server"}]},
+        {"principal":"formspec-server","scope":scope_a(),"ledger":"authority","action":"read"},
+        {"principal":"formspec-server","scope":scope_a(),"ledger":"authority-decisions","action":"append",
+          "actors":[{"kind":"service","subject":"formspec-server"}]},
+        {"principal":"formspec-server","scope":scope_a(),"ledger":"authority-decisions","action":"read"}
     ]);
     files.save();
     let app = files.app(Arc::new(ProtocolHttp::new()));
-    let token = sign(&claims());
+    let wos_token = token_for("wos-service-sub");
+    let formspec_token = token_for("formspec-service-sub");
     let cases = super::ledger_read_tests::authority_cases();
-    for (index, field) in [(0, "actor"), (3, "principal")] {
-        let case = &cases[index];
-        let path = format!("/v1/scopes/{}/events", case["ledger"].as_str().unwrap());
-        let mut body = super::ledger_read_tests::body_for(case, &format!("oidc-authority-{index}"));
-        body["payload"][field] = json!("person:another-human");
-        let send = |body: &Value| post_request_bearer(&path, serde_json::to_vec(body).unwrap(), &token);
+
+    for (server, token, contract, payload_actor) in [
+        ("wos-server", &wos_token, "wos", "person:another-human"),
+        ("formspec-server", &formspec_token, "formspec", "service:operator-1"),
+    ] {
+        // Ordinary operator/service actor on `authority` and decision on `authority-decisions`.
+        for (index, field) in [(0, "actor"), (3, "principal")] {
+            let case = &cases[index];
+            let path = format!("/v1/scopes/{}/events", case["ledger"].as_str().unwrap());
+            let mut body = super::ledger_read_tests::body_for(case, &format!("oidc-{server}-{index}"));
+            body["actor"] = json!({"kind": "service", "subject": server});
+            body["payload"]["contract"] = json!(contract);
+            body["payload"][field] = json!(payload_actor);
+            let send = |body: &Value| post_request_bearer(&path, serde_json::to_vec(body).unwrap(), token);
+            assert_eq!(
+                app.clone().oneshot(send(&body)).await.unwrap().status(),
+                StatusCode::CREATED,
+                "{server} {index}"
+            );
+            body["actor"]["subject"] = json!("different-service");
+            assert_eq!(
+                app.clone().oneshot(send(&body)).await.unwrap().status(),
+                StatusCode::FORBIDDEN,
+            );
+            let head = format!("/v1/scopes/{}/head", case["ledger"].as_str().unwrap());
+            let read = crate::test_support::scoped_request("GET", &head)
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap();
+            assert_eq!(app.clone().oneshot(read).await.unwrap().status(), StatusCode::OK);
+        }
+
+        // Genesis grant uses canonical genesis `service:<digest>` payload actor alongside each server's own outer AppendActor.
+        let genesis = &cases[4];
+        let mut body = super::ledger_read_tests::body_for(genesis, &format!("oidc-genesis-{server}"));
+        body["actor"] = json!({"kind": "service", "subject": server});
         assert_eq!(
-            app.clone().oneshot(send(&body)).await.unwrap().status(),
+            app.clone()
+                .oneshot(post_request_bearer(
+                    "/v1/scopes/authority/events",
+                    serde_json::to_vec(&body).unwrap(),
+                    token
+                ))
+                .await
+                .unwrap()
+                .status(),
             StatusCode::CREATED,
+            "genesis grant by {server}"
         );
-        body["actor"]["subject"] = json!("different-service");
-        assert_eq!(
-            app.clone().oneshot(send(&body)).await.unwrap().status(),
-            StatusCode::FORBIDDEN,
-        );
-        let head = format!("/v1/scopes/{}/head", case["ledger"].as_str().unwrap());
-        let read = crate::test_support::scoped_request("GET", &head)
-            .header("authorization", format!("Bearer {token}"))
-            .body(Body::empty())
-            .unwrap();
-        assert_eq!(app.clone().oneshot(read).await.unwrap().status(), StatusCode::OK);
     }
 }

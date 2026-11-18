@@ -9,15 +9,9 @@
       "pattern": "^sha256:[0-9a-f]{64}$"
     },
     "contractId": {
-      "description": "A server contract id. The decisions namespace is reserved for decision ledgers.",
+      "description": "A server contract id. Both authority and authority-decisions ledgers are shared per scope across contracts; \"genesis\" is reserved for genesis tupleChange grants and rejected by server contract loaders.",
       "type": "string",
-      "pattern": "^[a-z][a-z0-9-]{0,31}$",
-      "not": {
-        "anyOf": [
-          { "const": "decisions" },
-          { "pattern": "^decisions-" }
-        ]
-      }
+      "pattern": "^[a-z][a-z0-9-]{0,31}$"
     },
     "objectRef": {
       "description": "A typed object: `<type>:<id>`. The bounds are structural; an evaluator's own limits are enforced by the server that admits the command.",
@@ -25,7 +19,7 @@
       "pattern": "^[^:#@\\s]{1,254}:[^#:\\s]{1,256}$"
     },
     "subjectRef": {
-      "description": "A typed object, or a set of subjects related to one: `<type>:<id>#<relation>`. A wildcard subject is not admitted in an authority fact.",
+      "description": "A typed object, or a set of subjects related to one: `<type>:<id>#<relation>`. A wildcard subject is not admitted in an authority fact. The bounds are structural; an evaluator's own limits are enforced by the server that admits the command.",
       "type": "string",
       "pattern": "^[^:#@*\\s]{1,254}:[^#:*\\s]{1,256}(#[^:#@\\s]{1,50})?$"
     },
@@ -72,7 +66,7 @@
       }
     },
     "tupleChange": {
-      "description": "Payload of trellis.authority.grant.v1 and trellis.authority.revocation.v1. A pure function of the command that produced it.",
+      "description": "Payload of trellis.authority.grant.v1 and trellis.authority.revocation.v1. A pure function of the command that produced it; for a genesis authority_admin grant, a pure deterministic function of (scope, administrator) with contract \"genesis\" and the canonical genesis service actor, identical across all servers.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -87,7 +81,7 @@
           "$ref": "#/$defs/tuple"
         },
         "actor": {
-          "description": "The principal who issued the command.",
+          "description": "The principal who issued the command. For genesis grants, the deterministic canonical genesis actor (service:<digest> derived from the fixed domain tag \"stack-authz-genesis-operator-v1\"), distinct from the calling server's HTTP AppendActor.",
           "$ref": "#/$defs/objectRef"
         },
         "reason": {
@@ -102,7 +96,7 @@
           "maxLength": 255
         },
         "contract": {
-          "description": "The server contract that admitted the command.",
+          "description": "The server contract that admitted the command, or \"genesis\" for a scope's genesis authority_admin grants.",
           "$ref": "#/$defs/contractId"
         }
       }

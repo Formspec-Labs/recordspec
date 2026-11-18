@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use stack_common_error::StackError;
 use trellis_admission_authority::{
-    AUTHORITY_LEDGER_PREFIX, AuthorityAdmissionPolicy, DECISIONS_LEDGER_PREFIX,
-    authority_event_type_specs, authority_literals, valid_contract_id,
+    AUTHORITY_LEDGER_ID, AuthorityAdmissionPolicy, DECISIONS_LEDGER_ID, authority_event_type_specs,
+    authority_literals,
 };
 use trellis_admission_formspec::accepted_attachment::{
     FormspecAttachmentAdmission, accepted_attachment_event_type_spec,
@@ -65,17 +65,15 @@ fn admission_router() -> AdmissionRouter {
             .collect::<Vec<_>>()
     };
     AdmissionRouter::new()
-        .reserve_contract_ledgers(
-            AUTHORITY_LEDGER_PREFIX,
+        .reserve_ledger(
+            AUTHORITY_LEDGER_ID,
             Arc::new(AuthorityAdmissionPolicy),
-            authority_literals(AUTHORITY_LEDGER_PREFIX),
-            valid_contract_id,
+            authority_literals(AUTHORITY_LEDGER_ID),
         )
-        .reserve_contract_ledgers(
-            DECISIONS_LEDGER_PREFIX,
+        .reserve_ledger(
+            DECISIONS_LEDGER_ID,
             Arc::new(AuthorityAdmissionPolicy),
-            authority_literals(DECISIONS_LEDGER_PREFIX),
-            valid_contract_id,
+            authority_literals(DECISIONS_LEDGER_ID),
         )
         .register_for_literals(
             Arc::new(WosEventAdmissionPolicy::new()),

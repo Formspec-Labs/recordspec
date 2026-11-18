@@ -45,14 +45,8 @@ pub struct ServerAdapters {
 #[derive(Default, Clone)]
 pub struct AdmissionRouter {
     by_literal: HashMap<EventType, Arc<dyn EventAdmissionPolicy<Error = StackError>>>,
-    contract_ledgers: HashMap<&'static str, ContractLedger>,
+    reserved_ledgers: HashMap<&'static str, Vec<&'static str>>,
     payload_policy: Option<Arc<dyn EventAdmissionPolicy<Error = StackError>>>,
-}
-
-#[derive(Clone)]
-struct ContractLedger {
-    literals: Vec<&'static str>,
-    valid_contract_id: fn(&str) -> bool,
 }
 
 impl std::fmt::Debug for AdmissionRouter {
@@ -91,29 +85,23 @@ impl AdmissionRouter {
         self
     }
 
-    /// Reserves a prefix for ledgers that accept only the listed literals.
+    /// Reserves an exact ledger id for the listed event literals.
     ///
-    /// When several prefixes match, the longest match with a valid contract suffix wins.
+    /// Events reserved for a ledger are rejected on every other ledger, and the
+    /// reserved ledger admits no other event literals.
     #[must_use]
-    pub fn reserve_contract_ledgers(
+    pub fn reserve_ledger(
         mut self,
-        prefix: &'static str,
+        ledger_id: &'static str,
         adapter: Arc<dyn EventAdmissionPolicy<Error = StackError>>,
         literals: impl IntoIterator<Item = &'static str>,
-        valid_contract_id: fn(&str) -> bool,
     ) -> Self {
         let literals: Vec<_> = literals.into_iter().collect();
-        self.contract_ledgers.insert(
-            prefix,
-            ContractLedger {
-                literals: literals.clone(),
-                valid_contract_id,
-            },
-        );
+        self.reserved_ledgers.insert(ledger_id, literals.clone());
         self.register_for_literals(adapter, literals)
     }
 
-    fn contract_ledger<'a>(&self, scope: &'a [u8]) -> Option<(&[&'static str], &'a str)> {
+    fn reserved_ledger(&self, scope: &[u8]) -> Option<&[&'static str]> {
         let (key, id) = std::str::from_utf8(scope).ok()?.split_once('.')?;
         if key.len() != 64
             || !key
@@ -122,24 +110,13 @@ impl AdmissionRouter {
         {
             return None;
         }
-        self.contract_ledgers
-            .iter()
-            .filter_map(|(&prefix, reservation)| {
-                let contract = id.strip_prefix(prefix)?;
-                (reservation.valid_contract_id)(contract).then_some((
-                    prefix.len(),
-                    reservation.literals.as_slice(),
-                    contract,
-                ))
-            })
-            .max_by_key(|(length, _, _)| *length)
-            .map(|(_, literals, contract)| (literals, contract))
+        self.reserved_ledgers.get(id).map(Vec::as_slice)
     }
 
     pub(crate) fn is_contract_event(&self, event_type: &str) -> bool {
-        self.contract_ledgers
+        self.reserved_ledgers
             .values()
-            .any(|reservation| reservation.literals.contains(&event_type))
+            .any(|literals| literals.contains(&event_type))
     }
 
     pub(crate) fn replace_payload_policy(
@@ -160,8 +137,8 @@ impl AdmissionRouter {
         scope: &[u8],
         event_type: &str,
     ) -> Result<(), StackError> {
-        let allowed = match self.contract_ledger(scope) {
-            Some((literals, _)) => literals.contains(&event_type),
+        let allowed = match self.reserved_ledger(scope) {
+            Some(literals) => literals.contains(&event_type),
             None => !self.is_contract_event(event_type),
         };
         if !allowed {
@@ -173,7 +150,7 @@ impl AdmissionRouter {
     }
 
     pub(crate) fn uses_canonical_append_replay(&self, scope: &[u8]) -> bool {
-        self.contract_ledger(scope).is_some()
+        self.reserved_ledger(scope).is_some()
     }
 }
 
@@ -198,23 +175,6 @@ impl EventAdmissionPolicy for AdmissionRouter {
             return Err(StackError::internal(
                 "admission policy changed the event type",
             ));
-        }
-        if let Some((_, expected)) = self.contract_ledger(event.scope) {
-            #[derive(serde::Deserialize)]
-            struct PayloadContract<'a> {
-                #[serde(borrow)]
-                contract: std::borrow::Cow<'a, str>,
-            }
-
-            let payload: PayloadContract<'_> =
-                serde_json::from_slice(event.payload).map_err(|_| {
-                    StackError::bad_request("authority payload contract is missing or invalid")
-                })?;
-            if payload.contract != expected {
-                return Err(StackError::bad_request(
-                    "authority payload contract does not match its ledger",
-                ));
-            }
         }
         Ok(admitted)
     }
@@ -337,6 +297,89 @@ mod tests {
         assert!(
             err.to_string().contains("not registered for admission"),
             "router must surface the registration gap; got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn reserved_ledger_binds_events_bidirectionally_without_suffix_coupling() {
+        let adapter: Arc<dyn EventAdmissionPolicy<Error = StackError>> =
+            Arc::new(ConstantAdapter(AdmittedEvent {
+                event_type: "trellis.authority.grant.v1".to_string(),
+                event_family: trellis_server_ports::EventFamilyId::new("trellis.authority").unwrap(),
+                schema_ref: trellis_server_ports::SchemaRef::new(
+                    "https://formspec.org/schemas/trellis/authority-events.schema.json#/$defs/tupleChange",
+                )
+                .unwrap(),
+                artifact_type: trellis_types::ArtifactType::Event,
+                direct_submit: trellis_server_ports::DirectSubmitPolicy::ServiceOnly,
+                max_scope_events: None,
+            }));
+        let decision_adapter: Arc<dyn EventAdmissionPolicy<Error = StackError>> =
+            Arc::new(ConstantAdapter(AdmittedEvent {
+                event_type: "trellis.authority.decision.v1".to_string(),
+                event_family: trellis_server_ports::EventFamilyId::new("trellis.authority").unwrap(),
+                schema_ref: trellis_server_ports::SchemaRef::new(
+                    "https://formspec.org/schemas/trellis/authority-events.schema.json#/$defs/decision",
+                )
+                .unwrap(),
+                artifact_type: trellis_types::ArtifactType::Event,
+                direct_submit: trellis_server_ports::DirectSubmitPolicy::ServiceOnly,
+                max_scope_events: None,
+            }));
+        let router = router()
+            .reserve_ledger("authority", adapter, ["trellis.authority.grant.v1"])
+            .reserve_ledger(
+                "authority-decisions",
+                decision_adapter,
+                ["trellis.authority.decision.v1"],
+            );
+        let key = "a".repeat(64);
+        let auth_scope = format!("{key}.authority");
+        let dec_scope = format!("{key}.authority-decisions");
+        let legacy_scope = format!("{key}.authority-wos");
+
+        assert!(router.uses_canonical_append_replay(auth_scope.as_bytes()));
+        assert!(router.uses_canonical_append_replay(dec_scope.as_bytes()));
+        assert!(!router.uses_canonical_append_replay(legacy_scope.as_bytes()));
+        assert!(!router.uses_canonical_append_replay(b"authority"));
+        assert!(router.is_contract_event("trellis.authority.grant.v1"));
+        assert!(router.is_contract_event("trellis.authority.decision.v1"));
+        assert!(!router.is_contract_event("x-test.overlay.synthetic"));
+
+        assert!(
+            router
+                .admit(&AdmissionEvent {
+                    scope: auth_scope.as_bytes(),
+                    event_type: "trellis.authority.grant.v1",
+                    payload: br#"{"contract":"genesis"}"#,
+                })
+                .await
+                .is_ok()
+        );
+        assert!(
+            router
+                .admit(&AdmissionEvent {
+                    scope: dec_scope.as_bytes(),
+                    event_type: "trellis.authority.decision.v1",
+                    payload: br#"{"contract":"wos"}"#,
+                })
+                .await
+                .is_ok()
+        );
+        assert!(
+            router
+                .check_ledger_event(auth_scope.as_bytes(), "trellis.authority.decision.v1")
+                .is_err()
+        );
+        assert!(
+            router
+                .check_ledger_event(auth_scope.as_bytes(), "x-test.overlay.synthetic")
+                .is_err()
+        );
+        assert!(
+            router
+                .check_ledger_event(legacy_scope.as_bytes(), "trellis.authority.grant.v1")
+                .is_err()
         );
     }
 }

@@ -7,8 +7,8 @@
 use std::sync::Arc;
 
 use trellis_admission_authority::{
-    AUTHORITY_LEDGER_PREFIX, AuthorityAdmissionPolicy, DECISIONS_LEDGER_PREFIX,
-    authority_event_type_specs, authority_literals, valid_contract_id,
+    AUTHORITY_LEDGER_ID, AuthorityAdmissionPolicy, DECISIONS_LEDGER_ID, authority_event_type_specs,
+    authority_literals,
 };
 use trellis_admission_formspec::accepted_attachment::{
     FormspecAttachmentAdmission, accepted_attachment_event_type_spec,
@@ -50,17 +50,15 @@ pub fn default_admission_policy() -> AdmissionRouter {
             .collect::<Vec<_>>()
     };
     AdmissionRouter::new()
-        .reserve_contract_ledgers(
-            AUTHORITY_LEDGER_PREFIX,
+        .reserve_ledger(
+            AUTHORITY_LEDGER_ID,
             Arc::new(AuthorityAdmissionPolicy),
-            authority_literals(AUTHORITY_LEDGER_PREFIX),
-            valid_contract_id,
+            authority_literals(AUTHORITY_LEDGER_ID),
         )
-        .reserve_contract_ledgers(
-            DECISIONS_LEDGER_PREFIX,
+        .reserve_ledger(
+            DECISIONS_LEDGER_ID,
             Arc::new(AuthorityAdmissionPolicy),
-            authority_literals(DECISIONS_LEDGER_PREFIX),
-            valid_contract_id,
+            authority_literals(DECISIONS_LEDGER_ID),
         )
         .register_for_literals(
             Arc::new(WosEventAdmissionPolicy::new()),
@@ -336,8 +334,8 @@ mod authority_tests {
     }
 
     #[tokio::test]
-    async fn t1_formspec_event_cannot_enter_either_authority_ledger() {
-        for ledger in ["authority-sample", "authority-decisions-sample"] {
+    async fn t1_non_authority_events_cannot_enter_either_authority_ledger() {
+        for ledger in ["authority", "authority-decisions"] {
             let scope = format!("{}.{ledger}", "a".repeat(64));
             let error = default_admission_policy()
                 .admit(&AdmissionEvent {
@@ -347,7 +345,17 @@ mod authority_tests {
                 })
                 .await
                 .unwrap_err();
-            assert!(error.to_string().contains("ledger"));
+            assert!(error.to_string().contains("ledger"), "{ledger}: {error}");
+
+            let error = default_admission_policy()
+                .admit(&AdmissionEvent {
+                    scope: scope.as_bytes(),
+                    event_type: "wos.kernel.case_created",
+                    payload: b"{}",
+                })
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("ledger"), "{ledger}: {error}");
         }
     }
 
@@ -375,43 +383,59 @@ mod authority_tests {
     }
 
     #[tokio::test]
-    async fn t1_binds_contract_and_disambiguates_the_ledger_prefixes() {
+    async fn t1_shared_ledgers_accept_any_valid_contract_and_genesis_and_refuse_cross_ledger() {
         let cases = cases();
+        let long_valid = "a1234567890123456789012345678901";
+        let long_invalid = "a12345678901234567890123456789012";
         for case in &cases {
             let event_type = case["eventType"].as_str().unwrap();
-            let prefix = case["ledger"]
-                .as_str()
-                .unwrap()
-                .strip_suffix("sample")
-                .unwrap();
+            let ledger = case["ledger"].as_str().unwrap();
+            let other_ledger = if ledger == "authority" {
+                "authority-decisions"
+            } else {
+                "authority"
+            };
             let mut payload = case["payload"].clone();
-            for contract in ["decisions", "decisions-9"] {
+            for contract in [
+                "wos",
+                "formspec",
+                "genesis",
+                "decisions",
+                "decisions-9",
+                "decisionsx",
+                long_valid,
+            ] {
                 payload["contract"] = contract.into();
+                admit(event_type, ledger, &payload)
+                    .await
+                    .unwrap_or_else(|error| {
+                        panic!("{event_type} on {ledger} refused contract {contract}: {error}")
+                    });
                 assert!(
-                    admit(event_type, &format!("{prefix}{contract}"), &payload)
+                    admit(event_type, other_ledger, &payload).await.is_err(),
+                    "{event_type} unexpectedly admitted on {other_ledger}"
+                );
+                assert!(
+                    admit(event_type, "authority-sample", &payload)
                         .await
                         .is_err(),
-                    "{event_type} accepted reserved contract {contract}"
+                    "{event_type} unexpectedly admitted on authority-sample"
+                );
+                assert!(
+                    admit(event_type, "authority-decisions-sample", &payload)
+                        .await
+                        .is_err(),
+                    "{event_type} unexpectedly admitted on authority-decisions-sample"
                 );
             }
-            for contract in ["decisionsx", "a1234567890123456789012345678901"] {
-                payload["contract"] = contract.into();
-                admit(event_type, &format!("{prefix}{contract}"), &payload)
-                    .await
-                    .unwrap();
+            for invalid in ["", "Sample", "0sample", "bad_id", long_invalid] {
+                payload["contract"] = invalid.into();
+                let error = admit(event_type, ledger, &payload).await.unwrap_err();
+                assert!(
+                    error.to_string().contains("contract"),
+                    "{event_type} invalid contract {invalid}: {error}"
+                );
             }
-        }
-        for case in cases {
-            let mut payload = case["payload"].clone();
-            payload["contract"] = "another".into();
-            let error = admit(
-                case["eventType"].as_str().unwrap(),
-                case["ledger"].as_str().unwrap(),
-                &payload,
-            )
-            .await
-            .unwrap_err();
-            assert!(error.to_string().contains("contract"), "{error}");
         }
     }
 

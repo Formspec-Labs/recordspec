@@ -1,7 +1,7 @@
 [
   {
     "eventType": "trellis.authority.grant.v1",
-    "ledger": "authority-sample",
+    "ledger": "authority",
     "payload": {
       "tuple": {
         "subject": "group:reviewers#member",
@@ -16,7 +16,7 @@
   },
   {
     "eventType": "trellis.authority.revocation.v1",
-    "ledger": "authority-sample",
+    "ledger": "authority",
     "payload": {
       "tuple": {
         "subject": "group:reviewers#member",
@@ -31,7 +31,7 @@
   },
   {
     "eventType": "trellis.authority.activation.v1",
-    "ledger": "authority-sample",
+    "ledger": "authority",
     "payload": {
       "contract": "sample",
       "policy": {
@@ -56,7 +56,7 @@
   },
   {
     "eventType": "trellis.authority.decision.v1",
-    "ledger": "authority-decisions-sample",
+    "ledger": "authority-decisions",
     "payload": {
       "contract": "sample",
       "operation": "record.read",
@@ -82,6 +82,21 @@
         "treeSize": 0,
         "treeHeadHash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
       }
+    }
+  },
+  {
+    "eventType": "trellis.authority.grant.v1",
+    "ledger": "authority",
+    "payload": {
+      "tuple": {
+        "subject": "person:admin",
+        "relation": "authority_admin",
+        "object": "space:sample"
+      },
+      "actor": "service:0000000000000000000000000000000000000000000000000000000000000000",
+      "reason": "Genesis authority administrator",
+      "command": "genesis-sample",
+      "contract": "genesis"
     }
   }
 ]

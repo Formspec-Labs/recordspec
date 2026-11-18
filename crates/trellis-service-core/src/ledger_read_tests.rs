@@ -96,9 +96,9 @@ async fn t1_authority_replays_original_and_refuses_changed_payload() {
             router(fixture).unwrap()
         };
         assert_eq!(post_append(&fresh(), &path, bytes).await, first);
-        let field = match index {
-            0 | 1 => "reason",
-            2 => "actor",
+        let field = match case["eventType"].as_str().unwrap() {
+            "trellis.authority.grant.v1" | "trellis.authority.revocation.v1" => "reason",
+            "trellis.authority.activation.v1" => "actor",
             _ => "point",
         };
         body["payload"][field] = "person:changed".into();
@@ -109,8 +109,8 @@ async fn t1_authority_replays_original_and_refuses_changed_payload() {
 
 async fn check_feed(fixture: Fixture) {
     let app = router(fixture.clone()).unwrap();
-    let ledger = crate::test_support::ledger("authority-sample");
-    let path = "/v1/scopes/authority-sample";
+    let ledger = crate::test_support::ledger("authority");
+    let path = "/v1/scopes/authority";
     let head_path = format!("{path}/head");
     let feed = |after, limit| format!("{path}/events/ordered?after={after}&limit={limit}");
     assert_eq!(get(&app, &head_path).await, (StatusCode::OK, serde_json::json!({"head":null})));
@@ -147,7 +147,7 @@ async fn check_feed(fixture: Fixture) {
         let body = serde_json::to_vec(&make_body(id)).unwrap();
         let app = app.clone();
         writers.spawn(async move {
-            (id, post_append(&app, "/v1/scopes/authority-sample/events", body).await)
+            (id, post_append(&app, "/v1/scopes/authority/events", body).await)
         });
     }
     let (status, page) = tokio::time::timeout(
@@ -253,7 +253,7 @@ async fn t1_activation_admits_a_realistic_package_and_refuses_oversize() {
         artifact("policy.txt", &"policy\n".repeat(1000)),
         artifact("vocabulary.json", "{}"),
     ]);
-    let path = "/v1/scopes/authority-sample/events";
+    let path = "/v1/scopes/authority/events";
     post_append(&app, path, serde_json::to_vec(&body).unwrap()).await;
     body["idempotencyKey"] = "oversize-activation".into();
     body["payload"]["artifacts"][0] = artifact("model.txt", &"x".repeat(1800 * 1024));
@@ -264,7 +264,7 @@ async fn t1_activation_admits_a_realistic_package_and_refuses_oversize() {
 #[tokio::test]
 async fn t1_conditional_append_refuses_moved_heads_and_uses_canonical_replay() {
     let app = router(test_state()).unwrap();
-    let path = "/v1/scopes/authority-sample/events";
+    let path = "/v1/scopes/authority/events";
     let grant = authority_cases().remove(0);
     let mut first = body_for(&grant, "first-conditional");
     first["expectedTreeSize"] = 0.into();
@@ -285,15 +285,15 @@ async fn t1_conditional_append_refuses_moved_heads_and_uses_canonical_replay() {
     assert_eq!(response.status(), StatusCode::CONFLICT);
     let problem: serde_json::Value = serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
     assert_ne!(problem["error_code"], "INFRA-4094");
-    assert_eq!(get(&app, "/v1/scopes/authority-sample/head").await.1["head"]["treeSize"], 2);
+    assert_eq!(get(&app, "/v1/scopes/authority/head").await.1["head"]["treeSize"], 2);
 }
 
 async fn concurrent_conditionals(fixture: Fixture) {
     let scoped = fixture.ledgers.scoped(&crate::test_support::a());
-    let lock = scoped.begin(&crate::test_support::ledger("authority-sample")).await.unwrap();
+    let lock = scoped.begin(&crate::test_support::ledger("authority")).await.unwrap();
     let app = router(fixture).unwrap();
     let grant = authority_cases().remove(0);
-    let path = "/v1/scopes/authority-sample/events";
+    let path = "/v1/scopes/authority/events";
     let request = |key| {
         let mut body = body_for(&grant, key);
         body["expectedTreeSize"] = 0.into();
@@ -310,7 +310,7 @@ async fn concurrent_conditionals(fixture: Fixture) {
     let mut statuses = [first.unwrap().status(), second.unwrap().status()];
     statuses.sort();
     assert_eq!(statuses, [StatusCode::CREATED, StatusCode::CONFLICT]);
-    assert_eq!(get(&app, "/v1/scopes/authority-sample/head").await.1["head"]["treeSize"], 1);
+    assert_eq!(get(&app, "/v1/scopes/authority/head").await.1["head"]["treeSize"], 1);
 }
 
 #[tokio::test]
@@ -332,7 +332,7 @@ async fn t1_concurrent_conditional_appends_postgres() {
 async fn t1_committed_authority_replay_after_signer_expires() {
     let mut fixture = test_state();
     let app = router(fixture.clone()).unwrap();
-    let path = "/v1/scopes/authority-sample/events";
+    let path = "/v1/scopes/authority/events";
     let mut body = body_for(&authority_cases()[0], "review-replay");
     body["expectedTreeSize"] = 0.into();
     let bytes = serde_json::to_vec(&body).unwrap();
@@ -347,7 +347,7 @@ async fn t1_committed_authority_replay_after_signer_expires() {
     assert_eq!(refusal.status(), StatusCode::BAD_REQUEST);
     let bytes = to_bytes(refusal.into_body(), 4096).await.unwrap();
     assert!(String::from_utf8_lossy(&bytes).contains("signing key inactive"));
-    assert_eq!(get(&app, "/v1/scopes/authority-sample/head").await.1["head"]["treeSize"], 1);
+    assert_eq!(get(&app, "/v1/scopes/authority/head").await.1["head"]["treeSize"], 1);
 }
 
 fn validate_http_response(
@@ -397,7 +397,7 @@ fn validate_http_response(
 async fn t1_invalid_ordered_query_returns_declared_problem_json() {
     let app = router(test_state()).unwrap();
     for query in ["after=abc", "limit=2", "after=0&limit=33"] {
-        let path = format!("/v1/scopes/authority-sample/events/ordered?{query}");
+        let path = format!("/v1/scopes/authority/events/ordered?{query}");
         let response = app.clone().oneshot(get_request(&path)).await.unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{query}");
         assert_eq!(response.headers()["content-type"], "application/problem+json", "{query}");
@@ -410,7 +410,7 @@ async fn t1_invalid_ordered_query_returns_declared_problem_json() {
 #[tokio::test]
 async fn t1_ledger_successes_validate_against_the_normative_http_schema() {
     let app = router(test_state()).unwrap();
-    let path = "/v1/scopes/authority-sample";
+    let path = "/v1/scopes/authority";
     let (status, head) = get(&app, &format!("{path}/head")).await;
     assert_eq!(status, StatusCode::OK);
     validate_http_response("getLedgerHead", serde_json::json!(200), &head);
@@ -428,8 +428,8 @@ async fn t1_read_rejects_event_hash_that_disagrees_with_the_canonical_bytes() {
     let fixture = test_state();
     let app = router(fixture.clone()).unwrap();
     let body = body_for(&authority_cases()[0], "review-row");
-    post_append(&app, "/v1/scopes/authority-sample/events", serde_json::to_vec(&body).unwrap()).await;
-    let ledger = crate::test_support::ledger("authority-sample");
+    post_append(&app, "/v1/scopes/authority/events", serde_json::to_vec(&body).unwrap()).await;
+    let ledger = crate::test_support::ledger("authority");
     let ledgers = fixture.ledgers.scoped(&crate::test_support::a());
     let mut page = ledgers.events_after(&ledger, 0, 1).await.unwrap().unwrap();
     let mut row = page.events.remove(0);
@@ -443,8 +443,8 @@ async fn t1_read_rejects_checkpoint_digest_that_disagrees_with_the_signed_payloa
     let fixture = test_state();
     let app = router(fixture.clone()).unwrap();
     let body = body_for(&authority_cases()[0], "checkpoint-digest");
-    post_append(&app, "/v1/scopes/authority-sample/events", serde_json::to_vec(&body).unwrap()).await;
-    let ledger = crate::test_support::ledger("authority-sample");
+    post_append(&app, "/v1/scopes/authority/events", serde_json::to_vec(&body).unwrap()).await;
+    let ledger = crate::test_support::ledger("authority");
     let ledgers = fixture.ledgers.scoped(&crate::test_support::a());
     let mut row = ledgers.events_after(&ledger, 0, 1).await.unwrap().unwrap().events.remove(0);
     row.checkpoint.digest[0] ^= 1;
@@ -459,11 +459,11 @@ async fn t1_default_ordered_page_stops_at_32_with_one_event_left() {
         let body = body_for(case, &format!("default-page-{i}"));
         post_append(
             &app,
-            "/v1/scopes/authority-sample/events",
+            "/v1/scopes/authority/events",
             serde_json::to_vec(&body).unwrap(),
         ).await;
     }
-    let path = "/v1/scopes/authority-sample/events/ordered";
+    let path = "/v1/scopes/authority/events/ordered";
     let (status, first) = get(&app, &format!("{path}?after=0")).await;
     assert_eq!(status, StatusCode::OK);
     let rows = first["events"].as_array().unwrap();
@@ -609,7 +609,7 @@ async fn t1_payload_policy_cannot_relabel_a_reserved_event() {
     }
 
     let app = router(test_state().with_admission_policy(Arc::new(RelabelsEvent))).unwrap();
-    let path = "/v1/scopes/authority-sample";
+    let path = "/v1/scopes/authority";
     let request = body_for(&authority_cases()[0], "relabelled-event");
     let response = app.clone().oneshot(post_request(
         &format!("{path}/events"),
@@ -617,4 +617,139 @@ async fn t1_payload_policy_cannot_relabel_a_reserved_event() {
     )).await.unwrap();
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(get(&app, &format!("{path}/head")).await.1["head"], serde_json::Value::Null);
+}
+
+#[tokio::test]
+async fn t1_shared_ledgers_admit_multiple_contracts_and_genesis_and_refuse_cross_ledger() {
+    let fixture = test_state();
+    let admission = &fixture.state.admission_policy;
+    assert!(admission.uses_canonical_append_replay(crate::test_support::ledger("authority").as_bytes()));
+    assert!(admission.uses_canonical_append_replay(crate::test_support::ledger("authority-decisions").as_bytes()));
+    assert!(!admission.uses_canonical_append_replay(crate::test_support::ledger("authority-sample").as_bytes()));
+    assert!(!admission.uses_canonical_append_replay(crate::test_support::ledger("authority-decisions-sample").as_bytes()));
+    assert!(!admission.uses_canonical_append_replay(crate::test_support::ledger("case_123").as_bytes()));
+    assert!(!admission.uses_canonical_append_replay(b"authority"));
+    assert!(!admission.uses_canonical_append_replay(b"authority-decisions"));
+    for event_type in [
+        "trellis.authority.grant.v1",
+        "trellis.authority.revocation.v1",
+        "trellis.authority.activation.v1",
+        "trellis.authority.decision.v1",
+    ] {
+        assert!(admission.is_contract_event(event_type), "{event_type}");
+    }
+    assert!(!admission.is_contract_event("wos.kernel.case_created"));
+    assert!(!admission.is_contract_event(crate::test_adapters::FORMSPEC_RESPONSE_SUBMITTED));
+
+    let app = router(fixture).unwrap();
+    let cases = authority_cases();
+    for (seq, contract) in ["wos", "formspec", "genesis", "decisions"].into_iter().enumerate() {
+        let mut body = body_for(&cases[0], &format!("shared-auth-{seq}"));
+        body["expectedTreeSize"] = (seq as u64).into();
+        body["payload"]["contract"] = contract.into();
+        if contract == "genesis" {
+            body["payload"] = cases[4]["payload"].clone();
+        }
+        let receipt = post_append(&app, "/v1/scopes/authority/events", serde_json::to_vec(&body).unwrap()).await;
+        assert_eq!(receipt.sequence, seq as u64);
+    }
+    let (status, auth_page) = get(&app, "/v1/scopes/authority/events/ordered?after=0").await;
+    assert_eq!(status, StatusCode::OK);
+    let auth_events = auth_page["events"].as_array().unwrap();
+    assert_eq!(auth_events.len(), 4);
+    assert_eq!(auth_events[0]["payload"]["contract"], "wos");
+    assert_eq!(auth_events[1]["payload"]["contract"], "formspec");
+    assert_eq!(auth_events[2]["payload"]["contract"], "genesis");
+    assert_eq!(auth_events[3]["payload"]["contract"], "decisions");
+
+    for (seq, contract) in ["wos", "formspec"].into_iter().enumerate() {
+        let mut body = body_for(&cases[3], &format!("shared-decision-{seq}"));
+        body["expectedTreeSize"] = (seq as u64).into();
+        body["payload"]["contract"] = contract.into();
+        let receipt = post_append(
+            &app,
+            "/v1/scopes/authority-decisions/events",
+            serde_json::to_vec(&body).unwrap(),
+        )
+        .await;
+        assert_eq!(receipt.sequence, seq as u64);
+    }
+    let (status, dec_page) = get(&app, "/v1/scopes/authority-decisions/events/ordered?after=0").await;
+    assert_eq!(status, StatusCode::OK);
+    let dec_events = dec_page["events"].as_array().unwrap();
+    assert_eq!(dec_events.len(), 2);
+    assert_eq!(dec_events[0]["payload"]["contract"], "wos");
+    assert_eq!(dec_events[1]["payload"]["contract"], "formspec");
+
+    let mut stale_decision = body_for(&cases[3], "stale-shared-decision");
+    stale_decision["expectedTreeSize"] = 1.into();
+    let stale_response = app
+        .clone()
+        .oneshot(post_request(
+            "/v1/scopes/authority-decisions/events",
+            serde_json::to_vec(&stale_decision).unwrap(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(stale_response.status(), StatusCode::CONFLICT);
+    let problem: serde_json::Value =
+        serde_json::from_slice(&to_bytes(stale_response.into_body(), 4096).await.unwrap())
+            .unwrap();
+    assert_eq!(problem["error_code"], "INFRA-4094");
+
+    // Cross-ledger and cross-family writes are refused.
+    let decision_body = body_for(&cases[3], "cross-decision-on-authority");
+    assert_eq!(
+        app.clone()
+            .oneshot(post_request("/v1/scopes/authority/events", serde_json::to_vec(&decision_body).unwrap()))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let grant_body = body_for(&cases[0], "cross-grant-on-decisions");
+    assert_eq!(
+        app.clone()
+            .oneshot(post_request("/v1/scopes/authority-decisions/events", serde_json::to_vec(&grant_body).unwrap()))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    for legacy_path in ["/v1/scopes/authority-sample/events", "/v1/scopes/case_123/events"] {
+        assert_eq!(
+            app.clone()
+                .oneshot(post_request(legacy_path, serde_json::to_vec(&grant_body).unwrap()))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::BAD_REQUEST,
+            "{legacy_path}"
+        );
+    }
+    let mut legacy_with_expected = body_for(&cases[0], "expected-on-legacy");
+    legacy_with_expected["eventType"] = crate::test_adapters::FORMSPEC_RESPONSE_SUBMITTED.into();
+    legacy_with_expected["payload"] = serde_json::json!({"aggregateType":"t","aggregateId":"i","payload":{}});
+    legacy_with_expected["expectedTreeSize"] = 0.into();
+    assert_eq!(
+        app.clone()
+            .oneshot(post_request("/v1/scopes/authority-sample/events", serde_json::to_vec(&legacy_with_expected).unwrap()))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    for ledger in ["authority", "authority-decisions"] {
+        let mut formspec_body = body_for(&cases[0], &format!("formspec-on-{ledger}"));
+        formspec_body["eventType"] = crate::test_adapters::FORMSPEC_RESPONSE_SUBMITTED.into();
+        formspec_body["payload"] = serde_json::json!({"aggregateType":"t","aggregateId":"i","payload":{}});
+        assert_eq!(
+            app.clone()
+                .oneshot(post_request(&format!("/v1/scopes/{ledger}/events"), serde_json::to_vec(&formspec_body).unwrap()))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
 }

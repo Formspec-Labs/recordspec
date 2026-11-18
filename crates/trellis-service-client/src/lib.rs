@@ -1630,18 +1630,18 @@ mod tests {
         let endpoint = test_server(|request| {
             assert!(request.starts_with(&format!(
                 "GET /v1/scopes/{}/head ",
-                crate::test_ledger("authority-sample")
+                crate::test_ledger("authority")
             )));
             response("application/json", r#"{"head":null}"#)
         });
-        let ledger = crate::test_ledger("authority-sample");
+        let ledger = crate::test_ledger("authority");
         let client = TrellisServiceClient::new(TrellisServiceClientConfig::new(endpoint)).unwrap();
         assert_eq!(client.ledger_head(&ledger).await.unwrap(), None);
 
         let endpoint = test_server(|request| {
             assert!(request.starts_with(&format!(
                 "GET /v1/scopes/{}/events/ordered?after=7&limit=2 ",
-                crate::test_ledger("authority-sample")
+                crate::test_ledger("authority")
             )));
             response(
                 "application/json",
@@ -1659,7 +1659,7 @@ mod tests {
 
     #[tokio::test]
     async fn ledger_reads_require_explicit_nullable_members() {
-        let ledger = crate::test_ledger("authority-sample");
+        let ledger = crate::test_ledger("authority");
         for (body, valid) in [(r#"{"head":null}"#, true), ("{}", false)] {
             let endpoint = test_server(move |_| response("application/json", body));
             let client =
@@ -1700,7 +1700,7 @@ mod tests {
 
     #[tokio::test]
     async fn head_refuses_an_oversized_chunked_body_before_its_unfinished_tail() {
-        let ledger = crate::test_ledger("authority-sample");
+        let ledger = crate::test_ledger("authority");
         let endpoint = test_server(|_| {
             // A chunk crosses the head bound. Without a streaming bound the unfinished tail fails
             // as a transport error instead.
@@ -1717,7 +1717,7 @@ mod tests {
 
     #[tokio::test]
     async fn ordered_page_refuses_an_oversized_body_before_reading_it() {
-        let ledger = crate::test_ledger("authority-sample");
+        let ledger = crate::test_ledger("authority");
         let endpoint = test_server(|_| {
             "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 1073741824\r\n\r\n".into()
         });
@@ -1739,7 +1739,7 @@ mod tests {
         });
         let client = TrellisServiceClient::new(TrellisServiceClientConfig::new(endpoint)).unwrap();
         let request = SubstrateAppendRequest::new_json(
-            crate::test_ledger("authority-sample"),
+            crate::test_ledger("authority"),
             "trellis.authority.grant.v1",
             "conditional-key",
             AppendActor::service("producer"),

@@ -103,48 +103,79 @@ principal granted in this scope but not for this ledger or action answers 403.
 
 ### Authority ledger grants
 
-Apply these four rows per served scope and server contract. This example uses
-the contract `sample`. The `principal` is the grant file's stable mapping for
-the calling server. The append actor subject is what the server sends in the
-request's outer `actor`. Omit `payloadActors`: the producing server authorizes
-the human principal and includes it in the payload as evidence.
+Each served scope has two shared authority ledgers across contracts: `"authority"`
+and `"authority-decisions"`. Apply these four exact-ledger rows per served scope for
+each calling server's mapped service principal (`wos-server` and `formspec-server`).
+Each server's `append` row binds that server's own outer HTTP `AppendActor` in
+`actors`. Omit `payloadActors`: the producing server authorizes the acting
+principal and records it in the payload (`actor` for tuple changes or `principal`
+for decisions). Genesis `authority_admin` grants (`contract: "genesis"`) use the
+deterministic canonical genesis `actor` (`service:<digest>` derived from the fixed
+domain tag `"stack-authz-genesis-operator-v1"`), distinct from the calling server's
+outer HTTP `AppendActor`, alongside ordinary operator and service payload actors.
 
 ```json
 {
   "grants": [
     {
-      "principal": "records-producer",
+      "principal": "wos-server",
       "scope": {"tenant": "tenant-a", "workspace": "workspace-a", "environment": "prod"},
-      "ledger": "authority-sample",
+      "ledger": "authority",
       "action": "append",
-      "actors": [{"kind": "service", "subject": "producer-actor"}]
+      "actors": [{"kind": "service", "subject": "wos-server"}]
     },
     {
-      "principal": "records-producer",
+      "principal": "wos-server",
       "scope": {"tenant": "tenant-a", "workspace": "workspace-a", "environment": "prod"},
-      "ledger": "authority-sample",
+      "ledger": "authority",
       "action": "read"
     },
     {
-      "principal": "records-producer",
+      "principal": "wos-server",
       "scope": {"tenant": "tenant-a", "workspace": "workspace-a", "environment": "prod"},
-      "ledger": "authority-decisions-sample",
+      "ledger": "authority-decisions",
       "action": "append",
-      "actors": [{"kind": "service", "subject": "producer-actor"}]
+      "actors": [{"kind": "service", "subject": "wos-server"}]
     },
     {
-      "principal": "records-producer",
+      "principal": "wos-server",
       "scope": {"tenant": "tenant-a", "workspace": "workspace-a", "environment": "prod"},
-      "ledger": "authority-decisions-sample",
+      "ledger": "authority-decisions",
+      "action": "read"
+    },
+    {
+      "principal": "formspec-server",
+      "scope": {"tenant": "tenant-a", "workspace": "workspace-a", "environment": "prod"},
+      "ledger": "authority",
+      "action": "append",
+      "actors": [{"kind": "service", "subject": "formspec-server"}]
+    },
+    {
+      "principal": "formspec-server",
+      "scope": {"tenant": "tenant-a", "workspace": "workspace-a", "environment": "prod"},
+      "ledger": "authority",
+      "action": "read"
+    },
+    {
+      "principal": "formspec-server",
+      "scope": {"tenant": "tenant-a", "workspace": "workspace-a", "environment": "prod"},
+      "ledger": "authority-decisions",
+      "action": "append",
+      "actors": [{"kind": "service", "subject": "formspec-server"}]
+    },
+    {
+      "principal": "formspec-server",
+      "scope": {"tenant": "tenant-a", "workspace": "workspace-a", "environment": "prod"},
+      "ledger": "authority-decisions",
       "action": "read"
     }
   ]
 }
 ```
 
-Use exact `ledger` entries. The authority ledger prefixes end in a hyphen,
-while `ledgerPrefix` requires a dot or underscore. The two read grants cover
-head, ordered events, and append reconciliation. Give the producer's token
+Use exact `ledger` entries (`"authority"` and `"authority-decisions"`), because
+`ledgerPrefix` requires a dot or underscore separator. The two read grants cover
+head, ordered events, and append reconciliation. Give each server's token
 the configured append and read OAuth scopes.
 
 Storage records the cell on first open and refuses another; rows carry their scope

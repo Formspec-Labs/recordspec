@@ -103,12 +103,23 @@ fn authority_append_payloads_follow_the_authored_schema() {
             assert!(!validator.is_valid(&body), "{body}");
         }
         body.as_object_mut().unwrap().remove("expectedTreeSize");
-        for reserved in ["decisions", "decisions-9"] {
-            body["payload"]["contract"] = json!(reserved);
+        for contract in [
+            "wos",
+            "formspec",
+            "genesis",
+            "decisions",
+            "decisions-9",
+            "decisionsx",
+            "a1234567890123456789012345678901",
+        ] {
+            body["payload"]["contract"] = json!(contract);
+            assert!(validator.is_valid(&body), "{body}");
+        }
+        for invalid in ["", "Sample", "0sample", "bad_id", &"a".repeat(33)] {
+            body["payload"]["contract"] = json!(invalid);
             assert!(!validator.is_valid(&body), "{body}");
         }
-        body["payload"]["contract"] = json!("decisionsx");
-        assert!(validator.is_valid(&body), "{body}");
+        body["payload"]["contract"] = case["payload"]["contract"].clone();
         body["payload"]["unknown"] = json!(true);
         assert!(!validator.is_valid(&body), "{body}");
     }

@@ -20,10 +20,10 @@ const SCHEMA: &str = include_str!("../../../specs/authority-events.schema.json")
 /// Serialized activation limit, allowing room for escaped artifacts in the 2 MiB append body.
 pub const ACTIVATION_PAYLOAD_LIMIT: usize = 1792 * 1024;
 
-/// Ledger prefix for grants, revocations and activations.
-pub const AUTHORITY_LEDGER_PREFIX: &str = "authority-";
-/// Ledger prefix for authorization decision records.
-pub const DECISIONS_LEDGER_PREFIX: &str = "authority-decisions-";
+/// Shared ledger id for grants, revocations and activations.
+pub const AUTHORITY_LEDGER_ID: &str = "authority";
+/// Shared ledger id for authorization decision records.
+pub const DECISIONS_LEDGER_ID: &str = "authority-decisions";
 
 const TUPLE_CHANGE: &str = "tupleChange";
 const ACTIVATION: &str = "activation";
@@ -31,29 +31,29 @@ const DECISION: &str = "decision";
 
 struct Event {
     literal: &'static str,
-    ledger_prefix: &'static str,
+    ledger_id: &'static str,
     definition: &'static str,
 }
 
 const EVENTS: [Event; 4] = [
     Event {
         literal: "trellis.authority.grant.v1",
-        ledger_prefix: AUTHORITY_LEDGER_PREFIX,
+        ledger_id: AUTHORITY_LEDGER_ID,
         definition: TUPLE_CHANGE,
     },
     Event {
         literal: "trellis.authority.revocation.v1",
-        ledger_prefix: AUTHORITY_LEDGER_PREFIX,
+        ledger_id: AUTHORITY_LEDGER_ID,
         definition: TUPLE_CHANGE,
     },
     Event {
         literal: "trellis.authority.activation.v1",
-        ledger_prefix: AUTHORITY_LEDGER_PREFIX,
+        ledger_id: AUTHORITY_LEDGER_ID,
         definition: ACTIVATION,
     },
     Event {
         literal: "trellis.authority.decision.v1",
-        ledger_prefix: DECISIONS_LEDGER_PREFIX,
+        ledger_id: DECISIONS_LEDGER_ID,
         definition: DECISION,
     },
 ];
@@ -62,7 +62,6 @@ struct Validators {
     tuple_change: jsonschema::Validator,
     activation: jsonschema::Validator,
     decision: jsonschema::Validator,
-    contract_id: jsonschema::Validator,
     schema: serde_json::Value,
 }
 
@@ -80,7 +79,6 @@ static VALIDATORS: LazyLock<Validators> = LazyLock::new(|| {
         tuple_change: build(TUPLE_CHANGE),
         activation: build(ACTIVATION),
         decision: build(DECISION),
-        contract_id: build("contractId"),
         schema,
     }
 });
@@ -95,19 +93,11 @@ impl Event {
     }
 }
 
-/// Checks a ledger's contract suffix against the authored identifier schema.
-#[must_use]
-pub fn valid_contract_id(contract: &str) -> bool {
-    VALIDATORS
-        .contract_id
-        .is_valid(&serde_json::json!(contract))
-}
-
-/// Literals reserved for the ledger prefix.
-pub fn authority_literals(prefix: &str) -> impl Iterator<Item = &'static str> + '_ {
+/// Literals reserved for the shared ledger id.
+pub fn authority_literals(ledger_id: &str) -> impl Iterator<Item = &'static str> + '_ {
     EVENTS
         .iter()
-        .filter(move |event| event.ledger_prefix == prefix)
+        .filter(move |event| event.ledger_id == ledger_id)
         .map(|event| event.literal)
 }
 
@@ -205,4 +195,72 @@ fn verify_artifacts(payload: &serde_json::Value) -> Result<(), StackError> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn literals_partition_between_exact_shared_ledgers() {
+        let authority: Vec<_> = authority_literals(AUTHORITY_LEDGER_ID).collect();
+        assert_eq!(
+            authority,
+            [
+                "trellis.authority.grant.v1",
+                "trellis.authority.revocation.v1",
+                "trellis.authority.activation.v1",
+            ]
+        );
+        let decisions: Vec<_> = authority_literals(DECISIONS_LEDGER_ID).collect();
+        assert_eq!(decisions, ["trellis.authority.decision.v1"]);
+        assert!(authority_literals("authority-sample").next().is_none());
+    }
+
+    fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        let mut future = std::pin::pin!(future);
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        match future.as_mut().poll(&mut context) {
+            std::task::Poll::Ready(output) => output,
+            std::task::Poll::Pending => {
+                panic!("AuthorityAdmissionPolicy::admit must complete immediately")
+            }
+        }
+    }
+
+    #[test]
+    fn admits_multi_contract_genesis_and_decisions_contract_ids() {
+        let cases: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../../../fixtures/conformance/authority-events.json"
+        ))
+        .expect("conformance fixture");
+        let policy = AuthorityAdmissionPolicy;
+        for case in cases {
+            let event_type = case["eventType"].as_str().unwrap();
+            let scope = format!("{}.{}", "a".repeat(64), case["ledger"].as_str().unwrap());
+            let mut payload = case["payload"].clone();
+            for contract in ["wos", "formspec", "genesis", "decisions", "decisions-9"] {
+                payload["contract"] = contract.into();
+                block_on(policy.admit(&AdmissionEvent {
+                    scope: scope.as_bytes(),
+                    event_type,
+                    payload: &serde_json::to_vec(&payload).unwrap(),
+                }))
+                .unwrap_or_else(|err| panic!("{event_type} {contract}: {err}"));
+            }
+            for invalid in ["", "Sample", "0sample", "bad_id"] {
+                payload["contract"] = invalid.into();
+                let err = block_on(policy.admit(&AdmissionEvent {
+                    scope: scope.as_bytes(),
+                    event_type,
+                    payload: &serde_json::to_vec(&payload).unwrap(),
+                }))
+                .unwrap_err();
+                assert!(
+                    err.to_string().contains("/contract"),
+                    "{event_type} {invalid}: {err}"
+                );
+            }
+        }
+    }
 }

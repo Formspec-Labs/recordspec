@@ -1290,7 +1290,7 @@ async fn t1_specialized_appends_refuse_both_authority_ledgers() {
     }
     let state = state.with_admission_policy(Arc::new(ForwardingPolicy(crate::test_adapters::admission_policy())));
     let app = router(state).unwrap();
-    for ledger in ["authority-sample", "authority-decisions-sample"] {
+    for ledger in ["authority", "authority-decisions"] {
         let path = format!("/v1/scopes/{ledger}/completion");
         let response = app.clone().oneshot(post_request(&path, serde_json::to_vec(&request).unwrap())).await.unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
