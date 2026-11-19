@@ -1280,6 +1280,32 @@ async fn t1_authority_grants_bind_the_service_and_allow_unlisted_payload_princip
         receipts.push(receipt);
     }
     assert_eq!(receipts[0], receipts[1]);
+    // Wrong scope or non-user subject on a genesis grant refuses (400) before committing any row.
+    for (suffix, field, value) in [
+        (
+            "wrong-scope",
+            "object",
+            json!(format!("space:{}", crate::test_support::b().key())),
+        ),
+        ("non-user", "subject", json!("person:admin")),
+    ] {
+        let mut bad = super::ledger_read_tests::body_for(genesis, &format!("oidc-genesis-{suffix}"));
+        bad["actor"] = json!({"kind": "service", "subject": "wos-server"});
+        bad["payload"]["tuple"][field] = value;
+        assert_eq!(
+            app.clone()
+                .oneshot(post_request_bearer(
+                    "/v1/scopes/authority/events",
+                    serde_json::to_vec(&bad).unwrap(),
+                    &wos_token,
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::BAD_REQUEST,
+            "genesis grant {suffix} must refuse"
+        );
+    }
     let ordered = crate::test_support::scoped_request(
         "GET",
         "/v1/scopes/authority/events/ordered?after=0&limit=32",

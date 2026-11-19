@@ -169,7 +169,7 @@ impl EventAdmissionPolicy for AuthorityAdmissionPolicy {
                 error.instance_path()
             ))
         })?;
-        verify_genesis_grant(spec.literal, &payload)?;
+        verify_genesis_grant(event.scope, spec.literal, &payload)?;
         if spec.definition == ACTIVATION {
             verify_artifacts(&payload)?;
         }
@@ -184,7 +184,34 @@ impl EventAdmissionPolicy for AuthorityAdmissionPolicy {
     }
 }
 
-fn verify_genesis_grant(event_type: &str, payload: &serde_json::Value) -> Result<(), StackError> {
+fn is_lower_hex_64(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+fn parse_scope_key(scope: &[u8]) -> Result<&str, StackError> {
+    let text = std::str::from_utf8(scope)
+        .map_err(|_| StackError::bad_request("authority event scope must be UTF-8"))?;
+    let (key, _ledger) = text
+        .split_once('.')
+        .filter(|(key, ledger)| is_lower_hex_64(key) && !ledger.is_empty())
+        .ok_or_else(|| {
+            StackError::bad_request("authority event scope must be `<64-hex scope_key>.<ledger>`")
+        })?;
+    Ok(key)
+}
+
+fn is_canonical_user_subject(subject: &str) -> bool {
+    subject.strip_prefix("user:").is_some_and(is_lower_hex_64)
+}
+
+fn verify_genesis_grant(
+    scope: &[u8],
+    event_type: &str,
+    payload: &serde_json::Value,
+) -> Result<(), StackError> {
     if payload["contract"].as_str() != Some(GENESIS_CONTRACT) {
         return Ok(());
     }
@@ -193,17 +220,24 @@ fn verify_genesis_grant(event_type: &str, payload: &serde_json::Value) -> Result
             "contract \"genesis\" is only valid for trellis.authority.grant.v1",
         ));
     }
+    let scope_key = parse_scope_key(scope)?;
+    let expected_space = format!("{GENESIS_OBJECT_PREFIX}{scope_key}");
     if payload["tuple"]["relation"].as_str() != Some(GENESIS_RELATION) {
         return Err(StackError::bad_request(
             "genesis authority grants require relation \"authority_admin\"",
         ));
     }
-    if !payload["tuple"]["object"]
+    if payload["tuple"]["object"].as_str() != Some(expected_space.as_str()) {
+        return Err(StackError::bad_request(format!(
+            "genesis authority grants require object \"{expected_space}\" for the admitted scope"
+        )));
+    }
+    if !payload["tuple"]["subject"]
         .as_str()
-        .is_some_and(|object| object.starts_with(GENESIS_OBJECT_PREFIX))
+        .is_some_and(is_canonical_user_subject)
     {
         return Err(StackError::bad_request(
-            "genesis authority grants require a \"space:\" object",
+            "genesis authority grants require a canonical `user:<64 lowercase hex>` subject",
         ));
     }
     let expected_actor = canonical_genesis_actor();
@@ -293,12 +327,28 @@ mod tests {
                 .unwrap_or_else(|err| panic!("{event_type} {contract}: {err}"));
             }
             if index == 4 {
+                let genesis_scope_key = case["payload"]["tuple"]["object"]
+                    .as_str()
+                    .unwrap()
+                    .strip_prefix("space:")
+                    .unwrap();
+                let genesis_scope =
+                    format!("{genesis_scope_key}.{}", case["ledger"].as_str().unwrap());
                 block_on(policy.admit(&AdmissionEvent {
-                    scope: scope.as_bytes(),
+                    scope: genesis_scope.as_bytes(),
                     event_type,
                     payload: &serde_json::to_vec(&case["payload"]).unwrap(),
                 }))
-                .expect("canonical genesis fixture grant must be admitted");
+                .expect("canonical genesis fixture grant must be admitted on its scope");
+                assert!(
+                    block_on(policy.admit(&AdmissionEvent {
+                        scope: scope.as_bytes(),
+                        event_type,
+                        payload: &serde_json::to_vec(&case["payload"]).unwrap(),
+                    }))
+                    .is_err(),
+                    "canonical genesis fixture grant must refuse a mismatched scope"
+                );
             } else {
                 payload["contract"] = "genesis".into();
                 assert!(
@@ -334,9 +384,15 @@ mod tests {
         ))
         .expect("conformance fixture");
         let policy = AuthorityAdmissionPolicy;
-        let auth_scope = format!("{}.authority", "a".repeat(64));
-        let dec_scope = format!("{}.authority-decisions", "a".repeat(64));
         let canonical = cases[4]["payload"].clone();
+        let canonical_scope_key = canonical["tuple"]["object"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("space:")
+            .unwrap();
+        let auth_scope = format!("{canonical_scope_key}.authority");
+        let other_auth_scope = format!("{}.authority", "a".repeat(64));
+        let dec_scope = format!("{canonical_scope_key}.authority-decisions");
         assert_eq!(
             canonical["actor"].as_str().unwrap(),
             "service:6e70406f0eaa4a6dd1f83c93ae711b6fbc28c19dac996c381b31ca49150564e7"
@@ -371,7 +427,7 @@ mod tests {
             assert_eq!(err.status().as_u16(), 400);
         }
 
-        // Grant with wrong actor, wrong relation, or non-"space:" object must refuse.
+        // Grant with wrong actor, wrong relation, wrong/unscoped object, or non-user subject must refuse.
         let mut bad_actor = canonical.clone();
         bad_actor["actor"] =
             "service:0000000000000000000000000000000000000000000000000000000000000000".into();
@@ -379,13 +435,59 @@ mod tests {
         caller_actor["actor"] = "service:wos-server".into();
         let mut bad_relation = canonical.clone();
         bad_relation["tuple"]["relation"] = "viewer".into();
-        let mut bad_object = canonical;
-        bad_object["tuple"]["object"] = "record:sample".into();
-        for bad in [bad_actor, caller_actor, bad_relation, bad_object] {
+        let mut non_space_object = canonical.clone();
+        non_space_object["tuple"]["object"] = "record:sample".into();
+        let mut sample_space_object = canonical.clone();
+        sample_space_object["tuple"]["object"] = "space:sample".into();
+        let mut other_space_object = canonical.clone();
+        other_space_object["tuple"]["object"] = format!("space:{}", "a".repeat(64)).into();
+
+        let valid_user = canonical["tuple"]["subject"].as_str().unwrap();
+        let uppercase_user = valid_user.to_ascii_uppercase();
+        let service_subject = valid_user.replace("user:", "service:");
+        let userset_subject = format!("{valid_user}#member");
+        let mut bad_cases = vec![
+            bad_actor,
+            caller_actor,
+            bad_relation,
+            non_space_object,
+            sample_space_object,
+            other_space_object,
+        ];
+        for bad_subject in [
+            "person:admin",
+            "user:*",
+            "user:alice",
+            "user:short",
+            uppercase_user.as_str(),
+            service_subject.as_str(),
+            userset_subject.as_str(),
+        ] {
+            let mut bad = canonical.clone();
+            bad["tuple"]["subject"] = bad_subject.into();
+            bad_cases.push(bad);
+        }
+        for bad in bad_cases {
             let err = block_on(policy.admit(&AdmissionEvent {
                 scope: auth_scope.as_bytes(),
                 event_type: "trellis.authority.grant.v1",
                 payload: &serde_json::to_vec(&bad).unwrap(),
+            }))
+            .unwrap_err();
+            assert_eq!(err.status().as_u16(), 400, "{bad}");
+        }
+
+        // Canonical payload submitted against a different scope key or malformed/non-UTF-8 scope refuses (400).
+        for bad_scope in [
+            other_auth_scope.as_bytes(),
+            b"not-utf8-\xff.authority".as_slice(),
+            b"authority".as_slice(),
+            b"badkey.authority".as_slice(),
+        ] {
+            let err = block_on(policy.admit(&AdmissionEvent {
+                scope: bad_scope,
+                event_type: "trellis.authority.grant.v1",
+                payload: &serde_json::to_vec(&canonical).unwrap(),
             }))
             .unwrap_err();
             assert_eq!(err.status().as_u16(), 400);

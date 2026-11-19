@@ -87,12 +87,12 @@
   {
     "eventType": "trellis.authority.grant.v1",
     "ledger": "authority",
-    "_note": "Uses the canonical genesis service:<digest> actor derived from domain tag stack-authz-genesis-operator-v1; space:sample is a structural scope placeholder.",
+    "_note": "Canonical genesis grant fixture: actor uses stack-authz-genesis-operator-v1, subject uses user:<64hex>, and object binds to space:<scope_key> for test scope acme/benefits/prod.",
     "payload": {
       "tuple": {
-        "subject": "person:admin",
+        "subject": "user:719c5cfde5aac79dd62c9ab403e7f8c36daacdeb45c21116f02a6aaeb75fed79",
         "relation": "authority_admin",
-        "object": "space:sample"
+        "object": "space:b790664e064ebbf64d0232be2ee357f10dcf3cfe4e9e243d26b156b0fd23ff78"
       },
       "actor": "service:6e70406f0eaa4a6dd1f83c93ae711b6fbc28c19dac996c381b31ca49150564e7",
       "reason": "Genesis authority administrator",

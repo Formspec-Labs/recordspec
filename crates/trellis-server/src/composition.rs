@@ -258,9 +258,18 @@ mod authority_tests {
     #[tokio::test]
     async fn t1_authority_payloads_and_ledger_binding() {
         let policy = default_admission_policy();
+        let default_key = "a".repeat(64);
         for case in cases() {
             let event_type = case["eventType"].as_str().unwrap();
             let ledger = case["ledger"].as_str().unwrap();
+            let scope_key = if case["payload"]["contract"] == "genesis" {
+                case["payload"]["tuple"]["object"]
+                    .as_str()
+                    .and_then(|object| object.strip_prefix("space:"))
+                    .unwrap()
+            } else {
+                default_key.as_str()
+            };
             let bytes = serde_json::to_vec(&case["payload"]).unwrap();
             for id in [
                 "authority",
@@ -275,7 +284,7 @@ mod authority_tests {
                 "case_123",
                 "other.authority",
             ] {
-                let scope = format!("{}.{id}", "a".repeat(64));
+                let scope = format!("{scope_key}.{id}");
                 let result = policy
                     .admit(&AdmissionEvent {
                         scope: scope.as_bytes(),
@@ -359,12 +368,13 @@ mod authority_tests {
         }
     }
 
-    async fn admit(
+    async fn admit_under(
+        scope_key: &str,
         event_type: &str,
         ledger: &str,
         payload: &serde_json::Value,
     ) -> Result<(), stack_common_error::StackError> {
-        let scope = format!("{}.{ledger}", "a".repeat(64));
+        let scope = format!("{scope_key}.{ledger}");
         default_admission_policy()
             .admit(&AdmissionEvent {
                 scope: scope.as_bytes(),
@@ -373,6 +383,14 @@ mod authority_tests {
             })
             .await
             .map(|_| ())
+    }
+
+    async fn admit(
+        event_type: &str,
+        ledger: &str,
+        payload: &serde_json::Value,
+    ) -> Result<(), stack_common_error::StackError> {
+        admit_under(&"a".repeat(64), event_type, ledger, payload).await
     }
 
     fn cases() -> Vec<serde_json::Value> {
@@ -428,13 +446,35 @@ mod authority_tests {
                 );
             }
             if index == 4 {
-                admit(event_type, ledger, &case["payload"])
+                let genesis_scope_key = case["payload"]["tuple"]["object"]
+                    .as_str()
+                    .unwrap()
+                    .strip_prefix("space:")
+                    .unwrap();
+                admit_under(genesis_scope_key, event_type, ledger, &case["payload"])
                     .await
-                    .expect("canonical genesis grant admitted on authority");
+                    .expect("canonical genesis grant admitted on matching authority scope");
                 assert!(
-                    admit(event_type, other_ledger, &case["payload"])
+                    admit(event_type, ledger, &case["payload"]).await.is_err(),
+                    "genesis grant on wrong scope key must refuse"
+                );
+                let mut non_user = case["payload"].clone();
+                non_user["tuple"]["subject"] = "person:admin".into();
+                assert!(
+                    admit_under(genesis_scope_key, event_type, ledger, &non_user)
                         .await
-                        .is_err()
+                        .is_err(),
+                    "genesis grant with non-user subject must refuse"
+                );
+                assert!(
+                    admit_under(
+                        genesis_scope_key,
+                        event_type,
+                        other_ledger,
+                        &case["payload"]
+                    )
+                    .await
+                    .is_err()
                 );
             } else {
                 payload["contract"] = "genesis".into();

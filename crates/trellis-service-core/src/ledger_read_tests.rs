@@ -710,9 +710,47 @@ async fn t1_shared_ledgers_admit_multiple_contracts_and_genesis_and_refuse_cross
         body["payload"]["contract"] = contract.into();
         if contract == "genesis" {
             body["payload"] = cases[4]["payload"].clone();
+            assert_eq!(
+                body["payload"]["tuple"]["object"],
+                format!("space:{}", crate::test_support::a().key())
+            );
         }
         let receipt = post_append(&app, "/v1/scopes/authority/events", serde_json::to_vec(&body).unwrap()).await;
         assert_eq!(receipt.sequence, seq as u64);
+    }
+    // Genesis HTTP route rejects wrong scope or non-user subjects with 400.
+    let mut wrong_scope_genesis = body_for(&cases[4], "wrong-scope-genesis");
+    wrong_scope_genesis["payload"]["tuple"]["object"] =
+        format!("space:{}", crate::test_support::b().key()).into();
+    let mut placeholder_scope_genesis = body_for(&cases[4], "placeholder-scope-genesis");
+    placeholder_scope_genesis["payload"]["tuple"]["object"] = "space:sample".into();
+    let mut bad_genesis_bodies = vec![wrong_scope_genesis, placeholder_scope_genesis];
+    for (suffix, subject) in [
+        ("person", "person:admin"),
+        ("wildcard", "user:*"),
+        ("short", "user:alice"),
+        (
+            "service",
+            "service:719c5cfde5aac79dd62c9ab403e7f8c36daacdeb45c21116f02a6aaeb75fed79",
+        ),
+    ] {
+        let mut bad = body_for(&cases[4], &format!("bad-genesis-{suffix}"));
+        bad["payload"]["tuple"]["subject"] = subject.into();
+        bad_genesis_bodies.push(bad);
+    }
+    for bad in bad_genesis_bodies {
+        assert_eq!(
+            app.clone()
+                .oneshot(post_request(
+                    "/v1/scopes/authority/events",
+                    serde_json::to_vec(&bad).unwrap(),
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::BAD_REQUEST,
+            "{bad}"
+        );
     }
     let (status, auth_page) = get(&app, "/v1/scopes/authority/events/ordered?after=0").await;
     assert_eq!(status, StatusCode::OK);
