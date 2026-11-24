@@ -39,27 +39,31 @@ macro_rules! attachments {
     };
 }
 
+// Both reads compute the checkpoint size in the bounded event subquery. The checkpoint
+// lookup can then use equality on its full primary key under row security.
 /// The last event's hash and signed checkpoint from one statement snapshot.
 pub const LEDGER_HEAD: &str = "
     SELECT e.sequence, e.canonical_event_hash, c.digest, c.checkpoint
     FROM (
-        SELECT sequence, canonical_event_hash FROM trellis_events
+        SELECT sequence, canonical_event_hash, sequence + 1 AS checkpoint_tree_size
+        FROM trellis_events
         WHERE scope_key = $1 AND scope = $2 ORDER BY sequence DESC LIMIT 1
     ) e
     LEFT JOIN LATERAL (
         SELECT digest, checkpoint FROM trellis_checkpoints
-        WHERE scope_key = $1 AND scope = $2 AND tree_size = e.sequence + 1 LIMIT 1
+        WHERE scope_key = $1 AND scope = $2 AND tree_size = e.checkpoint_tree_size LIMIT 1
     ) c ON TRUE";
 /// An indexed page plus each event's checkpoint, using one statement snapshot.
 pub const EVENTS_AFTER: &str = "
     SELECT e.sequence, e.canonical_event, e.canonical_event_hash, c.digest, c.checkpoint
     FROM (
-        SELECT sequence, canonical_event, canonical_event_hash FROM trellis_events
+        SELECT sequence, canonical_event, canonical_event_hash, sequence + 1 AS checkpoint_tree_size
+        FROM trellis_events
         WHERE scope_key = $1 AND scope = $2 AND sequence >= $3 ORDER BY sequence LIMIT $4
     ) e
     LEFT JOIN LATERAL (
         SELECT digest, checkpoint FROM trellis_checkpoints
-        WHERE scope_key = $1 AND scope = $2 AND tree_size = e.sequence + 1 LIMIT 1
+        WHERE scope_key = $1 AND scope = $2 AND tree_size = e.checkpoint_tree_size LIMIT 1
     ) c ON TRUE
     ORDER BY e.sequence";
 
