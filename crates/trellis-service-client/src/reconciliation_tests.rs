@@ -122,3 +122,44 @@ fn completion_lookup_names_the_certificate_id_and_every_other_type_the_hash() {
     .unwrap();
     assert!(AppendReconciliationRequest::from_append_body(&body).is_err());
 }
+
+#[tokio::test]
+async fn reconciliation_client_preserves_http_status_and_closed_code_without_private_content() {
+    for (status, expected_code) in [
+        (400, "INFRA-4000"),
+        (401, "INFRA-4010"),
+        (403, "INFRA-4030"),
+        (404, "INFRA-4040"),
+        (500, "INFRA-5000"),
+        (503, "INFRA-5030"),
+    ] {
+        let body = format!(
+            r#"{{"error_code":"{expected_code}","title":"PRIVATE_RECONCILE_SENTINEL","detail":"SECRET_DETAIL"}}"#
+        );
+        let endpoint = test_server(move |_| {
+            format!(
+                "HTTP/1.1 {status} controlled\r\ncontent-type: application/problem+json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            )
+        });
+        let client = TrellisServiceClient::new(TrellisServiceClientConfig::new(endpoint)).unwrap();
+        let lookup = AppendReconciliationRequest {
+            event_type: "trellis.authority.grant.v1".into(),
+            idempotency_key: "neutral-key".into(),
+            content_hash: Some([0; 32]),
+            certificate_id: None,
+        };
+        let error = client
+            .reconcile_event(&crate::test_ledger("authority"), &lookup)
+            .await
+            .unwrap_err();
+        assert_eq!(error.status().as_u16(), status);
+        assert!(
+            error.title().contains(expected_code),
+            "closed problem code missing: {error}"
+        );
+        let debug = format!("{error:?}");
+        assert!(!debug.contains("PRIVATE_RECONCILE_SENTINEL"));
+        assert!(!debug.contains("SECRET_DETAIL"));
+    }
+}

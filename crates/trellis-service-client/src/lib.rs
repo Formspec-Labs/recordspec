@@ -1110,9 +1110,7 @@ impl SubstrateClient for TrellisServiceClient {
                     StackError::unavailable("append reconciliation transport unavailable")
                 })?;
             if response.status() != reqwest::StatusCode::OK {
-                return Err(StackError::unavailable(
-                    "append reconciliation admission refused",
-                ));
+                return Err(provider_http_error(response, "reconcile", false).await);
             }
             let result = response
                 .json::<AppendReconciliation>()
