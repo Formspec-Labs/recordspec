@@ -1,0 +1,42 @@
+[package]
+name = "trellis-authority-ledger"
+version.workspace = true
+edition.workspace = true
+description = "Shared AuthorityLedger adapter over trellis-service-client for scope authority and decision ledgers"
+license.workspace = true
+
+[features]
+# Composition roots enable this feature to construct the adapter (ADR 0168 §1.2; CONTRACT §8).
+composition-root = []
+
+[dependencies]
+async-trait = "0.1"
+http = "1"
+serde_json = "1"
+stack-common-authz = { path = "../../../stack-common/crates/stack-common-authz" }
+stack-common-error = { path = "../../../stack-common/crates/stack-common-error", default-features = false }
+stack-common-scope = { path = "../../../stack-common/crates/stack-common-scope" }
+trellis-service-client = { path = "../trellis-service-client" }
+trellis-types = { path = "../trellis-types" }
+
+[dev-dependencies]
+axum = "0.8"
+chrono = "0.4"
+hex = "0.4"
+integrity-cbor = { path = "../../../integrity-stack/crates/integrity-cbor", features = ["json"] }
+object_store = { version = "0.11", default-features = false, features = ["aws"] }
+reqwest = { version = "0.12", default-features = false }
+sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio-rustls"] }
+stack-common-auth = { path = "../../../stack-common/crates/stack-common-auth" }
+stack-common-authz = { path = "../../../stack-common/crates/stack-common-authz", features = ["testing"] }
+stack-common-object-store = { path = "../../../stack-common/crates/stack-common-object-store", features = ["composition-root"] }
+stack-common-ops = { path = "../../../stack-common/crates/stack-common-ops" }
+stack-common-postgres = { path = "../../../stack-common/crates/stack-common-postgres", default-features = false, features = ["composition-root", "migrations", "pool", "scoped", "testing"] }
+stack-common-scope = { path = "../../../stack-common/crates/stack-common-scope", features = ["composition-root"] }
+tokio = { version = "1", features = ["full", "macros", "test-util"] }
+trellis-authority-ledger = { path = ".", features = ["composition-root"] }
+trellis-core = { path = "../trellis-core" }
+trellis-export-writer = { path = "../trellis-export-writer" }
+trellis-server = { path = "../trellis-server", features = ["test-harness"] }
+trellis-server-ports = { path = "../trellis-server-ports" }
+trellis-store-postgres-async = { path = "../trellis-store-postgres-async" }

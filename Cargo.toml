@@ -6,6 +6,7 @@ members = [
     "crates/trellis-server-ports",
     "crates/trellis-export-writer",
     "crates/trellis-service-client",
+    "crates/trellis-authority-ledger",
     "crates/trellis-service-core",
     "crates/trellis-server",
     "crates/trellis-main",

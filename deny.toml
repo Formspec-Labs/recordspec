@@ -55,6 +55,11 @@ deny = [
     { name = "trellis-interop-c2pa", wrappers = ["trellis-cli"] },
     { name = "trellis-interop-did", wrappers = ["trellis-cli"] },
 
+    # Outbound authorization ledger adapter: implements stack-common-authz's AuthorityLedger
+    # port over trellis-service-client for downstream servers. Only it may depend on
+    # stack-common-authz.
+    { name = "stack-common-authz", wrappers = ["trellis-authority-ledger"] },
+
     # WOS vocabulary: the WOS adapters, the WOS verifier, and trellis-service-client.
     # The last is an accepted edge: its `wos_ext` typed-helper module (the shared WOS client
     # surface) is why trellis-server-ports reaches wos-events transitively; `wrappers`
