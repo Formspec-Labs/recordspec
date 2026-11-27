@@ -213,6 +213,16 @@ async fn seed_erased_authority_grant(
     key: &str,
     original_payload: &Value,
 ) -> Head {
+    seed_external_authority_grant(ledgers, scope, key, original_payload, "erased").await
+}
+
+async fn seed_external_authority_grant(
+    ledgers: &Arc<dyn Ledgers>,
+    scope: &Scope,
+    key: &str,
+    original_payload: &Value,
+    availability: &str,
+) -> Head {
     #[derive(Default)]
     struct Capture(Option<StoredEvent>);
     impl LedgerStore for Capture {
@@ -275,7 +285,7 @@ async fn seed_erased_authority_grant(
     let payload_ref = map(vec![
         ("ref_type", Cbor::Text("external".to_owned())),
         ("content_hash", Cbor::Bytes(content.content_hash.to_vec())),
-        ("availability", Cbor::Text("erased".to_owned())),
+        ("availability", Cbor::Text(availability.to_owned())),
         ("retrieval_hint", Cbor::Null),
     ]);
     let key_bag = map(vec![("entries", Cbor::Array(Vec::new()))]);
@@ -900,7 +910,60 @@ async fn run_erased_entry_reconcile_contract(server: &RunningServer, scope: &Sco
             .reconcile(scope, Ledger::Authority, "erased-key-0", GRANT, &original)
             .await
             .unwrap(),
-        Reconcile::Committed(erased_head)
+        Reconcile::Committed(erased_head.clone())
+    );
+
+    // OC-124 rebuild & anchor reads over real Trellis HTTP: erased entry yields `payload: None`
+    // while preserving canonical event hash, chain continuity, and checkpoint proofs.
+    let full = adapter
+        .read_after(scope, Ledger::Authority, 0, 10)
+        .await
+        .expect("read_after across OC-124 erased entry must succeed");
+    assert_eq!(full.start, Head::empty());
+    assert_eq!(full.entries.len(), 2);
+    assert_eq!(full.entries[0].head.tree_size, 1);
+    assert_eq!(full.entries[0].event_type, GRANT);
+    assert_eq!(full.entries[0].payload, None);
+    assert_eq!(full.entries[0].head, erased_head);
+    assert_eq!(full.entries[1].head.tree_size, 2);
+    assert_eq!(full.entries[1].event_type, GRANT);
+    assert_eq!(full.entries[1].payload.as_ref(), Some(&next_grant));
+    assert_eq!(full.entries[1].head, h2);
+
+    // Anchor read starting directly at the erased seq 0 (tree_size = 1) must also succeed.
+    let tail = adapter
+        .read_after(scope, Ledger::Authority, 1, 10)
+        .await
+        .expect("read_after anchored on OC-124 erased entry must succeed");
+    assert_eq!(tail.start, erased_head);
+    assert_eq!(tail.entries.len(), 1);
+    assert_eq!(tail.entries[0].payload.as_ref(), Some(&next_grant));
+    assert_eq!(tail.entries[0].head, h2);
+
+    // Zero-limit prefix confirmation anchored on the erased seq 0 must succeed.
+    let prefix = adapter
+        .read_after(scope, Ledger::Authority, 1, 0)
+        .await
+        .expect("zero-limit prefix check anchored on OC-124 erased entry must succeed");
+    assert_eq!(prefix.start, erased_head);
+    assert!(prefix.entries.is_empty());
+}
+
+#[tokio::test]
+async fn contract_in_memory_server_non_erased_external_authority_row_fails_closed() {
+    let server = spawn_memory_server().await;
+    let scope = scope_a();
+    let adapter = adapter_for(&server.endpoint, "wos-server", None);
+    let original = grant_payload("wos", "record:corrupt", "cmd-corrupt");
+    seed_external_authority_grant(&server.ledgers, &scope, "corrupt-key-0", &original, "available")
+        .await;
+    let err = adapter
+        .read_after(&scope, Ledger::Authority, 0, 10)
+        .await
+        .expect_err("non-erased external authority payload must fail closed");
+    assert!(
+        matches!(err, LedgerFailure::Unavailable(_)),
+        "expected Unavailable on non-erased unreadable authority payload, got {err:?}"
     );
 }
 

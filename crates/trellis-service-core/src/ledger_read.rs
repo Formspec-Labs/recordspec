@@ -105,6 +105,20 @@ pub(crate) fn event(
         map_lookup_optional_value(key_bag, "entries"),
         Some(Value::Array(entries)) if entries.is_empty()
     );
+    let erased = public
+        && plaintext
+        && matches!(
+            map_lookup_optional_value(reference, "ref_type"),
+            Some(Value::Text(kind)) if kind == "external"
+        )
+        && matches!(
+            map_lookup_optional_value(reference, "availability"),
+            Some(Value::Text(avail)) if avail == "erased"
+        )
+        && matches!(
+            map_lookup_optional_value(reference, "content_hash"),
+            Some(Value::Bytes(bytes)) if bytes.len() == 32
+        );
     let payload = if public && inline && plaintext {
         let Some(Value::Bytes(encoded)) = map_lookup_optional_value(reference, "ciphertext") else {
             return Err(invalid());
@@ -114,6 +128,7 @@ pub(crate) fn event(
         None
     };
     if admission.is_contract_event(&event_type)
+        && !erased
         && !payload.as_ref().is_some_and(serde_json::Value::is_object)
     {
         return Err(StackError::internal(
